@@ -1,0 +1,9 @@
+node_modules/
+client/dist/
+server/scout.db
+server/scout.db-wal
+server/scout.db-shm
+*.log
+
+# personal docs
+*.pdf
