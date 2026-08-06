@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ar, fr } from 'date-fns/locale';
-import { Calendar } from './shadcn/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
-import { Button, IconCalendar, IconX, cn } from './ui';
+import { Button, IconCalendar, IconX, Skeleton, cn } from './ui';
 import { fmtDate } from '../utils';
+
+const CalendarPanel = lazy(() => import('./CalendarPanel'));
 
 /* ISO <-> Date, anchored at local noon so a timezone offset can never shift
    the calendar by a day. */
@@ -96,15 +96,15 @@ export default function DateRangePicker({ value, onChange, className }) {
             )}
           </div>
           <div className="p-3">
-            <Calendar
-              mode="range"
-              dir={isAr ? 'rtl' : 'ltr'}
-              locale={isAr ? ar : fr}
-              defaultMonth={selected.from || new Date()}
-              selected={hasRange ? selected : undefined}
-              onSelect={apply}
-              numberOfMonths={1}
-            />
+            <Suspense fallback={<Skeleton className="h-72 w-72" />}>
+              <CalendarPanel
+                mode="range"
+                isAr={isAr}
+                defaultMonth={selected.from || new Date()}
+                selected={hasRange ? selected : undefined}
+                onSelect={apply}
+              />
+            </Suspense>
           </div>
         </PopoverContent>
       </Popover>
