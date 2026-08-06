@@ -48,6 +48,35 @@ CREATE TABLE IF NOT EXISTS sessions (
   matalib TEXT NOT NULL DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS leaders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  phone TEXT,
+  photo TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
+);
+
+-- التشكيلة: yearly role assignments (قائد فرقة أو أمانة). One row = one توصيف.
+CREATE TABLE IF NOT EXISTS assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  year TEXT NOT NULL,
+  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana'))
+);
+
+-- Animators of a session: one main (animateur principal) + helpers, with their own présence
+CREATE TABLE IF NOT EXISTS session_leaders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'helper' CHECK (role IN ('main', 'helper')),
+  status TEXT CHECK (status IN ('present', 'absent')),
+  UNIQUE(session_id, leader_id)
+);
+
 CREATE TABLE IF NOT EXISTS attendance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -71,6 +100,8 @@ function migrate() {
   ensureColumn('sessions', 'leader', 'leader TEXT');
   ensureColumn('sessions', 'fee', 'fee REAL');
   ensureColumn('sessions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
+  // Plain INTEGER (no FK): leader deletion nulls it manually, keeping the name snapshot in `leader`
+  ensureColumn('sessions', 'leader_id', 'leader_id INTEGER');
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
@@ -80,6 +111,13 @@ function migrate() {
     'UPDATE branches SET total_requirements = ? WHERE name_ar = ? AND total_requirements = 0'
   );
   for (const [ar, total] of Object.entries(REQUIREMENT_DEFAULTS)) setTotal.run(total, ar);
+
+  // Sessions created before session_leaders: register the linked leader as main animator
+  db.exec(`
+    INSERT OR IGNORE INTO session_leaders (session_id, leader_id, role)
+    SELECT s.id, s.leader_id, 'main' FROM sessions s
+    WHERE s.leader_id IS NOT NULL AND EXISTS (SELECT 1 FROM leaders l WHERE l.id = s.leader_id)
+  `);
 
   const hasBranches = db.prepare('SELECT COUNT(*) AS n FROM branches').get().n > 0;
   const hasBaraem = db.prepare('SELECT id FROM branches WHERE name_ar = ?').get('البراعم');
@@ -122,4 +160,37 @@ function seed() {
   insertMember.run('Karim', 'Bouzid', birthDateForAge(18), 'M', routiers, '+216 29 999 000', '2019-09-05');
 }
 
-module.exports = { db, seed, migrate };
+// Demo leaders + تشكيلة assignments; separate guard so it also fills databases seeded before this feature
+function seedLeaders() {
+  const count = db.prepare('SELECT COUNT(*) AS n FROM leaders').get().n;
+  if (count > 0) return;
+
+  const branchByAr = (ar) => db.prepare('SELECT id FROM branches WHERE name_ar = ?').get(ar)?.id ?? null;
+
+  const insertLeader = db.prepare(
+    "INSERT INTO leaders (first_name, last_name, phone, status) VALUES (?, ?, ?, ?)"
+  );
+  const leaders = [
+    ['Mohamed', 'Lahaf', '+216 21 100 200', 'active'],
+    ['Fatma', 'Jendoubi', '+216 22 210 320', 'active'],
+    ['Ahmed', 'Mansouri', '+216 50 430 540', 'active'],
+    ['Nour', 'Khelifi', '+216 97 650 760', 'active'],
+    ['Sami', 'Ayari', '+216 23 870 980', 'active'],
+    ['Rania', 'Belhadj', '+216 58 090 100', 'active'],
+    ['Hedi', 'Chaabane', '+216 24 111 213', 'inactive'],
+  ];
+  const ids = leaders.map((l) => insertLeader.run(...l).lastInsertRowid);
+
+  const year = '2025-2026';
+  const insertAssignment = db.prepare(
+    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type) VALUES (?, ?, ?, ?, ?)'
+  );
+  insertAssignment.run(year, ids[0], 'قائد الفوج', null, 'amana');
+  insertAssignment.run(year, ids[1], 'أمين المال', null, 'amana');
+  insertAssignment.run(year, ids[2], 'قائد فرقة البراعم', branchByAr('البراعم'), 'branch');
+  insertAssignment.run(year, ids[3], 'قائد فرقة الأشبال', branchByAr('الأشبال'), 'branch');
+  insertAssignment.run(year, ids[4], 'قائد فرقة الكشافة', branchByAr('الكشافة'), 'branch');
+  insertAssignment.run(year, ids[5], 'قائد فرقة الجوالة', branchByAr('الجوالة'), 'branch');
+}
+
+module.exports = { db, seed, seedLeaders, migrate };

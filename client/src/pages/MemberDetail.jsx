@@ -1,23 +1,29 @@
-import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
-import { fmtDate, branchName } from '../utils';
+import { useBack, useFetch } from '../hooks';
+import { fmtDate, branchName, birthdayWhen } from '../utils';
 import {
-  cn,
+  Avatar,
+  Badge,
   Button,
   Card,
+  CardContent,
   CardHeader,
   CardTitle,
-  CardContent,
-  Badge,
-  Avatar,
-  Table,
-  Th,
-  Td,
   EmptyState,
-  IconBack,
+  ErrorState,
+  ProgressBar,
+  RequirementGrid,
+  SkeletonPage,
+  Table,
+  Td,
+  Th,
   IconAlert,
+  IconAward,
+  IconBack,
+  IconCake,
+  IconCalendar,
+  IconPhone,
 } from '../components/ui';
 
 const STATUS_BADGE = {
@@ -29,66 +35,131 @@ const STATUS_BADGE = {
 export default function MemberDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
-  const [member, setMember] = useState(null);
+  const back = useBack('/members');
+  const { data: member, loading, error, reload } = useFetch(`/members/${id}`);
 
-  useEffect(() => {
-    api.get(`/members/${id}`).then(setMember).catch(console.error);
-  }, [id]);
-
-  if (!member) return <p className="text-muted-foreground">{t('common.loading')}</p>;
+  if (loading) return <SkeletonPage rows={4} />;
+  if (error)
+    return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
   const { stats } = member;
+  const bday = birthdayWhen(member.birth_date);
+  const reqPct = member.branch_total_requirements
+    ? Math.min(100, Math.round((stats.requirements_earned / member.branch_total_requirements) * 100))
+    : 0;
+  const rateTone =
+    stats.rate === null ? 'text-foreground' : stats.rate >= 75 ? 'text-success' : stats.rate >= 50 ? 'text-warning' : 'text-destructive';
 
   return (
     <div className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={() => history.back()}>
+      <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
         <IconBack className="rtl:rotate-180" />
         {t('common.back')}
       </Button>
 
-      <Card>
-        <CardContent className="flex flex-wrap items-center gap-4 p-5">
-          <Avatar
-            photo={member.photo}
-            name={`${member.first_name} ${member.last_name}`}
-            className="h-16 w-16 text-base"
-          />
-          <div className="flex-1">
-            <h1 className="text-xl font-bold">
-              {member.first_name} {member.last_name}
-            </h1>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <Badge>{branchName(member, i18n.language)}</Badge>
-              <span>
-                {member.age} {t('common.years')}
-              </span>
-              <span>· {t(member.sex === 'M' ? 'member.male' : 'member.female')}</span>
-              <Badge variant={member.status === 'active' ? 'success' : 'secondary'}>
-                {t(member.status === 'active' ? 'member.active' : 'member.inactive')}
-              </Badge>
+      {/* ---------- Identity header ---------- */}
+      <Card className="overflow-hidden">
+        <div className="bg-brand-gradient h-1.5" />
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <div className="flex items-center gap-4">
+              <Avatar
+                photo={member.photo}
+                name={`${member.first_name} ${member.last_name}`}
+                className="h-16 w-16 border-2 border-card text-xl shadow-md sm:h-20 sm:w-20 sm:text-2xl"
+              />
+              <div className="min-w-0 flex-1 sm:hidden">
+                <h1 className="text-lg font-bold leading-tight">
+                  {member.first_name} {member.last_name}
+                </h1>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <Badge>{branchName(member, i18n.language)}</Badge>
+                  <Badge variant={member.status === 'active' ? 'success' : 'secondary'}>
+                    {t(member.status === 'active' ? 'member.active' : 'member.inactive')}
+                  </Badge>
+                </div>
+              </div>
             </div>
-            <div className="mt-2 grid gap-x-6 gap-y-1 text-sm text-muted-foreground sm:grid-cols-2">
-              <span>
-                {t('member.birthDate')} : {fmtDate(member.birth_date)}
-              </span>
-              <span>
-                {t('member.joinDate')} : {fmtDate(member.join_date)}
-              </span>
-              {member.parent_phone && (
-                <span>
-                  {t('member.parentPhone')} : <span dir="ltr">{member.parent_phone}</span>
-                </span>
-              )}
+
+            <div className="min-w-0 flex-1">
+              <div className="hidden sm:block">
+                <h1 className="text-xl font-bold tracking-tight">
+                  {member.first_name} {member.last_name}
+                </h1>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <Badge>{branchName(member, i18n.language)}</Badge>
+                  <span className="tabular-nums">
+                    {member.age} {t('common.years')}
+                  </span>
+                  <span>· {t(member.sex === 'M' ? 'member.male' : 'member.female')}</span>
+                  <Badge variant={member.status === 'active' ? 'success' : 'secondary'}>
+                    {t(member.status === 'active' ? 'member.active' : 'member.inactive')}
+                  </Badge>
+                </div>
+              </div>
+
+              <dl className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+                <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.birthDate')}>
+                  <span className="tabular-nums">
+                    {fmtDate(member.birth_date)} · {member.age} {t('common.years')}
+                  </span>
+                </Row>
+                <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.joinDate')}>
+                  <span className="tabular-nums">{fmtDate(member.join_date)}</span>
+                </Row>
+                {member.parent_phone && (
+                  <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.parentPhone')}>
+                    {/* Tapping a number should place the call on a phone */}
+                    <a
+                      href={`tel:${member.parent_phone}`}
+                      dir="ltr"
+                      className="focus-ring rounded tabular-nums text-primary hover:underline"
+                    >
+                      {member.parent_phone}
+                    </a>
+                  </Row>
+                )}
+              </dl>
             </div>
-          </div>
-          <div className="text-center">
-            <div className="bg-gradient-to-r from-emerald-700 to-teal-500 bg-clip-text text-3xl font-bold text-transparent">
-              {stats.rate !== null ? `${stats.rate}%` : '—'}
+
+            <div className="flex shrink-0 items-center justify-around gap-6 rounded-lg bg-muted/50 px-4 py-3 sm:flex-col sm:gap-1 sm:bg-transparent sm:px-0 sm:py-0">
+              <div className="text-center">
+                <div className={`text-3xl font-bold leading-none tabular-nums ${rateTone}`}>
+                  {stats.rate !== null ? `${stats.rate}%` : '—'}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">{t('member.attendanceRate')}</div>
+              </div>
+              <div className="text-center sm:hidden">
+                <div className="text-3xl font-bold leading-none tabular-nums">{stats.present}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{t('leader.timesPresent')}</div>
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">{t('member.attendanceRate')}</div>
           </div>
         </CardContent>
       </Card>
+
+      {bday && (
+        <div
+          role="status"
+          className="flex items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/10 px-4 py-3 text-sm font-medium text-warning"
+        >
+          <IconCake className="h-5 w-5 shrink-0" />
+          {t(bday === 'today' ? 'birthday.isToday' : 'birthday.isTomorrow', {
+            name: member.first_name,
+            age: member.age + (bday === 'today' ? 0 : 1),
+          })}
+        </div>
+      )}
+
+      {stats.consecutive_absences >= 3 && (
+        <div
+          role="alert"
+          className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive"
+        >
+          <IconAlert className="h-5 w-5 shrink-0" />
+          {t('member.consecutiveAbsences', { count: stats.consecutive_absences })}
+        </div>
+      )}
 
       {member.branch_total_requirements > 0 && (
         <Card>
@@ -99,44 +170,19 @@ export default function MemberDetail() {
                 earned: Math.min(stats.requirements_earned, member.branch_total_requirements),
                 total: member.branch_total_requirements,
               })}
+              {' · '}
+              <span className="font-medium text-foreground tabular-nums">{reqPct}%</span>
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-teal-400 transition-all"
-                style={{
-                  width: `${Math.min(
-                    100,
-                    Math.round((stats.requirements_earned / member.branch_total_requirements) * 100)
-                  )}%`,
-                }}
-              />
-            </div>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1">
-              {Array.from({ length: member.branch_total_requirements }, (_, i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    'flex h-8 items-center justify-center rounded border text-[0.65rem] font-medium',
-                    stats.earned_numbers.includes(i + 1)
-                      ? 'border-emerald-600 bg-emerald-600 text-white'
-                      : 'border-border bg-muted text-muted-foreground'
-                  )}
-                >
-                  {i + 1}
-                </div>
-              ))}
-            </div>
+            <ProgressBar value={reqPct} label={t('member.requirementsProgress')} />
+            <RequirementGrid
+              total={member.branch_total_requirements}
+              selected={stats.earned_numbers}
+              label={t('member.requirementsProgress')}
+            />
           </CardContent>
         </Card>
-      )}
-
-      {stats.consecutive_absences >= 3 && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-          <IconAlert />
-          {t('member.consecutiveAbsences', { count: stats.consecutive_absences })}
-        </div>
       )}
 
       {member.promotions.length > 0 && (
@@ -146,15 +192,14 @@ export default function MemberDetail() {
           </CardHeader>
           <CardContent className="space-y-3">
             {member.promotions.map((p) => (
-              <details key={p.id} className="rounded-lg border border-border">
-                <summary className="flex cursor-pointer select-none list-none flex-wrap items-center gap-2 px-4 py-3 text-sm [&::-webkit-details-marker]:hidden">
-                  <span className="text-muted-foreground">{fmtDate(p.promoted_at)}</span>
-                  <Badge variant="secondary">
-                    {i18n.language === 'ar' ? p.old_name_ar : p.old_name_fr}
-                  </Badge>
+              <details key={p.id} className="group rounded-lg border border-border">
+                <summary className="focus-ring flex cursor-pointer select-none list-none flex-wrap items-center gap-2 rounded-lg px-4 py-3 text-sm hover:bg-accent/40 [&::-webkit-details-marker]:hidden">
+                  <IconAward className="h-4 w-4 text-primary" />
+                  <span className="tabular-nums text-muted-foreground">{fmtDate(p.promoted_at)}</span>
+                  <Badge variant="secondary">{i18n.language === 'ar' ? p.old_name_ar : p.old_name_fr}</Badge>
                   <span className="text-muted-foreground rtl:inline-block rtl:rotate-180">→</span>
                   <Badge>{i18n.language === 'ar' ? p.new_name_ar : p.new_name_fr}</Badge>
-                  <span className="ms-auto font-medium text-emerald-700">
+                  <span className="ms-auto font-medium text-primary tabular-nums">
                     {t('member.requirementsOf', {
                       earned: p.matalib.length,
                       total: p.old_total_requirements,
@@ -162,21 +207,7 @@ export default function MemberDetail() {
                   </span>
                 </summary>
                 <div className="border-t border-border p-4">
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1">
-                    {Array.from({ length: p.old_total_requirements }, (_, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          'flex h-8 items-center justify-center rounded border text-[0.65rem] font-medium',
-                          p.matalib.includes(i + 1)
-                            ? 'border-emerald-600 bg-emerald-600 text-white'
-                            : 'border-border bg-muted text-muted-foreground'
-                        )}
-                      >
-                        {i + 1}
-                      </div>
-                    ))}
-                  </div>
+                  <RequirementGrid total={p.old_total_requirements} selected={p.matalib} />
                 </div>
               </details>
             ))}
@@ -195,28 +226,31 @@ export default function MemberDetail() {
         </CardHeader>
         <CardContent className="p-0 pb-2">
           {stats.history.length === 0 ? (
-            <EmptyState>{t('member.noAttendance')}</EmptyState>
+            <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('member.noAttendance')} />
           ) : (
             <Table>
               <thead className="border-b border-border">
                 <tr>
                   <Th>{t('common.date')}</Th>
                   <Th>{t('session.sessionTitle')}</Th>
-                  <Th>{t('member.status')}</Th>
+                  <Th className="text-end">{t('member.status')}</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {stats.history.map((h) => {
                   const [variant, key] = STATUS_BADGE[h.status];
                   return (
-                    <tr key={h.session_id}>
-                      <Td>{fmtDate(h.date)}</Td>
+                    <tr key={h.session_id} className="transition-colors hover:bg-accent/40">
+                      <Td className="whitespace-nowrap tabular-nums">{fmtDate(h.date)}</Td>
                       <Td>
-                        <Link to={`/sessions/${h.session_id}`} className="hover:underline">
+                        <Link
+                          to={`/sessions/${h.session_id}`}
+                          className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                        >
                           {h.title}
                         </Link>
                       </Td>
-                      <Td>
+                      <Td className="text-end">
                         <Badge variant={variant}>{t(key)}</Badge>
                       </Td>
                     </tr>
@@ -227,6 +261,16 @@ export default function MemberDetail() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function Row({ icon, label, children }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-muted-foreground">{icon}</span>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium">{children}</dd>
     </div>
   );
 }

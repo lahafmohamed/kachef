@@ -1,10 +1,11 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { db, seed, migrate } = require('./db');
+const { db, seed, seedLeaders, migrate } = require('./db');
 
 migrate();
 seed();
+seedLeaders();
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -56,6 +57,35 @@ function pendingPromotions() {
   return out;
 }
 
+/**
+ * Active members whose birthday falls today or tomorrow.
+ * Only the month-day is compared, so the reminder fires every year, and the
+ * window is deliberately one day so nobody is warned too early.
+ */
+function upcomingBirthdays() {
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const md = (d) =>
+    `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const wanted = { [md(now)]: 'today', [md(tomorrow)]: 'tomorrow' };
+
+  return db
+    .prepare(
+      `SELECT m.id, m.first_name, m.last_name, m.photo, m.birth_date,
+              b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+         FROM members m LEFT JOIN branches b ON b.id = m.branch_id
+        WHERE m.status = 'active' AND substr(m.birth_date, 6, 5) IN (?, ?)`
+    )
+    .all(md(now), md(tomorrow))
+    .map((m) => {
+      const when = wanted[m.birth_date.slice(5)];
+      const ref = when === 'today' ? now : tomorrow;
+      return { ...m, when, turning: ref.getFullYear() - Number(m.birth_date.slice(0, 4)) };
+    })
+    .sort((a, b) => (a.when === b.when ? 0 : a.when === 'today' ? -1 : 1));
+}
+
 // Distinct matalib numbers earned by a member in sessions of a given branch
 function earnedNumbersInBranch(memberId, branchId) {
   const rows = db
@@ -104,7 +134,13 @@ app.get('/api/branches', (req, res) => {
   const rows = db
     .prepare(
       `SELECT b.*,
-        (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count
+        (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count,
+        (SELECT l.first_name || ' ' || l.last_name FROM assignments a JOIN leaders l ON l.id = a.leader_id
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          ORDER BY a.id LIMIT 1) AS leader_name,
+        (SELECT a.leader_id FROM assignments a
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          ORDER BY a.id LIMIT 1) AS leader_id
        FROM branches b ORDER BY b.sort_order`
     )
     .all();
@@ -322,25 +358,238 @@ app.get('/api/promotions/history', (req, res) => {
   res.json(rows);
 });
 
+// ---------- Leaders & التشكيلة ----------
+
+const latestYear = () =>
+  db.prepare('SELECT MAX(year) AS y FROM assignments').get().y || null;
+
+// Assignments (with leader + branch names) for a given تشكيلة year
+function assignmentsForYear(year) {
+  if (!year) return [];
+  return db
+    .prepare(
+      `SELECT a.*, l.first_name, l.last_name, l.photo,
+        b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM assignments a
+       JOIN leaders l ON l.id = a.leader_id
+       LEFT JOIN branches b ON b.id = a.branch_id
+       WHERE a.year = ?
+       ORDER BY a.role_type = 'amana', COALESCE(b.sort_order, 999), a.id`
+    )
+    .all(year);
+}
+
+app.get('/api/leaders', (req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT l.*,
+        (SELECT COUNT(*) FROM sessions s WHERE s.leader_id = l.id) AS sessions_count,
+        (SELECT COUNT(*) FROM session_leaders sl WHERE sl.leader_id = l.id AND sl.status = 'present') AS present_count,
+        (SELECT COUNT(*) FROM session_leaders sl WHERE sl.leader_id = l.id AND sl.status = 'absent') AS absent_count
+       FROM leaders l ORDER BY l.last_name, l.first_name`
+    )
+    .all();
+  const year = latestYear();
+  const roles = {};
+  for (const a of assignmentsForYear(year)) {
+    (roles[a.leader_id] = roles[a.leader_id] || []).push({
+      title: a.title,
+      role_type: a.role_type,
+      branch_id: a.branch_id,
+      branch_name_fr: a.branch_name_fr,
+      branch_name_ar: a.branch_name_ar,
+    });
+  }
+  res.json(rows.map((l) => ({ ...l, roles: roles[l.id] || [], year })));
+});
+
+app.get('/api/leaders/:id', (req, res) => {
+  const l = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'leader not found' });
+  const assignments = db
+    .prepare(
+      `SELECT a.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM assignments a LEFT JOIN branches b ON b.id = a.branch_id
+       WHERE a.leader_id = ? ORDER BY a.year DESC, a.id`
+    )
+    .all(l.id);
+  // All sessions where the leader is animator (main or helper), with their own présence
+  const sessions = db
+    .prepare(
+      `SELECT s.id, s.title, s.date, s.matalib, sl.role, sl.status AS my_status,
+        b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count
+       FROM session_leaders sl
+       JOIN sessions s ON s.id = sl.session_id
+       JOIN branches b ON b.id = s.branch_id
+       WHERE sl.leader_id = ? ORDER BY s.date DESC, s.id DESC`
+    )
+    .all(l.id)
+    .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
+  const year = latestYear();
+  const attendance = {
+    present: sessions.filter((s) => s.my_status === 'present').length,
+    absent: sessions.filter((s) => s.my_status === 'absent').length,
+    unmarked: sessions.filter((s) => !s.my_status).length,
+  };
+  res.json({
+    ...l,
+    year,
+    current_roles: assignments.filter((a) => a.year === year),
+    assignments,
+    sessions,
+    attendance,
+  });
+});
+
+function validateLeader(body) {
+  if (!body.first_name || !body.last_name) return 'first_name and last_name required';
+  if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
+  return null;
+}
+
+app.post('/api/leaders', (req, res) => {
+  const err = validateLeader(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const b = req.body;
+  const info = db
+    .prepare('INSERT INTO leaders (first_name, last_name, phone, photo, status) VALUES (?, ?, ?, ?, ?)')
+    .run(b.first_name, b.last_name, b.phone || null, b.photo || null, b.status || 'active');
+  res.status(201).json(db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.put('/api/leaders/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'leader not found' });
+  const err = validateLeader(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const b = req.body;
+  db.prepare(
+    'UPDATE leaders SET first_name = ?, last_name = ?, phone = ?, photo = ?, status = ? WHERE id = ?'
+  ).run(b.first_name, b.last_name, b.phone || null, b.photo || null, b.status || 'active', req.params.id);
+  // Refresh the name snapshot on sessions this leader animated
+  db.prepare('UPDATE sessions SET leader = ? WHERE leader_id = ?').run(
+    `${b.first_name} ${b.last_name}`, req.params.id
+  );
+  res.json(db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id));
+});
+
+app.delete('/api/leaders/:id', (req, res) => {
+  const existing = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'leader not found' });
+  const run = db.transaction(() => {
+    // Sessions keep the leader name as plain text, only the link is removed
+    db.prepare('UPDATE sessions SET leader_id = NULL WHERE leader_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM leaders WHERE id = ?').run(req.params.id);
+  });
+  run();
+  res.status(204).end();
+});
+
+app.get('/api/tachkila', (req, res) => {
+  const years = db
+    .prepare('SELECT DISTINCT year FROM assignments ORDER BY year DESC')
+    .all()
+    .map((r) => r.year);
+  const year = req.query.year || years[0] || null;
+  res.json({ years, year, assignments: assignmentsForYear(year) });
+});
+
+function validateAssignment(body) {
+  if (!body.year || !String(body.year).trim()) return 'year required';
+  if (!body.title || !String(body.title).trim()) return 'title required';
+  if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(body.leader_id)) return 'invalid leader_id';
+  if (body.branch_id !== undefined && body.branch_id !== null) {
+    if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(body.branch_id)) return 'invalid branch_id';
+  }
+  return null;
+}
+
+app.post('/api/tachkila', (req, res) => {
+  const err = validateAssignment(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const b = req.body;
+  const branchId = b.branch_id ?? null;
+  const info = db
+    .prepare('INSERT INTO assignments (year, leader_id, title, branch_id, role_type) VALUES (?, ?, ?, ?, ?)')
+    .run(String(b.year).trim(), b.leader_id, String(b.title).trim(), branchId, branchId ? 'branch' : 'amana');
+  res.status(201).json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.put('/api/tachkila/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'assignment not found' });
+  const body = { ...existing, ...req.body };
+  const err = validateAssignment(body);
+  if (err) return res.status(400).json({ error: err });
+  const branchId = body.branch_id ?? null;
+  db.prepare(
+    'UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, role_type = ? WHERE id = ?'
+  ).run(String(body.year).trim(), body.leader_id, String(body.title).trim(), branchId, branchId ? 'branch' : 'amana', req.params.id);
+  res.json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id));
+});
+
+app.delete('/api/tachkila/:id', (req, res) => {
+  const info = db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id);
+  if (info.changes === 0) return res.status(404).json({ error: 'assignment not found' });
+  res.status(204).end();
+});
+
+// New تشكيلة year seeded from a previous one (titles carry over, editable afterwards)
+app.post('/api/tachkila/copy', (req, res) => {
+  const { from_year, to_year } = req.body;
+  if (!to_year || !String(to_year).trim()) return res.status(400).json({ error: 'to_year required' });
+  const target = String(to_year).trim();
+  const exists = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE year = ?').get(target).n;
+  if (exists > 0) return res.status(400).json({ error: 'year_exists' });
+  let copied = 0;
+  if (from_year) {
+    const src = db.prepare('SELECT * FROM assignments WHERE year = ?').all(from_year);
+    const insert = db.prepare(
+      'INSERT INTO assignments (year, leader_id, title, branch_id, role_type) VALUES (?, ?, ?, ?, ?)'
+    );
+    const run = db.transaction(() => {
+      for (const a of src) {
+        insert.run(target, a.leader_id, a.title, a.branch_id, a.role_type);
+        copied++;
+      }
+    });
+    run();
+  }
+  res.status(201).json({ year: target, copied });
+});
+
 // ---------- Sessions & attendance ----------
 
 app.get('/api/sessions', (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+  const { q, branch, from, to } = req.query;
+  let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+        COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') AS absent_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count
        FROM sessions s JOIN branches b ON b.id = s.branch_id
-       ORDER BY s.date DESC, s.id DESC`
-    )
-    .all()
+       LEFT JOIN leaders l ON l.id = s.leader_id
+       WHERE 1=1`;
+  const params = [];
+  if (branch) { sql += ' AND s.branch_id = ?'; params.push(branch); }
+  // Dates are stored as YYYY-MM-DD, so plain string comparison sorts correctly
+  if (from) { sql += ' AND s.date >= ?'; params.push(from); }
+  if (to) { sql += ' AND s.date <= ?'; params.push(to); }
+  if (q) {
+    sql += ` AND (s.title LIKE ? OR COALESCE(l.first_name || ' ' || l.last_name, s.leader) LIKE ?)`;
+    params.push(`%${q}%`, `%${q}%`);
+  }
+  sql += ' ORDER BY s.date DESC, s.id DESC';
+  const rows = db
+    .prepare(sql)
+    .all(...params)
     .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
   res.json(rows);
 });
 
 app.post('/api/sessions', (req, res) => {
-  const { title, date, branch_id, leader, fee, matalib } = req.body;
+  const { title, date, branch_id, leader, leader_id, fee, matalib, helper_ids } = req.body;
   if (!title || !date || !branch_id) return res.status(400).json({ error: 'title, date, branch_id required' });
   if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(branch_id))
     return res.status(400).json({ error: 'invalid branch_id' });
@@ -350,18 +599,49 @@ app.post('/api/sessions', (req, res) => {
   const unique = [...new Set(nums)].sort((a, b) => a - b);
   if (fee !== undefined && fee !== null && (typeof fee !== 'number' || fee < 0))
     return res.status(400).json({ error: 'invalid fee' });
-  const info = db
-    .prepare('INSERT INTO sessions (title, date, branch_id, leader, fee, matalib) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(title, date, branch_id, leader || null, fee ?? null, JSON.stringify(unique));
-  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(info.lastInsertRowid);
+  let leaderRow = null;
+  if (leader_id !== undefined && leader_id !== null) {
+    leaderRow = db.prepare('SELECT * FROM leaders WHERE id = ?').get(leader_id);
+    if (!leaderRow) return res.status(400).json({ error: 'invalid leader_id' });
+  }
+  const helpers = helper_ids === undefined || helper_ids === null ? [] : helper_ids;
+  if (!Array.isArray(helpers) || !helpers.every((h) => Number.isInteger(h)))
+    return res.status(400).json({ error: 'invalid helper_ids' });
+  for (const h of helpers) {
+    if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(h))
+      return res.status(400).json({ error: 'invalid helper_ids' });
+  }
+  // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
+  const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leader || null;
+  const insertAnimator = db.prepare(
+    'INSERT OR IGNORE INTO session_leaders (session_id, leader_id, role) VALUES (?, ?, ?)'
+  );
+  let sessionId;
+  db.transaction(() => {
+    sessionId = db
+      .prepare(
+        'INSERT INTO sessions (title, date, branch_id, leader, leader_id, fee, matalib) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(title, date, branch_id, leaderName, leaderRow ? leaderRow.id : null, fee ?? null, JSON.stringify(unique))
+      .lastInsertRowid;
+    if (leaderRow) insertAnimator.run(sessionId, leaderRow.id, 'main');
+    for (const h of helpers) {
+      if (leaderRow && h === leaderRow.id) continue;
+      insertAnimator.run(sessionId, h, 'helper');
+    }
+  })();
+  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   res.status(201).json({ ...row, matalib: JSON.parse(row.matalib) });
 });
 
 app.get('/api/sessions/:id', (req, res) => {
   const s = db
     .prepare(
-      `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
-       FROM sessions s JOIN branches b ON b.id = s.branch_id WHERE s.id = ?`
+      `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+        COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader
+       FROM sessions s JOIN branches b ON b.id = s.branch_id
+       LEFT JOIN leaders l ON l.id = s.leader_id
+       WHERE s.id = ?`
     )
     .get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
@@ -375,7 +655,36 @@ app.get('/api/sessions/:id', (req, res) => {
     )
     .all(s.id, s.branch_id)
     .map((m) => ({ ...m, consecutive_absences: attendanceStats(m.id).consecutive_absences }));
-  res.json({ ...s, matalib: JSON.parse(s.matalib || '[]'), roster });
+  const animators = db
+    .prepare(
+      `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.last_name, l.photo
+       FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
+       WHERE sl.session_id = ?
+       ORDER BY sl.role = 'helper', l.last_name, l.first_name`
+    )
+    .all(s.id);
+  res.json({ ...s, matalib: JSON.parse(s.matalib || '[]'), roster, animators });
+});
+
+// Add / remove helpers and mark animator présence on a session
+app.post('/api/sessions/:id/animators', (req, res) => {
+  const s = db.prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const { leader_id, status, remove } = req.body;
+  if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(leader_id))
+    return res.status(400).json({ error: 'invalid leader_id' });
+  if (remove) {
+    db.prepare("DELETE FROM session_leaders WHERE session_id = ? AND leader_id = ? AND role = 'helper'")
+      .run(s.id, leader_id);
+    return res.json({ ok: true });
+  }
+  if (status !== null && status !== undefined && !['present', 'absent'].includes(status))
+    return res.status(400).json({ error: 'invalid status' });
+  db.prepare(
+    `INSERT INTO session_leaders (session_id, leader_id, role, status) VALUES (?, ?, 'helper', ?)
+     ON CONFLICT(session_id, leader_id) DO UPDATE SET status = excluded.status`
+  ).run(s.id, leader_id, status ?? null);
+  res.json({ ok: true });
 });
 
 app.post('/api/sessions/:id/attendance', (req, res) => {
@@ -408,6 +717,12 @@ app.get('/api/stats', (req, res) => {
   const branches = db
     .prepare(
       `SELECT b.id, b.name_fr, b.name_ar,
+        (SELECT l.first_name || ' ' || l.last_name FROM assignments a JOIN leaders l ON l.id = a.leader_id
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          ORDER BY a.id LIMIT 1) AS leader_name,
+        (SELECT a.leader_id FROM assignments a
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          ORDER BY a.id LIMIT 1) AS leader_id,
         (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count,
         (SELECT COUNT(*) FROM sessions s WHERE s.branch_id = b.id) AS activities_count,
         (SELECT COUNT(DISTINCT a.member_id) FROM attendance a
@@ -429,15 +744,30 @@ app.get('/api/stats', (req, res) => {
     branches,
     pending_promotions: pendingPromotions().length,
     month_rate: row.total ? Math.round((row.present / row.total) * 100) : null,
+    birthdays: upcomingBirthdays(),
   });
 });
 
 // Production: serve the built client if present (npm run build at repo root)
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(clientDist)) {
-  app.use(express.static(clientDist));
+  // Hashed asset filenames change on every build, so they can be cached hard.
+  // index.html must NOT be cached: a stale copy keeps pointing phones at the
+  // previous bundle, which looks exactly like "the update never shipped".
+  app.use(
+    express.static(clientDist, {
+      index: false,
+      setHeaders(res, filePath) {
+        res.setHeader(
+          'Cache-Control',
+          /[/\\]assets[/\\]/.test(filePath) ? 'public, max-age=31536000, immutable' : 'no-cache'
+        );
+      },
+    })
+  );
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'not found' });
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }

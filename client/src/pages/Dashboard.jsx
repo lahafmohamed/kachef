@@ -1,105 +1,219 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
-import { branchName } from '../utils';
+import { useFetch } from '../hooks';
+import { branchName, fmtDate } from '../utils';
 import {
+  Avatar,
+  Badge,
   Card,
+  CardContent,
   CardHeader,
   CardTitle,
-  CardContent,
-  IconUsers,
-  IconTrendingUp,
+  EmptyState,
+  ErrorState,
+  ProgressBar,
+  SkeletonPage,
+  StatTile,
+  IconArrow,
+  IconCake,
   IconCalendar,
+  IconInbox,
+  IconTrendingUp,
+  IconUsers,
 } from '../components/ui';
 
-function StatCard({ icon, label, value, to }) {
-  const inner = (
-    <Card className="transition-shadow hover:shadow-md">
-      <CardContent className="flex items-center gap-4 p-5">
-        <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-          {icon}
-        </div>
-        <div>
-          <div className="bg-gradient-to-r from-emerald-700 to-teal-500 bg-clip-text text-3xl font-bold text-transparent">
-            {value}
-          </div>
-          <div className="text-sm text-muted-foreground">{label}</div>
-        </div>
+function StatCard({ to, ...tile }) {
+  return (
+    <Card interactive={!!to} className="overflow-hidden">
+      <CardContent className="p-4 sm:p-5">
+        <StatTile {...tile} />
       </CardContent>
     </Card>
   );
-  return to ? <Link to={to}>{inner}</Link> : inner;
 }
 
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
-  const [stats, setStats] = useState(null);
+  const stats = useFetch('/stats');
+  const sessions = useFetch('/sessions');
 
-  useEffect(() => {
-    api.get('/stats').then(setStats).catch(console.error);
-  }, []);
+  if (stats.loading) return <SkeletonPage />;
+  if (stats.error)
+    return (
+      <ErrorState message={t('error.loadFailed')} onRetry={stats.reload} retryLabel={t('error.retry')} />
+    );
 
-  if (!stats) return <p className="text-muted-foreground">{t('common.loading')}</p>;
+  const s = stats.data;
+  const total = s.total_active;
+  const recent = (sessions.data || []).slice(0, 4);
+  const rateTone =
+    s.month_rate === null ? 'plain' : s.month_rate >= 75 ? 'success' : s.month_rate >= 50 ? 'warning' : 'destructive';
 
-  const total = stats.total_active;
+  const tiles = [
+    {
+      to: '/members',
+      icon: <IconUsers className="h-5 w-5" />,
+      label: t('dashboard.totalMembers'),
+      value: total,
+      hint: t('dashboard.activeMembers'),
+    },
+    {
+      to: '/promotions',
+      icon: <IconTrendingUp className="h-5 w-5" />,
+      label: t('dashboard.pendingPromotions'),
+      value: s.pending_promotions,
+      tone: s.pending_promotions > 0 ? 'warning' : 'brand',
+      hint: s.pending_promotions > 0 ? t('dashboard.needsReview') : t('dashboard.allClear'),
+    },
+    {
+      to: '/sessions',
+      icon: <IconCalendar className="h-5 w-5" />,
+      label: t('dashboard.monthRate'),
+      value: s.month_rate !== null ? `${s.month_rate}%` : t('dashboard.noData'),
+      tone: rateTone,
+    },
+  ];
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">{t('dashboard.title')}</h1>
+      <div>
+        <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{t('dashboard.title')}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{t('dashboard.subtitle')}</p>
+      </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <StatCard
-          icon={<IconUsers className="h-5 w-5" />}
-          label={t('dashboard.totalMembers')}
-          value={total}
-          to="/members"
-        />
-        <StatCard
-          icon={<IconTrendingUp className="h-5 w-5" />}
-          label={t('dashboard.pendingPromotions')}
-          value={stats.pending_promotions}
-          to="/promotions"
-        />
-        <StatCard
-          icon={<IconCalendar className="h-5 w-5" />}
-          label={t('dashboard.monthRate')}
-          value={stats.month_rate !== null ? `${stats.month_rate}%` : t('dashboard.noData')}
-          to="/sessions"
-        />
+      {/* Birthdays — today first, then tomorrow. Sits above the stats because
+          it is time-critical: miss the day and the reminder is worthless. */}
+      {s.birthdays?.length > 0 && (
+        <div className="animate-fade-up space-y-2 rounded-xl border border-warning/35 bg-warning/10 p-3 sm:p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+            <IconCake className="h-4.5 w-4.5" />
+            {t('birthday.title')}
+          </div>
+          <ul className="space-y-1.5">
+            {s.birthdays.map((b) => (
+              <li key={b.id}>
+                <Link
+                  to={`/members/${b.id}`}
+                  className="focus-ring flex items-center gap-3 rounded-lg bg-card/70 px-3 py-2 transition-colors hover:bg-card"
+                >
+                  <Avatar photo={b.photo} name={`${b.first_name} ${b.last_name}`} className="h-9 w-9" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">
+                      {b.first_name} {b.last_name}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t('birthday.turning', { age: b.turning })} ·{' '}
+                      {branchName({ name_fr: b.branch_name_fr, name_ar: b.branch_name_ar }, i18n.language)}
+                    </div>
+                  </div>
+                  <Badge variant={b.when === 'today' ? 'warning' : 'outline'}>
+                    {t(b.when === 'today' ? 'birthday.today' : 'birthday.tomorrow')}
+                  </Badge>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="stagger grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
+        {tiles.map((tile) => (
+          <Link key={tile.to} to={tile.to} className="focus-ring rounded-xl">
+            <StatCard {...tile} />
+          </Link>
+        ))}
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>{t('dashboard.byBranch')}</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {stats.branches.map((b) => {
-            const pct = total ? Math.round((b.member_count / total) * 100) : 0;
-            return (
-              <div key={b.id}>
-                <div className="mb-1 flex items-center justify-between text-sm">
-                  <span className="font-medium">{branchName(b, i18n.language)}</span>
-                  <span className="text-muted-foreground">
-                    {b.member_count} · {pct}%
-                  </span>
+        <CardContent className="space-y-5">
+          {s.branches.length === 0 ? (
+            <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('dashboard.noBranches')} />
+          ) : (
+            s.branches.map((b) => {
+              const pct = total ? Math.round((b.member_count / total) * 100) : 0;
+              const name = branchName(b, i18n.language);
+              return (
+                <div key={b.id}>
+                  <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-semibold">{name}</span>
+                      {b.leader_name && (
+                        <Link
+                          to={`/leaders/${b.leader_id}`}
+                          className="focus-ring rounded text-xs text-muted-foreground hover:text-primary hover:underline"
+                        >
+                          {t('leader.branchLeader')} · {b.leader_name}
+                        </Link>
+                      )}
+                    </div>
+                    <span className="tabular-nums text-muted-foreground">
+                      <span className="font-semibold text-foreground">{b.member_count}</span> · {pct}%
+                    </span>
+                  </div>
+                  <ProgressBar value={pct} label={name} />
+                  <div className="mt-1.5 text-xs text-muted-foreground">
+                    {t('dashboard.branchActivity', {
+                      activities: b.activities_count,
+                      participants: b.participants_count,
+                      total: b.member_count,
+                    })}
+                  </div>
                 </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-teal-400 transition-all"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {t('dashboard.branchActivity', {
-                    activities: b.activities_count,
-                    participants: b.participants_count,
-                    total: b.member_count,
-                  })}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <CardTitle>{t('dashboard.recentSessions')}</CardTitle>
+          <Link
+            to="/sessions"
+            className="focus-ring flex items-center gap-1 rounded text-sm font-medium text-primary hover:underline"
+          >
+            {t('dashboard.seeAll')}
+            <IconArrow className="h-3.5 w-3.5 rtl:rotate-180" />
+          </Link>
+        </CardHeader>
+        <CardContent className="p-0 pb-2">
+          {sessions.loading ? (
+            <div className="space-y-3 p-4 sm:p-5">
+              <div className="skeleton h-12 rounded-md" />
+              <div className="skeleton h-12 rounded-md" />
+            </div>
+          ) : recent.length === 0 ? (
+            <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('session.noSessions')} />
+          ) : (
+            <ul className="divide-y divide-border">
+              {recent.map((x) => (
+                <li key={x.id}>
+                  <Link
+                    to={`/sessions/${x.id}`}
+                    className="focus-ring flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors hover:bg-accent/50 sm:px-5"
+                  >
+                    <div className="min-w-40 flex-1">
+                      <div className="font-medium">{x.title}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {fmtDate(x.date)} · {branchName(x, i18n.language)}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant="success">
+                        {x.present_count} {t('session.present')}
+                      </Badge>
+                      <Badge variant="destructive">
+                        {x.absent_count} {t('session.absent')}
+                      </Badge>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
     </div>

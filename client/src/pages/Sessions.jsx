@@ -1,41 +1,112 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { useDebounced, useFetch } from '../hooks';
 import { fmtDate, todayISO, branchName } from '../utils';
+import DateRangePicker from '../components/DateRangePicker';
+import FilterSelect from '../components/FilterSelect';
+import SearchInput from '../components/SearchInput';
 import {
-  cn,
+  Badge,
   Button,
   Card,
-  Input,
-  Select,
-  Label,
-  Badge,
+  cn,
   Dialog,
-  Table,
-  Th,
-  Td,
   EmptyState,
+  ErrorState,
+  Input,
+  Label,
+  PageHeader,
+  RequirementGrid,
+  Select,
+  Skeleton,
+  Table,
+  Td,
+  Th,
+  useToast,
+  IconCalendar,
+  IconFilter,
   IconPlus,
+  IconShield,
+  IconX,
 } from '../components/ui';
+
+const EMPTY = {
+  title: '',
+  date: todayISO(),
+  branch_id: '',
+  leader_id: '',
+  helper_ids: [],
+  fee: '',
+  matalib: [],
+};
+
+function AttendanceChips({ s, t }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <Badge variant="success">
+        {s.present_count} {t('session.present')}
+      </Badge>
+      <Badge variant="destructive">
+        {s.absent_count} {t('session.absent')}
+      </Badge>
+      {s.excused_count > 0 && (
+        <Badge variant="warning">
+          {s.excused_count} {t('session.excused')}
+        </Badge>
+      )}
+    </div>
+  );
+}
 
 export default function Sessions() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const [sessions, setSessions] = useState([]);
-  const [branches, setBranches] = useState([]);
+  const toast = useToast();
+
+  const [q, setQ] = useState('');
+  const [branch, setBranch] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+
+  const dq = useDebounced(q, 250);
+  const params = new URLSearchParams();
+  if (dq) params.set('q', dq);
+  if (branch) params.set('branch', branch);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+
+  const sessions = useFetch(`/sessions?${params}`);
+  const branches = useFetch('/branches');
+  const leaders = useFetch('/leaders');
+
+  const activeFilters = [branch, from, to].filter(Boolean).length;
+  const filtering = activeFilters > 0 || !!q;
+
+  function clearFilters() {
+    setQ('');
+    setBranch('');
+    setFrom('');
+    setTo('');
+  }
+
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({
-    title: '',
-    date: todayISO(),
-    branch_id: '',
-    leader: '',
-    fee: '',
-    matalib: [],
-  });
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState(null);
 
-  const selectedBranch = branches.find((b) => b.id === Number(form.branch_id));
+  const branchList = branches.data || [];
+  const leaderList = leaders.data || [];
+  const list = sessions.data || [];
+  const selectedBranch = branchList.find((b) => b.id === Number(form.branch_id));
+
+  // Pre-select the first branch and its current تشكيلة leader once branches load
+  useEffect(() => {
+    if (!branchList.length || form.branch_id) return;
+    setForm((f) => ({ ...f, branch_id: branchList[0].id, leader_id: branchList[0].leader_id || '' }));
+  }, [branchList, form.branch_id]);
 
   function toggleMatalib(n) {
     setForm((f) => ({
@@ -44,96 +115,230 @@ export default function Sessions() {
     }));
   }
 
-  function load() {
-    api.get('/sessions').then(setSessions).catch(console.error);
+  // Selecting a branch auto-picks its leader from the current تشكيلة (still changeable)
+  function pickBranch(branchId) {
+    const b = branchList.find((x) => x.id === Number(branchId));
+    setForm((f) => ({ ...f, branch_id: branchId, matalib: [], leader_id: b?.leader_id || f.leader_id }));
   }
 
-  useEffect(() => {
-    load();
-    api.get('/branches').then((bs) => {
-      setBranches(bs);
-      setForm((f) => ({ ...f, branch_id: bs[0]?.id || '' }));
-    });
-  }, []);
+  function toggleHelper(id) {
+    setForm((f) => ({
+      ...f,
+      helper_ids: f.helper_ids.includes(id)
+        ? f.helper_ids.filter((x) => x !== id)
+        : [...f.helper_ids, id],
+    }));
+  }
 
   async function create(e) {
     e.preventDefault();
     setError(null);
+    setSaving(true);
     try {
       const s = await api.post('/sessions', {
         ...form,
         branch_id: Number(form.branch_id),
-        leader: form.leader || null,
+        leader_id: form.leader_id === '' ? null : Number(form.leader_id),
+        helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
         fee: form.fee === '' ? null : Number(form.fee),
         matalib: form.matalib,
       });
       setCreating(false);
+      setForm({ ...EMPTY, branch_id: form.branch_id, leader_id: form.leader_id });
+      toast.success(t('session.created'));
       navigate(`/sessions/${s.id}`);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSaving(false);
     }
   }
 
+  const availableHelpers = leaderList.filter(
+    (l) => l.status === 'active' && l.id !== Number(form.leader_id)
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">{t('session.title')}</h1>
-        <Button onClick={() => setCreating(true)}>
+      <PageHeader
+        title={t('session.title')}
+        description={
+          filtering ? t('session.resultCount', { count: list.length }) : t('session.subtitle')
+        }
+      >
+        <Button variant="brand" onClick={() => setCreating(true)}>
           <IconPlus />
           {t('session.newSession')}
         </Button>
+      </PageHeader>
+
+      {/* Search always visible; the rest folds away on phones to keep the list
+          near the top, and is permanently open from sm up. */}
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <SearchInput value={q} onChange={setQ} placeholder={t('session.searchPlaceholder')} />
+          <Button
+            variant="outline"
+            size="icon"
+            className="relative sm:hidden"
+            aria-expanded={showFilters}
+            aria-label={t('session.filters')}
+            onClick={() => setShowFilters((v) => !v)}
+          >
+            <IconFilter />
+            {activeFilters > 0 && (
+              <span className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[0.6rem] font-bold text-primary-foreground">
+                {activeFilters}
+              </span>
+            )}
+          </Button>
+        </div>
+
+        <div
+          className={cn(
+            'flex-col gap-2 sm:flex sm:flex-row sm:flex-wrap sm:items-center',
+            showFilters ? 'flex' : 'hidden'
+          )}
+        >
+          <FilterSelect
+            value={branch}
+            onChange={setBranch}
+            allLabel={t('member.allBranches')}
+            ariaLabel={t('member.branch')}
+            className="sm:w-auto sm:min-w-44"
+            icon={<IconShield className="opacity-60" />}
+            options={branchList.map((b) => ({
+              value: b.id,
+              label: branchName(b, i18n.language),
+            }))}
+          />
+          <DateRangePicker
+            value={{ from, to }}
+            onChange={({ from: f, to: tt }) => {
+              setFrom(f);
+              setTo(tt);
+            }}
+          />
+          {filtering && (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>
+              <IconX />
+              {t('common.clearFilters')}
+            </Button>
+          )}
+        </div>
       </div>
 
-      <Card>
-        {sessions.length === 0 ? (
-          <EmptyState>{t('session.noSessions')}</EmptyState>
-        ) : (
-          <Table>
-            <thead className="border-b border-border">
-              <tr>
-                <Th>{t('common.date')}</Th>
-                <Th>{t('session.sessionTitle')}</Th>
-                <Th>{t('member.branch')}</Th>
-                <Th className="hidden md:table-cell">{t('session.leader')}</Th>
-                <Th>{t('session.requirementsShort')}</Th>
-                <Th>{t('session.attendance')}</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {sessions.map((s) => (
-                <tr
-                  key={s.id}
-                  className="cursor-pointer transition-colors hover:bg-accent/50"
-                  onClick={() => navigate(`/sessions/${s.id}`)}
-                >
-                  <Td>{fmtDate(s.date)}</Td>
-                  <Td className="font-medium">{s.title}</Td>
-                  <Td>
-                    <Badge>{branchName(s, i18n.language)}</Badge>
-                  </Td>
-                  <Td className="hidden md:table-cell">{s.leader}</Td>
-                  <Td>
-                    <Badge variant="warning">{s.matalib.length}</Badge>
-                  </Td>
-                  <Td>
-                    <div className="flex flex-wrap gap-1.5">
-                      <Badge variant="success">
-                        {s.present_count} {t('session.present')}
-                      </Badge>
-                      <Badge variant="destructive">
-                        {s.absent_count} {t('session.absent')}
-                      </Badge>
-                      <Badge variant="warning">
-                        {s.excused_count} {t('session.excused')}
-                      </Badge>
+      {sessions.error ? (
+        <ErrorState message={t('error.loadFailed')} onRetry={sessions.reload} retryLabel={t('error.retry')} />
+      ) : sessions.loading ? (
+        <Card className="divide-y divide-border">
+          {Array.from({ length: 5 }, (_, i) => (
+            <div key={i} className="space-y-2 p-4">
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="h-3 w-1/2" />
+            </div>
+          ))}
+        </Card>
+      ) : list.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={<IconCalendar className="h-6 w-6" />}
+            title={t(filtering ? 'common.noResults' : 'session.noSessions')}
+            action={
+              filtering ? (
+                <Button variant="outline" onClick={clearFilters}>
+                  {t('common.clearFilters')}
+                </Button>
+              ) : (
+                <Button variant="brand" onClick={() => setCreating(true)}>
+                  <IconPlus />
+                  {t('session.newSession')}
+                </Button>
+              )
+            }
+          >
+            {t(filtering ? 'common.noResultsHint' : 'session.noSessionsHint')}
+          </EmptyState>
+        </Card>
+      ) : (
+        <>
+          {/* Mobile cards */}
+          <Card className="md:hidden">
+            <ul className="divide-y divide-border">
+              {list.map((s) => (
+                <li key={s.id}>
+                  <Link
+                    to={`/sessions/${s.id}`}
+                    className="focus-ring block px-4 py-3 transition-colors hover:bg-accent/50"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium">{s.title}</span>
+                      <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+                        {fmtDate(s.date)}
+                      </span>
                     </div>
-                  </Td>
-                </tr>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      <Badge>{branchName(s, i18n.language)}</Badge>
+                      {s.matalib.length > 0 && (
+                        <Badge variant="warning">
+                          {s.matalib.length} {t('session.requirementsShort')}
+                        </Badge>
+                      )}
+                      {s.leader && (
+                        <span className="truncate text-xs text-muted-foreground">{s.leader}</span>
+                      )}
+                    </div>
+                    <div className="mt-2">
+                      <AttendanceChips s={s} t={t} />
+                    </div>
+                  </Link>
+                </li>
               ))}
-            </tbody>
-          </Table>
-        )}
-      </Card>
+            </ul>
+          </Card>
+
+          {/* Desktop table */}
+          <Card className="hidden md:block">
+            <Table>
+              <thead className="border-b border-border">
+                <tr>
+                  <Th>{t('common.date')}</Th>
+                  <Th>{t('session.sessionTitle')}</Th>
+                  <Th>{t('member.branch')}</Th>
+                  <Th>{t('session.leader')}</Th>
+                  <Th>{t('session.requirementsShort')}</Th>
+                  <Th>{t('session.attendance')}</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {list.map((s) => (
+                  <tr key={s.id} className="group transition-colors hover:bg-accent/40">
+                    <Td className="tabular-nums">{fmtDate(s.date)}</Td>
+                    <Td>
+                      <Link
+                        to={`/sessions/${s.id}`}
+                        className="focus-ring rounded font-medium group-hover:text-primary"
+                      >
+                        {s.title}
+                      </Link>
+                    </Td>
+                    <Td>
+                      <Badge>{branchName(s, i18n.language)}</Badge>
+                    </Td>
+                    <Td className="text-muted-foreground">{s.leader || '—'}</Td>
+                    <Td>
+                      <Badge variant={s.matalib.length ? 'warning' : 'outline'}>{s.matalib.length}</Badge>
+                    </Td>
+                    <Td>
+                      <AttendanceChips s={s} t={t} />
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </Card>
+        </>
+      )}
 
       <Dialog open={creating} onClose={() => setCreating(false)} title={t('session.newSession')}>
         <form onSubmit={create} className="space-y-4">
@@ -142,89 +347,130 @@ export default function Sessions() {
             <Input
               id="s_title"
               required
+              autoComplete="off"
               value={form.title}
               onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="s_date">{t('common.date')}</Label>
-            <Input
-              id="s_date"
-              type="date"
-              required
-              value={form.date}
-              onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="s_branch">{t('session.branch')}</Label>
-            <Select
-              id="s_branch"
-              required
-              value={form.branch_id}
-              onChange={(e) => setForm((f) => ({ ...f, branch_id: e.target.value, matalib: [] }))}
-            >
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {branchName(b, i18n.language)}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="s_date">{t('common.date')}</Label>
+              <Input
+                id="s_date"
+                type="date"
+                required
+                value={form.date}
+                onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s_fee">{t('session.fee')}</Label>
+              <Input
+                id="s_fee"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="—"
+                value={form.fee}
+                onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s_branch">{t('session.branch')}</Label>
+              <Select id="s_branch" required value={form.branch_id} onChange={(e) => pickBranch(e.target.value)}>
+                {branchList.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {branchName(b, i18n.language)}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s_leader">{t('session.leader')}</Label>
+              <Select
+                id="s_leader"
+                required
+                value={form.leader_id}
+                onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
+              >
+                <option value="" disabled>
+                  {t('leader.selectLeader')}
                 </option>
-              ))}
-            </Select>
+                {leaderList
+                  .filter((l) => l.status === 'active' || l.id === Number(form.leader_id))
+                  .map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.first_name} {l.last_name}
+                    </option>
+                  ))}
+              </Select>
+            </div>
           </div>
+
           <div className="space-y-1.5">
-            <Label htmlFor="s_leader">{t('session.leader')}</Label>
-            <Input
-              id="s_leader"
-              required
-              value={form.leader}
-              onChange={(e) => setForm((f) => ({ ...f, leader: e.target.value }))}
-            />
+            <Label>
+              {t('session.helpers')}
+              <span className="ms-2 font-normal text-muted-foreground">
+                {t('session.selectedCount', { count: form.helper_ids.length })}
+              </span>
+            </Label>
+            {availableHelpers.length === 0 ? (
+              <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {t('session.noHelpersAvailable')}
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto rounded-md border border-border p-1.5">
+                {availableHelpers.map((l) => (
+                  <label
+                    key={l.id}
+                    className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.helper_ids.includes(l.id)}
+                      onChange={() => toggleHelper(l.id)}
+                    />
+                    {l.first_name} {l.last_name}
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="s_fee">{t('session.fee')}</Label>
-            <Input
-              id="s_fee"
-              type="number"
-              min="0"
-              step="0.01"
-              value={form.fee}
-              onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
-            />
-          </div>
+
           {selectedBranch?.total_requirements > 0 && (
             <div className="space-y-1.5">
               <Label>
-                {t('session.requirements')} — {t('session.selectedCount', { count: form.matalib.length })}
+                {t('session.requirements')}
+                <span className="ms-2 font-normal text-muted-foreground">
+                  {t('session.selectedCount', { count: form.matalib.length })}
+                </span>
               </Label>
-              <div className="grid max-h-44 grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border p-2">
-                {Array.from({ length: selectedBranch.total_requirements }, (_, i) => {
-                  const n = i + 1;
-                  const selected = form.matalib.includes(n);
-                  return (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => toggleMatalib(n)}
-                      className={cn(
-                        'flex h-8 items-center justify-center rounded border text-[0.65rem] font-medium transition-colors cursor-pointer',
-                        selected
-                          ? 'border-emerald-600 bg-emerald-600 text-white'
-                          : 'border-border bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                      )}
-                    >
-                      {n}
-                    </button>
-                  );
-                })}
+              <div className="max-h-56 overflow-y-auto rounded-md border border-border p-2">
+                <RequirementGrid
+                  total={selectedBranch.total_requirements}
+                  selected={form.matalib}
+                  onToggle={toggleMatalib}
+                  label={t('session.requirements')}
+                />
               </div>
             </div>
           )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex justify-end gap-2 pt-2">
+
+          {error && (
+            <p role="alert" className="text-sm font-medium text-destructive">
+              {error}
+            </p>
+          )}
+
+          <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
             <Button variant="outline" onClick={() => setCreating(false)}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit">{t('common.save')}</Button>
+            <Button type="submit" loading={saving}>
+              {t('common.save')}
+            </Button>
           </div>
         </form>
       </Dialog>

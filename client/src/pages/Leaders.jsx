@@ -1,0 +1,609 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { api } from '../api';
+import { useFetch, useLocalStorage } from '../hooks';
+import { branchName, fileToDataUrl } from '../utils';
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Dialog,
+  EmptyState,
+  ErrorState,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  Skeleton,
+  cn,
+  useConfirm,
+  useToast,
+  IconPencil,
+  IconPlus,
+  IconShield,
+  IconTrash,
+  IconUsers,
+} from '../components/ui';
+
+const EMPTY_LEADER = { first_name: '', last_name: '', phone: '', photo: null, status: 'active' };
+const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '' };
+
+function FormActions({ onCancel, saving }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+      <Button variant="outline" onClick={onCancel}>
+        {t('common.cancel')}
+      </Button>
+      <Button type="submit" loading={saving}>
+        {t('common.save')}
+      </Button>
+    </div>
+  );
+}
+
+function LeaderForm({ initial, onSaved, onCancel }) {
+  const { t } = useTranslation();
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      if (initial.id) await api.put(`/leaders/${initial.id}`, form);
+      else await api.post('/leaders', form);
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="l_first">{t('member.firstName')}</Label>
+          <Input id="l_first" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_last">{t('member.lastName')}</Label>
+          <Input id="l_last" required autoComplete="off" value={form.last_name} onChange={set('last_name')} />
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="l_phone">{t('leader.phone')}</Label>
+        <Input id="l_phone" type="tel" inputMode="tel" dir="ltr" value={form.phone || ''} onChange={set('phone')} />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="l_photo">{t('member.photo')}</Label>
+        <div className="flex flex-wrap items-center gap-3">
+          {form.photo && <Avatar photo={form.photo} name={form.first_name} className="h-14 w-14" />}
+          <Input
+            id="l_photo"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="flex-1 py-2 file:me-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const photo = await fileToDataUrl(file);
+              setForm((f) => ({ ...f, photo }));
+            }}
+          />
+          {form.photo && (
+            <Button variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, photo: null }))}>
+              {t('member.removePhoto')}
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="l_status">{t('member.status')}</Label>
+        <Select id="l_status" value={form.status} onChange={set('status')}>
+          <option value="active">{t('member.active')}</option>
+          <option value="inactive">{t('member.inactive')}</option>
+        </Select>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm font-medium text-destructive">
+          {error}
+        </p>
+      )}
+      <FormActions onCancel={onCancel} saving={saving} />
+    </form>
+  );
+}
+
+function AssignmentForm({ initial, year, leaders, branches, onSaved, onCancel }) {
+  const { t, i18n } = useTranslation();
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    const body = {
+      year,
+      leader_id: Number(form.leader_id),
+      title: form.title,
+      branch_id: form.branch_id === '' ? null : Number(form.branch_id),
+    };
+    try {
+      if (initial.id) await api.put(`/tachkila/${initial.id}`, body);
+      else await api.post('/tachkila', body);
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="a_leader">{t('leader.selectLeader')}</Label>
+        <Select
+          id="a_leader"
+          required
+          value={form.leader_id}
+          onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
+        >
+          <option value="" disabled>
+            —
+          </option>
+          {leaders.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.first_name} {l.last_name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="a_title">{t('leader.assignmentTitle')}</Label>
+        <Input
+          id="a_title"
+          required
+          list="title-suggestions"
+          value={form.title}
+          onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+        />
+        <datalist id="title-suggestions">
+          {branches.map((b) => (
+            <option key={b.id} value={`${t('leader.branchLeader')} ${branchName(b, i18n.language)}`} />
+          ))}
+        </datalist>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="a_branch">{t('leader.linkedBranch')}</Label>
+        <Select
+          id="a_branch"
+          value={form.branch_id ?? ''}
+          onChange={(e) => setForm((f) => ({ ...f, branch_id: e.target.value }))}
+        >
+          <option value="">{t('leader.noBranch')}</option>
+          {branches.map((b) => (
+            <option key={b.id} value={b.id}>
+              {branchName(b, i18n.language)}
+            </option>
+          ))}
+        </Select>
+        <p className="text-xs text-muted-foreground">{t('leader.amanaHint')}</p>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm font-medium text-destructive">
+          {error}
+        </p>
+      )}
+      <FormActions onCancel={onCancel} saving={saving} />
+    </form>
+  );
+}
+
+function NewYearForm({ currentYear, onSaved, onCancel }) {
+  const { t } = useTranslation();
+  const y = new Date().getFullYear();
+  const [year, setYear] = useState(`${y}-${y + 1}`);
+  const [copy, setCopy] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      await api.post('/tachkila/copy', { to_year: year, from_year: copy ? currentYear : null });
+      onSaved(year);
+    } catch (err) {
+      setError(err.message === 'year_exists' ? t('leader.yearExists') : err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="y_year">{t('leader.newYearLabel')}</Label>
+        <Input id="y_year" required dir="ltr" value={year} onChange={(e) => setYear(e.target.value)} />
+      </div>
+      {currentYear && (
+        <label className="flex min-h-11 cursor-pointer items-center gap-2.5 text-sm">
+          <input type="checkbox" checked={copy} onChange={(e) => setCopy(e.target.checked)} />
+          {t('leader.copyFromCurrent')}
+        </label>
+      )}
+      {error && (
+        <p role="alert" className="text-sm font-medium text-destructive">
+          {error}
+        </p>
+      )}
+      <FormActions onCancel={onCancel} saving={saving} />
+    </form>
+  );
+}
+
+export default function Leaders() {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const [year, setYear] = useState(null);
+  // '' = all, 'amana' = الأمانة only, otherwise a branch id (string)
+  const [branchFilter, setBranchFilter] = useLocalStorage('leaders.branchFilter', '');
+  const [editingLeader, setEditingLeader] = useState(null);
+  const [editingAssignment, setEditingAssignment] = useState(null);
+  const [creatingYear, setCreatingYear] = useState(false);
+
+  const leadersRes = useFetch('/leaders');
+  const branchesRes = useFetch('/branches');
+  const tachkilaRes = useFetch(year ? `/tachkila?year=${encodeURIComponent(year)}` : '/tachkila');
+
+  const leaders = leadersRes.data || [];
+  const branches = branchesRes.data || [];
+  const tachkila = tachkilaRes.data || { years: [], year: null, assignments: [] };
+
+  function reloadAll() {
+    leadersRes.reload({ quiet: true });
+    tachkilaRes.reload({ quiet: true });
+  }
+
+  async function removeLeader(l) {
+    if (!(await confirm({ title: t('common.delete'), message: t('leader.confirmDelete') }))) return;
+    try {
+      await api.del(`/leaders/${l.id}`);
+      reloadAll();
+      toast.success(t('leader.deleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  async function removeAssignment(a) {
+    if (!(await confirm({ title: t('common.delete'), message: t('leader.confirmDeleteAssignment') }))) return;
+    try {
+      await api.del(`/tachkila/${a.id}`);
+      reloadAll();
+      toast.success(t('leader.assignmentDeleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  const branchAssignments = tachkila.assignments.filter((a) => a.role_type === 'branch');
+  const amanat = tachkila.assignments.filter((a) => a.role_type === 'amana');
+  const showAmanat = branchFilter === '' || branchFilter === 'amana';
+
+  // One group per فرقة so it is clear which chef belongs to which branch
+  const branchGroups = branches
+    .filter((b) => branchFilter === '' || branchFilter === String(b.id))
+    .map((b) => ({ branch: b, list: branchAssignments.filter((a) => a.branch_id === b.id) }))
+    .filter((g) => g.list.length > 0);
+
+  const filteredLeaders = leaders.filter((l) => {
+    if (branchFilter === '') return true;
+    if (branchFilter === 'amana') return l.roles.some((r) => r.role_type === 'amana');
+    return l.roles.some((r) => String(r.branch_id) === branchFilter);
+  });
+
+  function GroupHeading({ children, count }) {
+    return (
+      <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:border-t-0 sm:px-5">
+        {children}
+        <Badge variant="outline">{count}</Badge>
+      </div>
+    );
+  }
+
+  function AssignmentRow({ a }) {
+    return (
+      <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+        <Avatar photo={a.photo} name={`${a.first_name} ${a.last_name}`} />
+        <div className="min-w-32 flex-1">
+          <Link
+            to={`/leaders/${a.leader_id}`}
+            className="focus-ring rounded font-medium hover:text-primary hover:underline"
+          >
+            {a.first_name} {a.last_name}
+          </Link>
+          <div className="text-sm text-muted-foreground">{a.title}</div>
+        </div>
+        {a.branch_id && <Badge>{branchName(a, i18n.language)}</Badge>}
+        <div className="flex gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setEditingAssignment(a)}
+            aria-label={t('common.edit')}
+          >
+            <IconPencil />
+          </Button>
+          <Button
+            variant="destructive-ghost"
+            size="icon"
+            onClick={() => removeAssignment(a)}
+            aria-label={t('common.delete')}
+          >
+            <IconTrash />
+          </Button>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
+        <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+          <IconPlus />
+          {t('leader.addLeader')}
+        </Button>
+      </PageHeader>
+
+      {/* ---------- التشكيلة ---------- */}
+      <Card>
+        <CardHeader className="gap-3">
+          <div>
+            <CardTitle>{t('leader.tachkila')}</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">{t('leader.tachkilaHint')}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+            <Select
+              value={branchFilter}
+              onChange={(e) => setBranchFilter(e.target.value)}
+              aria-label={t('member.branch')}
+              className="sm:w-auto"
+            >
+              <option value="">{t('member.allBranches')}</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {branchName(b, i18n.language)}
+                </option>
+              ))}
+              <option value="amana">{t('leader.amanat')}</option>
+            </Select>
+            {tachkila.years.length > 0 && (
+              <Select
+                value={tachkila.year || ''}
+                onChange={(e) => setYear(e.target.value)}
+                aria-label={t('leader.year')}
+                className="sm:w-auto"
+              >
+                {tachkila.years.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </Select>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setCreatingYear(true)}>
+              <IconPlus />
+              {t('leader.newYear')}
+            </Button>
+            {tachkila.year && (
+              <Button size="sm" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
+                <IconPlus />
+                {t('leader.addAssignment')}
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 pb-2">
+          {tachkilaRes.loading ? (
+            <div className="space-y-3 p-4">
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+            </div>
+          ) : tachkilaRes.error ? (
+            <div className="p-4">
+              <ErrorState
+                message={t('error.loadFailed')}
+                onRetry={tachkilaRes.reload}
+                retryLabel={t('error.retry')}
+              />
+            </div>
+          ) : branchGroups.length === 0 && !(showAmanat && amanat.length > 0) ? (
+            <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
+          ) : (
+            <div>
+              {branchGroups.map((g) => (
+                <div key={g.branch.id}>
+                  <GroupHeading count={g.list.length}>{branchName(g.branch, i18n.language)}</GroupHeading>
+                  <ul className="divide-y divide-border">
+                    {g.list.map((a) => (
+                      <AssignmentRow key={a.id} a={a} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
+              {showAmanat && amanat.length > 0 && (
+                <div>
+                  <GroupHeading count={amanat.length}>{t('leader.amanat')}</GroupHeading>
+                  <ul className="divide-y divide-border">
+                    {amanat.map((a) => (
+                      <AssignmentRow key={a.id} a={a} />
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ---------- القادة ---------- */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <CardTitle>{t('leader.leadersList')}</CardTitle>
+          <Badge variant="outline">{filteredLeaders.length}</Badge>
+        </CardHeader>
+        <CardContent className="p-0 pb-2">
+          {leadersRes.loading ? (
+            <div className="space-y-3 p-4">
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+            </div>
+          ) : filteredLeaders.length === 0 ? (
+            <EmptyState
+              icon={<IconUsers className="h-6 w-6" />}
+              title={t('leader.noLeaders')}
+              action={
+                <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+                  <IconPlus />
+                  {t('leader.addLeader')}
+                </Button>
+              }
+            />
+          ) : (
+            <ul className="divide-y divide-border">
+              {filteredLeaders.map((l) => (
+                <li key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+                  <Link
+                    to={`/leaders/${l.id}`}
+                    className="focus-ring flex min-w-40 flex-1 items-center gap-3 rounded-md"
+                  >
+                    <Avatar photo={l.photo} name={`${l.first_name} ${l.last_name}`} />
+                    <div className="min-w-0 flex-1">
+                      <span
+                        className={cn(
+                          'font-medium',
+                          l.status === 'inactive' && 'text-muted-foreground line-through decoration-1'
+                        )}
+                      >
+                        {l.first_name} {l.last_name}
+                      </span>
+                      <div className="mt-0.5 flex flex-wrap gap-1.5">
+                        {l.roles.length === 0 ? (
+                          <span className="text-xs text-muted-foreground">{t('leader.noRole')}</span>
+                        ) : (
+                          l.roles.map((r, i) => (
+                            <Badge key={i} variant={r.role_type === 'branch' ? 'default' : 'warning'}>
+                              {r.title}
+                            </Badge>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </Link>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="tabular-nums">
+                      {l.sessions_count} {t('leader.sessionsLed')}
+                    </span>
+                    <Badge variant="success">✓ {l.present_count}</Badge>
+                    <Badge variant="destructive">✗ {l.absent_count}</Badge>
+                  </div>
+                  <div className="flex gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setEditingLeader(l)}
+                      aria-label={t('common.edit')}
+                    >
+                      <IconPencil />
+                    </Button>
+                    <Button
+                      variant="destructive-ghost"
+                      size="icon"
+                      onClick={() => removeLeader(l)}
+                      aria-label={t('common.delete')}
+                    >
+                      <IconTrash />
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog
+        open={!!editingLeader}
+        onClose={() => setEditingLeader(null)}
+        title={t(editingLeader?.id ? 'leader.editLeader' : 'leader.addLeader')}
+      >
+        {editingLeader && (
+          <LeaderForm
+            initial={editingLeader}
+            onSaved={() => {
+              const wasNew = !editingLeader.id;
+              setEditingLeader(null);
+              reloadAll();
+              toast.success(t(wasNew ? 'leader.created' : 'leader.updated'));
+            }}
+            onCancel={() => setEditingLeader(null)}
+          />
+        )}
+      </Dialog>
+
+      <Dialog
+        open={!!editingAssignment}
+        onClose={() => setEditingAssignment(null)}
+        title={t(editingAssignment?.id ? 'leader.editAssignment' : 'leader.addAssignment')}
+      >
+        {editingAssignment && (
+          <AssignmentForm
+            initial={editingAssignment}
+            year={tachkila.year}
+            leaders={leaders}
+            branches={branches}
+            onSaved={() => {
+              setEditingAssignment(null);
+              reloadAll();
+              toast.success(t('common.saved'));
+            }}
+            onCancel={() => setEditingAssignment(null)}
+          />
+        )}
+      </Dialog>
+
+      <Dialog open={creatingYear} onClose={() => setCreatingYear(false)} title={t('leader.newYear')}>
+        {creatingYear && (
+          <NewYearForm
+            currentYear={tachkila.year}
+            onSaved={(y) => {
+              setCreatingYear(false);
+              setYear(y);
+              leadersRes.reload({ quiet: true });
+              toast.success(t('common.saved'));
+            }}
+            onCancel={() => setCreatingYear(false)}
+          />
+        )}
+      </Dialog>
+    </div>
+  );
+}

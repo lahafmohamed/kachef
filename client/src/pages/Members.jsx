@@ -1,25 +1,35 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { fmtDate, todayISO, branchName, fileToDataUrl } from '../utils';
+import { useDebounced, useFetch } from '../hooks';
+import { fmtDate, todayISO, branchName, fileToDataUrl, birthdayWhen } from '../utils';
+import FilterSelect from '../components/FilterSelect';
+import SearchInput from '../components/SearchInput';
 import {
+  Avatar,
+  Badge,
   Button,
   Card,
-  Input,
-  Select,
-  Label,
-  Badge,
-  Avatar,
   Dialog,
-  Table,
-  Th,
-  Td,
   EmptyState,
-  IconPlus,
-  IconSearch,
+  ErrorState,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  Skeleton,
+  Table,
+  Td,
+  Th,
+  useConfirm,
+  useToast,
+  IconCake,
   IconPencil,
+  IconPlus,
+  IconShield,
   IconTrash,
+  IconUsers,
 } from '../components/ui';
 
 const EMPTY_FORM = {
@@ -35,8 +45,7 @@ const EMPTY_FORM = {
 };
 
 function MemberForm({ initial, branches, onSave, onCancel }) {
-  const { t } = useTranslation();
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -46,8 +55,8 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
   async function handlePhoto(e) {
     const file = e.target.files[0];
     if (!file) return;
-    const dataUrl = await fileToDataUrl(file);
-    setForm((f) => ({ ...f, photo: dataUrl }));
+    const photo = await fileToDataUrl(file);
+    setForm((f) => ({ ...f, photo }));
   }
 
   async function submit(e) {
@@ -67,11 +76,11 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="first_name">{t('member.firstName')}</Label>
-          <Input id="first_name" required value={form.first_name} onChange={set('first_name')} />
+          <Input id="first_name" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="last_name">{t('member.lastName')}</Label>
-          <Input id="last_name" required value={form.last_name} onChange={set('last_name')} />
+          <Input id="last_name" required autoComplete="off" value={form.last_name} onChange={set('last_name')} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="birth_date">{t('member.birthDate')}</Label>
@@ -96,7 +105,14 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="parent_phone">{t('member.parentPhone')}</Label>
-          <Input id="parent_phone" type="tel" value={form.parent_phone || ''} onChange={set('parent_phone')} />
+          <Input
+            id="parent_phone"
+            type="tel"
+            inputMode="tel"
+            dir="ltr"
+            value={form.parent_phone || ''}
+            onChange={set('parent_phone')}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="join_date">{t('member.joinDate')}</Label>
@@ -113,9 +129,18 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
 
       <div className="space-y-1.5">
         <Label htmlFor="photo">{t('member.photo')}</Label>
-        <div className="flex items-center gap-3">
-          {form.photo && <Avatar photo={form.photo} name="" className="h-12 w-12" />}
-          <Input id="photo" type="file" accept="image/*" onChange={handlePhoto} className="h-auto py-1.5" />
+        <div className="flex flex-wrap items-center gap-3">
+          {form.photo && (
+            <Avatar photo={form.photo} name={form.first_name} className="h-14 w-14" />
+          )}
+          <Input
+            id="photo"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handlePhoto}
+            className="flex-1 py-2 file:me-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground"
+          />
           {form.photo && (
             <Button variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, photo: null }))}>
               {t('member.removePhoto')}
@@ -124,13 +149,18 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
         </div>
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm font-medium text-destructive">
+          {error}
+        </p>
+      )}
 
-      <div className="flex justify-end gap-2 pt-2">
+      {/* Reversed on mobile so the primary action sits under the thumb */}
+      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <Button variant="outline" onClick={onCancel}>
           {t('common.cancel')}
         </Button>
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" loading={saving}>
           {t('common.save')}
         </Button>
       </div>
@@ -138,149 +168,266 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
   );
 }
 
+/** Cake marker for a birthday today or tomorrow — null the rest of the year. */
+function BirthdayBadge({ birthDate, t }) {
+  const when = birthdayWhen(birthDate);
+  if (!when) return null;
+  return (
+    <Badge variant="warning" title={t(when === 'today' ? 'birthday.today' : 'birthday.tomorrow')}>
+      <IconCake className="h-3 w-3" />
+      {t(when === 'today' ? 'birthday.today' : 'birthday.tomorrow')}
+    </Badge>
+  );
+}
+
+/** One member as a tappable card — the mobile equivalent of a table row. */
+function MemberCard({ m, lang, t, onEdit, onDelete }) {
+  return (
+    <li className="flex items-center gap-3 p-3">
+      <Link to={`/members/${m.id}`} className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md">
+        <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-11 w-11" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium">
+            {m.first_name} {m.last_name}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <Badge>{branchName(m, lang)}</Badge>
+            <BirthdayBadge birthDate={m.birth_date} t={t} />
+            <span className="text-xs text-muted-foreground">
+              {m.age} {t('common.years')}
+            </span>
+            {m.status !== 'active' && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+          </div>
+        </div>
+      </Link>
+      <div className="flex shrink-0 gap-0.5">
+        <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')}>
+          <IconPencil />
+        </Button>
+        <Button variant="destructive-ghost" size="icon" onClick={onDelete} aria-label={t('common.delete')}>
+          <IconTrash />
+        </Button>
+      </div>
+    </li>
+  );
+}
+
 export default function Members() {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
-  const [members, setMembers] = useState([]);
-  const [branches, setBranches] = useState([]);
+  const toast = useToast();
+  const confirm = useConfirm();
+
   const [branch, setBranch] = useState('');
   const [status, setStatus] = useState('');
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null); // null | 'new' | member object
 
-  const load = useCallback(() => {
-    const params = new URLSearchParams();
-    if (branch) params.set('branch', branch);
-    if (status) params.set('status', status);
-    if (q) params.set('q', q);
-    api.get(`/members?${params}`).then(setMembers).catch(console.error);
-  }, [branch, status, q]);
+  const dq = useDebounced(q, 250);
+  const branches = useFetch('/branches');
 
-  useEffect(() => {
-    api.get('/branches').then(setBranches).catch(console.error);
-  }, []);
+  const params = new URLSearchParams();
+  if (branch) params.set('branch', branch);
+  if (status) params.set('status', status);
+  if (dq) params.set('q', dq);
+  const members = useFetch(`/members?${params}`);
 
-  useEffect(() => {
-    const id = setTimeout(load, q ? 250 : 0);
-    return () => clearTimeout(id);
-  }, [load, q]);
+  const list = members.data || [];
+  const branchList = branches.data || [];
+  const filtering = !!(branch || status || q);
 
   async function save(form) {
     if (editing === 'new') await api.post('/members', form);
     else await api.put(`/members/${editing.id}`, form);
     setEditing(null);
-    load();
+    members.reload({ quiet: true });
+    toast.success(t(editing === 'new' ? 'member.created' : 'member.updated'));
   }
 
   async function remove(m) {
-    if (!confirm(t('common.confirmDeleteMember'))) return;
-    await api.del(`/members/${m.id}`);
-    load();
+    if (!(await confirm({ message: t('common.confirmDeleteMember'), title: t('common.delete') }))) return;
+    try {
+      await api.del(`/members/${m.id}`);
+      members.reload({ quiet: true });
+      toast.success(t('member.deleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">{t('member.title')}</h1>
-        <Button onClick={() => setEditing('new')}>
+      <PageHeader title={t('member.title')} description={t('member.subtitle', { count: list.length })}>
+        <Button variant="brand" onClick={() => setEditing('new')}>
           <IconPlus />
           {t('member.addMember')}
         </Button>
-      </div>
+      </PageHeader>
 
-      <div className="flex flex-wrap gap-2">
-        <div className="relative min-w-48 flex-1">
-          <IconSearch className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={t('common.search')}
-            className="ps-9"
+      {/* Filters — search takes the full width on mobile, selects sit side by side */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <SearchInput
+          value={q}
+          onChange={setQ}
+          placeholder={t('common.search')}
+          className="sm:min-w-56"
+        />
+        <div className="flex gap-2">
+          <FilterSelect
+            value={branch}
+            onChange={setBranch}
+            allLabel={t('member.allBranches')}
+            ariaLabel={t('member.branch')}
+            className="sm:w-auto sm:min-w-40"
+            icon={<IconShield className="opacity-60" />}
+            options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
+          />
+          <FilterSelect
+            value={status}
+            onChange={setStatus}
+            allLabel={t('member.allStatuses')}
+            ariaLabel={t('member.status')}
+            className="sm:w-auto sm:min-w-36"
+            options={[
+              { value: 'active', label: t('member.active') },
+              { value: 'inactive', label: t('member.inactive') },
+            ]}
           />
         </div>
-        <Select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-auto">
-          <option value="">{t('member.allBranches')}</option>
-          {branches.map((b) => (
-            <option key={b.id} value={b.id}>
-              {branchName(b, i18n.language)}
-            </option>
-          ))}
-        </Select>
-        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-auto">
-          <option value="">{t('member.allStatuses')}</option>
-          <option value="active">{t('member.active')}</option>
-          <option value="inactive">{t('member.inactive')}</option>
-        </Select>
       </div>
 
-      <Card>
-        {members.length === 0 ? (
-          <EmptyState>{t('common.none')}</EmptyState>
-        ) : (
-          <Table>
-            <thead className="border-b border-border">
-              <tr>
-                <Th>{t('member.name')}</Th>
-                <Th>{t('member.age')}</Th>
-                <Th>{t('member.branch')}</Th>
-                <Th className="hidden md:table-cell">{t('member.parentPhone')}</Th>
-                <Th className="hidden md:table-cell">{t('member.joinDate')}</Th>
-                <Th>{t('member.status')}</Th>
-                <Th className="text-end">{t('common.actions')}</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {members.map((m) => (
-                <tr
-                  key={m.id}
-                  className="cursor-pointer transition-colors hover:bg-accent/50"
-                  onClick={() => navigate(`/members/${m.id}`)}
+      {members.error ? (
+        <ErrorState message={t('error.loadFailed')} onRetry={members.reload} retryLabel={t('error.retry')} />
+      ) : members.loading ? (
+        <Card className="divide-y divide-border">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3 p-3">
+              <Skeleton className="h-11 w-11 rounded-full" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-3.5 w-2/5" />
+                <Skeleton className="h-3 w-24" />
+              </div>
+            </div>
+          ))}
+        </Card>
+      ) : list.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={<IconUsers className="h-6 w-6" />}
+            title={t(filtering ? 'common.noResults' : 'member.noMembers')}
+            action={
+              filtering ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setQ('');
+                    setBranch('');
+                    setStatus('');
+                  }}
                 >
-                  <Td>
-                    <div className="flex items-center gap-3">
-                      <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} />
-                      <span className="font-medium">
-                        {m.first_name} {m.last_name}
-                      </span>
-                    </div>
-                  </Td>
-                  <Td>
-                    {m.age} {t('common.years')}
-                  </Td>
-                  <Td>
-                    <Badge>{branchName(m, i18n.language)}</Badge>
-                  </Td>
-                  <Td className="hidden md:table-cell" dir="ltr">
-                    {m.parent_phone}
-                  </Td>
-                  <Td className="hidden md:table-cell">{fmtDate(m.join_date)}</Td>
-                  <Td>
-                    <Badge variant={m.status === 'active' ? 'success' : 'secondary'}>
-                      {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
-                    </Badge>
-                  </Td>
-                  <Td className="text-end" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => setEditing(m)} aria-label={t('common.edit')}>
-                        <IconPencil />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => remove(m)}
-                        aria-label={t('common.delete')}
-                      >
-                        <IconTrash />
-                      </Button>
-                    </div>
-                  </Td>
-                </tr>
+                  {t('common.clearFilters')}
+                </Button>
+              ) : (
+                <Button variant="brand" onClick={() => setEditing('new')}>
+                  <IconPlus />
+                  {t('member.addMember')}
+                </Button>
+              )
+            }
+          >
+            {t(filtering ? 'common.noResultsHint' : 'member.noMembersHint')}
+          </EmptyState>
+        </Card>
+      ) : (
+        <>
+          {/* Mobile: cards. A 7-column table cannot be read on a 375px screen. */}
+          <Card className="md:hidden">
+            <ul className="divide-y divide-border">
+              {list.map((m) => (
+                <MemberCard
+                  key={m.id}
+                  m={m}
+                  lang={i18n.language}
+                  t={t}
+                  onEdit={() => setEditing(m)}
+                  onDelete={() => remove(m)}
+                />
               ))}
-            </tbody>
-          </Table>
-        )}
-      </Card>
+            </ul>
+          </Card>
+
+          {/* Desktop: full table */}
+          <Card className="hidden md:block">
+            <Table>
+              <thead className="border-b border-border">
+                <tr>
+                  <Th>{t('member.name')}</Th>
+                  <Th>{t('member.age')}</Th>
+                  <Th>{t('member.branch')}</Th>
+                  <Th>{t('member.parentPhone')}</Th>
+                  <Th>{t('member.joinDate')}</Th>
+                  <Th>{t('member.status')}</Th>
+                  <Th className="text-end">{t('common.actions')}</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {list.map((m) => (
+                  <tr key={m.id} className="group transition-colors hover:bg-accent/40">
+                    <Td>
+                      <Link
+                        to={`/members/${m.id}`}
+                        className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
+                      >
+                        <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-9 w-9" />
+                        <span>
+                          {m.first_name} {m.last_name}
+                        </span>
+                      </Link>
+                    </Td>
+                    <Td className="tabular-nums">
+                      <div className="flex items-center gap-2">
+                        {m.age} {t('common.years')}
+                        <BirthdayBadge birthDate={m.birth_date} t={t} />
+                      </div>
+                    </Td>
+                    <Td>
+                      <Badge>{branchName(m, i18n.language)}</Badge>
+                    </Td>
+                    <Td dir="ltr" className="tabular-nums">
+                      {m.parent_phone || '—'}
+                    </Td>
+                    <Td className="tabular-nums">{fmtDate(m.join_date)}</Td>
+                    <Td>
+                      <Badge variant={m.status === 'active' ? 'success' : 'secondary'}>
+                        {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
+                      </Badge>
+                    </Td>
+                    <Td className="text-end">
+                      <div className="flex justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setEditing(m)}
+                          aria-label={t('common.edit')}
+                        >
+                          <IconPencil />
+                        </Button>
+                        <Button
+                          variant="destructive-ghost"
+                          size="icon-sm"
+                          onClick={() => remove(m)}
+                          aria-label={t('common.delete')}
+                        >
+                          <IconTrash />
+                        </Button>
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </Card>
+        </>
+      )}
 
       <Dialog
         open={editing !== null}
@@ -291,7 +438,7 @@ export default function Members() {
           <MemberForm
             initial={
               editing === 'new'
-                ? { ...EMPTY_FORM, branch_id: branches[0]?.id || '' }
+                ? { ...EMPTY_FORM, branch_id: branchList[0]?.id || '' }
                 : {
                     first_name: editing.first_name,
                     last_name: editing.last_name,
@@ -304,7 +451,7 @@ export default function Members() {
                     status: editing.status,
                   }
             }
-            branches={branches}
+            branches={branchList}
             onSave={save}
             onCancel={() => setEditing(null)}
           />

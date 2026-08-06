@@ -9,6 +9,23 @@ export function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * 'today' | 'tomorrow' | null for a YYYY-MM-DD birth date.
+ * Month-day only, so it matches every year; the window stops at one day ahead.
+ */
+export function birthdayWhen(birthDate) {
+  if (!birthDate) return null;
+  const md = (d) =>
+    `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const target = birthDate.slice(5);
+  if (target === md(now)) return 'today';
+  if (target === md(tomorrow)) return 'tomorrow';
+  return null;
+}
+
 // Works for objects carrying either name_fr/name_ar or branch_name_fr/branch_name_ar
 export function branchName(obj, lng) {
   if (!obj) return '';
