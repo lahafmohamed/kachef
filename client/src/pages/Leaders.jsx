@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { useAuth } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
 import { branchName, fileToDataUrl } from '../utils';
+import Combobox from '../components/Combobox';
 import {
   Avatar,
   Badge,
@@ -24,6 +26,7 @@ import {
   cn,
   useConfirm,
   useToast,
+  IconLock,
   IconPencil,
   IconPlus,
   IconShield,
@@ -173,21 +176,16 @@ function AssignmentForm({ initial, year, leaders, branches, template, onSaved, o
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="a_title">{t('leader.assignmentTitle')}</Label>
-        <Input
+        <Combobox
           id="a_title"
           required
-          list="title-suggestions"
           value={form.title}
           onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+          options={[
+            ...template,
+            ...branches.map((b) => `${t('leader.branchLeader')} ${branchName(b, i18n.language)}`),
+          ]}
         />
-        <datalist id="title-suggestions">
-          {template.map((title) => (
-            <option key={title} value={title} />
-          ))}
-          {branches.map((b) => (
-            <option key={b.id} value={`${t('leader.branchLeader')} ${branchName(b, i18n.language)}`} />
-          ))}
-        </datalist>
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="a_branch">{t('leader.linkedBranch')}</Label>
@@ -274,6 +272,8 @@ export default function Leaders() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
 
   const [year, setYear] = useState(null);
   // '' = all, 'amana' = الأمانة only, otherwise a branch id (string)
@@ -294,7 +294,15 @@ export default function Leaders() {
     assignments: [],
     template: [],
     missing_count: 0,
+    locked: false,
   };
+  // A سنة مقفلة is frozen: the server refuses every change, and only an admin can unlock it
+  const locked = !!tachkila.locked;
+  // With leaders.read a قائد opens this page read-only — changing the التشكيلة stays admin-only
+  const canEdit = isAdmin && !locked;
+
+  // The server answers 423 { error: 'year_locked' } if the freeze was set from another device
+  const errMsg = (err) => (err.message === 'year_locked' ? t('leader.lockedError') : err.message);
 
   function reloadAll() {
     leadersRes.reload({ quiet: true });
@@ -308,7 +316,24 @@ export default function Leaders() {
       reloadAll();
       toast.success(t('leader.deleted'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errMsg(err));
+    }
+  }
+
+  // Freeze / unfreeze the whole تشكيلة of the selected year. Admin only, server-enforced.
+  async function toggleLock() {
+    const next = !locked;
+    const ok = await confirm({
+      title: t(next ? 'leader.lock' : 'leader.unlock'),
+      message: t(next ? 'leader.confirmLock' : 'leader.confirmUnlock', { year: tachkila.year }),
+    });
+    if (!ok) return;
+    try {
+      await api.post('/tachkila/lock', { year: tachkila.year, locked: next });
+      reloadAll();
+      toast.success(t(next ? 'leader.lockedToast' : 'leader.unlockedToast'));
+    } catch (err) {
+      toast.error(errMsg(err));
     }
   }
 
@@ -319,7 +344,7 @@ export default function Leaders() {
       reloadAll();
       toast.success(t('leader.assignmentDeleted'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errMsg(err));
     }
   }
 
@@ -329,7 +354,7 @@ export default function Leaders() {
       await api.put(`/tachkila/${a.id}`, { leader_id: leaderId === '' ? null : Number(leaderId) });
       reloadAll();
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errMsg(err));
     }
   }
 
@@ -349,7 +374,7 @@ export default function Leaders() {
       reloadAll();
       toast.success(added > 0 ? t('leader.templateFilled', { count: added }) : t('leader.templateComplete'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errMsg(err));
     }
   }
 
@@ -401,6 +426,7 @@ export default function Leaders() {
             onChange={(e) => quickAssign(a, e.target.value)}
             aria-label={`${a.title} — ${t('leader.selectLeader')}`}
             className="max-w-64"
+            disabled={!canEdit}
           >
             <option value="">{t('leader.unassigned')}</option>
             {leaders.map((l) => (
@@ -411,33 +437,41 @@ export default function Leaders() {
           </Select>
         </div>
         {a.branch_id && <Badge>{branchName(a, i18n.language)}</Badge>}
-        <div className="flex gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => addAssistant(a)}
-            aria-label={t('leader.addAssistant')}
-            title={t('leader.addAssistant')}
-          >
-            <IconPlus />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setEditingAssignment(a)}
-            aria-label={t('common.edit')}
-          >
-            <IconPencil />
-          </Button>
-          <Button
-            variant="destructive-ghost"
-            size="icon"
-            onClick={() => removeAssignment(a)}
-            aria-label={t('common.delete')}
-          >
-            <IconTrash />
-          </Button>
-        </div>
+        {/* Frozen year (or non-admin account): the row is read-only */}
+        {locked && (
+          <span className="text-muted-foreground" title={t('leader.lockedBadge')} aria-hidden="true">
+            <IconLock className="h-4 w-4" />
+          </span>
+        )}
+        {canEdit && (
+          <div className="flex gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => addAssistant(a)}
+              aria-label={t('leader.addAssistant')}
+              title={t('leader.addAssistant')}
+            >
+              <IconPlus />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setEditingAssignment(a)}
+              aria-label={t('common.edit')}
+            >
+              <IconPencil />
+            </Button>
+            <Button
+              variant="destructive-ghost"
+              size="icon"
+              onClick={() => removeAssignment(a)}
+              aria-label={t('common.delete')}
+            >
+              <IconTrash />
+            </Button>
+          </div>
+        )}
       </li>
     );
   }
@@ -445,18 +479,37 @@ export default function Leaders() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
-        <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
-          <IconPlus />
-          {t('leader.addLeader')}
-        </Button>
+        {isAdmin && (
+          <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+            <IconPlus />
+            {t('leader.addLeader')}
+          </Button>
+        )}
       </PageHeader>
 
       {/* ---------- التشكيلة ---------- */}
       <Card>
         <CardHeader className="gap-3">
           <div>
-            <CardTitle>{t('leader.tachkila')}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">{t('leader.tachkilaHint')}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle>{t('leader.tachkila')}</CardTitle>
+              {locked && (
+                <Badge variant="warning">
+                  <IconLock className="h-3.5 w-3.5" />
+                  {t('leader.lockedBadge')}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {locked
+                ? t('leader.lockedHint', {
+                    by: tachkila.locked_by || '—',
+                    admin: isAdmin ? t('leader.lockedHintAdmin') : t('leader.lockedHintUser'),
+                  })
+                : canEdit
+                  ? t('leader.tachkilaHint')
+                  : t('leader.readOnlyHint')}
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
             <Select
@@ -487,17 +540,26 @@ export default function Leaders() {
                 ))}
               </Select>
             )}
-            <Button variant="outline" size="sm" onClick={() => setCreatingYear(true)}>
-              <IconPlus />
-              {t('leader.newYear')}
-            </Button>
-            {tachkila.year && tachkila.missing_count > 0 && (
+            {isAdmin && (
+              <Button variant="outline" size="sm" onClick={() => setCreatingYear(true)}>
+                <IconPlus />
+                {t('leader.newYear')}
+              </Button>
+            )}
+            {/* Only an admin may freeze a تشكيلة or lift the freeze */}
+            {isAdmin && tachkila.year && (
+              <Button variant={locked ? 'brand' : 'outline'} size="sm" onClick={toggleLock}>
+                <IconLock />
+                {t(locked ? 'leader.unlock' : 'leader.lock')}
+              </Button>
+            )}
+            {canEdit && tachkila.year && tachkila.missing_count > 0 && (
               <Button variant="outline" size="sm" onClick={fillTemplate}>
                 <IconShield />
                 {t('leader.fillTemplate', { count: tachkila.missing_count })}
               </Button>
             )}
-            {tachkila.year && (
+            {tachkila.year && canEdit && (
               <Button size="sm" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
                 <IconPlus />
                 {t('leader.addAssignment')}
@@ -551,8 +613,12 @@ export default function Leaders() {
 
       {/* ---------- القادة ---------- */}
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>{t('leader.leadersList')}</CardTitle>
+        <CardHeader className="flex-row items-start justify-between">
+          <div>
+            <CardTitle>{t('leader.leadersList')}</CardTitle>
+            {/* فرقة القادة: قادة الفوج تُتابع مطالبهم سنويًا مثل باقي الفرق */}
+            <p className="mt-1 text-sm text-muted-foreground">{t('leader.cardHint')}</p>
+          </div>
           <Badge variant="outline">{filteredLeaders.length}</Badge>
         </CardHeader>
         <CardContent className="p-0 pb-2">
@@ -567,10 +633,12 @@ export default function Leaders() {
               icon={<IconUsers className="h-6 w-6" />}
               title={t('leader.noLeaders')}
               action={
-                <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
-                  <IconPlus />
-                  {t('leader.addLeader')}
-                </Button>
+                isAdmin ? (
+                  <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+                    <IconPlus />
+                    {t('leader.addLeader')}
+                  </Button>
+                ) : null
               }
             />
           ) : (
@@ -604,31 +672,39 @@ export default function Leaders() {
                       </div>
                     </div>
                   </Link>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span className="tabular-nums">
                       {l.sessions_count} {t('leader.sessionsLed')}
                     </span>
                     <Badge variant="success">✓ {l.present_count}</Badge>
                     <Badge variant="destructive">✗ {l.absent_count}</Badge>
+                    {/* بطاقة تقدم القائد لسنة التشكيلة الجارية */}
+                    {l.card?.total > 0 && (
+                      <Badge variant={l.card.done_count === l.card.total ? 'success' : 'outline'}>
+                        {t('leader.cardProgress', { done: l.card.done_count, total: l.card.total })}
+                      </Badge>
+                    )}
                   </div>
-                  <div className="flex gap-0.5">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setEditingLeader(l)}
-                      aria-label={t('common.edit')}
-                    >
-                      <IconPencil />
-                    </Button>
-                    <Button
-                      variant="destructive-ghost"
-                      size="icon"
-                      onClick={() => removeLeader(l)}
-                      aria-label={t('common.delete')}
-                    >
-                      <IconTrash />
-                    </Button>
-                  </div>
+                  {isAdmin && (
+                    <div className="flex gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setEditingLeader(l)}
+                        aria-label={t('common.edit')}
+                      >
+                        <IconPencil />
+                      </Button>
+                      <Button
+                        variant="destructive-ghost"
+                        size="icon"
+                        onClick={() => removeLeader(l)}
+                        aria-label={t('common.delete')}
+                      >
+                        <IconTrash />
+                      </Button>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

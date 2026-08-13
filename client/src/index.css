@@ -262,11 +262,6 @@ body[data-scroll-locked] {
   }
 }
 
-/* Native date inputs collapse oddly inside flex/grid on mobile Safari */
-input[type="date"] {
-  min-width: 0;
-}
-
 /* Native checkbox in brand color, sized for touch */
 input[type="checkbox"],
 input[type="radio"] {

@@ -36,6 +36,7 @@ const PERM_GROUPS = [
       { key: 'members.create', label: 'admin.permMembersCreate' },
       { key: 'members.edit', label: 'admin.permMembersEdit' },
       { key: 'members.delete', label: 'admin.permMembersDelete' },
+      { key: 'members.matalib', label: 'admin.permMembersMatalib' },
     ],
   },
   {
@@ -56,6 +57,15 @@ const PERM_GROUPS = [
     items: [
       { key: 'promotions.read', label: 'admin.permAccess' },
       { key: 'promotions.apply', label: 'admin.permPromotionsApply' },
+    ],
+  },
+  {
+    page: 'nav.leaders',
+    // التشكيلة stays read-only here: only an admin ever changes it. Filling in
+    // بطاقة تقدم القائد is a separate, grantable action.
+    items: [
+      { key: 'leaders.read', label: 'admin.permLeadersRead' },
+      { key: 'leaders.progress', label: 'admin.permLeadersProgress' },
     ],
   },
 ];

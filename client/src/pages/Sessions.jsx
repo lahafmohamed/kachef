@@ -4,9 +4,11 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
-import { fmtDate, todayISO, branchName } from '../utils';
+import { fmtDate, fmtTime, todayISO, branchName, ACTIVITY_TYPES, activityTypeKey } from '../utils';
+import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
+import TimePicker from '../components/TimePicker';
 import SearchInput from '../components/SearchInput';
 import {
   Badge,
@@ -20,7 +22,6 @@ import {
   Label,
   PageHeader,
   RequirementGrid,
-  SegmentedControl,
   Select,
   Skeleton,
   Table,
@@ -38,15 +39,45 @@ const EMPTY = {
   kind: 'activity',
   title: '',
   date: todayISO(),
+  start_time: '',
+  place: '',
+  activity_type: '',
   branch_id: '',
   leader_id: '',
   helper_ids: [],
   member_ids: [],
   fee: '',
   matalib: [],
+  // نشاط عام للفوج: { [branch_id]: عدد الحضور } as typed, plus عدد القادة
+  branch_counts: {},
+  leaders_count: '',
 };
 
+/** فرقة النشاط، أو نوعه حين يكون نشاطًا فوجيًا بلا فرقة */
+function ScopeBadge({ s, lang, t }) {
+  if (s.branch_id) return <Badge>{branchName(s, lang)}</Badge>;
+  return (
+    <Badge variant="secondary">
+      {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
+    </Badge>
+  );
+}
+
 function AttendanceChips({ s, t }) {
+  // A نشاط عام للفوج is recorded by counts, so there is no present/absent to show
+  if (s.kind === 'group')
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        <Badge variant="success">
+          {s.branch_counts_total ?? 0} {t('session.present')}
+        </Badge>
+        {s.leaders_count !== null && s.leaders_count !== undefined && (
+          <Badge variant="secondary">
+            {s.leaders_count} {t('leader.leadersList')}
+          </Badge>
+        )}
+      </div>
+    );
   return (
     <div className="flex flex-wrap gap-1.5">
       <Badge variant="success">
@@ -138,7 +169,8 @@ export default function Sessions() {
     }));
   }
 
-  // Switching type resets what no longer applies: مطالب and عناصر belong to a فرقة نشاط only
+  // Switching type resets what no longer applies: مطالب and عناصر belong to a فرقة نشاط only,
+  // and the per-فرقة counts to a نشاط عام للفوج.
   function pickKind(kind) {
     setForm((f) => ({
       ...f,
@@ -146,8 +178,14 @@ export default function Sessions() {
       title: kind === 'visit' ? t('session.familyVisit') : f.title === t('session.familyVisit') ? '' : f.title,
       matalib: [],
       member_ids: [],
-      fee: kind === 'visit' ? '' : f.fee,
+      fee: kind === 'visit' || kind === 'group' ? '' : f.fee,
+      branch_counts: kind === 'group' ? f.branch_counts : {},
+      leaders_count: kind === 'group' ? f.leaders_count : '',
     }));
+  }
+
+  function setBranchCount(branchId, value) {
+    setForm((f) => ({ ...f, branch_counts: { ...f.branch_counts, [branchId]: value } }));
   }
 
   function toggleVisited(id) {
@@ -175,12 +213,23 @@ export default function Sessions() {
     try {
       const s = await api.post('/sessions', {
         ...form,
-        branch_id: form.kind === 'leaders' ? null : Number(form.branch_id),
+        branch_id: ['leaders', 'group'].includes(form.kind) ? null : Number(form.branch_id),
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
         member_ids: form.kind === 'visit' ? form.member_ids : [],
         fee: form.fee === '' ? null : Number(form.fee),
         matalib: form.kind === 'visit' ? [] : form.matalib,
+        activity_type: form.activity_type || null,
+        start_time: form.start_time || null,
+        place: form.place || null,
+        // Only فرق the قائد actually typed a number for are recorded
+        branch_counts:
+          form.kind === 'group'
+            ? Object.entries(form.branch_counts)
+                .filter(([, v]) => v !== '' && v !== null)
+                .map(([branchId, v]) => ({ branch_id: Number(branchId), count: Number(v) }))
+            : [],
+        leaders_count: form.kind === 'group' && form.leaders_count !== '' ? Number(form.leaders_count) : null,
       });
       setCreating(false);
       setForm({ ...EMPTY, branch_id: form.branch_id, leader_id: form.leader_id });
@@ -199,6 +248,8 @@ export default function Sessions() {
   const isVisit = form.kind === 'visit';
   // نشاط قادة: no فرقة, no عناصر, no مطالب — only the قادة who take part
   const isLeadersOnly = form.kind === 'leaders';
+  // نشاط عام للفوج: no فرقة either, présence recorded as a count per فرقة
+  const isGroup = form.kind === 'group';
   // Both pickers stay usable with 40+ names: filter on the full name, and never
   // hide an already-ticked row — otherwise a search makes selections look lost.
   const matches = (person, query) =>
@@ -337,16 +388,20 @@ export default function Sessions() {
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      {s.branch_id ? (
-                        <Badge>{branchName(s, i18n.language)}</Badge>
-                      ) : (
-                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
-                      )}
+                      <ScopeBadge s={s} lang={i18n.language} t={t} />
                       {s.kind === 'visit' && <Badge variant="warning">{t('session.kindVisit')}</Badge>}
+                      {activityTypeKey(s.activity_type) && (
+                        <Badge variant="outline">{t(activityTypeKey(s.activity_type))}</Badge>
+                      )}
                       {s.matalib.length > 0 && (
                         <Badge variant="warning">
                           {s.matalib.length} {t('session.requirementsShort')}
                         </Badge>
+                      )}
+                      {(s.start_time || s.place) && (
+                        <span className="truncate text-xs text-muted-foreground">
+                          {[fmtTime(s.start_time), s.place].filter(Boolean).join(' · ')}
+                        </span>
                       )}
                       {s.leader && (
                         <span className="truncate text-xs text-muted-foreground">{s.leader}</span>
@@ -390,13 +445,20 @@ export default function Sessions() {
                           {t('session.kindVisit')}
                         </Badge>
                       )}
+                      {(s.start_time || s.place || s.activity_type) && (
+                        <span className="block text-xs text-muted-foreground">
+                          {[
+                            fmtTime(s.start_time),
+                            s.place,
+                            activityTypeKey(s.activity_type) && t(activityTypeKey(s.activity_type)),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      )}
                     </Td>
                     <Td>
-                      {s.branch_id ? (
-                        <Badge>{branchName(s, i18n.language)}</Badge>
-                      ) : (
-                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
-                      )}
+                      <ScopeBadge s={s} lang={i18n.language} t={t} />
                     </Td>
                     <Td className="text-muted-foreground">{s.leader || '—'}</Td>
                     <Td>
@@ -416,47 +478,91 @@ export default function Sessions() {
       <Dialog
         open={creating}
         onClose={() => setCreating(false)}
-        title={t(isVisit ? 'session.newVisit' : isLeadersOnly ? 'session.newLeadersSession' : 'session.newSession')}
+        title={t(
+          isVisit
+            ? 'session.newVisit'
+            : isLeadersOnly
+              ? 'session.newLeadersSession'
+              : isGroup
+                ? 'session.newGroupSession'
+                : 'session.newSession'
+        )}
       >
         <form onSubmit={create} className="space-y-4">
           <div className="space-y-1.5">
-            <Label className="block">{t('session.kind')}</Label>
-            <SegmentedControl
-              className="w-full"
-              options={[
-                { value: 'activity', label: t('session.kindActivity') },
-                { value: 'visit', label: t('session.kindVisit') },
-                { value: 'leaders', label: t('session.kindLeaders') },
-              ]}
-              value={form.kind}
-              onChange={pickKind}
-              label={t('session.kind')}
-            />
+            <Label htmlFor="s_kind">{t('session.kind')}</Label>
+            {/* A select, not segments: four kinds no longer fit side by side on a phone */}
+            <Select id="s_kind" value={form.kind} onChange={(e) => pickKind(e.target.value)}>
+              <option value="activity">{t('session.kindActivity')}</option>
+              <option value="visit">{t('session.kindVisit')}</option>
+              <option value="leaders">{t('session.kindLeaders')}</option>
+              <option value="group">{t('session.kindGroup')}</option>
+            </Select>
+            {isGroup && <p className="text-xs text-muted-foreground">{t('session.groupHint')}</p>}
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="s_title">{t('session.sessionTitle')}</Label>
+            <Label htmlFor="s_title">{t(isGroup ? 'session.occasion' : 'session.sessionTitle')}</Label>
             <Input
               id="s_title"
               required
               autoComplete="off"
+              placeholder={t('session.sessionTitleHint')}
               value={form.title}
               onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
             />
+            {!isVisit && (
+              <p className="text-xs text-muted-foreground">{t('session.sessionTitleHint')}</p>
+            )}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="s_date">{t('common.date')}</Label>
-              <Input
+              <DatePicker
                 id="s_date"
-                type="date"
                 required
+                clearable={false}
                 value={form.date}
                 onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s_time">{t('session.time')}</Label>
+              <TimePicker
+                id="s_time"
+                value={form.start_time}
+                onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s_place">{t('session.place')}</Label>
+              <Input
+                id="s_place"
+                autoComplete="off"
+                value={form.place}
+                onChange={(e) => setForm((f) => ({ ...f, place: e.target.value }))}
+              />
+            </div>
             {!isVisit && (
+              <div className="space-y-1.5">
+                <Label htmlFor="s_nature">{t('session.nature')}</Label>
+                <Select
+                  id="s_nature"
+                  required={isGroup}
+                  value={form.activity_type}
+                  onChange={(e) => setForm((f) => ({ ...f, activity_type: e.target.value }))}
+                >
+                  <option value="">—</option>
+                  {ACTIVITY_TYPES.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {t(a.key)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            {!isVisit && !isGroup && (
               <div className="space-y-1.5">
                 <Label htmlFor="s_fee">{t('session.fee')}</Label>
                 <Input
@@ -471,7 +577,7 @@ export default function Sessions() {
                 />
               </div>
             )}
-            {!isLeadersOnly && (
+            {!isLeadersOnly && !isGroup && (
               <div className="space-y-1.5">
                 <Label htmlFor="s_branch">{t('session.branch')}</Label>
                 <Select id="s_branch" required value={form.branch_id} onChange={(e) => pickBranch(e.target.value)}>
@@ -547,6 +653,48 @@ export default function Sessions() {
             </div>
           )}
 
+          {/* نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل + عدد حضور القادة */}
+          {isGroup && (
+            <div className="space-y-1.5">
+              <Label className="block">{t('session.branchCounts')}</Label>
+              <div className="space-y-2 rounded-md border border-border p-3">
+                {branchList.map((b) => (
+                  <div key={b.id} className="flex items-center justify-between gap-3">
+                    <Label htmlFor={`s_count_${b.id}`} className="flex-1">
+                      {branchName(b, i18n.language)}
+                    </Label>
+                    <Input
+                      id={`s_count_${b.id}`}
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      placeholder="0"
+                      className="w-24"
+                      value={form.branch_counts[b.id] ?? ''}
+                      onChange={(e) => setBranchCount(b.id, e.target.value)}
+                    />
+                  </div>
+                ))}
+                <div className="flex items-center justify-between gap-3 border-t border-border pt-2">
+                  <Label htmlFor="s_leaders_count" className="flex-1">
+                    {t('session.leadersCount')}
+                  </Label>
+                  <Input
+                    id="s_leaders_count"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    placeholder="0"
+                    className="w-24"
+                    value={form.leaders_count}
+                    onChange={(e) => setForm((f) => ({ ...f, leaders_count: e.target.value }))}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!isGroup && (
           <div className="space-y-1.5">
             <Label>
               {t(isVisit || isLeadersOnly ? 'session.visitParticipants' : 'session.helpers')}
@@ -584,8 +732,9 @@ export default function Sessions() {
               </div>
             )}
           </div>
+          )}
 
-          {!isVisit && !isLeadersOnly && selectedBranch?.total_requirements > 0 && (
+          {!isVisit && !isLeadersOnly && !isGroup && selectedBranch?.total_requirements > 0 && (
             <div className="space-y-1.5">
               <Label>
                 {t('session.requirements')}

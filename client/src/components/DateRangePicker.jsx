@@ -3,24 +3,15 @@ import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { Button, IconArrow, IconCalendar, IconX, Skeleton, cn } from './ui';
 import { fmtDate } from '../utils';
+import { monthEnd, monthNames as monthNamesFor, monthStart, toDate, toISO } from '../lib/date';
 
 const CalendarPanel = lazy(() => import('./CalendarPanel'));
-
-/* ISO <-> Date, anchored at local noon so a timezone offset can never shift
-   the calendar by a day. */
-const toDate = (iso) => (iso ? new Date(`${iso}T12:00:00`) : undefined);
-const toISO = (d) =>
-  d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
 
 function shiftDays(n) {
   const d = new Date();
   d.setDate(d.getDate() + n);
   return d;
 }
-
-/* Whole month, from the 1st to the last day — day 0 of the next month is that last day. */
-const monthStart = (year, month) => new Date(year, month, 1);
-const monthEnd = (year, month) => new Date(year, month + 1, 0);
 
 /**
  * Range date filter: shadcn Popover + react-day-picker range calendar,
@@ -58,10 +49,7 @@ export default function DateRangePicker({ value, onChange, className }) {
         ? `${t('session.dateFrom')} ${fmtDate(value.from)}`
         : `${t('session.dateTo')} ${fmtDate(value.to)}`;
 
-  // Short month names in the active language (يناير…, janv.…)
-  const monthNames = Array.from({ length: 12 }, (_, m) =>
-    new Intl.DateTimeFormat(isAr ? 'ar' : 'fr', { month: 'short' }).format(new Date(2000, m, 1))
-  );
+  const monthNames = monthNamesFor(isAr);
 
   const presets = [
     { key: 'last7', from: shiftDays(-6), to: new Date() },

@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
-import { useDebounced, useFetch } from '../hooks';
+import { useDebounced, useFetch, useLocalStorage } from '../hooks';
 import { fmtDate, todayISO, branchName, fileToDataUrl, birthdayWhen } from '../utils';
+import DatePicker from '../components/DatePicker';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import {
@@ -27,8 +28,11 @@ import {
   useToast,
   IconCake,
   IconPencil,
+  IconPin,
   IconPlus,
+  IconSchool,
   IconShield,
+  IconSort,
   IconTrash,
   IconUsers,
 } from '../components/ui';
@@ -42,6 +46,7 @@ const EMPTY_FORM = {
   birth_place: '',
   address_abidjan: '',
   address_lebanon: '',
+  school: '',
   sex: 'M',
   branch_id: '',
   member_phone: '',
@@ -99,7 +104,14 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="birth_date">{t('member.birthDate')}</Label>
-          <Input id="birth_date" type="date" required value={form.birth_date} onChange={set('birth_date')} />
+          <DatePicker
+            id="birth_date"
+            required
+            clearable={false}
+            toYear={new Date().getFullYear()}
+            value={form.birth_date}
+            onChange={set('birth_date')}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="birth_place">{t('member.birthPlace')}</Label>
@@ -122,6 +134,10 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
             value={form.address_lebanon || ''}
             onChange={set('address_lebanon')}
           />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="school">{t('member.school')}</Label>
+          <Input id="school" autoComplete="off" value={form.school || ''} onChange={set('school')} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="sex">{t('member.sex')}</Label>
@@ -164,7 +180,14 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="join_date">{t('member.joinDate')}</Label>
-          <Input id="join_date" type="date" required value={form.join_date} onChange={set('join_date')} />
+          <DatePicker
+            id="join_date"
+            required
+            clearable={false}
+            fromYear={2000}
+            value={form.join_date}
+            onChange={set('join_date')}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="status">{t('member.status')}</Label>
@@ -238,6 +261,11 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
           <div className="truncate font-medium">
             {m.first_name} {m.last_name}
           </div>
+          {(m.school || m.address_abidjan) && (
+            <div className="truncate text-xs text-muted-foreground">
+              {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
+            </div>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <Badge>{branchName(m, lang)}</Badge>
             <BirthdayBadge birthDate={m.birth_date} t={t} />
@@ -278,27 +306,48 @@ export default function Members() {
 
   const [branch, setBranch] = useState('');
   const [status, setStatus] = useState('');
+  const [school, setSchool] = useState('');
+  const [residence, setResidence] = useState('');
+  // Sorting is a preference, not a filter: it survives from one visit to the next
+  const [sort, setSort] = useLocalStorage('members.sort', 'name');
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null); // null | 'new' | member object
 
   const dq = useDebounced(q, 250);
   const branches = useFetch('/branches');
+  // Distinct مدارس / أماكن سكن actually in the base — the filters only offer real values
+  const filterValues = useFetch('/members/filters');
 
   const params = new URLSearchParams();
   if (branch) params.set('branch', branch);
   if (status) params.set('status', status);
+  if (school) params.set('school', school);
+  if (residence) params.set('residence', residence);
+  if (sort && sort !== 'name') params.set('sort', sort);
   if (dq) params.set('q', dq);
   const members = useFetch(`/members?${params}`);
 
   const list = members.data || [];
   const branchList = branches.data || [];
-  const filtering = !!(branch || status || q);
+  const schools = filterValues.data?.schools || [];
+  const residences = filterValues.data?.residences || [];
+  const filtering = !!(branch || status || school || residence || q);
+
+  function clearFilters() {
+    setQ('');
+    setBranch('');
+    setStatus('');
+    setSchool('');
+    setResidence('');
+  }
 
   async function save(form) {
     if (editing === 'new') await api.post('/members', form);
     else await api.put(`/members/${editing.id}`, form);
     setEditing(null);
     members.reload({ quiet: true });
+    // A new مدرسة / مكان سكن must show up in the filters right away
+    filterValues.reload({ quiet: true });
     toast.success(t(editing === 'new' ? 'member.created' : 'member.updated'));
   }
 
@@ -354,6 +403,50 @@ export default function Members() {
             ]}
           />
         </div>
+        {/* حسب المدرسة / مكان السكن — only offered once the base holds such values */}
+        <div className="flex flex-wrap gap-2">
+          {schools.length > 0 && (
+            <FilterSelect
+              value={school}
+              onChange={setSchool}
+              allLabel={t('member.allSchools')}
+              ariaLabel={t('member.school')}
+              className="sm:w-auto sm:min-w-44"
+              icon={<IconSchool className="opacity-60" />}
+              options={schools.map((s) => ({ value: s, label: s }))}
+            />
+          )}
+          {residences.length > 0 && (
+            <FilterSelect
+              value={residence}
+              onChange={setResidence}
+              allLabel={t('member.allResidences')}
+              ariaLabel={t('member.residence')}
+              className="sm:w-auto sm:min-w-44"
+              icon={<IconPin className="opacity-60" />}
+              options={residences.map((r) => ({ value: r, label: r }))}
+            />
+          )}
+          <FilterSelect
+            value={sort}
+            onChange={setSort}
+            ariaLabel={t('member.sortBy')}
+            className="sm:w-auto sm:min-w-48"
+            icon={<IconSort className="opacity-60" />}
+            options={[
+              { value: 'name', label: t('member.sortName') },
+              { value: 'age_desc', label: t('member.sortAgeDesc') },
+              { value: 'age_asc', label: t('member.sortAgeAsc') },
+              ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
+              ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
+            ]}
+          />
+          {filtering && (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>
+              {t('common.clearFilters')}
+            </Button>
+          )}
+        </div>
       </div>
 
       {members.error ? (
@@ -377,14 +470,7 @@ export default function Members() {
             title={t(filtering ? 'common.noResults' : 'member.noMembers')}
             action={
               filtering ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setQ('');
-                    setBranch('');
-                    setStatus('');
-                  }}
-                >
+                <Button variant="outline" onClick={clearFilters}>
                   {t('common.clearFilters')}
                 </Button>
               ) : canCreate ? (
@@ -441,6 +527,11 @@ export default function Members() {
                         <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-9 w-9" />
                         <span>
                           {m.first_name} {m.last_name}
+                          {(m.school || m.address_abidjan) && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
                         </span>
                       </Link>
                     </Td>
@@ -515,6 +606,7 @@ export default function Members() {
                     birth_place: editing.birth_place || '',
                     address_abidjan: editing.address_abidjan || '',
                     address_lebanon: editing.address_lebanon || '',
+                    school: editing.school || '',
                     sex: editing.sex,
                     branch_id: editing.branch_id,
                     member_phone: editing.member_phone || '',

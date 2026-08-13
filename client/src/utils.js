@@ -26,6 +26,21 @@ export function birthdayWhen(birthDate) {
   return null;
 }
 
+// طبيعة النشاط — the slugs the server accepts, with their translation key
+export const ACTIVITY_TYPES = [
+  { value: 'weekly', key: 'session.natureWeekly' },
+  { value: 'cultural', key: 'session.natureCultural' },
+  { value: 'ashura', key: 'session.natureAshura' },
+  { value: 'ramadan', key: 'session.natureRamadan' },
+  { value: 'summer_clubs', key: 'session.natureSummerClubs' },
+];
+
+export const activityTypeKey = (value) =>
+  ACTIVITY_TYPES.find((a) => a.value === value)?.key || null;
+
+// HH:MM — stored as typed, only trimmed of a stray seconds part
+export const fmtTime = (v) => (v ? String(v).slice(0, 5) : '');
+
 // Works for objects carrying either name_fr/name_ar or branch_name_fr/branch_name_ar
 export function branchName(obj, lng) {
   if (!obj) return '';

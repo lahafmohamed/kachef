@@ -29,6 +29,115 @@ import {
 
 const EMPTY_BRANCH = { name_fr: '', name_ar: '', min_age: '', max_age: '', total_requirements: '' };
 
+/**
+ * لائحة مطالب فرقة القادة — the one followed on بطاقة تقدم القائد, year after year.
+ * It lives in the base because its content is agreed with السيد علي and will change.
+ */
+function LeaderMatalibCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { data, loading, error, reload } = useFetch('/leader-matalib');
+  const [form, setForm] = useState({ number: '', label: '' });
+  const [saving, setSaving] = useState(false);
+
+  const list = data || [];
+  const nextNumber = list.reduce((n, m) => Math.max(n, m.number), 0) + 1;
+
+  async function add(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post('/leader-matalib', {
+        number: Number(form.number || nextNumber),
+        label: form.label,
+      });
+      setForm({ number: '', label: '' });
+      reload({ quiet: true });
+      toast.success(t('settings.matlabCreated'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(m) {
+    if (!(await confirm({ title: t('common.delete'), message: t('settings.confirmDeleteMatlab') }))) return;
+    try {
+      await api.del(`/leader-matalib/${m.id}`);
+      reload({ quiet: true });
+      toast.success(t('settings.matlabDeleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  return (
+    <Card className="max-w-3xl">
+      <CardHeader>
+        <CardTitle>{t('settings.leaderMatalib')}</CardTitle>
+        <p className="text-sm text-muted-foreground">{t('settings.leaderMatalibHint')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error ? (
+          <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
+        ) : loading ? (
+          <Skeleton className="h-24" />
+        ) : list.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('settings.noLeaderMatalib')}</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-lg border border-border">
+            {list.map((m) => (
+              <li key={m.id} className="flex items-center gap-3 px-3 py-2">
+                <Badge variant="outline">{m.number}</Badge>
+                <span className="flex-1 text-sm">{m.label}</span>
+                <Button
+                  variant="destructive-ghost"
+                  size="icon-sm"
+                  onClick={() => remove(m)}
+                  aria-label={t('common.delete')}
+                >
+                  <IconTrash />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
+          <div className="w-20 space-y-1.5">
+            <Label htmlFor="lm_number">{t('settings.matlabNumber')}</Label>
+            <Input
+              id="lm_number"
+              type="number"
+              inputMode="numeric"
+              min="1"
+              placeholder={String(nextNumber)}
+              value={form.number}
+              onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))}
+            />
+          </div>
+          <div className="min-w-48 flex-1 space-y-1.5">
+            <Label htmlFor="lm_label">{t('settings.matlabLabel')}</Label>
+            <Input
+              id="lm_label"
+              required
+              autoComplete="off"
+              value={form.label}
+              onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
+            />
+          </div>
+          <Button type="submit" loading={saving}>
+            <IconPlus />
+            {t('settings.newMatlab')}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -314,6 +423,9 @@ export default function Settings() {
           )}
         </CardContent>
       </Card>
+
+      {/* ---------- مطالب القادة (بطاقة تقدم القائد) ---------- */}
+      <LeaderMatalibCard />
 
       <Dialog open={creating} onClose={() => setCreating(false)} title={t('settings.newBranch')}>
         <form onSubmit={createBranch} className="space-y-4">

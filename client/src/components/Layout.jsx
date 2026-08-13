@@ -25,12 +25,12 @@ const NAV_ITEMS = [
   { to: '/members', key: 'nav.members', short: 'nav.members', Icon: IconUsers, perm: 'members.read' },
   { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions.read' },
   { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions.read' },
-  { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, admin: true },
+  { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, perm: 'leaders.read' },
   { to: '/settings', key: 'nav.settings', short: 'nav.settings', Icon: IconSettings, admin: true },
   { to: '/admin', key: 'nav.admin', short: 'nav.admin', Icon: IconLock, admin: true },
 ];
 
-// التشكيلة, settings and user management only exist for admins; the other pages
+// Settings and user management only exist for admins; the other pages
 // follow the per-account permission levels (null = everything).
 function useNavItems() {
   const { user } = useAuth();

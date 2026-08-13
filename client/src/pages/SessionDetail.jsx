@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { fmtDate, branchName } from '../utils';
+import { fmtDate, fmtTime, branchName, activityTypeKey } from '../utils';
 import {
   Avatar,
   Badge,
@@ -15,6 +15,8 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  Input,
+  Label,
   ProgressBar,
   SegmentedControl,
   Select,
@@ -24,6 +26,8 @@ import {
   IconAlert,
   IconBack,
   IconCheckAll,
+  IconClock,
+  IconPin,
   IconTrash,
   IconUsers,
 } from '../components/ui';
@@ -40,6 +44,109 @@ function StatusBadge({ status, t }) {
   const s = MEMBER_STATUSES.find((x) => x.value === status);
   if (!s) return <Badge variant="outline">{t('session.unmarked')}</Badge>;
   return <Badge variant={s.tone}>{t(s.key)}</Badge>;
+}
+
+/**
+ * نشاط عام للفوج: الحضور مسجّل بالأعداد — عدد لكل فرقة بالتفصيل + عدد القادة.
+ * Editable by the same permission that marks présence on the other kinds of نشاط.
+ */
+function GroupCountsCard({ session, editable, onSaved }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const branches = useFetch('/branches');
+  const [counts, setCounts] = useState(() =>
+    Object.fromEntries((session.branch_counts || []).map((c) => [c.branch_id, String(c.count)]))
+  );
+  const [leadersCount, setLeadersCount] = useState(session.leaders_count ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const list = branches.data || [];
+  const membersTotal = Object.values(counts).reduce((n, v) => n + (Number(v) || 0), 0);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.post(`/sessions/${session.id}/counts`, {
+        branch_counts: Object.entries(counts)
+          .filter(([, v]) => v !== '' && v !== null)
+          .map(([branchId, v]) => ({ branch_id: Number(branchId), count: Number(v) })),
+        leaders_count: leadersCount === '' ? null : Number(leadersCount),
+      });
+      toast.success(t('session.countsSaved'));
+      onSaved();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="gap-1">
+        <CardTitle>{t('session.branchCounts')}</CardTitle>
+        <p className="text-sm text-muted-foreground">{t('session.groupHint')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {(editable ? list : session.branch_counts || []).map((b) => {
+          const id = editable ? b.id : b.branch_id;
+          return (
+            <div key={id} className="flex items-center justify-between gap-3">
+              <Label htmlFor={`c_${id}`} className="flex-1">
+                {branchName(b, i18n.language)}
+              </Label>
+              {editable ? (
+                <Input
+                  id={`c_${id}`}
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  placeholder="0"
+                  className="w-24"
+                  value={counts[id] ?? ''}
+                  onChange={(e) => setCounts((c) => ({ ...c, [id]: e.target.value }))}
+                />
+              ) : (
+                <Badge variant="success">{b.count}</Badge>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+          <Label htmlFor="c_leaders" className="flex-1">
+            {t('session.leadersCount')}
+          </Label>
+          {editable ? (
+            <Input
+              id="c_leaders"
+              type="number"
+              inputMode="numeric"
+              min="0"
+              placeholder="0"
+              className="w-24"
+              value={leadersCount}
+              onChange={(e) => setLeadersCount(e.target.value)}
+            />
+          ) : (
+            <Badge variant="secondary">{session.leaders_count ?? '—'}</Badge>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+          <span className="text-sm font-medium">
+            {t('session.totalAttendance')} :{' '}
+            <span className="tabular-nums">{membersTotal + (Number(leadersCount) || 0)}</span>
+          </span>
+          {editable && (
+            <Button size="sm" loading={saving} onClick={save}>
+              {t('common.save')}
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function SessionDetail() {
@@ -170,10 +277,27 @@ export default function SessionDetail() {
         <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{session.title}</h1>
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span className="tabular-nums">{fmtDate(session.date)}</span>
+          {session.start_time && (
+            <span className="flex items-center gap-1 tabular-nums">
+              <IconClock className="h-3.5 w-3.5" />
+              {fmtTime(session.start_time)}
+            </span>
+          )}
+          {session.place && (
+            <span className="flex items-center gap-1">
+              <IconPin className="h-3.5 w-3.5" />
+              {session.place}
+            </span>
+          )}
           {session.branch_id ? (
             <Badge>{branchName(session, i18n.language)}</Badge>
           ) : (
-            <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+            <Badge variant="secondary">
+              {t(session.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
+            </Badge>
+          )}
+          {activityTypeKey(session.activity_type) && (
+            <Badge variant="outline">{t(activityTypeKey(session.activity_type))}</Badge>
           )}
           {session.leader && (
             <span>
@@ -202,6 +326,15 @@ export default function SessionDetail() {
           )}
         </div>
       </div>
+
+      {/* ---------- نشاط عام للفوج: عدد الحضور لكل فرقة ---------- */}
+      {session.kind === 'group' && (
+        <GroupCountsCard
+          session={session}
+          editable={editable}
+          onSaved={() => reload({ quiet: true })}
+        />
+      )}
 
       {/* ---------- Attendance progress + bulk action ---------- */}
       {totalRoster > 0 && (
@@ -307,8 +440,9 @@ export default function SessionDetail() {
       </Card>
 
       {/* ---------- Roster ---------- */}
-      {/* نشاط قادة has no عناصر at all: présence is marked on the animators card above */}
-      {session.kind !== 'leaders' && (
+      {/* نشاط قادة has no عناصر at all (présence is marked on the animators card above),
+          and a نشاط عام للفوج counts its حضور instead of listing names */}
+      {!['leaders', 'group'].includes(session.kind) && (
       <Card>
         <CardHeader>
           <CardTitle>

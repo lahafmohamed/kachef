@@ -1,5 +1,8 @@
 import {
+  Children,
+  Fragment,
   createContext,
+  isValidElement,
   useCallback,
   useContext,
   useEffect,
@@ -10,6 +13,14 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/utils';
+import {
+  Select as SelectRoot,
+  SelectContent,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from './shadcn/select';
 
 export { cn };
 
@@ -53,6 +64,20 @@ export const IconPin = (p) => (
   <Icon {...p}>
     <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
     <circle cx="12" cy="10" r="3" />
+  </Icon>
+);
+export const IconSchool = (p) => (
+  <Icon {...p}>
+    <path d="M22 9 12 4 2 9l10 5 10-5z" />
+    <path d="M6 11.5V17c0 1.1 2.7 2.5 6 2.5s6-1.4 6-2.5v-5.5" />
+  </Icon>
+);
+export const IconSort = (p) => (
+  <Icon {...p}>
+    <path d="M7 4v16" />
+    <path d="m3 8 4-4 4 4" />
+    <path d="M17 20V4" />
+    <path d="m13 16 4 4 4-4" />
   </Icon>
 );
 export const IconCalendar = (p) => (
@@ -365,7 +390,7 @@ export function CardContent({ className, ...props }) {
   return <div className={cn('p-4 pt-0 sm:p-5 sm:pt-0', className)} {...props} />;
 }
 
-const fieldBase =
+export const fieldBase =
   'flex h-11 w-full rounded-lg border border-input bg-card px-3.5 text-sm shadow-xs transition-colors sm:h-10 ' +
   'hover:border-input/70 focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50';
 
@@ -387,18 +412,87 @@ export function Textarea({ className, ...props }) {
   );
 }
 
+/* Radix forbids an item with an empty value, so '' rides through as a sentinel. */
+const EMPTY_VALUE = '__empty__';
+
+/** Flattens `<option>` / `<optgroup>` children (incl. fragments and arrays) into a list. */
+function collectOptions(children, out = []) {
+  Children.forEach(children, (child) => {
+    if (!isValidElement(child)) return;
+    if (child.type === Fragment) {
+      collectOptions(child.props.children, out);
+    } else if (child.type === 'optgroup') {
+      out.push({ group: child.props.label });
+      collectOptions(child.props.children, out);
+    } else if (child.type === 'option') {
+      out.push({
+        value: String(child.props.value ?? ''),
+        label: child.props.children,
+        disabled: !!child.props.disabled,
+      });
+    }
+  });
+  return out;
+}
+
 /**
- * Native select keeps the mobile OS picker (best UX on phones); we only add a
- * chevron and hide the platform arrow so it matches the other fields.
- * `className` sizes the wrapper — the control itself always fills it.
+ * shadcn Select behind the native `<select>` API: call sites keep writing
+ * `<option>` children and an `onChange` that reads `e.target.value`, so the
+ * whole app gets the same listbox without touching every form.
+ * A disabled empty option is read as the placeholder, as it is in HTML.
  */
-export function Select({ className, children, ...props }) {
+export function Select({ className, children, value, onChange, id, name, required, disabled, placeholder, ...props }) {
+  const options = collectOptions(children);
+  const isPlaceholderOption = (o) => o.value === '' && o.disabled;
+  const hasEmptyItem = options.some((o) => o.value === '' && !o.disabled);
+  const placeholderText = placeholder ?? options.find(isPlaceholderOption)?.label;
+  const current = value == null ? '' : String(value);
+
+  const root = (
+    <SelectRoot
+      value={current === '' && hasEmptyItem ? EMPTY_VALUE : current}
+      onValueChange={(v) =>
+        onChange?.({ target: { value: v === EMPTY_VALUE ? '' : v, name, id } })
+      }
+      name={name}
+      disabled={disabled}
+    >
+      <SelectTrigger
+        id={id}
+        className={cn('rounded-lg px-3.5 hover:border-input/70 hover:bg-card', className)}
+        {...props}
+      >
+        <SelectValue placeholder={placeholderText} />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((o, i) => {
+          if (o.group) return <SelectLabel key={`group-${i}`}>{o.group}</SelectLabel>;
+          if (isPlaceholderOption(o)) return null;
+          return (
+            <SelectItem key={o.value || EMPTY_VALUE} value={o.value === '' ? EMPTY_VALUE : o.value} disabled={o.disabled}>
+              {o.label}
+            </SelectItem>
+          );
+        })}
+      </SelectContent>
+    </SelectRoot>
+  );
+
+  if (!required) return root;
+
+  /* Required needs a real form control the browser can point its message at —
+     Radix's own hidden select is unfocusable, so submit would fail silently. */
   return (
-    <div className={cn('relative inline-flex w-full', className)}>
-      <select className={cn(fieldBase, 'cursor-pointer appearance-none bg-none pe-9')} {...props}>
-        {children}
-      </select>
-      <IconChevronDown className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+    <div className="relative w-full">
+      {root}
+      <input
+        tabIndex={-1}
+        required
+        aria-hidden="true"
+        value={current}
+        onChange={() => {}}
+        className="pointer-events-none absolute bottom-0 start-3 h-0 w-0 opacity-0"
+      />
     </div>
   );
 }
@@ -546,8 +640,11 @@ export function ProgressBar({ value, className, label }) {
    Overlays — Dialog / Sheet
    ============================================================ */
 
+/* `[tabindex="-1"]` is excluded everywhere: the pickers park an invisible input
+   there purely to carry `required`, and it must not eat the focus. */
 const FOCUSABLE =
-  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  'a[href]:not([tabindex="-1"]),button:not([disabled]):not([tabindex="-1"]),input:not([disabled]):not([tabindex="-1"]),' +
+  'select:not([disabled]):not([tabindex="-1"]),textarea:not([disabled]):not([tabindex="-1"]),[tabindex]:not([tabindex="-1"])';
 
 let openOverlays = 0;
 
@@ -573,6 +670,9 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
 
     function onKeyDown(e) {
       if (e.key === 'Escape') {
+        // A select/popover layer is open on top — that one owns the Escape,
+        // otherwise closing a dropdown would throw the whole form away.
+        if (document.querySelector('[data-radix-popper-content-wrapper]')) return;
         e.stopPropagation();
         onClose?.();
         return;

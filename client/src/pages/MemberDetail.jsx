@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { fmtDate, branchName, birthdayWhen } from '../utils';
 import SearchInput from '../components/SearchInput';
@@ -20,6 +22,7 @@ import {
   Table,
   Td,
   Th,
+  useToast,
   IconAlert,
   IconAward,
   IconBack,
@@ -27,7 +30,9 @@ import {
   IconCalendar,
   IconPhone,
   IconPin,
+  IconSchool,
   IconUsers,
+  IconX,
 } from '../components/ui';
 
 const STATUS_BADGE = {
@@ -41,8 +46,32 @@ export default function MemberDetail() {
   const { t, i18n } = useTranslation();
   const back = useBack('/members');
   const navigate = useNavigate();
+  const toast = useToast();
+  const { has } = usePerms();
+  // A قائد with this permission may add a مطلب the عنصر earned outside a نشاط,
+  // or cancel one that was credited by mistake.
+  const canEditMatalib = has('members.matalib');
   const [historyQuery, setHistoryQuery] = useState('');
-  const { data: member, loading, error, reload } = useFetch(`/members/${id}`);
+  const { data: member, setData: setMember, loading, error, reload } = useFetch(`/members/${id}`);
+
+  // state: 'granted' | 'revoked' | 'auto' (auto drops the manual correction)
+  async function setMatlab(number, state) {
+    try {
+      const res = await api.post(`/members/${id}/matalib`, { number, state });
+      setMember((m) => ({
+        ...m,
+        stats: {
+          ...m.stats,
+          earned_numbers: res.earned_numbers,
+          requirements_earned: res.earned_numbers.length,
+        },
+        manual_matalib: res.manual_matalib,
+      }));
+      toast.success(t('member.matalibUpdated'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
 
   if (loading) return <SkeletonPage rows={4} />;
   if (error)
@@ -123,6 +152,11 @@ export default function MemberDetail() {
                 {member.birth_place && (
                   <Row icon={<IconPin className="h-3.5 w-3.5" />} label={t('member.birthPlace')}>
                     {member.birth_place}
+                  </Row>
+                )}
+                {member.school && (
+                  <Row icon={<IconSchool className="h-3.5 w-3.5" />} label={t('member.school')}>
+                    {member.school}
                   </Row>
                 )}
                 {member.father_name && (
@@ -225,11 +259,51 @@ export default function MemberDetail() {
           </CardHeader>
           <CardContent className="space-y-4">
             <ProgressBar value={reqPct} label={t('member.requirementsProgress')} />
+            {canEditMatalib && (
+              <p className="text-xs text-muted-foreground">{t('member.matalibEditHint')}</p>
+            )}
             <RequirementGrid
               total={member.branch_total_requirements}
               selected={stats.earned_numbers}
               label={t('member.requirementsProgress')}
+              onToggle={
+                canEditMatalib
+                  ? (n) => setMatlab(n, stats.earned_numbers.includes(n) ? 'revoked' : 'granted')
+                  : undefined
+              }
             />
+            {/* مطالب corrected by hand — shown apart so what came from أنشطة stays readable */}
+            {member.manual_matalib?.length > 0 && (
+              <div className="space-y-1.5 border-t border-border pt-3">
+                <p className="text-xs font-medium text-muted-foreground">{t('member.matalibManual')}</p>
+                <ul className="flex flex-wrap gap-1.5">
+                  {member.manual_matalib.map((m) => (
+                    <li key={m.number}>
+                      <Badge variant={m.state === 'granted' ? 'success' : 'destructive'}>
+                        <span className="tabular-nums">{m.number}</span>
+                        <span>
+                          {t(m.state === 'granted' ? 'member.matalibGranted' : 'member.matalibRevoked')}
+                        </span>
+                        {m.updated_by && (
+                          <span className="opacity-80">{t('member.matalibBy', { name: m.updated_by })}</span>
+                        )}
+                        {canEditMatalib && (
+                          <button
+                            type="button"
+                            onClick={() => setMatlab(m.number, 'auto')}
+                            aria-label={t('member.matalibReset')}
+                            title={t('member.matalibReset')}
+                            className="focus-ring -me-1 cursor-pointer rounded-full p-0.5 hover:bg-black/10"
+                          >
+                            <IconX className="h-3 w-3" />
+                          </button>
+                        )}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

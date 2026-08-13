@@ -114,7 +114,7 @@ function Shell() {
           {can('sessions.read') && <Route path="/sessions" element={<Sessions />} />}
           {can('sessions.read') && <Route path="/sessions/:id" element={<SessionDetail />} />}
           {can('promotions.read') && <Route path="/promotions" element={<Promotions />} />}
-          {isAdmin && <Route path="/leaders" element={<Leaders />} />}
+          {can('leaders.read') && <Route path="/leaders" element={<Leaders />} />}
           <Route path="/leaders/:id" element={<LeaderDetail />} />
           {isAdmin && <Route path="/settings" element={<Settings />} />}
           <Route

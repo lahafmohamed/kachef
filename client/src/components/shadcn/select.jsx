@@ -1,7 +1,7 @@
 /**
  * shadcn/ui Select — Radix primitive with this project's tokens.
- * Used for filter dropdowns. Form fields keep the native <select> on purpose:
- * on a phone the OS wheel picker beats any custom listbox.
+ * Every dropdown in the app goes through this — filters directly, form fields
+ * through the `Select` wrapper in ui.jsx that keeps the `<option>` API.
  */
 import * as SelectPrimitive from '@radix-ui/react-select';
 import { cn } from '../../lib/utils';

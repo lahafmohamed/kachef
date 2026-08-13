@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { fmtDate, branchName } from '../utils';
 import {
@@ -10,13 +13,19 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  cn,
   EmptyState,
   ErrorState,
+  ProgressBar,
+  Select,
   SkeletonPage,
   Table,
   Td,
   Th,
+  useToast,
+  IconAward,
   IconBack,
+  IconCheck,
   IconPhone,
   IconShield,
 } from '../components/ui';
@@ -25,7 +34,33 @@ export default function LeaderDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
   const back = useBack('/leaders');
-  const { data: leader, loading, error, reload } = useFetch(`/leaders/${id}`);
+  const toast = useToast();
+  const { has } = usePerms();
+  // Filling in بطاقة تقدم القائد is its own permission; everyone else reads it
+  const canEditCard = has('leaders.progress');
+  // '' = the year the server picks (the latest تشكيلة year)
+  const [cardYear, setCardYear] = useState('');
+  const {
+    data: leader,
+    setData: setLeader,
+    loading,
+    error,
+    reload,
+  } = useFetch(`/leaders/${id}${cardYear ? `?year=${encodeURIComponent(cardYear)}` : ''}`);
+
+  async function toggleMatlab(item) {
+    try {
+      const card = await api.post(`/leaders/${id}/progress`, {
+        year: leader.card.year,
+        matlab_id: item.id,
+        done: !item.done,
+      });
+      setLeader((l) => ({ ...l, card }));
+      toast.success(t('leader.cardUpdated'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
 
   if (loading) return <SkeletonPage rows={4} />;
   if (error)
@@ -38,6 +73,9 @@ export default function LeaderDetail() {
     if (g) g.roles.push(a);
     else byYear.push({ year: a.year, roles: [a] });
   }
+
+  // بطاقة تقدم القائد for the selected سنة — empty until the مطالب list is filled in
+  const card = leader.card || { year: '', total: 0, done_count: 0, items: [] };
 
   const stats = [
     { value: leader.sessions.length, label: t('leader.sessionsLed'), cls: 'text-brand-gradient' },
@@ -107,6 +145,86 @@ export default function LeaderDetail() {
               ))}
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ---------- فرقة القادة: بطاقة تقدم القائد ---------- */}
+      <Card>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle>{t('leader.card')}</CardTitle>
+              {card.total > 0 && (
+                <Badge variant={card.done_count === card.total ? 'success' : 'outline'}>
+                  {t('leader.cardProgress', { done: card.done_count, total: card.total })}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t(canEditCard ? 'leader.cardHint' : 'leader.cardReadOnly')}
+            </p>
+          </div>
+          {(leader.card_years || []).length > 0 && (
+            <Select
+              value={card.year}
+              onChange={(e) => setCardYear(e.target.value)}
+              aria-label={t('leader.cardYear')}
+              className="sm:w-auto"
+            >
+              {leader.card_years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </Select>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-3 p-0 pb-2">
+          {card.total === 0 ? (
+            <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('leader.cardEmpty')}>
+              {t('leader.cardEmptyHint')}
+            </EmptyState>
+          ) : (
+            <>
+              <div className="px-4 sm:px-5">
+                <ProgressBar
+                  value={Math.round((card.done_count / card.total) * 100)}
+                  label={t('leader.card')}
+                />
+              </div>
+              <ul className="divide-y divide-border">
+                {card.items.map((item) => (
+                  <li key={item.id} className="flex items-center gap-3 px-4 py-2.5 sm:px-5">
+                    <button
+                      type="button"
+                      aria-pressed={item.done}
+                      disabled={!canEditCard}
+                      onClick={() => toggleMatlab(item)}
+                      aria-label={item.label}
+                      className={cn(
+                        'flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors',
+                        item.done
+                          ? 'border-success bg-success text-success-foreground'
+                          : 'border-border bg-muted text-muted-foreground',
+                        canEditCard ? 'focus-ring cursor-pointer' : 'cursor-default'
+                      )}
+                    >
+                      {item.done ? <IconCheck className="h-4 w-4" /> : null}
+                    </button>
+                    <span className="w-8 shrink-0 text-xs font-semibold tabular-nums text-muted-foreground">
+                      {item.number}
+                    </span>
+                    <span className={cn('flex-1 text-sm', item.done && 'font-medium')}>{item.label}</span>
+                    {item.achieved_at && (
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                        {fmtDate(item.achieved_at)}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </CardContent>
       </Card>
 

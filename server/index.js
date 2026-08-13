@@ -29,10 +29,21 @@ function verifyPassword(password, stored) {
 // Granular permission catalog, grouped by page. Dashboard is always allowed;
 // التشكيلة / settings / admin stay admin-only regardless.
 const PERM_GROUPS = {
-  members: ['members.read', 'members.create', 'members.edit', 'members.delete', 'members.contact'],
+  members: [
+    'members.read',
+    'members.create',
+    'members.edit',
+    'members.delete',
+    'members.contact',
+    // زيادة أو إلغاء مطلب لأي عنصر بشكل يدوي
+    'members.matalib',
+  ],
   sessions: ['sessions.read', 'sessions.create', 'sessions.attendance', 'sessions.read.fees'],
   branches: ['branches.read'],
   promotions: ['promotions.read', 'promotions.apply'],
+  // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
+  // deleting توصيفات stays admin-only.
+  leaders: ['leaders.read', 'leaders.progress'],
 };
 const ALL_PERMS = Object.values(PERM_GROUPS).flat();
 
@@ -42,6 +53,7 @@ const LEGACY_VIEW = {
   sessions: ['sessions.read', 'sessions.read.fees'],
   branches: ['branches.read'],
   promotions: ['promotions.read'],
+  leaders: ['leaders.read'],
 };
 
 // perms went array-of-pages → {page: level} → array of granular keys.
@@ -311,7 +323,16 @@ function upcomingBirthdays() {
     .sort((a, b) => (a.when === b.when ? 0 : a.when === 'today' ? -1 : 1));
 }
 
-// Distinct matalib numbers earned by a member in sessions of a given branch
+// مطالب added or cancelled by hand for one عنصر in a given فرقة
+const manualMatalib = (memberId, branchId) =>
+  db
+    .prepare(
+      'SELECT number, state, updated_at, updated_by FROM member_matalib WHERE member_id = ? AND branch_id = ? ORDER BY number'
+    )
+    .all(memberId, branchId);
+
+// Distinct matalib numbers earned by a member in sessions of a given branch,
+// then corrected by the manual grants / cancellations a قائد recorded.
 function earnedNumbersInBranch(memberId, branchId) {
   const rows = db
     .prepare(
@@ -321,6 +342,10 @@ function earnedNumbersInBranch(memberId, branchId) {
     .all(memberId, branchId);
   const set = new Set();
   for (const r of rows) JSON.parse(r.matalib || '[]').forEach((n) => set.add(n));
+  for (const m of manualMatalib(memberId, branchId)) {
+    if (m.state === 'granted') set.add(m.number);
+    else set.delete(m.number);
+  }
   return [...set].sort((a, b) => a - b);
 }
 
@@ -578,24 +603,58 @@ function validateMember(body) {
   return null;
 }
 
+// Age is derived from birth_date, so sorting by age is sorting by birth_date:
+// the oldest عنصر is the one born first.
+const MEMBER_SORTS = {
+  name: 'm.last_name, m.first_name',
+  age_desc: 'm.birth_date ASC, m.last_name',
+  age_asc: 'm.birth_date DESC, m.last_name',
+  school: "COALESCE(NULLIF(m.school, ''), 'zzz'), m.last_name, m.first_name",
+  residence: "COALESCE(NULLIF(m.address_abidjan, ''), 'zzz'), m.last_name, m.first_name",
+};
+
 app.get('/api/members', requirePerm('members.read'), (req, res) => {
-  const { branch, q, status } = req.query;
+  const { branch, q, status, school, residence } = req.query;
   let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
              FROM members m JOIN branches b ON b.id = m.branch_id WHERE 1=1`;
   const params = [];
   sql += branchFilterSQL(req, 'm.branch_id');
   if (branch) { sql += ' AND m.branch_id = ?'; params.push(branch); }
   if (status) { sql += ' AND m.status = ?'; params.push(status); }
+  if (school) { sql += ' AND m.school = ?'; params.push(school); }
+  // مكان السكن is contact data: an account that may not read it may not filter on it either
+  if (residence && hasPerm(req, 'members.contact')) {
+    sql += ' AND m.address_abidjan = ?';
+    params.push(residence);
+  }
   if (q) {
     sql += " AND (m.first_name LIKE ? OR m.last_name LIKE ? OR (m.first_name || ' ' || m.last_name) LIKE ?)";
     params.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
-  sql += ' ORDER BY m.last_name, m.first_name';
+  sql += ` ORDER BY ${MEMBER_SORTS[req.query.sort] || MEMBER_SORTS.name}`;
   const rows = db
     .prepare(sql)
     .all(...params)
     .map((m) => stripContact(req, { ...m, age: calcAge(m.birth_date) }));
   res.json(rows);
+});
+
+// Values actually present in the base, to fill the المدرسة / مكان السكن filters.
+// Declared before /api/members/:id so "filters" is not read as an id.
+app.get('/api/members/filters', requirePerm('members.read'), (req, res) => {
+  const distinct = (col) =>
+    db
+      .prepare(
+        `SELECT DISTINCT ${col} AS v FROM members m
+          WHERE ${col} IS NOT NULL AND TRIM(${col}) != ''${branchFilterSQL(req, 'm.branch_id')}
+          ORDER BY v`
+      )
+      .all()
+      .map((r) => r.v);
+  res.json({
+    schools: distinct('m.school'),
+    residences: hasPerm(req, 'members.contact') ? distinct('m.address_abidjan') : [],
+  });
 });
 
 app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
@@ -628,6 +687,8 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
       age: calcAge(m.birth_date),
       stats: attendanceStats(m.id, m.branch_id),
       visits: familyVisits(m.id),
+      // مطالب زيدت أو أُلغيت يدويًا — the UI marks them apart from the ones earned in أنشطة
+      manual_matalib: manualMatalib(m.id, m.branch_id),
       promotions,
     })
   );
@@ -641,13 +702,13 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
-        address_abidjan, address_lebanon, sex, branch_id, member_phone, parent_phone, join_date, photo, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        address_abidjan, address_lebanon, school, sex, branch_id, member_phone, parent_phone, join_date, photo, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
       b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-      b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
+      b.school || null, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
       b.join_date, b.photo || null, b.status || 'active'
     );
   res.status(201).json(db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid));
@@ -664,12 +725,12 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   const b = req.body;
   db.prepare(
     `UPDATE members SET first_name = ?, last_name = ?, father_name = ?, mother_name = ?,
-     birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, sex = ?, branch_id = ?,
+     birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, sex = ?, branch_id = ?,
      member_phone = ?, parent_phone = ?, join_date = ?, photo = ?, status = ? WHERE id = ?`
   ).run(
     b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
     b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-    b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
+    b.school || null, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
     b.join_date, b.photo || null, b.status || 'active', req.params.id
   );
   res.json(db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id));
@@ -681,6 +742,42 @@ app.delete('/api/members/:id', requirePerm('members.delete'), (req, res) => {
   if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
   db.prepare('DELETE FROM members WHERE id = ?').run(req.params.id);
   res.status(204).end();
+});
+
+// زيادة أو إلغاء مطلب لعنصر بشكل يدوي، بمعزل عن حضوره في الأنشطة:
+//   granted — المطلب محقق ولو لم يُسجَّل في أي نشاط
+//   revoked — المطلب ملغى ولو حُقق في نشاط
+//   auto    — إزالة التعديل اليدوي والعودة إلى الحساب من الأنشطة
+app.post('/api/members/:id/matalib', requirePerm('members.matalib'), (req, res) => {
+  const m = db
+    .prepare(
+      `SELECT m.id, m.branch_id, b.total_requirements
+       FROM members m JOIN branches b ON b.id = m.branch_id WHERE m.id = ?`
+    )
+    .get(req.params.id);
+  if (!m) return res.status(404).json({ error: 'member not found' });
+  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  const { number, state } = req.body || {};
+  if (!Number.isInteger(number) || number < 1 || (m.total_requirements && number > m.total_requirements))
+    return res.status(400).json({ error: 'invalid number' });
+  if (!['granted', 'revoked', 'auto'].includes(state))
+    return res.status(400).json({ error: 'invalid state' });
+  if (state === 'auto') {
+    db.prepare('DELETE FROM member_matalib WHERE member_id = ? AND branch_id = ? AND number = ?').run(
+      m.id, m.branch_id, number
+    );
+  } else {
+    db.prepare(
+      `INSERT INTO member_matalib (member_id, branch_id, number, state, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, datetime('now'), ?)
+       ON CONFLICT(member_id, branch_id, number) DO UPDATE SET
+         state = excluded.state, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+    ).run(m.id, m.branch_id, number, state, req.user.display_name || req.user.username);
+  }
+  res.json({
+    earned_numbers: earnedNumbersInBranch(m.id, m.branch_id),
+    manual_matalib: manualMatalib(m.id, m.branch_id),
+  });
 });
 
 // ---------- Promotions ----------
@@ -756,6 +853,121 @@ function assignmentsForYear(year) {
     .all(year);
 }
 
+// ---------- فرقة القادة: بطاقة تقدم القائد ----------
+// مطالب خاصة بالقادة، تُتابع سنويًا. Their content is agreed with السيد علي and
+// lives in the base (leader_matalib), so it can be adjusted without a new release.
+
+const leaderMatalibList = () =>
+  db.prepare('SELECT * FROM leader_matalib ORDER BY sort_order, number, id').all();
+
+// السنة الافتراضية للبطاقة: سنة التشكيلة الأخيرة، وإلا السنة الدراسية الجارية
+function defaultCardYear() {
+  const y = latestYear();
+  if (y) return y;
+  const now = new Date();
+  // A scout year starts in September: before that month, it is still the previous one
+  const start = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  return `${start}-${start + 1}`;
+}
+
+// كل السنوات التي لها تشكيلة أو بطاقات مملوءة، الأحدث أولًا
+function cardYears() {
+  const years = new Set([defaultCardYear()]);
+  for (const r of db.prepare('SELECT DISTINCT year FROM assignments').all()) years.add(r.year);
+  for (const r of db.prepare('SELECT DISTINCT year FROM leader_progress').all()) years.add(r.year);
+  return [...years].sort().reverse();
+}
+
+// بطاقة تقدم القائد لسنة واحدة: كل المطالب مع ما تحقق منها
+function progressCard(leaderId, year) {
+  const items = leaderMatalibList();
+  const done = new Map(
+    db
+      .prepare('SELECT matlab_id, achieved_at, note FROM leader_progress WHERE leader_id = ? AND year = ?')
+      .all(leaderId, year)
+      .map((r) => [r.matlab_id, r])
+  );
+  return {
+    year,
+    total: items.length,
+    done_count: items.filter((i) => done.has(i.id)).length,
+    items: items.map((i) => ({
+      ...i,
+      done: done.has(i.id),
+      achieved_at: done.get(i.id)?.achieved_at || null,
+      note: done.get(i.id)?.note || null,
+    })),
+  };
+}
+
+app.get('/api/leader-matalib', requirePerm('leaders.read'), (req, res) => {
+  res.json(leaderMatalibList());
+});
+
+function validateLeaderMatlab(body) {
+  if (!Number.isInteger(body.number) || body.number < 1) return 'invalid number';
+  if (!body.label || !String(body.label).trim()) return 'label required';
+  return null;
+}
+
+app.post('/api/leader-matalib', requireAdmin, (req, res) => {
+  const err = validateLeaderMatlab(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const info = db
+    .prepare('INSERT INTO leader_matalib (number, label, sort_order) VALUES (?, ?, ?)')
+    .run(
+      req.body.number,
+      String(req.body.label).trim(),
+      Number.isInteger(req.body.sort_order) ? req.body.sort_order : req.body.number
+    );
+  res.status(201).json(db.prepare('SELECT * FROM leader_matalib WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.put('/api/leader-matalib/:id', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM leader_matalib WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const body = { ...existing, ...req.body };
+  const err = validateLeaderMatlab(body);
+  if (err) return res.status(400).json({ error: err });
+  db.prepare('UPDATE leader_matalib SET number = ?, label = ?, sort_order = ? WHERE id = ?').run(
+    body.number,
+    String(body.label).trim(),
+    Number.isInteger(body.sort_order) ? body.sort_order : body.number,
+    req.params.id
+  );
+  res.json(db.prepare('SELECT * FROM leader_matalib WHERE id = ?').get(req.params.id));
+});
+
+// Deleting a مطلب drops it from every بطاقة (ON DELETE CASCADE): it is the list itself
+// that changed, so keeping orphan ticks would be misleading.
+app.delete('/api/leader-matalib/:id', requireAdmin, (req, res) => {
+  const info = db.prepare('DELETE FROM leader_matalib WHERE id = ?').run(req.params.id);
+  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.status(204).end();
+});
+
+// تحقيق أو إلغاء مطلب لقائد في سنة معيّنة
+app.post('/api/leaders/:id/progress', requirePerm('leaders.progress'), (req, res) => {
+  const l = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'leader not found' });
+  const year = normYear(req.body?.year) || defaultCardYear();
+  const matlabId = Number(req.body?.matlab_id);
+  if (!db.prepare('SELECT id FROM leader_matalib WHERE id = ?').get(matlabId))
+    return res.status(400).json({ error: 'invalid matlab_id' });
+  if (req.body?.done === false) {
+    db.prepare('DELETE FROM leader_progress WHERE leader_id = ? AND matlab_id = ? AND year = ?').run(
+      l.id, matlabId, year
+    );
+  } else {
+    db.prepare(
+      `INSERT INTO leader_progress (leader_id, matlab_id, year, achieved_at, note)
+       VALUES (?, ?, ?, date('now'), ?)
+       ON CONFLICT(leader_id, matlab_id, year) DO UPDATE SET note = excluded.note`
+    ).run(l.id, matlabId, year, req.body?.note || null);
+  }
+  res.json(progressCard(l.id, year));
+});
+
 app.get('/api/leaders', (req, res) => {
   const rows = db
     .prepare(
@@ -782,7 +994,22 @@ app.get('/api/leaders', (req, res) => {
       branch_name_ar: a.branch_name_ar,
     });
   }
-  res.json(rows.map((l) => ({ ...l, roles: roles[l.id] || [], year })));
+  // بطاقة تقدم القائد, summarised: how many مطالب of the year each قائد has ticked
+  const cardYear = defaultCardYear();
+  const cardTotal = db.prepare('SELECT COUNT(*) AS n FROM leader_matalib').get().n;
+  const doneByLeader = {};
+  for (const r of db
+    .prepare('SELECT leader_id, COUNT(*) AS n FROM leader_progress WHERE year = ? GROUP BY leader_id')
+    .all(cardYear))
+    doneByLeader[r.leader_id] = r.n;
+  res.json(
+    rows.map((l) => ({
+      ...l,
+      roles: roles[l.id] || [],
+      year,
+      card: { year: cardYear, total: cardTotal, done_count: doneByLeader[l.id] || 0 },
+    }))
+  );
 });
 
 app.get('/api/leaders/:id', (req, res) => {
@@ -823,6 +1050,9 @@ app.get('/api/leaders/:id', (req, res) => {
     absent: activities.filter((s) => s.my_status === 'absent').length,
     unmarked: activities.filter((s) => !s.my_status).length,
   };
+  // بطاقة تقدم القائد — one سنة at a time, picked with ?year=
+  const years = cardYears();
+  const selectedYear = years.includes(normYear(req.query.year)) ? normYear(req.query.year) : years[0];
   res.json({
     ...l,
     year,
@@ -831,6 +1061,8 @@ app.get('/api/leaders/:id', (req, res) => {
     sessions: activities,
     visits,
     attendance,
+    card_years: years,
+    card: progressCard(l.id, selectedYear),
   });
 });
 
@@ -869,6 +1101,13 @@ app.put('/api/leaders/:id', requireAdmin, (req, res) => {
 app.delete('/api/leaders/:id', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'leader not found' });
+  // Deleting him would empty his توصيفات — refuse while one of them sits in a frozen year
+  const held = db
+    .prepare(
+      'SELECT 1 FROM assignments a JOIN tachkila_locks k ON k.year = a.year WHERE a.leader_id = ? LIMIT 1'
+    )
+    .get(req.params.id);
+  if (held) return res.status(423).json({ error: 'year_locked' });
   const run = db.transaction(() => {
     // Sessions keep the leader name as plain text, only the link is removed.
     // His توصيفات survive too (FK ON DELETE SET NULL): the slots stay in the تشكيلة, unassigned.
@@ -879,7 +1118,41 @@ app.delete('/api/leaders/:id', requireAdmin, (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/tachkila', (req, res) => {
+// ---------- قفل التشكيلة ----------
+// A locked year is frozen: none of its توصيفات can be created, renamed, reassigned or
+// deleted. Only an admin can lock or unlock a year.
+
+const normYear = (v) => (v === undefined || v === null ? '' : String(v).trim());
+
+const lockInfo = (year) =>
+  normYear(year) ? db.prepare('SELECT * FROM tachkila_locks WHERE year = ?').get(normYear(year)) || null : null;
+
+const yearLocked = (year) => !!lockInfo(year);
+
+// Refuses any mutation touching a frozen year. `getYears` returns the year(s) the
+// request would write to (a PUT can both edit a row and move it to another year).
+const rejectLocked = (getYears) => (req, res, next) => {
+  const years = [].concat(getYears(req) || []).filter(Boolean);
+  return years.some(yearLocked) ? res.status(423).json({ error: 'year_locked' }) : next();
+};
+
+const assignmentYear = (req) =>
+  db.prepare('SELECT year FROM assignments WHERE id = ?').get(req.params.id)?.year;
+
+app.post('/api/tachkila/lock', requireAdmin, (req, res) => {
+  const year = normYear(req.body?.year);
+  if (!year) return res.status(400).json({ error: 'year required' });
+  const locked = req.body?.locked !== false;
+  if (locked)
+    db.prepare(
+      "INSERT OR REPLACE INTO tachkila_locks (year, locked_at, locked_by) VALUES (?, datetime('now'), ?)"
+    ).run(year, req.user.display_name || req.user.username);
+  else db.prepare('DELETE FROM tachkila_locks WHERE year = ?').run(year);
+  const info = lockInfo(year);
+  res.json({ year, locked, locked_at: info?.locked_at || null, locked_by: info?.locked_by || null });
+});
+
+app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
   const years = db
     .prepare('SELECT DISTINCT year FROM assignments ORDER BY year DESC')
     .all()
@@ -889,9 +1162,15 @@ app.get('/api/tachkila', (req, res) => {
   const titles = new Set(
     (year ? db.prepare('SELECT title FROM assignments WHERE year = ?').all(year) : []).map((r) => r.title.trim())
   );
+  const lock = lockInfo(year);
   res.json({
     years,
     year,
+    // Years frozen by an admin — the UI greys the whole list out for them
+    locked: !!lock,
+    locked_at: lock?.locked_at || null,
+    locked_by: lock?.locked_by || null,
+    locked_years: db.prepare('SELECT year FROM tachkila_locks').all().map((r) => r.year),
     assignments: assignmentsForYear(year),
     // Standard titles, plus how many of them this year is still missing (offer to fill them in)
     template: template.map((r) => r.title),
@@ -914,7 +1193,7 @@ function validateAssignment(body) {
   return null;
 }
 
-app.post('/api/tachkila', requireAdmin, (req, res) => {
+app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
   const err = validateAssignment(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
@@ -934,29 +1213,34 @@ app.post('/api/tachkila', requireAdmin, (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(info.lastInsertRowid));
 });
 
-app.put('/api/tachkila/:id', requireAdmin, (req, res) => {
-  const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'assignment not found' });
-  const body = { ...existing, ...req.body };
-  const err = validateAssignment(body);
-  if (err) return res.status(400).json({ error: err });
-  const branchId = optionalId(body.branch_id);
-  db.prepare(
-    `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, role_type = ?, sort_order = ?
-     WHERE id = ?`
-  ).run(
-    String(body.year).trim(),
-    optionalId(body.leader_id),
-    String(body.title).trim(),
-    branchId,
-    branchId ? 'branch' : 'amana',
-    Number.isInteger(body.sort_order) ? body.sort_order : existing.sort_order,
-    req.params.id
-  );
-  res.json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id));
-});
+app.put(
+  '/api/tachkila/:id',
+  requireAdmin,
+  rejectLocked((req) => [assignmentYear(req), req.body?.year]),
+  (req, res) => {
+    const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'assignment not found' });
+    const body = { ...existing, ...req.body };
+    const err = validateAssignment(body);
+    if (err) return res.status(400).json({ error: err });
+    const branchId = optionalId(body.branch_id);
+    db.prepare(
+      `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, role_type = ?, sort_order = ?
+       WHERE id = ?`
+    ).run(
+      String(body.year).trim(),
+      optionalId(body.leader_id),
+      String(body.title).trim(),
+      branchId,
+      branchId ? 'branch' : 'amana',
+      Number.isInteger(body.sort_order) ? body.sort_order : existing.sort_order,
+      req.params.id
+    );
+    res.json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id));
+  }
+);
 
-app.delete('/api/tachkila/:id', requireAdmin, (req, res) => {
+app.delete('/api/tachkila/:id', requireAdmin, rejectLocked(assignmentYear), (req, res) => {
   const info = db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id);
   if (info.changes === 0) return res.status(404).json({ error: 'assignment not found' });
   res.status(204).end();
@@ -971,7 +1255,7 @@ const insertAssignmentRow = () =>
 //   template (default) — every standard توصيف of the فوج as an empty slot
 //   copy               — same توصيفات AND same قادة as `from_year`
 //   empty              — nothing, build it by hand
-app.post('/api/tachkila/copy', requireAdmin, (req, res) => {
+app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_year), (req, res) => {
   const { from_year, to_year, mode = 'template' } = req.body;
   if (!to_year || !String(to_year).trim()) return res.status(400).json({ error: 'to_year required' });
   if (!['template', 'copy', 'empty'].includes(mode)) return res.status(400).json({ error: 'invalid mode' });
@@ -1002,7 +1286,7 @@ app.post('/api/tachkila/copy', requireAdmin, (req, res) => {
 
 // Add the standard توصيفات an existing year is missing — for تشكيلات made before this template,
 // or after a new فرقة was created. Existing rows are matched by title and left untouched.
-app.post('/api/tachkila/fill', requireAdmin, (req, res) => {
+app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
   const year = String(req.body.year || '').trim();
   if (!year) return res.status(400).json({ error: 'year required' });
   const titles = new Set(
@@ -1019,10 +1303,47 @@ app.post('/api/tachkila/fill', requireAdmin, (req, res) => {
 
 // ---------- Sessions & attendance ----------
 
+// طبيعة النشاط — a fixed list, translated client-side
+const ACTIVITY_TYPES = ['weekly', 'cultural', 'ashura', 'ramadan', 'summer_clubs'];
+
+// A نشاط عام للفوج is recorded by numbers, not by names: عدد الحضور لكل فرقة
+const branchCountsOf = (sessionId) =>
+  db
+    .prepare(
+      `SELECT c.branch_id, c.count, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM session_branch_counts c JOIN branches b ON b.id = c.branch_id
+       WHERE c.session_id = ? ORDER BY b.sort_order, b.id`
+    )
+    .all(sessionId);
+
+// [{ branch_id, count }] with existing فرق and counts >= 0, or null if the body is malformed
+function parseBranchCounts(v) {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return null;
+  const out = [];
+  for (const r of v) {
+    const branchId = Number(r?.branch_id);
+    const count = Number(r?.count);
+    if (!Number.isInteger(branchId) || !Number.isInteger(count) || count < 0) return null;
+    if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId)) return null;
+    out.push({ branch_id: branchId, count });
+  }
+  return out;
+}
+
+const saveBranchCounts = db.transaction((sessionId, counts) => {
+  db.prepare('DELETE FROM session_branch_counts WHERE session_id = ?').run(sessionId);
+  const insert = db.prepare(
+    'INSERT INTO session_branch_counts (session_id, branch_id, count) VALUES (?, ?, ?)'
+  );
+  for (const c of counts) insert.run(sessionId, c.branch_id, c.count);
+});
+
 app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   const { q, branch, from, to } = req.query;
   let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
         COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader,
+        (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') AS absent_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count
@@ -1048,11 +1369,25 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
 
 app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   const { title, date, branch_id, leader, leader_id, fee, matalib, helper_ids, member_ids } = req.body;
-  const kind = ['visit', 'leaders'].includes(req.body.kind) ? req.body.kind : 'activity';
-  // A نشاط قادة has no فرقة; every other kind still needs one
-  const branchId = kind === 'leaders' ? null : branch_id;
+  const kind = ['visit', 'leaders', 'group'].includes(req.body.kind) ? req.body.kind : 'activity';
+  // نشاط قادة و نشاط عام للفوج belong to the whole فوج; every other kind still needs a فرقة
+  const branchless = kind === 'leaders' || kind === 'group';
+  const branchId = branchless ? null : branch_id;
   if (!title || !date) return res.status(400).json({ error: 'title, date required' });
-  if (kind !== 'leaders' && !branchId) return res.status(400).json({ error: 'branch_id required' });
+  if (!branchless && !branchId) return res.status(400).json({ error: 'branch_id required' });
+  const activityType = req.body.activity_type || null;
+  if (activityType !== null && !ACTIVITY_TYPES.includes(activityType))
+    return res.status(400).json({ error: 'invalid activity_type' });
+  if (kind === 'group' && !activityType)
+    return res.status(400).json({ error: 'activity_type required' });
+  const branchCounts = kind === 'group' ? parseBranchCounts(req.body.branch_counts) : [];
+  if (branchCounts === null) return res.status(400).json({ error: 'invalid branch_counts' });
+  const leadersCount =
+    kind === 'group' && req.body.leaders_count !== undefined && req.body.leaders_count !== null && req.body.leaders_count !== ''
+      ? Number(req.body.leaders_count)
+      : null;
+  if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
+    return res.status(400).json({ error: 'invalid leaders_count' });
   if (!branchOk(req, branchId)) return res.status(403).json({ error: 'forbidden' });
   if (branchId && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
     return res.status(400).json({ error: 'invalid branch_id' });
@@ -1098,7 +1433,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   db.transaction(() => {
     sessionId = db
       .prepare(
-        'INSERT INTO sessions (title, date, branch_id, leader, leader_id, fee, matalib, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        `INSERT INTO sessions
+          (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         title,
@@ -1108,6 +1445,10 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         leaderRow ? leaderRow.id : null,
         fee ?? null,
         JSON.stringify(kind === 'activity' ? unique : []),
+        req.body.start_time || null,
+        req.body.place || null,
+        activityType,
+        leadersCount,
         kind
       )
       .lastInsertRowid;
@@ -1117,6 +1458,11 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       insertAnimator.run(sessionId, h, 'helper');
     }
     for (const m of visited) insertVisited.run(sessionId, m);
+    // عدد الحضور لكل فرقة — kept out of the attendance table on purpose: these are
+    // counts, and mixing them with named présence would corrupt every rate.
+    for (const c of branchCounts)
+      db.prepare('INSERT INTO session_branch_counts (session_id, branch_id, count) VALUES (?, ?, ?)')
+        .run(sessionId, c.branch_id, c.count);
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   res.status(201).json({ ...row, matalib: JSON.parse(row.matalib) });
@@ -1135,8 +1481,9 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
   // A نشاط lists the whole فرقة to be marked; a زيارة الأهل concerns only the
-  // عناصر actually visited, so the rest of the فرقة has no row here.
-  const roster = db
+  // عناصر actually visited, so the rest of the فرقة has no row here. A نشاط قادة
+  // and a نشاط عام للفوج have no عناصر roster at all.
+  const roster = ['leaders', 'group'].includes(s.kind) ? [] : db
     .prepare(
       s.kind === 'visit'
         ? `SELECT m.id, m.first_name, m.last_name, m.photo, a.status
@@ -1159,7 +1506,34 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
        ORDER BY sl.role = 'helper', l.last_name, l.first_name`
     )
     .all(s.id);
-  res.json(stripFee(req, { ...s, matalib: JSON.parse(s.matalib || '[]'), roster, animators }));
+  res.json(
+    stripFee(req, {
+      ...s,
+      matalib: JSON.parse(s.matalib || '[]'),
+      roster,
+      animators,
+      branch_counts: branchCountsOf(s.id),
+    })
+  );
+});
+
+// عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,
+// the same way présence is marked on the other kinds of نشاط.
+app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, res) => {
+  const s = db.prepare('SELECT id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (s.kind !== 'group') return res.status(400).json({ error: 'not_a_group_activity' });
+  const counts = parseBranchCounts(req.body?.branch_counts);
+  if (counts === null) return res.status(400).json({ error: 'invalid branch_counts' });
+  const raw = req.body?.leaders_count;
+  const leadersCount = raw === undefined || raw === null || raw === '' ? null : Number(raw);
+  if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
+    return res.status(400).json({ error: 'invalid leaders_count' });
+  db.transaction(() => {
+    saveBranchCounts(s.id, counts);
+    db.prepare('UPDATE sessions SET leaders_count = ? WHERE id = ?').run(leadersCount, s.id);
+  })();
+  res.json({ branch_counts: branchCountsOf(s.id), leaders_count: leadersCount });
 });
 
 // Add / remove helpers and mark animator présence on a session

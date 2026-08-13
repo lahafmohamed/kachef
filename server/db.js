@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS members (
   birth_place TEXT,
   address_abidjan TEXT,
   address_lebanon TEXT,
+  school TEXT,
   sex TEXT NOT NULL CHECK (sex IN ('M', 'F')),
   branch_id INTEGER NOT NULL REFERENCES branches(id),
   member_phone TEXT,
@@ -33,6 +34,19 @@ CREATE TABLE IF NOT EXISTS members (
   join_date TEXT NOT NULL,
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
+);
+
+-- مطالب added or cancelled by hand for one عنصر. Attendance stays the normal way a
+-- مطلب is earned; a row here overrides it in one direction or the other.
+CREATE TABLE IF NOT EXISTS member_matalib (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  number INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('granted', 'revoked')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  UNIQUE(member_id, branch_id, number)
 );
 
 CREATE TABLE IF NOT EXISTS promotions (
@@ -48,14 +62,32 @@ CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   date TEXT NOT NULL,
-  -- NULL for a نشاط قادة: it belongs to the فوج, not to one فرقة
+  -- NULL for a نشاط قادة or a نشاط عام للفوج: they belong to the فوج, not to one فرقة
   branch_id INTEGER REFERENCES branches(id),
   leader TEXT,
+  leader_id INTEGER,
   fee REAL,
   matalib TEXT NOT NULL DEFAULT '[]',
+  -- زمان و مكان النشاط, filled by the قائد alongside the title
+  start_time TEXT,
+  place TEXT,
+  -- طبيعة النشاط: weekly | cultural | ashura | ramadan | summer_clubs
+  activity_type TEXT,
+  -- نشاط عام للفوج only: عدد حضور القادة (a count, there is no قادة roster to mark)
+  leaders_count INTEGER,
   -- 'activity' = نشاط فرقة, 'visit' = زيارة الأهل (présence = who was visited),
-  -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves)
-  kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders'))
+  -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves),
+  -- 'group' = نشاط عام للفوج (حضور مسجّل بالعدد لكل فرقة, لا بالأسماء)
+  kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders', 'group'))
+);
+
+-- نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل
+CREATE TABLE IF NOT EXISTS session_branch_counts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(session_id, branch_id)
 );
 
 CREATE TABLE IF NOT EXISTS leaders (
@@ -65,6 +97,27 @@ CREATE TABLE IF NOT EXISTS leaders (
   phone TEXT,
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
+);
+
+-- فرقة القادة: the مطالب list a قائد is followed on. Its content is agreed with
+-- السيد علي, so the catalog is data an admin edits, not something hard-coded here.
+CREATE TABLE IF NOT EXISTS leader_matalib (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  number INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- بطاقة تقدم القائد: one row = one مطلب this قائد achieved in that سنة.
+-- The card is yearly, so the same مطلب can be followed again the next year.
+CREATE TABLE IF NOT EXISTS leader_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  matlab_id INTEGER NOT NULL REFERENCES leader_matalib(id) ON DELETE CASCADE,
+  year TEXT NOT NULL,
+  achieved_at TEXT NOT NULL DEFAULT (date('now')),
+  note TEXT,
+  UNIQUE(leader_id, matlab_id, year)
 );
 
 -- التشكيلة: yearly role assignments (قائد فرقة أو أمانة). One row = one توصيف.
@@ -77,6 +130,14 @@ CREATE TABLE IF NOT EXISTS assignments (
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
   sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- قفل التشكيلة: while a row exists for a year, that year's assignments are frozen.
+-- Only an admin can add or remove the row.
+CREATE TABLE IF NOT EXISTS tachkila_locks (
+  year TEXT PRIMARY KEY,
+  locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+  locked_by TEXT
 );
 
 -- Animators of a session: one main (animateur principal) + helpers, with their own présence
@@ -206,11 +267,15 @@ function migrateAssignments() {
   db.pragma('foreign_keys = ON');
 }
 
-// A نشاط قادة belongs to no فرقة, so branch_id must become nullable.
-// SQLite cannot relax NOT NULL in place: rebuild the table, keeping every row.
+// Two things SQLite cannot change in place, both needing a full rebuild:
+//   - branch_id must be nullable (a نشاط قادة / نشاط عام belongs to no فرقة)
+//   - the kind CHECK must accept 'group' (نشاط عام للفوج)
+// Called after the new columns are added, so every row keeps all its data.
 function migrateSessions() {
-  const branchCol = db.prepare('PRAGMA table_info(sessions)').all().find((c) => c.name === 'branch_id');
-  if (!branchCol || branchCol.notnull === 0) return;
+  const cols = db.prepare('PRAGMA table_info(sessions)').all();
+  const branchCol = cols.find((c) => c.name === 'branch_id');
+  const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get()?.sql || '';
+  if (branchCol && branchCol.notnull === 0 && ddl.includes("'group'")) return;
   db.pragma('foreign_keys = OFF');
   db.transaction(() => {
     db.exec(`
@@ -223,10 +288,16 @@ function migrateSessions() {
         leader_id INTEGER,
         fee REAL,
         matalib TEXT NOT NULL DEFAULT '[]',
-        kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders'))
+        start_time TEXT,
+        place TEXT,
+        activity_type TEXT,
+        leaders_count INTEGER,
+        kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders', 'group'))
       );
-      INSERT INTO sessions_new (id, title, date, branch_id, leader, leader_id, fee, matalib, kind)
-        SELECT id, title, date, branch_id, leader, leader_id, fee, matalib, kind FROM sessions;
+      INSERT INTO sessions_new
+        (id, title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind)
+        SELECT id, title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind
+        FROM sessions;
       DROP TABLE sessions;
       ALTER TABLE sessions_new RENAME TO sessions;
     `);
@@ -244,6 +315,12 @@ function migrate() {
   ensureColumn('sessions', 'kind', "kind TEXT NOT NULL DEFAULT 'activity'");
   // Plain INTEGER (no FK): leader deletion nulls it manually, keeping the name snapshot in `leader`
   ensureColumn('sessions', 'leader_id', 'leader_id INTEGER');
+  // زمان، مكان، طبيعة النشاط — filled by the قائد next to the title
+  ensureColumn('sessions', 'start_time', 'start_time TEXT');
+  ensureColumn('sessions', 'place', 'place TEXT');
+  ensureColumn('sessions', 'activity_type', 'activity_type TEXT');
+  // نشاط عام للفوج: عدد حضور القادة
+  ensureColumn('sessions', 'leaders_count', 'leaders_count INTEGER');
   migrateSessions();
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   migrateAssignments();
@@ -254,6 +331,8 @@ function migrate() {
   ensureColumn('members', 'address_abidjan', 'address_abidjan TEXT');
   ensureColumn('members', 'address_lebanon', 'address_lebanon TEXT');
   ensureColumn('members', 'member_phone', 'member_phone TEXT');
+  // المدرسة: added for the school filter, nullable so old rows stay valid
+  ensureColumn('members', 'school', 'school TEXT');
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
   if (sessionCols.includes('requirements')) db.exec('ALTER TABLE sessions DROP COLUMN requirements');
