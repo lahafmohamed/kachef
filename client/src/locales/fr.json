@@ -161,7 +161,8 @@
     "previousYear": "Année précédente",
     "nextYear": "Année suivante",
     "kindLeaders": "Activité chefs",
-    "newLeadersSession": "Nouvelle activité chefs"
+    "newLeadersSession": "Nouvelle activité chefs",
+    "unmarked": "Non marqué"
   },
   "promotion": {
     "title": "Promotions",
@@ -339,7 +340,10 @@
     "lastAdmin": "Impossible de retirer le dernier admin",
     "passwordTooShort": "Mot de passe trop court (4 caractères min.)",
     "allowedPages": "Pages autorisées",
-    "pagesHint": "Aucune coche = toutes les pages. Le tableau de bord reste toujours accessible.",
-    "pagesCount": "{{count}} pages"
+    "pagesHint": "Lecture seule : voit la page sans pouvoir ajouter, modifier ni supprimer. Le tableau de bord reste toujours accessible.",
+    "permNone": "Rien",
+    "permView": "Lecture seule",
+    "permEdit": "Lecture + édition",
+    "customPerms": "Droits personnalisés"
   }
 }

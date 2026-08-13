@@ -161,7 +161,8 @@
     "previousYear": "السنة السابقة",
     "nextYear": "السنة التالية",
     "kindLeaders": "نشاط قادة",
-    "newLeadersSession": "نشاط قادة جديد"
+    "newLeadersSession": "نشاط قادة جديد",
+    "unmarked": "غير محدد"
   },
   "promotion": {
     "title": "الترقيات",
@@ -339,7 +340,10 @@
     "lastAdmin": "لا يمكن إزالة آخر مدير",
     "passwordTooShort": "كلمة المرور قصيرة جدًا (4 أحرف على الأقل)",
     "allowedPages": "الصفحات المسموح بها",
-    "pagesHint": "بدون اختيار = كل الصفحات. لوحة القيادة متاحة دائمًا.",
-    "pagesCount": "{{count}} صفحات"
+    "pagesHint": "عرض فقط: يرى الصفحة بدون إضافة أو تعديل أو حذف. لوحة القيادة متاحة دائمًا.",
+    "permNone": "لا شيء",
+    "permView": "عرض فقط",
+    "permEdit": "عرض وتعديل",
+    "customPerms": "صلاحيات مخصصة"
   }
 }

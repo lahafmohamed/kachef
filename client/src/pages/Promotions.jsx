@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { fmtDate, branchName } from '../utils';
 import {
@@ -31,6 +32,9 @@ export default function Promotions() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
+  // View-only accounts see who is due for promotion but cannot apply it
+  const { canEdit } = usePerms();
+  const editable = canEdit('promotions');
   const pending = useFetch('/promotions/pending');
   const history = useFetch('/promotions/history');
   const [busy, setBusy] = useState(null); // null | 'all' | member id
@@ -66,7 +70,7 @@ export default function Promotions() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('promotion.pending')} description={t('promotion.subtitle')}>
-        {pendingList.length > 0 && (
+        {editable && pendingList.length > 0 && (
           <Button
             variant="brand"
             loading={busy === 'all'}
@@ -120,16 +124,18 @@ export default function Promotions() {
                     <IconArrow className="text-muted-foreground rtl:rotate-180" />
                     <Badge variant="solid">{branchName(p.target_branch, i18n.language)}</Badge>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    loading={busy === p.id}
-                    disabled={!!busy}
-                    onClick={() => promote([p.id], p.id)}
-                    className="w-full sm:w-auto"
-                  >
-                    {t('promotion.promote')}
-                  </Button>
+                  {editable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busy === p.id}
+                      disabled={!!busy}
+                      onClick={() => promote([p.id], p.id)}
+                      className="w-full sm:w-auto"
+                    >
+                      {t('promotion.promote')}
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { usePerms } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
 import { fmtDate, todayISO, branchName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
@@ -67,6 +68,8 @@ export default function Sessions() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const toast = useToast();
+  const { canEdit } = usePerms();
+  const editable = canEdit('sessions');
 
   const [q, setQ] = useState('');
   const [branch, setBranch] = useState('');
@@ -219,10 +222,12 @@ export default function Sessions() {
           filtering ? t('session.resultCount', { count: list.length }) : t('session.subtitle')
         }
       >
-        <Button variant="brand" onClick={() => setCreating(true)}>
-          <IconPlus />
-          {t('session.newSession')}
-        </Button>
+        {editable && (
+          <Button variant="brand" onClick={() => setCreating(true)}>
+            <IconPlus />
+            {t('session.newSession')}
+          </Button>
+        )}
       </PageHeader>
 
       {/* Search always visible; the rest folds away on phones to keep the list
@@ -302,12 +307,12 @@ export default function Sessions() {
                 <Button variant="outline" onClick={clearFilters}>
                   {t('common.clearFilters')}
                 </Button>
-              ) : (
+              ) : editable ? (
                 <Button variant="brand" onClick={() => setCreating(true)}>
                   <IconPlus />
                   {t('session.newSession')}
                 </Button>
-              )
+              ) : null
             }
           >
             {t(filtering ? 'common.noResultsHint' : 'session.noSessionsHint')}

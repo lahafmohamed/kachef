@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { fmtDate, branchName } from '../utils';
 import {
@@ -34,6 +35,13 @@ const MEMBER_STATUSES = [
 ];
 const ANIMATOR_STATUSES = MEMBER_STATUSES.filter((s) => s.value !== 'excused');
 
+/** Read-only rendering of a présence status for view-only accounts. */
+function StatusBadge({ status, t }) {
+  const s = MEMBER_STATUSES.find((x) => x.value === status);
+  if (!s) return <Badge variant="outline">{t('session.unmarked')}</Badge>;
+  return <Badge variant={s.tone}>{t(s.key)}</Badge>;
+}
+
 export default function SessionDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
@@ -41,6 +49,9 @@ export default function SessionDetail() {
   const toast = useToast();
   const confirm = useConfirm();
 
+  // View-only: présence is displayed as badges, never as tappable controls
+  const { canEdit } = usePerms();
+  const editable = canEdit('sessions');
   const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
   const leaders = useFetch('/leaders');
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -207,7 +218,7 @@ export default function SessionDetail() {
               </div>
             </div>
             <ProgressBar value={pct} label={t('session.attendance')} />
-            {marked < totalRoster && (
+            {editable && marked < totalRoster && (
               <Button
                 variant="outline"
                 size="sm"
@@ -227,7 +238,7 @@ export default function SessionDetail() {
       <Card>
         <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>{t('session.animators')}</CardTitle>
-          {availableHelpers.length > 0 && (
+          {editable && availableHelpers.length > 0 && (
             <Select
               className="sm:w-auto"
               value=""
@@ -265,21 +276,27 @@ export default function SessionDetail() {
                     </div>
                   </div>
                   <div className="flex w-full items-center gap-1.5 sm:w-auto">
-                    <SegmentedControl
-                      label={`${a.first_name} ${a.last_name}`}
-                      value={a.status}
-                      onChange={(v) => markAnimator(a.leader_id, v)}
-                      options={ANIMATOR_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
-                    />
-                    {a.role === 'helper' && (
-                      <Button
-                        variant="destructive-ghost"
-                        size="icon"
-                        onClick={() => removeHelper(a)}
-                        aria-label={t('common.delete')}
-                      >
-                        <IconTrash />
-                      </Button>
+                    {editable ? (
+                      <>
+                        <SegmentedControl
+                          label={`${a.first_name} ${a.last_name}`}
+                          value={a.status}
+                          onChange={(v) => markAnimator(a.leader_id, v)}
+                          options={ANIMATOR_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
+                        />
+                        {a.role === 'helper' && (
+                          <Button
+                            variant="destructive-ghost"
+                            size="icon"
+                            onClick={() => removeHelper(a)}
+                            aria-label={t('common.delete')}
+                          >
+                            <IconTrash />
+                          </Button>
+                        )}
+                      </>
+                    ) : (
+                      <StatusBadge status={a.status} t={t} />
                     )}
                   </div>
                 </li>
@@ -326,12 +343,16 @@ export default function SessionDetail() {
                     )}
                   </div>
                   <div className="w-full sm:w-auto">
-                    <SegmentedControl
-                      label={`${m.first_name} ${m.last_name}`}
-                      value={m.status}
-                      onChange={(v) => mark(m.id, v)}
-                      options={MEMBER_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
-                    />
+                    {editable ? (
+                      <SegmentedControl
+                        label={`${m.first_name} ${m.last_name}`}
+                        value={m.status}
+                        onChange={(v) => mark(m.id, v)}
+                        options={MEMBER_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
+                      />
+                    ) : (
+                      <StatusBadge status={m.status} t={t} />
+                    )}
                   </div>
                 </li>
               ))}

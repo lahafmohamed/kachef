@@ -26,6 +26,23 @@ function verifyPassword(password, stored) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// The pages an account can be restricted to. Dashboard is always allowed;
+// التشكيلة / settings / admin stay admin-only regardless.
+const PERM_KEYS = ['members', 'sessions', 'branches', 'promotions'];
+const PERM_LEVELS = ['none', 'view', 'edit'];
+
+// perms grew from an array of page keys to {page: none|view|edit}. Old rows
+// keep the array shape in the DB; a listed page meant full access.
+function normalizePerms(raw) {
+  if (!raw) return null;
+  const out = {};
+  for (const k of PERM_KEYS)
+    out[k] = Array.isArray(raw)
+      ? raw.includes(k) ? 'edit' : 'none'
+      : PERM_LEVELS.includes(raw[k]) ? raw[k] : 'none';
+  return out;
+}
+
 const publicUser = (u) => ({
   id: u.id,
   username: u.username,
@@ -33,19 +50,21 @@ const publicUser = (u) => ({
   role: u.role,
   // null = every فرقة; otherwise the branch ids this account may see
   branches: u.branches ? JSON.parse(u.branches) : null,
-  // null = every page; otherwise which sections the account may open
-  perms: u.perms ? JSON.parse(u.perms) : null,
+  // null = full access; otherwise {page: none|view|edit}
+  perms: u.perms ? normalizePerms(JSON.parse(u.perms)) : null,
 });
 
-// The pages an account can be restricted to. Dashboard is always allowed;
-// التشكيلة / settings / admin stay admin-only regardless.
-const PERM_KEYS = ['members', 'sessions', 'branches', 'promotions'];
-
-const hasPerm = (req, key) =>
-  req.user.role === 'admin' || !req.user.perms || req.user.perms.includes(key);
+function hasPerm(req, key, level = 'view') {
+  if (req.user.role === 'admin' || !req.user.perms) return true;
+  const v = req.user.perms[key] || 'none';
+  return level === 'view' ? v !== 'none' : v === 'edit';
+}
 
 const requirePerm = (key) => (req, res, next) =>
   hasPerm(req, key) ? next() : res.status(403).json({ error: 'forbidden' });
+
+const requireEdit = (key) => (req, res, next) =>
+  hasPerm(req, key, 'edit') ? next() : res.status(403).json({ error: 'forbidden' });
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
@@ -107,12 +126,23 @@ function parseBranchList(v) {
   return v.length ? JSON.stringify(v) : null;
 }
 
-// Same contract as parseBranchList: null = unrestricted, undefined = invalid input
+// Same contract as parseBranchList: null = unrestricted, undefined = invalid input.
+// Accepts the legacy array shape and the {page: none|view|edit} object.
 function parsePermList(v) {
   if (v === null || v === undefined || v === '') return null;
-  if (!Array.isArray(v) || !v.every((k) => PERM_KEYS.includes(k))) return undefined;
-  // Ticking every page is the same as no restriction
-  return v.length && v.length < PERM_KEYS.length ? JSON.stringify(v) : null;
+  if (Array.isArray(v)) {
+    if (!v.every((k) => PERM_KEYS.includes(k))) return undefined;
+    v = Object.fromEntries(PERM_KEYS.map((k) => [k, v.includes(k) ? 'edit' : 'none']));
+  }
+  if (typeof v !== 'object') return undefined;
+  const out = {};
+  for (const k of PERM_KEYS) {
+    const lv = v[k] ?? 'none';
+    if (!PERM_LEVELS.includes(lv)) return undefined;
+    out[k] = lv;
+  }
+  // Full edit everywhere is the same as no restriction
+  return PERM_KEYS.every((k) => out[k] === 'edit') ? null : JSON.stringify(out);
 }
 
 app.get('/api/users', requireAdmin, (req, res) => {
@@ -578,7 +608,7 @@ app.get('/api/members/:id', requirePerm('members'), (req, res) => {
   });
 });
 
-app.post('/api/members', requirePerm('members'), (req, res) => {
+app.post('/api/members', requireEdit('members'), (req, res) => {
   const err = validateMember(req.body);
   if (err) return res.status(400).json({ error: err });
   if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
@@ -598,7 +628,7 @@ app.post('/api/members', requirePerm('members'), (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid));
 });
 
-app.put('/api/members/:id', requirePerm('members'), (req, res) => {
+app.put('/api/members/:id', requireEdit('members'), (req, res) => {
   const existing = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'member not found' });
   const err = validateMember(req.body);
@@ -620,7 +650,7 @@ app.put('/api/members/:id', requirePerm('members'), (req, res) => {
   res.json(db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id));
 });
 
-app.delete('/api/members/:id', requirePerm('members'), (req, res) => {
+app.delete('/api/members/:id', requireEdit('members'), (req, res) => {
   const existing = db.prepare('SELECT branch_id FROM members WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'member not found' });
   if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
@@ -635,7 +665,7 @@ app.get('/api/promotions/pending', requirePerm('promotions'), (req, res) => {
   res.json(pendingPromotions().filter((p) => branchOk(req, p.current_branch.id)));
 });
 
-app.post('/api/promotions/validate', requirePerm('promotions'), (req, res) => {
+app.post('/api/promotions/validate', requireEdit('promotions'), (req, res) => {
   const ids = req.body.member_ids;
   if (!Array.isArray(ids) || ids.length === 0)
     return res.status(400).json({ error: 'member_ids required' });
@@ -991,7 +1021,7 @@ app.get('/api/sessions', requirePerm('sessions'), (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/sessions', requirePerm('sessions'), (req, res) => {
+app.post('/api/sessions', requireEdit('sessions'), (req, res) => {
   const { title, date, branch_id, leader, leader_id, fee, matalib, helper_ids, member_ids } = req.body;
   const kind = ['visit', 'leaders'].includes(req.body.kind) ? req.body.kind : 'activity';
   // A نشاط قادة has no فرقة; every other kind still needs one
@@ -1108,7 +1138,7 @@ app.get('/api/sessions/:id', requirePerm('sessions'), (req, res) => {
 });
 
 // Add / remove helpers and mark animator présence on a session
-app.post('/api/sessions/:id/animators', requirePerm('sessions'), (req, res) => {
+app.post('/api/sessions/:id/animators', requireEdit('sessions'), (req, res) => {
   const s = db.prepare('SELECT id, branch_id FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
@@ -1129,7 +1159,7 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions'), (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/sessions/:id/attendance', requirePerm('sessions'), (req, res) => {
+app.post('/api/sessions/:id/attendance', requireEdit('sessions'), (req, res) => {
   const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });

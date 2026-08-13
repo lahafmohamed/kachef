@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useAuth } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import {
   cn,
   Button,
@@ -31,14 +31,13 @@ const NAV_ITEMS = [
 ];
 
 // التشكيلة, settings and user management only exist for admins; the other pages
-// follow the per-account permission list (null = everything).
+// follow the per-account permission levels (null = everything).
 function useNavItems() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { can } = usePerms();
   return NAV_ITEMS.filter((item) => {
-    if (item.admin) return isAdmin;
-    if (item.perm && !isAdmin && user?.perms) return user.perms.includes(item.perm);
-    return true;
+    if (item.admin) return user?.role === 'admin';
+    return !item.perm || can(item.perm);
   });
 }
 

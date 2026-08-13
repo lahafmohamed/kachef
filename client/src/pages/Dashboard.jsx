@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
-import { useAuth } from '../auth';
+import { usePerms } from '../auth';
 import { branchName, fmtDate } from '../utils';
 import {
   Avatar,
@@ -35,9 +35,8 @@ function StatCard({ to, ...tile }) {
 
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
-  const { user } = useAuth();
-  // Mirrors the server rule: null perms = everything. Skip fetches that would 403.
-  const can = (key) => user?.role === 'admin' || !user?.perms || user.perms.includes(key);
+  // Mirrors the server rule. Skip fetches that would 403.
+  const { can } = usePerms();
   const stats = useFetch('/stats');
   const sessions = useFetch('/sessions', { skip: !can('sessions') });
 

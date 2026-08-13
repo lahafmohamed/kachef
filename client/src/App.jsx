@@ -3,7 +3,7 @@ import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { DirectionProvider } from '@radix-ui/react-direction';
 import Layout from './components/Layout';
-import { AuthProvider, useAuth } from './auth';
+import { AuthProvider, useAuth, usePerms } from './auth';
 import Login from './pages/Login';
 import Admin from './pages/Admin';
 import Dashboard from './pages/Dashboard';
@@ -99,8 +99,8 @@ function Shell() {
   if (!user) return <Login />;
 
   const isAdmin = user.role === 'admin';
-  // null perms = every page; the server enforces the same rule on its side
-  const can = (key) => isAdmin || !user.perms || user.perms.includes(key);
+  // Mirrors the server rule; the server enforces it again on every request
+  const { can } = usePerms();
 
   return (
     <Layout>

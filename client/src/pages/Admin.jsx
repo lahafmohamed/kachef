@@ -15,6 +15,7 @@ import {
   Input,
   Label,
   PageHeader,
+  SegmentedControl,
   Select,
   SkeletonPage,
   useConfirm,
@@ -26,8 +27,6 @@ import {
   IconUsers,
 } from '../components/ui';
 
-const EMPTY_USER = { username: '', password: '', display_name: '', role: 'user', branches: [], perms: [] };
-
 // Pages an account can be limited to; labels reuse the nav translations
 const PERM_OPTIONS = [
   { key: 'members', label: 'nav.members' },
@@ -35,6 +34,25 @@ const PERM_OPTIONS = [
   { key: 'branches', label: 'nav.branches' },
   { key: 'promotions', label: 'nav.promotions' },
 ];
+
+const FULL_PERMS = Object.fromEntries(PERM_OPTIONS.map((p) => [p.key, 'edit']));
+
+const EMPTY_USER = {
+  username: '',
+  password: '',
+  display_name: '',
+  role: 'user',
+  branches: [],
+  perms: { ...FULL_PERMS },
+};
+
+// Stored perms may be null (full access) or the legacy array shape
+function normalizePerms(p) {
+  if (!p) return { ...FULL_PERMS };
+  if (Array.isArray(p))
+    return Object.fromEntries(PERM_OPTIONS.map((o) => [o.key, p.includes(o.key) ? 'edit' : 'none']));
+  return { ...FULL_PERMS, ...p };
+}
 
 function UserForm({ initial, branches, onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
@@ -50,11 +68,8 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
     }));
   }
 
-  function togglePerm(key) {
-    setForm((f) => ({
-      ...f,
-      perms: f.perms.includes(key) ? f.perms.filter((x) => x !== key) : [...f.perms, key],
-    }));
+  function setPerm(key, level) {
+    setForm((f) => ({ ...f, perms: { ...f.perms, [key]: level } }));
   }
 
   async function submit(e) {
@@ -64,9 +79,9 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
     const body = {
       display_name: form.display_name || null,
       role: form.role,
-      // Empty selection = access to every فرقة / every page
+      // Empty branch selection = every فرقة; the server stores full-edit perms as null
       branches: form.branches.length ? form.branches : null,
-      perms: form.perms.length ? form.perms : null,
+      perms: form.perms,
     };
     if (form.password) body.password = form.password;
     try {
@@ -157,19 +172,22 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
       {form.role === 'user' && (
         <div className="space-y-1.5">
           <Label className="block">{t('admin.allowedPages')}</Label>
-          <div className="rounded-md border border-border p-1.5">
+          <div className="space-y-1 rounded-md border border-border p-2">
             {PERM_OPTIONS.map((p) => (
-              <label
-                key={p.key}
-                className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
-              >
-                <input
-                  type="checkbox"
-                  checked={form.perms.includes(p.key)}
-                  onChange={() => togglePerm(p.key)}
+              <div key={p.key} className="flex items-center justify-between gap-3">
+                <span className="text-sm">{t(p.label)}</span>
+                <SegmentedControl
+                  size="sm"
+                  label={t(p.label)}
+                  value={form.perms[p.key]}
+                  onChange={(v) => setPerm(p.key, v)}
+                  options={[
+                    { value: 'none', label: t('admin.permNone'), tone: 'destructive' },
+                    { value: 'view', label: t('admin.permView'), tone: 'warning' },
+                    { value: 'edit', label: t('admin.permEdit'), tone: 'success' },
+                  ]}
                 />
-                {t(p.label)}
-              </label>
+              </div>
             ))}
           </div>
           <p className="text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
@@ -271,9 +289,7 @@ export default function Admin() {
                           u.branches.map((id) => <Badge key={id}>{nameOf(id)}</Badge>)
                         )}
                         {u.perms !== null && (
-                          <Badge variant="secondary">
-                            {t('admin.pagesCount', { count: u.perms.length })}
-                          </Badge>
+                          <Badge variant="secondary">{t('admin.customPerms')}</Badge>
                         )}
                       </>
                     )}
@@ -283,7 +299,12 @@ export default function Admin() {
                       variant="ghost"
                       size="icon"
                       onClick={() =>
-                        setEditing({ ...u, password: '', branches: u.branches || [], perms: u.perms || [] })
+                        setEditing({
+                          ...u,
+                          password: '',
+                          branches: u.branches || [],
+                          perms: normalizePerms(u.perms),
+                        })
                       }
                       aria-label={t('common.edit')}
                     >

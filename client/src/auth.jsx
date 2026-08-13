@@ -60,3 +60,22 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(AuthContext);
+
+/** Access level for a page: none | view | edit. Admin or null perms = edit everywhere. */
+function permLevel(user, key) {
+  if (!user) return 'none';
+  if (user.role === 'admin' || !user.perms) return 'edit';
+  const p = user.perms;
+  // Legacy array shape: a listed page meant full access
+  if (Array.isArray(p)) return p.includes(key) ? 'edit' : 'none';
+  return p[key] || 'none';
+}
+
+/** `can(page)` = may open it; `canEdit(page)` = may also create/modify/delete. */
+export function usePerms() {
+  const { user } = useAuth();
+  return {
+    can: (key) => permLevel(user, key) !== 'none',
+    canEdit: (key) => permLevel(user, key) === 'edit',
+  };
+}
