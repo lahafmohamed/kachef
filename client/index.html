@@ -5,22 +5,23 @@
     <!-- viewport-fit=cover lets the layout use env(safe-area-inset-*) on notched phones -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="Gestion de groupe scout : membres, matalib, présences et promotions." />
-    <meta name="theme-color" content="#f7fbf9" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8fbfc" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#120d17" />
     <meta name="color-scheme" content="light dark" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Kachef" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>Kachef Scout</title>
     <style>
       /* Paint the app background before the CSS bundle lands, so a cold start
          on mobile doesn't flash white (or flash white in dark mode). */
-      html { background: #f7fbf9; }
+      html { background: #f8fbfc; }
       @media (prefers-color-scheme: dark) {
-        html { background: #111f1b; }
+        html { background: #120d17; }
       }
     </style>
   </head>

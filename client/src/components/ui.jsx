@@ -49,6 +49,12 @@ export const IconUsers = (p) => (
     <path d="M16 3.13a4 4 0 0 1 0 7.75" />
   </Icon>
 );
+export const IconPin = (p) => (
+  <Icon {...p}>
+    <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
+    <circle cx="12" cy="10" r="3" />
+  </Icon>
+);
 export const IconCalendar = (p) => (
   <Icon {...p}>
     <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -202,6 +208,19 @@ export const IconAward = (p) => (
     <path d="M15.5 13.5 17 22l-5-3-5 3 1.5-8.5" />
   </Icon>
 );
+export const IconLock = (p) => (
+  <Icon {...p}>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </Icon>
+);
+export const IconLogout = (p) => (
+  <Icon {...p}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="m16 17 5-5-5-5" />
+    <path d="M21 12H9" />
+  </Icon>
+);
 
 /* ============================================================
    Theme
@@ -222,7 +241,7 @@ export function ThemeProvider({ children }) {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
       'content',
-      theme === 'dark' ? '#111f1b' : '#f7fbf9'
+      theme === 'dark' ? '#120d17' : '#f8fbfc'
     );
     localStorage.setItem('theme', theme);
   }, [theme]);
@@ -259,16 +278,19 @@ export function Spinner({ className }) {
   );
 }
 
+/* Solid variants carry a hairline top highlight so they read as lit surfaces
+   rather than flat swatches, and a color-matched glow instead of grey shadow. */
 const buttonVariants = {
-  default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary-hover active:scale-[0.98]',
+  default:
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.98]',
   brand:
-    'bg-brand-gradient text-primary-foreground shadow-md hover:shadow-lg hover:brightness-[1.06] active:scale-[0.98]',
+    'ring-inset-light bg-brand-gradient text-primary-foreground shadow-brand hover:shadow-lg hover:brightness-[1.06] active:scale-[0.98]',
   secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.98]',
   outline:
-    'border border-border bg-card text-foreground shadow-xs hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
+    'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
   ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
   destructive:
-    'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.98]',
+    'ring-inset-light bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.98]',
   'destructive-ghost': 'text-destructive hover:bg-destructive/10 active:scale-[0.98]',
 };
 
@@ -296,8 +318,8 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={cn(
-        'focus-ring inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md',
-        'font-medium transition-all duration-150 cursor-pointer',
+        'focus-ring inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg',
+        'font-medium tracking-[-0.005em] transition-all duration-150 cursor-pointer',
         'disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none',
         buttonVariants[variant],
         buttonSizes[size],
@@ -315,9 +337,9 @@ export function Card({ className, interactive = false, ...props }) {
   return (
     <div
       className={cn(
-        'rounded-xl border border-border bg-card text-card-foreground shadow-sm',
+        'rounded-2xl border border-border bg-card text-card-foreground shadow-sm',
         interactive &&
-          'transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md',
+          'transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg',
         className
       )}
       {...props}
@@ -344,8 +366,8 @@ export function CardContent({ className, ...props }) {
 }
 
 const fieldBase =
-  'flex h-11 w-full rounded-md border border-input bg-card px-3 text-sm shadow-xs transition-colors sm:h-10 ' +
-  'focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50';
+  'flex h-11 w-full rounded-lg border border-input bg-card px-3.5 text-sm shadow-xs transition-colors sm:h-10 ' +
+  'hover:border-input/70 focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50';
 
 export function Input({ className, ...props }) {
   return (
@@ -462,7 +484,7 @@ export function Avatar({ photo, name, className }) {
       aria-hidden="true"
       className={cn(
         base,
-        'bg-brand-gradient flex items-center justify-center text-xs font-semibold text-white shadow-xs',
+        'bg-brand-gradient ring-inset-light flex items-center justify-center text-xs font-semibold text-white',
         className
       )}
     >
@@ -585,7 +607,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <div
-        className="animate-overlay-in absolute inset-0 bg-foreground/45 backdrop-blur-sm"
+        className="animate-overlay-in absolute inset-0 bg-brand-plum/50 backdrop-blur-md"
         onClick={onClose}
       />
       <div
@@ -596,8 +618,8 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
         tabIndex={-1}
         className={cn(
           'animate-sheet-in sm:animate-dialog-in relative flex max-h-[92dvh] w-full flex-col',
-          'rounded-t-2xl border border-border bg-card shadow-xl outline-none',
-          'sm:max-h-[88dvh] sm:rounded-xl',
+          'rounded-t-3xl border border-border bg-card shadow-xl outline-none',
+          'sm:max-h-[88dvh] sm:rounded-2xl',
           widths[size]
         )}
       >
@@ -730,7 +752,7 @@ export function ToastProvider({ children }) {
                 onClick={() => dismiss(id)}
                 className={cn(
                   'animate-toast-in pointer-events-auto flex w-full max-w-sm cursor-pointer items-start gap-2.5',
-                  'rounded-lg border bg-card px-4 py-3 text-sm font-medium shadow-lg backdrop-blur',
+                  'glass rounded-xl border px-4 py-3 text-sm font-medium shadow-lg',
                   cls
                 )}
               >
@@ -797,7 +819,7 @@ export function EmptyState({ icon, title, children, action, className }) {
       )}
     >
       {icon && (
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-accent-foreground">
+        <div className="bg-brand-soft flex h-14 w-14 items-center justify-center rounded-2xl text-primary ring-1 ring-primary/15">
           {icon}
         </div>
       )}
@@ -834,7 +856,7 @@ export function PageHeader({ title, description, children, className }) {
   return (
     <div className={cn('flex flex-wrap items-start justify-between gap-3', className)}>
       <div className="min-w-0">
-        <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{title}</h1>
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
         {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       </div>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
@@ -846,7 +868,7 @@ export function PageHeader({ title, description, children, className }) {
  * Segmented control. Used for attendance marking — the options read as one
  * group to screen readers and each button reports its pressed state.
  */
-export function SegmentedControl({ options, value, onChange, label, size = 'default' }) {
+export function SegmentedControl({ options, value, onChange, label, size = 'default', className }) {
   const tones = {
     success: 'bg-success text-success-foreground border-success',
     destructive: 'bg-destructive text-destructive-foreground border-destructive',
@@ -855,7 +877,11 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
   };
   const pad = size === 'sm' ? 'h-9 px-2.5 text-xs sm:h-8' : 'h-10 px-3 text-xs sm:h-9 sm:text-sm';
   return (
-    <div role="group" aria-label={label} className="inline-flex overflow-hidden rounded-md border border-border">
+    <div
+      role="group"
+      aria-label={label}
+      className={cn('inline-flex overflow-hidden rounded-lg border border-border', className)}
+    >
       {options.map((o, i) => {
         const active = value === o.value;
         return (
@@ -938,12 +964,12 @@ export function StatTile({ icon, label, value, hint, tone = 'brand', className }
   return (
     <div className={cn('flex items-center gap-4', className)}>
       {icon && (
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent text-accent-foreground">
+        <div className="bg-brand-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-primary ring-1 ring-primary/15">
           {icon}
         </div>
       )}
       <div className="min-w-0">
-        <div className={cn('text-3xl font-bold leading-none tracking-tight', tones[tone])}>
+        <div className={cn('tabular text-3xl font-bold leading-none tracking-tight', tones[tone])}>
           {value}
         </div>
         <div className="mt-1.5 truncate text-sm text-muted-foreground">{label}</div>

@@ -3,7 +3,11 @@ import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { DirectionProvider } from '@radix-ui/react-direction';
 import Layout from './components/Layout';
+import { AuthProvider, useAuth } from './auth';
+import Login from './pages/Login';
+import Admin from './pages/Admin';
 import Dashboard from './pages/Dashboard';
+import Branches from './pages/Branches';
 import Members from './pages/Members';
 import MemberDetail from './pages/MemberDetail';
 import Sessions from './pages/Sessions';
@@ -77,6 +81,57 @@ class ErrorBoundary extends Component {
   }
 }
 
+/** Routes only an admin may open; anyone else lands back on the dashboard. */
+function AdminRoute({ children }) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (user?.role !== 'admin') navigate('/', { replace: true });
+  }, [user, navigate]);
+  return user?.role === 'admin' ? children : null;
+}
+
+function Shell() {
+  const { t } = useTranslation();
+  const { user } = useAuth();
+
+  // No session → nothing but the login screen, whatever the URL says
+  if (!user) return <Login />;
+
+  const isAdmin = user.role === 'admin';
+  // null perms = every page; the server enforces the same rule on its side
+  const can = (key) => isAdmin || !user.perms || user.perms.includes(key);
+
+  return (
+    <Layout>
+      <ScrollToTop />
+      <ErrorBoundary title={t('error.crashTitle')} retryLabel={t('error.reload')}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          {can('branches') && <Route path="/branches" element={<Branches />} />}
+          {can('members') && <Route path="/members" element={<Members />} />}
+          {can('members') && <Route path="/members/:id" element={<MemberDetail />} />}
+          {can('sessions') && <Route path="/sessions" element={<Sessions />} />}
+          {can('sessions') && <Route path="/sessions/:id" element={<SessionDetail />} />}
+          {can('promotions') && <Route path="/promotions" element={<Promotions />} />}
+          {isAdmin && <Route path="/leaders" element={<Leaders />} />}
+          <Route path="/leaders/:id" element={<LeaderDetail />} />
+          {isAdmin && <Route path="/settings" element={<Settings />} />}
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <Admin />
+              </AdminRoute>
+            }
+          />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </ErrorBoundary>
+    </Layout>
+  );
+}
+
 export default function App() {
   const { t, i18n } = useTranslation();
 
@@ -92,23 +147,9 @@ export default function App() {
           cancel: t('common.cancel'),
         }}
       >
-        <Layout>
-          <ScrollToTop />
-          <ErrorBoundary title={t('error.crashTitle')} retryLabel={t('error.reload')}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/members" element={<Members />} />
-              <Route path="/members/:id" element={<MemberDetail />} />
-              <Route path="/sessions" element={<Sessions />} />
-              <Route path="/sessions/:id" element={<SessionDetail />} />
-              <Route path="/promotions" element={<Promotions />} />
-              <Route path="/leaders" element={<Leaders />} />
-              <Route path="/leaders/:id" element={<LeaderDetail />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </ErrorBoundary>
-        </Layout>
+        <AuthProvider>
+          <Shell />
+        </AuthProvider>
       </ConfirmProvider>
     </ToastProvider>
     </DirectionProvider>

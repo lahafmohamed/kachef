@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
+import { useAuth } from '../auth';
 import { branchName, fmtDate } from '../utils';
 import {
   Avatar,
@@ -34,8 +35,11 @@ function StatCard({ to, ...tile }) {
 
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
+  const { user } = useAuth();
+  // Mirrors the server rule: null perms = everything. Skip fetches that would 403.
+  const can = (key) => user?.role === 'admin' || !user?.perms || user.perms.includes(key);
   const stats = useFetch('/stats');
-  const sessions = useFetch('/sessions');
+  const sessions = useFetch('/sessions', { skip: !can('sessions') });
 
   if (stats.loading) return <SkeletonPage />;
   if (stats.error)
@@ -49,15 +53,16 @@ export default function Dashboard() {
   const rateTone =
     s.month_rate === null ? 'plain' : s.month_rate >= 75 ? 'success' : s.month_rate >= 50 ? 'warning' : 'destructive';
 
+  // A tile whose page the account cannot open would dead-end on 403 — drop it
   const tiles = [
-    {
+    can('members') && {
       to: '/members',
       icon: <IconUsers className="h-5 w-5" />,
       label: t('dashboard.totalMembers'),
       value: total,
       hint: t('dashboard.activeMembers'),
     },
-    {
+    can('promotions') && {
       to: '/promotions',
       icon: <IconTrendingUp className="h-5 w-5" />,
       label: t('dashboard.pendingPromotions'),
@@ -65,14 +70,22 @@ export default function Dashboard() {
       tone: s.pending_promotions > 0 ? 'warning' : 'brand',
       hint: s.pending_promotions > 0 ? t('dashboard.needsReview') : t('dashboard.allClear'),
     },
-    {
+    can('sessions') && {
       to: '/sessions',
       icon: <IconCalendar className="h-5 w-5" />,
+      label: t('dashboard.monthSessions'),
+      value: s.month_sessions ?? 0,
+      tone: 'brand',
+      hint: t('dashboard.thisMonth'),
+    },
+    can('sessions') && {
+      to: '/sessions',
+      icon: <IconTrendingUp className="h-5 w-5" />,
       label: t('dashboard.monthRate'),
       value: s.month_rate !== null ? `${s.month_rate}%` : t('dashboard.noData'),
       tone: rateTone,
     },
-  ];
+  ].filter(Boolean);
 
   return (
     <div className="space-y-6">
@@ -117,8 +130,9 @@ export default function Dashboard() {
       )}
 
       <div className="stagger grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
+        {/* Two tiles link to /sessions, so the label is the stable key */}
         {tiles.map((tile) => (
-          <Link key={tile.to} to={tile.to} className="focus-ring rounded-xl">
+          <Link key={tile.label} to={tile.to} className="focus-ring rounded-xl">
             <StatCard {...tile} />
           </Link>
         ))}
@@ -168,6 +182,7 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
+      {can('sessions') && (
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>{t('dashboard.recentSessions')}</CardTitle>
@@ -216,6 +231,7 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

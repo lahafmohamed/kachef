@@ -138,6 +138,46 @@ export default function LeaderDetail() {
         </Card>
       )}
 
+      {/* زيارات الأهل this قائد took part in — listed apart from the أنشطة he animated */}
+      {leader.visits?.length > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle>{t('session.familyVisits')}</CardTitle>
+            <Badge variant="outline">{leader.visits.length}</Badge>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <ul className="divide-y divide-border">
+              {leader.visits.map((v) => (
+                <li key={v.id} className="px-4 py-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <Link
+                      to={`/sessions/${v.id}`}
+                      className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                    >
+                      {v.title}
+                    </Link>
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {fmtDate(v.date)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <Badge>{branchName(v, i18n.language)}</Badge>
+                    <Badge variant={v.role === 'main' ? 'default' : 'secondary'}>
+                      {t(v.role === 'main' ? 'session.mainAnimator' : 'session.helper')}
+                    </Badge>
+                    {v.members?.length > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {v.members.map((m) => `${m.first_name} ${m.last_name}`).join(' · ')}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>{t('leader.activitiesLed')}</CardTitle>
@@ -163,7 +203,11 @@ export default function LeaderDetail() {
                       </span>
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      <Badge>{branchName(s, i18n.language)}</Badge>
+                      {s.branch_id ? (
+                        <Badge>{branchName(s, i18n.language)}</Badge>
+                      ) : (
+                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+                      )}
                       <Badge variant={s.role === 'main' ? 'default' : 'secondary'}>
                         {t(s.role === 'main' ? 'session.mainAnimator' : 'session.helper')}
                       </Badge>
@@ -204,7 +248,11 @@ export default function LeaderDetail() {
                         </Link>
                       </Td>
                       <Td>
+                        {s.branch_id ? (
                         <Badge>{branchName(s, i18n.language)}</Badge>
+                      ) : (
+                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+                      )}
                       </Td>
                       <Td>
                         <Badge variant={s.role === 'main' ? 'default' : 'secondary'}>

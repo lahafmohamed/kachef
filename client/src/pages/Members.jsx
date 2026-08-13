@@ -35,9 +35,15 @@ import {
 const EMPTY_FORM = {
   first_name: '',
   last_name: '',
+  father_name: '',
+  mother_name: '',
   birth_date: '',
+  birth_place: '',
+  address_abidjan: '',
+  address_lebanon: '',
   sex: 'M',
   branch_id: '',
+  member_phone: '',
   parent_phone: '',
   join_date: todayISO(),
   photo: null,
@@ -83,8 +89,38 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
           <Input id="last_name" required autoComplete="off" value={form.last_name} onChange={set('last_name')} />
         </div>
         <div className="space-y-1.5">
+          <Label htmlFor="father_name">{t('member.fatherName')}</Label>
+          <Input id="father_name" autoComplete="off" value={form.father_name || ''} onChange={set('father_name')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="mother_name">{t('member.motherName')}</Label>
+          <Input id="mother_name" autoComplete="off" value={form.mother_name || ''} onChange={set('mother_name')} />
+        </div>
+        <div className="space-y-1.5">
           <Label htmlFor="birth_date">{t('member.birthDate')}</Label>
           <Input id="birth_date" type="date" required value={form.birth_date} onChange={set('birth_date')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="birth_place">{t('member.birthPlace')}</Label>
+          <Input id="birth_place" autoComplete="off" value={form.birth_place || ''} onChange={set('birth_place')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="address_abidjan">{t('member.addressAbidjan')}</Label>
+          <Input
+            id="address_abidjan"
+            autoComplete="off"
+            value={form.address_abidjan || ''}
+            onChange={set('address_abidjan')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="address_lebanon">{t('member.addressLebanon')}</Label>
+          <Input
+            id="address_lebanon"
+            autoComplete="off"
+            value={form.address_lebanon || ''}
+            onChange={set('address_lebanon')}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="sex">{t('member.sex')}</Label>
@@ -102,6 +138,17 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
               </option>
             ))}
           </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="member_phone">{t('member.memberPhone')}</Label>
+          <Input
+            id="member_phone"
+            type="tel"
+            inputMode="tel"
+            dir="ltr"
+            value={form.member_phone || ''}
+            onChange={set('member_phone')}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="parent_phone">{t('member.parentPhone')}</Label>
@@ -442,9 +489,15 @@ export default function Members() {
                 : {
                     first_name: editing.first_name,
                     last_name: editing.last_name,
+                    father_name: editing.father_name || '',
+                    mother_name: editing.mother_name || '',
                     birth_date: editing.birth_date,
+                    birth_place: editing.birth_place || '',
+                    address_abidjan: editing.address_abidjan || '',
+                    address_lebanon: editing.address_lebanon || '',
                     sex: editing.sex,
                     branch_id: editing.branch_id,
+                    member_phone: editing.member_phone || '',
                     parent_phone: editing.parent_phone || '',
                     join_date: editing.join_date,
                     photo: editing.photo,

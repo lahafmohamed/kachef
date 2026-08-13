@@ -20,9 +20,15 @@ CREATE TABLE IF NOT EXISTS members (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
+  father_name TEXT,
+  mother_name TEXT,
   birth_date TEXT NOT NULL,
+  birth_place TEXT,
+  address_abidjan TEXT,
+  address_lebanon TEXT,
   sex TEXT NOT NULL CHECK (sex IN ('M', 'F')),
   branch_id INTEGER NOT NULL REFERENCES branches(id),
+  member_phone TEXT,
   parent_phone TEXT,
   join_date TEXT NOT NULL,
   photo TEXT,
@@ -42,10 +48,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   date TEXT NOT NULL,
-  branch_id INTEGER NOT NULL REFERENCES branches(id),
+  -- NULL for a نشاط قادة: it belongs to the فوج, not to one فرقة
+  branch_id INTEGER REFERENCES branches(id),
   leader TEXT,
   fee REAL,
-  matalib TEXT NOT NULL DEFAULT '[]'
+  matalib TEXT NOT NULL DEFAULT '[]',
+  -- 'activity' = نشاط فرقة, 'visit' = زيارة الأهل (présence = who was visited),
+  -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves)
+  kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders'))
 );
 
 CREATE TABLE IF NOT EXISTS leaders (
@@ -58,13 +68,15 @@ CREATE TABLE IF NOT EXISTS leaders (
 );
 
 -- التشكيلة: yearly role assignments (قائد فرقة أو أمانة). One row = one توصيف.
+-- leader_id is nullable: a توصيف exists as an empty slot until a قائد is assigned to it.
 CREATE TABLE IF NOT EXISTS assignments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   year TEXT NOT NULL,
-  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
-  role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana'))
+  role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
+  sort_order INTEGER NOT NULL DEFAULT 0
 );
 
 -- Animators of a session: one main (animateur principal) + helpers, with their own présence
@@ -75,6 +87,27 @@ CREATE TABLE IF NOT EXISTS session_leaders (
   role TEXT NOT NULL DEFAULT 'helper' CHECK (role IN ('main', 'helper')),
   status TEXT CHECK (status IN ('present', 'absent')),
   UNIQUE(session_id, leader_id)
+);
+
+-- Login accounts. branches is a JSON array of branch ids the user may see;
+-- NULL means every فرقة (no restriction). Admins always see everything.
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  display_name TEXT,
+  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+  branches TEXT,
+  -- JSON array of page keys the account may open (members, sessions, branches,
+  -- promotions); NULL = every page. Admins ignore it.
+  perms TEXT
+);
+
+-- One row per active login; deleting it logs the device out
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -89,9 +122,116 @@ CREATE TABLE IF NOT EXISTS attendance (
 // Default مطالب (requirements) totals per branch, from the scout program reference
 const REQUIREMENT_DEFAULTS = { 'البراعم': 99, 'الأشبال': 144, 'الكشافة': 166, 'الجوالة': 174 };
 
+// ---------- نموذج التشكيلة ----------
+// The standard توصيفات of a فوج. Opening a new تشكيلة year creates every one of them as an
+// empty slot, so the whole organigram is visible from the start. Rows stay editable afterwards:
+// titles can be renamed, extra مساعدين added, and unused ones deleted.
+const AMANAT_TEMPLATE = [
+  'عميد الفوج',
+  'نائب عميد الفوج',
+  'أمين السر',
+  'أمين المال',
+  'أمين الأنشطة',
+  'أمين التدريب',
+  'أمين الإعلام',
+  'أمين التجهيزات',
+  // توصيفات فوجية لا علاقة لها بالفرق: يعملون مع الأمانة المعنية
+  'إعلامي',
+  'أنشطة',
+  'تدريب',
+  'تجهيزات',
+];
+
+// Applied to every فرقة, using its Arabic name: قائد الجوالة الأساسي، قائد الجوالة المتقدم...
+const BRANCH_ROLES_TEMPLATE = [
+  (b) => `قائد ${b} الأساسي`,
+  (b) => `قائد ${b} المتقدم`,
+  (b) => `مساعد قائد ${b} المتقدم`,
+  (b) => `قائد ${b} الأول`,
+  (b) => `مساعد قائد ${b} الأول`,
+];
+
+// [{ title, branch_id, role_type, sort_order }] — الأمانات first, then فرقة by فرقة in age order.
+// Branch slots start at 100 so أمانات always sort ahead of them and a whole فرقة keeps its block.
+function tachkilaTemplate() {
+  const rows = AMANAT_TEMPLATE.map((title, i) => ({
+    title,
+    branch_id: null,
+    role_type: 'amana',
+    sort_order: i,
+  }));
+  const branches = db.prepare('SELECT id, name_ar FROM branches ORDER BY sort_order, id').all();
+  branches.forEach((b, bi) => {
+    BRANCH_ROLES_TEMPLATE.forEach((makeTitle, ri) => {
+      rows.push({
+        title: makeTitle(b.name_ar),
+        branch_id: b.id,
+        role_type: 'branch',
+        sort_order: 100 + bi * 10 + ri,
+      });
+    });
+  });
+  return rows;
+}
+
 function ensureColumn(table, col, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
+// Empty توصيف slots need a nullable leader_id, and deleting a قائد must free his slot instead of
+// destroying it. SQLite cannot relax NOT NULL or change a foreign key in place: rebuild the table.
+function migrateAssignments() {
+  ensureColumn('assignments', 'sort_order', 'sort_order INTEGER NOT NULL DEFAULT 0');
+  const leaderCol = db.prepare('PRAGMA table_info(assignments)').all().find((c) => c.name === 'leader_id');
+  if (!leaderCol || leaderCol.notnull === 0) return;
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE assignments_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year TEXT NOT NULL,
+        leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+        role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO assignments_new (id, year, leader_id, title, branch_id, role_type, sort_order)
+        SELECT id, year, leader_id, title, branch_id, role_type, sort_order FROM assignments;
+      DROP TABLE assignments;
+      ALTER TABLE assignments_new RENAME TO assignments;
+    `);
+  })();
+  db.pragma('foreign_keys = ON');
+}
+
+// A نشاط قادة belongs to no فرقة, so branch_id must become nullable.
+// SQLite cannot relax NOT NULL in place: rebuild the table, keeping every row.
+function migrateSessions() {
+  const branchCol = db.prepare('PRAGMA table_info(sessions)').all().find((c) => c.name === 'branch_id');
+  if (!branchCol || branchCol.notnull === 0) return;
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE sessions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        date TEXT NOT NULL,
+        branch_id INTEGER REFERENCES branches(id),
+        leader TEXT,
+        leader_id INTEGER,
+        fee REAL,
+        matalib TEXT NOT NULL DEFAULT '[]',
+        kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders'))
+      );
+      INSERT INTO sessions_new (id, title, date, branch_id, leader, leader_id, fee, matalib, kind)
+        SELECT id, title, date, branch_id, leader, leader_id, fee, matalib, kind FROM sessions;
+      DROP TABLE sessions;
+      ALTER TABLE sessions_new RENAME TO sessions;
+    `);
+  })();
+  db.pragma('foreign_keys = ON');
 }
 
 // Upgrade databases created before the مطالب / activity-details feature
@@ -100,9 +240,20 @@ function migrate() {
   ensureColumn('sessions', 'leader', 'leader TEXT');
   ensureColumn('sessions', 'fee', 'fee REAL');
   ensureColumn('sessions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
+  // زيارة الأهل shares the sessions table but must stay out of every attendance rate
+  ensureColumn('sessions', 'kind', "kind TEXT NOT NULL DEFAULT 'activity'");
   // Plain INTEGER (no FK): leader deletion nulls it manually, keeping the name snapshot in `leader`
   ensureColumn('sessions', 'leader_id', 'leader_id INTEGER');
+  migrateSessions();
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
+  migrateAssignments();
+  // Registration form fields added after the first release — all nullable so old rows stay valid
+  ensureColumn('members', 'father_name', 'father_name TEXT');
+  ensureColumn('members', 'mother_name', 'mother_name TEXT');
+  ensureColumn('members', 'birth_place', 'birth_place TEXT');
+  ensureColumn('members', 'address_abidjan', 'address_abidjan TEXT');
+  ensureColumn('members', 'address_lebanon', 'address_lebanon TEXT');
+  ensureColumn('members', 'member_phone', 'member_phone TEXT');
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
   if (sessionCols.includes('requirements')) db.exec('ALTER TABLE sessions DROP COLUMN requirements');
@@ -118,6 +269,19 @@ function migrate() {
     SELECT s.id, s.leader_id, 'main' FROM sessions s
     WHERE s.leader_id IS NOT NULL AND EXISTS (SELECT 1 FROM leaders l WHERE l.id = s.leader_id)
   `);
+
+  ensureColumn('users', 'perms', 'perms TEXT');
+  // First run: an admin must exist or nobody can log in. Default credentials
+  // admin / admin123 — change them from the admin page right away.
+  if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
+    const crypto = require('crypto');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync('admin123', salt, 64).toString('hex');
+    db.prepare(
+      "INSERT INTO users (username, password_hash, display_name, role, branches) VALUES ('admin', ?, 'Admin', 'admin', NULL)"
+    ).run(`${salt}:${hash}`);
+    console.log('Created default admin account: admin / admin123 — change the password!');
+  }
 
   const hasBranches = db.prepare('SELECT COUNT(*) AS n FROM branches').get().n > 0;
   const hasBaraem = db.prepare('SELECT id FROM branches WHERE name_ar = ?').get('البراعم');
@@ -165,8 +329,6 @@ function seedLeaders() {
   const count = db.prepare('SELECT COUNT(*) AS n FROM leaders').get().n;
   if (count > 0) return;
 
-  const branchByAr = (ar) => db.prepare('SELECT id FROM branches WHERE name_ar = ?').get(ar)?.id ?? null;
-
   const insertLeader = db.prepare(
     "INSERT INTO leaders (first_name, last_name, phone, status) VALUES (?, ?, ?, ?)"
   );
@@ -181,16 +343,26 @@ function seedLeaders() {
   ];
   const ids = leaders.map((l) => insertLeader.run(...l).lastInsertRowid);
 
+  // The full organigram is created, then a few slots are filled — the rest stay empty on purpose
   const year = '2025-2026';
   const insertAssignment = db.prepare(
-    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, NULL, ?, ?, ?, ?)'
   );
-  insertAssignment.run(year, ids[0], 'قائد الفوج', null, 'amana');
-  insertAssignment.run(year, ids[1], 'أمين المال', null, 'amana');
-  insertAssignment.run(year, ids[2], 'قائد فرقة البراعم', branchByAr('البراعم'), 'branch');
-  insertAssignment.run(year, ids[3], 'قائد فرقة الأشبال', branchByAr('الأشبال'), 'branch');
-  insertAssignment.run(year, ids[4], 'قائد فرقة الكشافة', branchByAr('الكشافة'), 'branch');
-  insertAssignment.run(year, ids[5], 'قائد فرقة الجوالة', branchByAr('الجوالة'), 'branch');
+  const run = db.transaction(() => {
+    for (const r of tachkilaTemplate()) insertAssignment.run(year, r.title, r.branch_id, r.role_type, r.sort_order);
+  });
+  run();
+
+  const assign = db.prepare('UPDATE assignments SET leader_id = ? WHERE year = ? AND title = ?');
+  const demo = [
+    [ids[0], 'عميد الفوج'],
+    [ids[1], 'أمين المال'],
+    [ids[2], 'قائد البراعم الأساسي'],
+    [ids[3], 'قائد الأشبال الأساسي'],
+    [ids[4], 'قائد الكشافة الأساسي'],
+    [ids[5], 'قائد الجوالة الأساسي'],
+  ];
+  for (const [leaderId, title] of demo) assign.run(leaderId, year, title);
 }
 
-module.exports = { db, seed, seedLeaders, migrate };
+module.exports = { db, seed, seedLeaders, migrate, tachkilaTemplate };

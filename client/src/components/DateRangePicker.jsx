@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
-import { Button, IconCalendar, IconX, Skeleton, cn } from './ui';
+import { Button, IconArrow, IconCalendar, IconX, Skeleton, cn } from './ui';
 import { fmtDate } from '../utils';
 
 const CalendarPanel = lazy(() => import('./CalendarPanel'));
@@ -18,6 +18,10 @@ function shiftDays(n) {
   return d;
 }
 
+/* Whole month, from the 1st to the last day — day 0 of the next month is that last day. */
+const monthStart = (year, month) => new Date(year, month, 1);
+const monthEnd = (year, month) => new Date(year, month + 1, 0);
+
 /**
  * Range date filter: shadcn Popover + react-day-picker range calendar,
  * with quick presets because "last 7 / 30 days" is what leaders actually want.
@@ -29,6 +33,10 @@ export default function DateRangePicker({ value, onChange, className }) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   const isAr = i18n.language === 'ar';
+  // Year the month grid is showing — starts on the year already filtered, else this one
+  const [year, setYear] = useState(() =>
+    value.from ? Number(value.from.slice(0, 4)) : new Date().getFullYear()
+  );
 
   const selected = { from: toDate(value.from), to: toDate(value.to) };
   const hasRange = !!(value.from || value.to);
@@ -49,6 +57,11 @@ export default function DateRangePicker({ value, onChange, className }) {
       : value.from
         ? `${t('session.dateFrom')} ${fmtDate(value.from)}`
         : `${t('session.dateTo')} ${fmtDate(value.to)}`;
+
+  // Short month names in the active language (يناير…, janv.…)
+  const monthNames = Array.from({ length: 12 }, (_, m) =>
+    new Intl.DateTimeFormat(isAr ? 'ar' : 'fr', { month: 'short' }).format(new Date(2000, m, 1))
+  );
 
   const presets = [
     { key: 'last7', from: shiftDays(-6), to: new Date() },
@@ -94,6 +107,51 @@ export default function DateRangePicker({ value, onChange, className }) {
                 {t('session.anyDate')}
               </Button>
             )}
+          </div>
+          {/* Month picker — "show me every نشاط of June" is one click, not two dates */}
+          <div className="space-y-2 border-b border-border p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">{t('session.byMonth')}</span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setYear((y) => y - 1)}
+                  aria-label={t('session.previousYear')}
+                >
+                  <IconArrow className="rotate-180 rtl:rotate-0" />
+                </Button>
+                <span className="tabular-nums text-sm font-semibold" dir="ltr">
+                  {year}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setYear((y) => y + 1)}
+                  aria-label={t('session.nextYear')}
+                >
+                  <IconArrow className="rtl:rotate-180" />
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {Array.from({ length: 12 }, (_, m) => {
+                const from = toISO(monthStart(year, m));
+                const to = toISO(monthEnd(year, m));
+                const active = value.from === from && value.to === to;
+                return (
+                  <Button
+                    key={m}
+                    variant={active ? 'brand' : 'ghost'}
+                    size="sm"
+                    className="px-1"
+                    onClick={() => preset(monthStart(year, m), monthEnd(year, m))}
+                  >
+                    {monthNames[m]}
+                  </Button>
+                );
+              })}
+            </div>
           </div>
           <div className="p-3">
             <Suspense fallback={<Skeleton className="h-72 w-72" />}>

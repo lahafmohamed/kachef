@@ -18,6 +18,7 @@ import {
   Input,
   Label,
   PageHeader,
+  SegmentedControl,
   Select,
   Skeleton,
   cn,
@@ -31,7 +32,7 @@ import {
 } from '../components/ui';
 
 const EMPTY_LEADER = { first_name: '', last_name: '', phone: '', photo: null, status: 'active' };
-const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '' };
+const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '', sort_order: 0 };
 
 function FormActions({ onCancel, saving }) {
   const { t } = useTranslation();
@@ -125,7 +126,7 @@ function LeaderForm({ initial, onSaved, onCancel }) {
   );
 }
 
-function AssignmentForm({ initial, year, leaders, branches, onSaved, onCancel }) {
+function AssignmentForm({ initial, year, leaders, branches, template, onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -137,9 +138,11 @@ function AssignmentForm({ initial, year, leaders, branches, onSaved, onCancel })
     setSaving(true);
     const body = {
       year,
-      leader_id: Number(form.leader_id),
+      // Empty means the توصيف stays in the تشكيلة as a slot waiting for a قائد
+      leader_id: form.leader_id === '' ? null : Number(form.leader_id),
       title: form.title,
       branch_id: form.branch_id === '' ? null : Number(form.branch_id),
+      sort_order: Number(form.sort_order) || 0,
     };
     try {
       if (initial.id) await api.put(`/tachkila/${initial.id}`, body);
@@ -157,13 +160,10 @@ function AssignmentForm({ initial, year, leaders, branches, onSaved, onCancel })
         <Label htmlFor="a_leader">{t('leader.selectLeader')}</Label>
         <Select
           id="a_leader"
-          required
-          value={form.leader_id}
+          value={form.leader_id ?? ''}
           onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
         >
-          <option value="" disabled>
-            —
-          </option>
+          <option value="">{t('leader.unassigned')}</option>
           {leaders.map((l) => (
             <option key={l.id} value={l.id}>
               {l.first_name} {l.last_name}
@@ -181,6 +181,9 @@ function AssignmentForm({ initial, year, leaders, branches, onSaved, onCancel })
           onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
         />
         <datalist id="title-suggestions">
+          {template.map((title) => (
+            <option key={title} value={title} />
+          ))}
           {branches.map((b) => (
             <option key={b.id} value={`${t('leader.branchLeader')} ${branchName(b, i18n.language)}`} />
           ))}
@@ -216,16 +219,23 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
   const { t } = useTranslation();
   const y = new Date().getFullYear();
   const [year, setYear] = useState(`${y}-${y + 1}`);
-  const [copy, setCopy] = useState(true);
+  // template = the whole organigram as empty slots, copy = same slots AND same قادة, empty = blank
+  const [mode, setMode] = useState('template');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  const modes = [
+    { value: 'template', label: t('leader.modeTemplate') },
+    ...(currentYear ? [{ value: 'copy', label: t('leader.modeCopy') }] : []),
+    { value: 'empty', label: t('leader.modeEmpty') },
+  ];
 
   async function submit(e) {
     e.preventDefault();
     setError(null);
     setSaving(true);
     try {
-      await api.post('/tachkila/copy', { to_year: year, from_year: copy ? currentYear : null });
+      await api.post('/tachkila/copy', { to_year: year, mode, from_year: currentYear });
       onSaved(year);
     } catch (err) {
       setError(err.message === 'year_exists' ? t('leader.yearExists') : err.message);
@@ -239,12 +249,17 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
         <Label htmlFor="y_year">{t('leader.newYearLabel')}</Label>
         <Input id="y_year" required dir="ltr" value={year} onChange={(e) => setYear(e.target.value)} />
       </div>
-      {currentYear && (
-        <label className="flex min-h-11 cursor-pointer items-center gap-2.5 text-sm">
-          <input type="checkbox" checked={copy} onChange={(e) => setCopy(e.target.checked)} />
-          {t('leader.copyFromCurrent')}
-        </label>
-      )}
+      <div className="space-y-1.5">
+        <Label className="block">{t('leader.newYearContent')}</Label>
+        <SegmentedControl
+          className="w-full"
+          options={modes}
+          value={mode}
+          onChange={setMode}
+          label={t('leader.newYearContent')}
+        />
+        <p className="text-xs text-muted-foreground">{t(`leader.modeHint.${mode}`)}</p>
+      </div>
       {error && (
         <p role="alert" className="text-sm font-medium text-destructive">
           {error}
@@ -273,7 +288,13 @@ export default function Leaders() {
 
   const leaders = leadersRes.data || [];
   const branches = branchesRes.data || [];
-  const tachkila = tachkilaRes.data || { years: [], year: null, assignments: [] };
+  const tachkila = tachkilaRes.data || {
+    years: [],
+    year: null,
+    assignments: [],
+    template: [],
+    missing_count: 0,
+  };
 
   function reloadAll() {
     leadersRes.reload({ quiet: true });
@@ -297,6 +318,36 @@ export default function Leaders() {
       await api.del(`/tachkila/${a.id}`);
       reloadAll();
       toast.success(t('leader.assignmentDeleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  // Assign / unassign a قائد straight from the row, so the تشكيلة can be adjusted any time of the year
+  async function quickAssign(a, leaderId) {
+    try {
+      await api.put(`/tachkila/${a.id}`, { leader_id: leaderId === '' ? null : Number(leaderId) });
+      reloadAll();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  // A مساعد sits right under its chef: same فرقة, same sort_order (the newer id breaks the tie)
+  function addAssistant(a) {
+    setEditingAssignment({
+      leader_id: '',
+      title: `${t('leader.assistantPrefix')} ${a.title}`,
+      branch_id: a.branch_id ?? '',
+      sort_order: a.sort_order ?? 0,
+    });
+  }
+
+  async function fillTemplate() {
+    try {
+      const { added } = await api.post('/tachkila/fill', { year: tachkila.year });
+      reloadAll();
+      toast.success(added > 0 ? t('leader.templateFilled', { count: added }) : t('leader.templateComplete'));
     } catch (err) {
       toast.error(err.message);
     }
@@ -327,21 +378,49 @@ export default function Leaders() {
     );
   }
 
+  // One row = one توصيف. It exists even with no قائد yet; the inline select fills or frees it.
   function AssignmentRow({ a }) {
     return (
       <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-        <Avatar photo={a.photo} name={`${a.first_name} ${a.last_name}`} />
-        <div className="min-w-32 flex-1">
-          <Link
-            to={`/leaders/${a.leader_id}`}
-            className="focus-ring rounded font-medium hover:text-primary hover:underline"
-          >
-            {a.first_name} {a.last_name}
+        {a.leader_id ? (
+          <Link to={`/leaders/${a.leader_id}`} className="focus-ring rounded-full">
+            <Avatar photo={a.photo} name={`${a.first_name} ${a.last_name}`} />
           </Link>
-          <div className="text-sm text-muted-foreground">{a.title}</div>
+        ) : (
+          <span
+            aria-hidden="true"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground"
+          >
+            <IconShield className="h-4 w-4" />
+          </span>
+        )}
+        <div className="min-w-40 flex-1 space-y-1.5">
+          <div className={cn('font-medium', !a.leader_id && 'text-muted-foreground')}>{a.title}</div>
+          <Select
+            value={a.leader_id || ''}
+            onChange={(e) => quickAssign(a, e.target.value)}
+            aria-label={`${a.title} — ${t('leader.selectLeader')}`}
+            className="max-w-64"
+          >
+            <option value="">{t('leader.unassigned')}</option>
+            {leaders.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.first_name} {l.last_name}
+              </option>
+            ))}
+          </Select>
         </div>
         {a.branch_id && <Badge>{branchName(a, i18n.language)}</Badge>}
         <div className="flex gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => addAssistant(a)}
+            aria-label={t('leader.addAssistant')}
+            title={t('leader.addAssistant')}
+          >
+            <IconPlus />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -412,6 +491,12 @@ export default function Leaders() {
               <IconPlus />
               {t('leader.newYear')}
             </Button>
+            {tachkila.year && tachkila.missing_count > 0 && (
+              <Button variant="outline" size="sm" onClick={fillTemplate}>
+                <IconShield />
+                {t('leader.fillTemplate', { count: tachkila.missing_count })}
+              </Button>
+            )}
             {tachkila.year && (
               <Button size="sm" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
                 <IconPlus />
@@ -438,16 +523,7 @@ export default function Leaders() {
             <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
           ) : (
             <div>
-              {branchGroups.map((g) => (
-                <div key={g.branch.id}>
-                  <GroupHeading count={g.list.length}>{branchName(g.branch, i18n.language)}</GroupHeading>
-                  <ul className="divide-y divide-border">
-                    {g.list.map((a) => (
-                      <AssignmentRow key={a.id} a={a} />
-                    ))}
-                  </ul>
-                </div>
-              ))}
+              {/* الأمانات first — عميد الفوج heads the organigram — then فرقة by فرقة */}
               {showAmanat && amanat.length > 0 && (
                 <div>
                   <GroupHeading count={amanat.length}>{t('leader.amanat')}</GroupHeading>
@@ -458,6 +534,16 @@ export default function Leaders() {
                   </ul>
                 </div>
               )}
+              {branchGroups.map((g) => (
+                <div key={g.branch.id}>
+                  <GroupHeading count={g.list.length}>{branchName(g.branch, i18n.language)}</GroupHeading>
+                  <ul className="divide-y divide-border">
+                    {g.list.map((a) => (
+                      <AssignmentRow key={a.id} a={a} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
@@ -580,6 +666,7 @@ export default function Leaders() {
             year={tachkila.year}
             leaders={leaders}
             branches={branches}
+            template={tachkila.template}
             onSaved={() => {
               setEditingAssignment(null);
               reloadAll();

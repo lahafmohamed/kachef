@@ -7,3 +7,4 @@ server/scout.db-shm
 
 # personal docs
 *.pdf
+server/scout.db.bak-*

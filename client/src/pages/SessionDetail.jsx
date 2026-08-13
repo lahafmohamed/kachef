@@ -159,7 +159,11 @@ export default function SessionDetail() {
         <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{session.title}</h1>
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span className="tabular-nums">{fmtDate(session.date)}</span>
-          <Badge>{branchName(session, i18n.language)}</Badge>
+          {session.branch_id ? (
+            <Badge>{branchName(session, i18n.language)}</Badge>
+          ) : (
+            <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+          )}
           {session.leader && (
             <span>
               {t('session.leader')} :{' '}
@@ -286,9 +290,13 @@ export default function SessionDetail() {
       </Card>
 
       {/* ---------- Roster ---------- */}
+      {/* نشاط قادة has no عناصر at all: présence is marked on the animators card above */}
+      {session.kind !== 'leaders' && (
       <Card>
         <CardHeader>
-          <CardTitle>{t('session.roster')}</CardTitle>
+          <CardTitle>
+            {t(session.kind === 'visit' ? 'session.visitedMembers' : 'session.roster')}
+          </CardTitle>
         </CardHeader>
         <CardContent className="p-0 pb-2">
           {totalRoster === 0 ? (
@@ -331,6 +339,7 @@ export default function SessionDetail() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

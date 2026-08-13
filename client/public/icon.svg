@@ -1,17 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Kachef Scout">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1d7a52" />
-      <stop offset="1" stop-color="#27a596" />
+    <!-- Tile ground: the logo's shadowed peak fading into its lake -->
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3e1d4f" />
+      <stop offset="1" stop-color="#0d7d92" />
     </linearGradient>
+    <!-- Everything in the emblem is clipped to the disc, as in the mark -->
+    <clipPath id="disc">
+      <circle cx="256" cy="256" r="150" />
+    </clipPath>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#g)" />
-  <text
-    x="256"
-    y="352"
-    font-size="288"
-    font-family="Segoe UI, system-ui, sans-serif"
-    text-anchor="middle"
-    fill="#ffffff"
-  >⚜</text>
+
+  <!-- Full bleed so the maskable variant has no transparent corners -->
+  <rect width="512" height="512" fill="url(#tile)" />
+
+  <!-- Dome field -->
+  <circle cx="256" cy="256" r="150" fill="#f3ebd7" />
+
+  <g clip-path="url(#disc)">
+    <!-- Sun -->
+    <circle cx="256" cy="238" r="88" fill="#fbc55b" />
+    <!-- Far peak -->
+    <path d="M206 190 296 410 116 410Z" fill="#9b5fb0" />
+    <!-- Shadowed peak -->
+    <path d="M206 262 264 410 150 410Z" fill="#3e1d4f" />
+    <!-- Lake / near peak -->
+    <path d="M314 166 424 302 424 410 200 410Z" fill="#12b0c4" />
+  </g>
+
+  <!-- Outer ring -->
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#f58220" stroke-width="9" />
 </svg>

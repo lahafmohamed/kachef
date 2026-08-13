@@ -19,6 +19,7 @@ import {
   Label,
   PageHeader,
   RequirementGrid,
+  SegmentedControl,
   Select,
   Skeleton,
   Table,
@@ -33,11 +34,13 @@ import {
 } from '../components/ui';
 
 const EMPTY = {
+  kind: 'activity',
   title: '',
   date: todayISO(),
   branch_id: '',
   leader_id: '',
   helper_ids: [],
+  member_ids: [],
   fee: '',
   matalib: [],
 };
@@ -81,6 +84,7 @@ export default function Sessions() {
   const sessions = useFetch(`/sessions?${params}`);
   const branches = useFetch('/branches');
   const leaders = useFetch('/leaders');
+  const members = useFetch('/members');
 
   const activeFilters = [branch, from, to].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;
@@ -93,6 +97,8 @@ export default function Sessions() {
   }
 
   const [creating, setCreating] = useState(false);
+  const [memberQuery, setMemberQuery] = useState('');
+  const [helperQuery, setHelperQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState(null);
@@ -118,7 +124,35 @@ export default function Sessions() {
   // Selecting a branch auto-picks its leader from the current تشكيلة (still changeable)
   function pickBranch(branchId) {
     const b = branchList.find((x) => x.id === Number(branchId));
-    setForm((f) => ({ ...f, branch_id: branchId, matalib: [], leader_id: b?.leader_id || f.leader_id }));
+    setForm((f) => ({
+      ...f,
+      branch_id: branchId,
+      matalib: [],
+      // عناصر of the previous فرقة are no longer visitable
+      member_ids: [],
+      leader_id: b?.leader_id || f.leader_id,
+    }));
+  }
+
+  // Switching type resets what no longer applies: مطالب and عناصر belong to a فرقة نشاط only
+  function pickKind(kind) {
+    setForm((f) => ({
+      ...f,
+      kind,
+      title: kind === 'visit' ? t('session.familyVisit') : f.title === t('session.familyVisit') ? '' : f.title,
+      matalib: [],
+      member_ids: [],
+      fee: kind === 'visit' ? '' : f.fee,
+    }));
+  }
+
+  function toggleVisited(id) {
+    setForm((f) => ({
+      ...f,
+      member_ids: f.member_ids.includes(id)
+        ? f.member_ids.filter((x) => x !== id)
+        : [...f.member_ids, id],
+    }));
   }
 
   function toggleHelper(id) {
@@ -137,11 +171,12 @@ export default function Sessions() {
     try {
       const s = await api.post('/sessions', {
         ...form,
-        branch_id: Number(form.branch_id),
+        branch_id: form.kind === 'leaders' ? null : Number(form.branch_id),
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
+        member_ids: form.kind === 'visit' ? form.member_ids : [],
         fee: form.fee === '' ? null : Number(form.fee),
-        matalib: form.matalib,
+        matalib: form.kind === 'visit' ? [] : form.matalib,
       });
       setCreating(false);
       setForm({ ...EMPTY, branch_id: form.branch_id, leader_id: form.leader_id });
@@ -156,6 +191,24 @@ export default function Sessions() {
 
   const availableHelpers = leaderList.filter(
     (l) => l.status === 'active' && l.id !== Number(form.leader_id)
+  );
+  const isVisit = form.kind === 'visit';
+  // نشاط قادة: no فرقة, no عناصر, no مطالب — only the قادة who take part
+  const isLeadersOnly = form.kind === 'leaders';
+  // Both pickers stay usable with 40+ names: filter on the full name, and never
+  // hide an already-ticked row — otherwise a search makes selections look lost.
+  const matches = (person, query) =>
+    `${person.first_name} ${person.last_name}`.toLowerCase().includes(query.trim().toLowerCase());
+
+  // A زيارة is recorded inside a فرقة, so only its active عناصر can be visited
+  const visitableMembers = (members.data || []).filter(
+    (m) =>
+      m.status === 'active' &&
+      m.branch_id === Number(form.branch_id) &&
+      (!memberQuery || form.member_ids.includes(m.id) || matches(m, memberQuery))
+  );
+  const shownHelpers = availableHelpers.filter(
+    (l) => !helperQuery || form.helper_ids.includes(l.id) || matches(l, helperQuery)
   );
 
   return (
@@ -278,7 +331,12 @@ export default function Sessions() {
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <Badge>{branchName(s, i18n.language)}</Badge>
+                      {s.branch_id ? (
+                        <Badge>{branchName(s, i18n.language)}</Badge>
+                      ) : (
+                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+                      )}
+                      {s.kind === 'visit' && <Badge variant="warning">{t('session.kindVisit')}</Badge>}
                       {s.matalib.length > 0 && (
                         <Badge variant="warning">
                           {s.matalib.length} {t('session.requirementsShort')}
@@ -321,9 +379,18 @@ export default function Sessions() {
                       >
                         {s.title}
                       </Link>
+                      {s.kind === 'visit' && (
+                        <Badge variant="warning" className="ms-2">
+                          {t('session.kindVisit')}
+                        </Badge>
+                      )}
                     </Td>
                     <Td>
-                      <Badge>{branchName(s, i18n.language)}</Badge>
+                      {s.branch_id ? (
+                        <Badge>{branchName(s, i18n.language)}</Badge>
+                      ) : (
+                        <Badge variant="secondary">{t('session.kindLeaders')}</Badge>
+                      )}
                     </Td>
                     <Td className="text-muted-foreground">{s.leader || '—'}</Td>
                     <Td>
@@ -340,8 +407,27 @@ export default function Sessions() {
         </>
       )}
 
-      <Dialog open={creating} onClose={() => setCreating(false)} title={t('session.newSession')}>
+      <Dialog
+        open={creating}
+        onClose={() => setCreating(false)}
+        title={t(isVisit ? 'session.newVisit' : isLeadersOnly ? 'session.newLeadersSession' : 'session.newSession')}
+      >
         <form onSubmit={create} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="block">{t('session.kind')}</Label>
+            <SegmentedControl
+              className="w-full"
+              options={[
+                { value: 'activity', label: t('session.kindActivity') },
+                { value: 'visit', label: t('session.kindVisit') },
+                { value: 'leaders', label: t('session.kindLeaders') },
+              ]}
+              value={form.kind}
+              onChange={pickKind}
+              label={t('session.kind')}
+            />
+          </div>
+
           <div className="space-y-1.5">
             <Label htmlFor="s_title">{t('session.sessionTitle')}</Label>
             <Input
@@ -364,31 +450,37 @@ export default function Sessions() {
                 onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
               />
             </div>
+            {!isVisit && (
+              <div className="space-y-1.5">
+                <Label htmlFor="s_fee">{t('session.fee')}</Label>
+                <Input
+                  id="s_fee"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  placeholder="—"
+                  value={form.fee}
+                  onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
+                />
+              </div>
+            )}
+            {!isLeadersOnly && (
+              <div className="space-y-1.5">
+                <Label htmlFor="s_branch">{t('session.branch')}</Label>
+                <Select id="s_branch" required value={form.branch_id} onChange={(e) => pickBranch(e.target.value)}>
+                  {branchList.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {branchName(b, i18n.language)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="space-y-1.5">
-              <Label htmlFor="s_fee">{t('session.fee')}</Label>
-              <Input
-                id="s_fee"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                placeholder="—"
-                value={form.fee}
-                onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="s_branch">{t('session.branch')}</Label>
-              <Select id="s_branch" required value={form.branch_id} onChange={(e) => pickBranch(e.target.value)}>
-                {branchList.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {branchName(b, i18n.language)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="s_leader">{t('session.leader')}</Label>
+              <Label htmlFor="s_leader">
+                {t(isVisit || isLeadersOnly ? 'session.visitMainLeader' : 'session.leader')}
+              </Label>
               <Select
                 id="s_leader"
                 required
@@ -409,20 +501,68 @@ export default function Sessions() {
             </div>
           </div>
 
+          {/* زيارة الأهل: pick the عناصر whose families were visited — each one gets the
+              visit recorded in their file the moment the نشاط is saved */}
+          {isVisit && (
+            <div className="space-y-1.5">
+              <Label>
+                {t('session.visitedMembers')}
+                <span className="ms-2 font-normal text-muted-foreground">
+                  {t('session.selectedCount', { count: form.member_ids.length })}
+                </span>
+              </Label>
+              <SearchInput
+                value={memberQuery}
+                onChange={setMemberQuery}
+                autoFocusHotkey={false}
+                placeholder={t('session.searchMember')}
+              />
+              {visitableMembers.length === 0 ? (
+                <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  {t(memberQuery ? 'common.noResults' : 'member.noMembers')}
+                </p>
+              ) : (
+                <div className="max-h-52 overflow-y-auto rounded-md border border-border p-1.5">
+                  {visitableMembers.map((m) => (
+                    <label
+                      key={m.id}
+                      className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={form.member_ids.includes(m.id)}
+                        onChange={() => toggleVisited(m.id)}
+                      />
+                      {m.first_name} {m.last_name}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label>
-              {t('session.helpers')}
+              {t(isVisit || isLeadersOnly ? 'session.visitParticipants' : 'session.helpers')}
               <span className="ms-2 font-normal text-muted-foreground">
                 {t('session.selectedCount', { count: form.helper_ids.length })}
               </span>
             </Label>
-            {availableHelpers.length === 0 ? (
+            {availableHelpers.length > 0 && (
+              <SearchInput
+                value={helperQuery}
+                onChange={setHelperQuery}
+                autoFocusHotkey={false}
+                placeholder={t('session.searchLeader')}
+              />
+            )}
+            {shownHelpers.length === 0 ? (
               <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                {t('session.noHelpersAvailable')}
+                {t(availableHelpers.length === 0 ? 'session.noHelpersAvailable' : 'common.noResults')}
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border p-1.5">
-                {availableHelpers.map((l) => (
+                {shownHelpers.map((l) => (
                   <label
                     key={l.id}
                     className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
@@ -439,7 +579,7 @@ export default function Sessions() {
             )}
           </div>
 
-          {selectedBranch?.total_requirements > 0 && (
+          {!isVisit && !isLeadersOnly && selectedBranch?.total_requirements > 0 && (
             <div className="space-y-1.5">
               <Label>
                 {t('session.requirements')}

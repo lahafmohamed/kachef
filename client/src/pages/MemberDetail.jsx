@@ -1,7 +1,9 @@
-import { Link, useParams } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useBack, useFetch } from '../hooks';
 import { fmtDate, branchName, birthdayWhen } from '../utils';
+import SearchInput from '../components/SearchInput';
 import {
   Avatar,
   Badge,
@@ -24,6 +26,8 @@ import {
   IconCake,
   IconCalendar,
   IconPhone,
+  IconPin,
+  IconUsers,
 } from '../components/ui';
 
 const STATUS_BADGE = {
@@ -36,6 +40,8 @@ export default function MemberDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
   const back = useBack('/members');
+  const navigate = useNavigate();
+  const [historyQuery, setHistoryQuery] = useState('');
   const { data: member, loading, error, reload } = useFetch(`/members/${id}`);
 
   if (loading) return <SkeletonPage rows={4} />;
@@ -47,6 +53,13 @@ export default function MemberDetail() {
   const reqPct = member.branch_total_requirements
     ? Math.min(100, Math.round((stats.requirements_earned / member.branch_total_requirements) * 100))
     : 0;
+  // Search the présence log by نشاط title or date (typing "06/2026" narrows to a month)
+  const hq = historyQuery.trim().toLowerCase();
+  const history = hq
+    ? stats.history.filter((h) =>
+        [h.title, h.date, fmtDate(h.date)].some((v) => String(v || '').toLowerCase().includes(hq))
+      )
+    : stats.history;
   const rateTone =
     stats.rate === null ? 'text-foreground' : stats.rate >= 75 ? 'text-success' : stats.rate >= 50 ? 'text-warning' : 'text-destructive';
 
@@ -107,6 +120,42 @@ export default function MemberDetail() {
                 <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.joinDate')}>
                   <span className="tabular-nums">{fmtDate(member.join_date)}</span>
                 </Row>
+                {member.birth_place && (
+                  <Row icon={<IconPin className="h-3.5 w-3.5" />} label={t('member.birthPlace')}>
+                    {member.birth_place}
+                  </Row>
+                )}
+                {member.father_name && (
+                  <Row icon={<IconUsers className="h-3.5 w-3.5" />} label={t('member.fatherName')}>
+                    {member.father_name}
+                  </Row>
+                )}
+                {member.mother_name && (
+                  <Row icon={<IconUsers className="h-3.5 w-3.5" />} label={t('member.motherName')}>
+                    {member.mother_name}
+                  </Row>
+                )}
+                {member.address_abidjan && (
+                  <Row icon={<IconPin className="h-3.5 w-3.5" />} label={t('member.addressAbidjan')}>
+                    {member.address_abidjan}
+                  </Row>
+                )}
+                {member.address_lebanon && (
+                  <Row icon={<IconPin className="h-3.5 w-3.5" />} label={t('member.addressLebanon')}>
+                    {member.address_lebanon}
+                  </Row>
+                )}
+                {member.member_phone && (
+                  <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.memberPhone')}>
+                    <a
+                      href={`tel:${member.member_phone}`}
+                      dir="ltr"
+                      className="focus-ring rounded tabular-nums text-primary hover:underline"
+                    >
+                      {member.member_phone}
+                    </a>
+                  </Row>
+                )}
                 {member.parent_phone && (
                   <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.parentPhone')}>
                     {/* Tapping a number should place the call on a phone */}
@@ -215,6 +264,33 @@ export default function MemberDetail() {
         </Card>
       )}
 
+      {/* زيارات الأهل — kept out of the présence table on purpose: a visit is not an
+          activity the عنصر attended, it is something the قادة did for their family. */}
+      {member.visits?.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('session.familyVisits')}</CardTitle>
+            <Badge variant="outline">{member.visits.length}</Badge>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <ul className="divide-y divide-border">
+              {member.visits.map((v) => (
+                <li key={v.session_id}>
+                  <Link
+                    to={`/sessions/${v.session_id}`}
+                    className="focus-ring flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 transition-colors hover:bg-accent/50 sm:px-5"
+                  >
+                    <span className="tabular-nums text-sm text-muted-foreground">{fmtDate(v.date)}</span>
+                    <span className="flex-1 text-sm font-medium">{v.title}</span>
+                    {v.leaders && <span className="text-xs text-muted-foreground">{v.leaders}</span>}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>{t('member.attendanceHistory')}</CardTitle>
@@ -228,36 +304,56 @@ export default function MemberDetail() {
           {stats.history.length === 0 ? (
             <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('member.noAttendance')} />
           ) : (
-            <Table>
-              <thead className="border-b border-border">
-                <tr>
-                  <Th>{t('common.date')}</Th>
-                  <Th>{t('session.sessionTitle')}</Th>
-                  <Th className="text-end">{t('member.status')}</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {stats.history.map((h) => {
-                  const [variant, key] = STATUS_BADGE[h.status];
-                  return (
-                    <tr key={h.session_id} className="transition-colors hover:bg-accent/40">
-                      <Td className="whitespace-nowrap tabular-nums">{fmtDate(h.date)}</Td>
-                      <Td>
-                        <Link
-                          to={`/sessions/${h.session_id}`}
-                          className="focus-ring rounded font-medium hover:text-primary hover:underline"
-                        >
-                          {h.title}
-                        </Link>
-                      </Td>
-                      <Td className="text-end">
-                        <Badge variant={variant}>{t(key)}</Badge>
-                      </Td>
+            <>
+              <div className="px-4 pb-3 sm:px-5">
+                <SearchInput
+                  value={historyQuery}
+                  onChange={setHistoryQuery}
+                  autoFocusHotkey={false}
+                  placeholder={t('member.searchHistory')}
+                />
+              </div>
+              {history.length === 0 ? (
+                <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('common.noResults')} />
+              ) : (
+                <Table>
+                  <thead className="border-b border-border">
+                    <tr>
+                      <Th>{t('common.date')}</Th>
+                      <Th>{t('session.sessionTitle')}</Th>
+                      <Th className="text-end">{t('member.status')}</Th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </Table>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {history.map((h) => {
+                      const [variant, key] = STATUS_BADGE[h.status];
+                      return (
+                        // The whole row opens the نشاط — the title alone is a small target on a phone
+                        <tr
+                          key={h.session_id}
+                          onClick={() => navigate(`/sessions/${h.session_id}`)}
+                          className="cursor-pointer transition-colors hover:bg-accent/40"
+                        >
+                          <Td className="whitespace-nowrap tabular-nums">{fmtDate(h.date)}</Td>
+                          <Td>
+                            <Link
+                              to={`/sessions/${h.session_id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                            >
+                              {h.title}
+                            </Link>
+                          </Td>
+                          <Td className="text-end">
+                            <Badge variant={variant}>{t(key)}</Badge>
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </Table>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
