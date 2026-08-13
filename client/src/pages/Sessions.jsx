@@ -68,8 +68,8 @@ export default function Sessions() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const toast = useToast();
-  const { canEdit } = usePerms();
-  const editable = canEdit('sessions');
+  const { has } = usePerms();
+  const editable = has('sessions.create');
 
   const [q, setQ] = useState('');
   const [branch, setBranch] = useState('');
@@ -87,7 +87,8 @@ export default function Sessions() {
   const sessions = useFetch(`/sessions?${params}`);
   const branches = useFetch('/branches');
   const leaders = useFetch('/leaders');
-  const members = useFetch('/members');
+  // Visit picker needs the roster; without members.read the fetch would 403
+  const members = useFetch('/members', { skip: !has('members.read') });
 
   const activeFilters = [branch, from, to].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;

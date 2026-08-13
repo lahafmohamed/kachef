@@ -33,8 +33,8 @@ export default function Promotions() {
   const toast = useToast();
   const confirm = useConfirm();
   // View-only accounts see who is due for promotion but cannot apply it
-  const { canEdit } = usePerms();
-  const editable = canEdit('promotions');
+  const { has } = usePerms();
+  const editable = has('promotions.apply');
   const pending = useFetch('/promotions/pending');
   const history = useFetch('/promotions/history');
   const [busy, setBusy] = useState(null); // null | 'all' | member id

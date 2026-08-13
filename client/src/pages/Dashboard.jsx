@@ -38,7 +38,7 @@ export default function Dashboard() {
   // Mirrors the server rule. Skip fetches that would 403.
   const { can } = usePerms();
   const stats = useFetch('/stats');
-  const sessions = useFetch('/sessions', { skip: !can('sessions') });
+  const sessions = useFetch('/sessions', { skip: !can('sessions.read') });
 
   if (stats.loading) return <SkeletonPage />;
   if (stats.error)
@@ -54,14 +54,14 @@ export default function Dashboard() {
 
   // A tile whose page the account cannot open would dead-end on 403 — drop it
   const tiles = [
-    can('members') && {
+    can('members.read') && {
       to: '/members',
       icon: <IconUsers className="h-5 w-5" />,
       label: t('dashboard.totalMembers'),
       value: total,
       hint: t('dashboard.activeMembers'),
     },
-    can('promotions') && {
+    can('promotions.read') && {
       to: '/promotions',
       icon: <IconTrendingUp className="h-5 w-5" />,
       label: t('dashboard.pendingPromotions'),
@@ -69,7 +69,7 @@ export default function Dashboard() {
       tone: s.pending_promotions > 0 ? 'warning' : 'brand',
       hint: s.pending_promotions > 0 ? t('dashboard.needsReview') : t('dashboard.allClear'),
     },
-    can('sessions') && {
+    can('sessions.read') && {
       to: '/sessions',
       icon: <IconCalendar className="h-5 w-5" />,
       label: t('dashboard.monthSessions'),
@@ -77,7 +77,7 @@ export default function Dashboard() {
       tone: 'brand',
       hint: t('dashboard.thisMonth'),
     },
-    can('sessions') && {
+    can('sessions.read') && {
       to: '/sessions',
       icon: <IconTrendingUp className="h-5 w-5" />,
       label: t('dashboard.monthRate'),
@@ -181,7 +181,7 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      {can('sessions') && (
+      {can('sessions.read') && (
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>{t('dashboard.recentSessions')}</CardTitle>

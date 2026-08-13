@@ -340,10 +340,19 @@
     "lastAdmin": "Impossible de retirer le dernier admin",
     "passwordTooShort": "Mot de passe trop court (4 caractères min.)",
     "allowedPages": "Pages autorisées",
-    "pagesHint": "Lecture seule : voit la page sans pouvoir ajouter, modifier ni supprimer. Le tableau de bord reste toujours accessible.",
+    "pagesHint": "Sans « Accéder à la page », la page disparaît complètement. Le tableau de bord reste toujours accessible.",
     "permNone": "Rien",
     "permView": "Lecture seule",
     "permEdit": "Lecture + édition",
-    "customPerms": "Droits personnalisés"
+    "customPerms": "Droits personnalisés",
+    "permAccess": "Accéder à la page",
+    "permMembersContact": "Voir téléphones et adresses",
+    "permMembersCreate": "Ajouter un membre",
+    "permMembersEdit": "Modifier un membre",
+    "permMembersDelete": "Supprimer un membre",
+    "permSessionsFees": "Voir les montants",
+    "permSessionsCreate": "Ajouter une activité",
+    "permSessionsAttendance": "Marquer les présences et gérer les animateurs",
+    "permPromotionsApply": "Valider les promotions"
   }
 }

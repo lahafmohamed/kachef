@@ -61,21 +61,22 @@ export function AuthProvider({ children }) {
 
 export const useAuth = () => useContext(AuthContext);
 
-/** Access level for a page: none | view | edit. Admin or null perms = edit everywhere. */
-function permLevel(user, key) {
-  if (!user) return 'none';
-  if (user.role === 'admin' || !user.perms) return 'edit';
+/**
+ * Granular permission check ("members.read", "sessions.attendance", ...).
+ * The server sends perms already normalized to the granular array; a stale
+ * cached user may still carry an older shape, so page-name arrays and
+ * {page: level} objects are read generously until /auth/me refreshes it.
+ */
+function has(user, key) {
+  if (!user) return false;
+  if (user.role === 'admin' || !user.perms) return true;
   const p = user.perms;
-  // Legacy array shape: a listed page meant full access
-  if (Array.isArray(p)) return p.includes(key) ? 'edit' : 'none';
-  return p[key] || 'none';
+  const page = key.split('.')[0];
+  if (Array.isArray(p)) return p.includes(key) || p.includes(page);
+  return p[page] === 'edit' || (p[page] === 'view' && !/create|edit|delete|apply|attendance/.test(key));
 }
 
-/** `can(page)` = may open it; `canEdit(page)` = may also create/modify/delete. */
 export function usePerms() {
   const { user } = useAuth();
-  return {
-    can: (key) => permLevel(user, key) !== 'none',
-    canEdit: (key) => permLevel(user, key) === 'edit',
-  };
+  return { has: (key) => has(user, key), can: (key) => has(user, key) };
 }

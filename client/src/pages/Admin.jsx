@@ -15,7 +15,6 @@ import {
   Input,
   Label,
   PageHeader,
-  SegmentedControl,
   Select,
   SkeletonPage,
   useConfirm,
@@ -27,15 +26,41 @@ import {
   IconUsers,
 } from '../components/ui';
 
-// Pages an account can be limited to; labels reuse the nav translations
-const PERM_OPTIONS = [
-  { key: 'members', label: 'nav.members' },
-  { key: 'sessions', label: 'nav.sessions' },
-  { key: 'branches', label: 'nav.branches' },
-  { key: 'promotions', label: 'nav.promotions' },
+// Granular permission catalog, grouped by page — must mirror the server's PERM_GROUPS
+const PERM_GROUPS = [
+  {
+    page: 'nav.members',
+    items: [
+      { key: 'members.read', label: 'admin.permAccess' },
+      { key: 'members.contact', label: 'admin.permMembersContact' },
+      { key: 'members.create', label: 'admin.permMembersCreate' },
+      { key: 'members.edit', label: 'admin.permMembersEdit' },
+      { key: 'members.delete', label: 'admin.permMembersDelete' },
+    ],
+  },
+  {
+    page: 'nav.sessions',
+    items: [
+      { key: 'sessions.read', label: 'admin.permAccess' },
+      { key: 'sessions.read.fees', label: 'admin.permSessionsFees' },
+      { key: 'sessions.create', label: 'admin.permSessionsCreate' },
+      { key: 'sessions.attendance', label: 'admin.permSessionsAttendance' },
+    ],
+  },
+  {
+    page: 'nav.branches',
+    items: [{ key: 'branches.read', label: 'admin.permAccess' }],
+  },
+  {
+    page: 'nav.promotions',
+    items: [
+      { key: 'promotions.read', label: 'admin.permAccess' },
+      { key: 'promotions.apply', label: 'admin.permPromotionsApply' },
+    ],
+  },
 ];
 
-const FULL_PERMS = Object.fromEntries(PERM_OPTIONS.map((p) => [p.key, 'edit']));
+const ALL_PERM_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
 
 const EMPTY_USER = {
   username: '',
@@ -43,16 +68,11 @@ const EMPTY_USER = {
   display_name: '',
   role: 'user',
   branches: [],
-  perms: { ...FULL_PERMS },
+  perms: [...ALL_PERM_KEYS],
 };
 
-// Stored perms may be null (full access) or the legacy array shape
-function normalizePerms(p) {
-  if (!p) return { ...FULL_PERMS };
-  if (Array.isArray(p))
-    return Object.fromEntries(PERM_OPTIONS.map((o) => [o.key, p.includes(o.key) ? 'edit' : 'none']));
-  return { ...FULL_PERMS, ...p };
-}
+// The server sends perms normalized to the granular array; null = full access
+const normalizePerms = (p) => (p ? p.filter((k) => ALL_PERM_KEYS.includes(k)) : [...ALL_PERM_KEYS]);
 
 function UserForm({ initial, branches, onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
@@ -68,8 +88,21 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
     }));
   }
 
-  function setPerm(key, level) {
-    setForm((f) => ({ ...f, perms: { ...f.perms, [key]: level } }));
+  function togglePerm(key) {
+    setForm((f) => ({
+      ...f,
+      perms: f.perms.includes(key) ? f.perms.filter((x) => x !== key) : [...f.perms, key],
+    }));
+  }
+
+  // Group header checkbox: everything of the page on, or everything off
+  function toggleGroup(group) {
+    const keys = group.items.map((i) => i.key);
+    const all = keys.every((k) => form.perms.includes(k));
+    setForm((f) => ({
+      ...f,
+      perms: all ? f.perms.filter((k) => !keys.includes(k)) : [...new Set([...f.perms, ...keys])],
+    }));
   }
 
   async function submit(e) {
@@ -79,7 +112,7 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
     const body = {
       display_name: form.display_name || null,
       role: form.role,
-      // Empty branch selection = every فرقة; the server stores full-edit perms as null
+      // Empty branch selection = every فرقة; the server stores the complete set as null
       branches: form.branches.length ? form.branches : null,
       perms: form.perms,
     };
@@ -172,23 +205,46 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
       {form.role === 'user' && (
         <div className="space-y-1.5">
           <Label className="block">{t('admin.allowedPages')}</Label>
-          <div className="space-y-1 rounded-md border border-border p-2">
-            {PERM_OPTIONS.map((p) => (
-              <div key={p.key} className="flex items-center justify-between gap-3">
-                <span className="text-sm">{t(p.label)}</span>
-                <SegmentedControl
-                  size="sm"
-                  label={t(p.label)}
-                  value={form.perms[p.key]}
-                  onChange={(v) => setPerm(p.key, v)}
-                  options={[
-                    { value: 'none', label: t('admin.permNone'), tone: 'destructive' },
-                    { value: 'view', label: t('admin.permView'), tone: 'warning' },
-                    { value: 'edit', label: t('admin.permEdit'), tone: 'success' },
-                  ]}
-                />
-              </div>
-            ))}
+          <div className="space-y-2">
+            {PERM_GROUPS.map((g) => {
+              const checkedCount = g.items.filter((i) => form.perms.includes(i.key)).length;
+              return (
+                <div key={g.page} className="overflow-hidden rounded-md border border-border">
+                  <label className="flex min-h-10 cursor-pointer items-center gap-2.5 bg-muted/40 px-3 text-sm font-semibold hover:bg-muted/60">
+                    <input
+                      type="checkbox"
+                      checked={checkedCount === g.items.length}
+                      ref={(el) => el && (el.indeterminate = checkedCount > 0 && checkedCount < g.items.length)}
+                      onChange={() => toggleGroup(g)}
+                    />
+                    {t(g.page)}
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {checkedCount}/{g.items.length}
+                    </span>
+                  </label>
+                  <div className="divide-y divide-border">
+                    {g.items.map((i) => (
+                      <label
+                        key={i.key}
+                        className="flex min-h-11 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-sm hover:bg-accent/60 sm:min-h-10"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={form.perms.includes(i.key)}
+                          onChange={() => togglePerm(i.key)}
+                        />
+                        <span className="flex-1">
+                          <span className="block">{t(i.label)}</span>
+                          <span className="block font-mono text-[0.65rem] text-muted-foreground" dir="ltr">
+                            {i.key}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <p className="text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
         </div>

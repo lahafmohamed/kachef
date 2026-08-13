@@ -21,10 +21,10 @@ import {
 
 const NAV_ITEMS = [
   { to: '/', key: 'nav.dashboard', short: 'nav.dashboardShort', Icon: IconHome, end: true },
-  { to: '/branches', key: 'nav.branches', short: 'nav.branches', Icon: IconAward, perm: 'branches' },
-  { to: '/members', key: 'nav.members', short: 'nav.members', Icon: IconUsers, perm: 'members' },
-  { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions' },
-  { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions' },
+  { to: '/branches', key: 'nav.branches', short: 'nav.branches', Icon: IconAward, perm: 'branches.read' },
+  { to: '/members', key: 'nav.members', short: 'nav.members', Icon: IconUsers, perm: 'members.read' },
+  { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions.read' },
+  { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions.read' },
   { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, admin: true },
   { to: '/settings', key: 'nav.settings', short: 'nav.settings', Icon: IconSettings, admin: true },
   { to: '/admin', key: 'nav.admin', short: 'nav.admin', Icon: IconLock, admin: true },

@@ -340,10 +340,19 @@
     "lastAdmin": "لا يمكن إزالة آخر مدير",
     "passwordTooShort": "كلمة المرور قصيرة جدًا (4 أحرف على الأقل)",
     "allowedPages": "الصفحات المسموح بها",
-    "pagesHint": "عرض فقط: يرى الصفحة بدون إضافة أو تعديل أو حذف. لوحة القيادة متاحة دائمًا.",
+    "pagesHint": "بدون \"الوصول إلى الصفحة\" تختفي الصفحة كليًا. لوحة القيادة متاحة دائمًا.",
     "permNone": "لا شيء",
     "permView": "عرض فقط",
     "permEdit": "عرض وتعديل",
-    "customPerms": "صلاحيات مخصصة"
+    "customPerms": "صلاحيات مخصصة",
+    "permAccess": "الوصول إلى الصفحة",
+    "permMembersContact": "رؤية أرقام الهاتف والعناوين",
+    "permMembersCreate": "إضافة عضو",
+    "permMembersEdit": "تعديل عضو",
+    "permMembersDelete": "حذف عضو",
+    "permSessionsFees": "رؤية المبالغ",
+    "permSessionsCreate": "إضافة نشاط",
+    "permSessionsAttendance": "تسجيل الحضور وإدارة المنشطين",
+    "permPromotionsApply": "تنفيذ الترقيات"
   }
 }

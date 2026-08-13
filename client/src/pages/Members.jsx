@@ -248,14 +248,18 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
           </div>
         </div>
       </Link>
-      {onEdit && (
+      {(onEdit || onDelete) && (
         <div className="flex shrink-0 gap-0.5">
-          <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')}>
-            <IconPencil />
-          </Button>
-          <Button variant="destructive-ghost" size="icon" onClick={onDelete} aria-label={t('common.delete')}>
-            <IconTrash />
-          </Button>
+          {onEdit && (
+            <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')}>
+              <IconPencil />
+            </Button>
+          )}
+          {onDelete && (
+            <Button variant="destructive-ghost" size="icon" onClick={onDelete} aria-label={t('common.delete')}>
+              <IconTrash />
+            </Button>
+          )}
         </div>
       )}
     </li>
@@ -267,8 +271,10 @@ export default function Members() {
   const toast = useToast();
   const confirm = useConfirm();
   // View-only accounts get the list without any add/edit/delete affordance
-  const { canEdit } = usePerms();
-  const editable = canEdit('members');
+  const { has } = usePerms();
+  const canCreate = has('members.create');
+  const canModify = has('members.edit');
+  const canDelete = has('members.delete');
 
   const [branch, setBranch] = useState('');
   const [status, setStatus] = useState('');
@@ -310,7 +316,7 @@ export default function Members() {
   return (
     <div className="space-y-4">
       <PageHeader title={t('member.title')} description={t('member.subtitle', { count: list.length })}>
-        {editable && (
+        {canCreate && (
           <Button variant="brand" onClick={() => setEditing('new')}>
             <IconPlus />
             {t('member.addMember')}
@@ -381,7 +387,7 @@ export default function Members() {
                 >
                   {t('common.clearFilters')}
                 </Button>
-              ) : editable ? (
+              ) : canCreate ? (
                 <Button variant="brand" onClick={() => setEditing('new')}>
                   <IconPlus />
                   {t('member.addMember')}
@@ -403,8 +409,8 @@ export default function Members() {
                   m={m}
                   lang={i18n.language}
                   t={t}
-                  onEdit={editable ? () => setEditing(m) : null}
-                  onDelete={editable ? () => remove(m) : null}
+                  onEdit={canModify ? () => setEditing(m) : null}
+                  onDelete={canDelete ? () => remove(m) : null}
                 />
               ))}
             </ul>
@@ -421,7 +427,7 @@ export default function Members() {
                   <Th>{t('member.parentPhone')}</Th>
                   <Th>{t('member.joinDate')}</Th>
                   <Th>{t('member.status')}</Th>
-                  {editable && <Th className="text-end">{t('common.actions')}</Th>}
+                  {(canModify || canDelete) && <Th className="text-end">{t('common.actions')}</Th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -456,25 +462,29 @@ export default function Members() {
                         {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
                       </Badge>
                     </Td>
-                    {editable && (
+                    {(canModify || canDelete) && (
                       <Td className="text-end">
                         <div className="flex justify-end gap-0.5">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => setEditing(m)}
-                            aria-label={t('common.edit')}
-                          >
-                            <IconPencil />
-                          </Button>
-                          <Button
-                            variant="destructive-ghost"
-                            size="icon-sm"
-                            onClick={() => remove(m)}
-                            aria-label={t('common.delete')}
-                          >
-                            <IconTrash />
-                          </Button>
+                          {canModify && (
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => setEditing(m)}
+                              aria-label={t('common.edit')}
+                            >
+                              <IconPencil />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="destructive-ghost"
+                              size="icon-sm"
+                              onClick={() => remove(m)}
+                              aria-label={t('common.delete')}
+                            >
+                              <IconTrash />
+                            </Button>
+                          )}
                         </div>
                       </Td>
                     )}

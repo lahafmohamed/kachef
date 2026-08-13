@@ -50,8 +50,8 @@ export default function SessionDetail() {
   const confirm = useConfirm();
 
   // View-only: présence is displayed as badges, never as tappable controls
-  const { canEdit } = usePerms();
-  const editable = canEdit('sessions');
+  const { has } = usePerms();
+  const editable = has('sessions.attendance');
   const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
   const leaders = useFetch('/leaders');
   const [bulkBusy, setBulkBusy] = useState(false);

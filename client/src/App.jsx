@@ -108,12 +108,12 @@ function Shell() {
       <ErrorBoundary title={t('error.crashTitle')} retryLabel={t('error.reload')}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          {can('branches') && <Route path="/branches" element={<Branches />} />}
-          {can('members') && <Route path="/members" element={<Members />} />}
-          {can('members') && <Route path="/members/:id" element={<MemberDetail />} />}
-          {can('sessions') && <Route path="/sessions" element={<Sessions />} />}
-          {can('sessions') && <Route path="/sessions/:id" element={<SessionDetail />} />}
-          {can('promotions') && <Route path="/promotions" element={<Promotions />} />}
+          {can('branches.read') && <Route path="/branches" element={<Branches />} />}
+          {can('members.read') && <Route path="/members" element={<Members />} />}
+          {can('members.read') && <Route path="/members/:id" element={<MemberDetail />} />}
+          {can('sessions.read') && <Route path="/sessions" element={<Sessions />} />}
+          {can('sessions.read') && <Route path="/sessions/:id" element={<SessionDetail />} />}
+          {can('promotions.read') && <Route path="/promotions" element={<Promotions />} />}
           {isAdmin && <Route path="/leaders" element={<Leaders />} />}
           <Route path="/leaders/:id" element={<LeaderDetail />} />
           {isAdmin && <Route path="/settings" element={<Settings />} />}
