@@ -78,7 +78,7 @@ export default function LeaderDetail() {
   const card = leader.card || { year: '', total: 0, done_count: 0, items: [] };
 
   const stats = [
-    { value: leader.sessions.length, label: t('leader.sessionsLed'), cls: 'text-brand-gradient' },
+    { value: leader.sessions.length, label: t('leader.sessionsLed'), cls: 'text-primary' },
     { value: leader.attendance?.present ?? 0, label: t('leader.timesPresent'), cls: 'text-success' },
     { value: leader.attendance?.absent ?? 0, label: t('leader.timesAbsent'), cls: 'text-destructive' },
   ];
@@ -91,7 +91,7 @@ export default function LeaderDetail() {
       </Button>
 
       <Card className="overflow-hidden">
-        <div className="bg-brand-gradient h-1.5" />
+        <div className="bg-primary h-1.5" />
         <CardContent className="p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <Avatar
@@ -140,7 +140,7 @@ export default function LeaderDetail() {
                   <div className={`text-2xl font-bold leading-none tabular-nums sm:text-3xl ${s.cls}`}>
                     {s.value}
                   </div>
-                  <div className="mt-1 text-[0.7rem] leading-tight text-muted-foreground">{s.label}</div>
+                  <div className="mt-1 text-xs leading-tight text-muted-foreground">{s.label}</div>
                 </div>
               ))}
             </div>

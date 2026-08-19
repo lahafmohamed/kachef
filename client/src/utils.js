@@ -1,8 +1,20 @@
-// ISO (AAAA-MM-JJ) -> JJ/MM/AAAA
+import i18n from './i18n';
+import { toDate } from './lib/date';
+
+// Latin digits in both locales: dates sit in tabular-nums columns and dir="ltr"
+// islands next to Latin numbers, so Arabic-Indic digits would mix scripts.
+const dateFormats = {};
+function dateFormat(lng) {
+  const locale = lng === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
+  return (dateFormats[locale] ??= new Intl.DateTimeFormat(locale, { dateStyle: 'short' }));
+}
+
 export function fmtDate(iso) {
   if (!iso) return '';
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
+  // Strip bidi control marks (RLM/ALM) the ar formatter inserts: inside the
+  // dir="ltr" islands the UI uses for dates they reverse the segment order.
+  // A bare digits/slashes run already renders d/m/y correctly in RTL text.
+  return dateFormat(i18n.language).format(toDate(iso)).replace(/[‎‏؜]/g, '');
 }
 
 export function todayISO() {

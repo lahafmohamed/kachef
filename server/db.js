@@ -5,6 +5,14 @@ const db = new Database(process.env.SCOUT_DB || path.join(__dirname, 'scout.db')
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// Decided before the CREATE below runs: the curated lists are seeded from the old
+// free-text values exactly once, on the boot that introduces them. Re-seeding later
+// would resurrect entries an admin deleted on purpose, and emptying a list on purpose
+// must stay emptied.
+const lookupsTableIsNew = !db
+  .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lookup_values'")
+  .get();
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS branches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +186,21 @@ CREATE TABLE IF NOT EXISTS attendance (
   status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'excused')),
   UNIQUE(session_id, member_id)
 );
+
+-- Referential lists an admin curates (quartiers d'Abidjan, régions du Liban, écoles).
+-- Registration picks from them instead of typing free text, so "Zone 4" is always
+-- spelled the same way and filtering on it actually returns everybody.
+-- The members columns stay plain TEXT: the list constrains new input, it does not
+-- own the data, so deleting an entry never rewrites a member's file.
+CREATE TABLE IF NOT EXISTS lookup_values (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('residence_abidjan', 'residence_lebanon', 'school')),
+  -- NOCASE so "Zone 4" and "zone 4" collide on the UNIQUE index instead of
+  -- becoming two entries that split the same people across two filters
+  label TEXT NOT NULL COLLATE NOCASE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(kind, label)
+);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -233,6 +256,28 @@ function tachkilaTemplate() {
     });
   });
   return rows;
+}
+
+// Addresses and schools were free text before the curated lists existed. Their distinct
+// values become the first version of each list, so nothing typed so far is lost when the
+// fields turn into pickers.
+function seedLookupsFromMembers() {
+  if (!lookupsTableIsNew) return;
+  const insert = db.prepare('INSERT OR IGNORE INTO lookup_values (kind, label) VALUES (?, ?)');
+  const seed = (kind, col) => {
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT TRIM(${col}) AS v FROM members
+          WHERE ${col} IS NOT NULL AND TRIM(${col}) != '' ORDER BY v`
+      )
+      .all();
+    for (const r of rows) insert.run(kind, r.v);
+  };
+  db.transaction(() => {
+    seed('residence_abidjan', 'address_abidjan');
+    seed('residence_lebanon', 'address_lebanon');
+    seed('school', 'school');
+  })();
 }
 
 function ensureColumn(table, col, ddl) {
@@ -333,6 +378,10 @@ function migrate() {
   ensureColumn('members', 'member_phone', 'member_phone TEXT');
   // المدرسة: added for the school filter, nullable so old rows stay valid
   ensureColumn('members', 'school', 'school TEXT');
+  // فصيلة الدم: required on the form from now on, but nullable in SQL — the rows
+  // registered before it existed stay valid until someone next edits them
+  ensureColumn('members', 'blood_type', 'blood_type TEXT');
+  seedLookupsFromMembers();
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
   if (sessionCols.includes('requirements')) db.exec('ALTER TABLE sessions DROP COLUMN requirements');

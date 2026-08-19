@@ -91,7 +91,7 @@ function BottomNav() {
               end={end}
               className={({ isActive }) =>
                 cn(
-                  'focus-ring relative flex h-[4.25rem] flex-col items-center justify-center gap-1 px-0.5 text-[0.625rem] font-medium leading-tight transition-colors',
+                  'focus-ring relative flex h-[4.25rem] flex-col items-center justify-center gap-1 px-0.5 text-[0.6875rem] font-medium leading-tight transition-colors',
                   isActive ? 'text-primary' : 'text-muted-foreground'
                 )
               }
@@ -168,7 +168,7 @@ function Brand({ className }) {
         height={90}
         className="h-20 w-20 shrink-0 object-cover object-[50%_18%] lg:h-[90px] lg:w-[90px]"
       />
-      <span className="text-brand-gradient truncate text-base font-bold tracking-tight">
+      <span className="truncate text-base font-bold tracking-tight text-primary">
         {t('app.name')}
       </span>
     </div>
@@ -246,12 +246,7 @@ export default function Layout({ children }) {
         </div>
       </header>
 
-      {/* `isolate` keeps the -z-10 backdrop above the body background instead of
-          disappearing behind it (no positioned ancestor would otherwise exist). */}
-      <div className="relative isolate lg:ps-64">
-        <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-96 overflow-hidden">
-          <div className="aurora h-full w-full" />
-        </div>
+      <div className="relative lg:ps-64">
         <main
           id="main"
           className="relative mx-auto max-w-6xl p-4 pb-[calc(var(--bottomnav-h)+1.5rem)] sm:p-6 lg:p-8 lg:pb-10"

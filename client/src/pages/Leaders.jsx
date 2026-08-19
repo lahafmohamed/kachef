@@ -26,12 +26,14 @@ import {
   cn,
   useConfirm,
   useToast,
+  IconCheck,
   IconLock,
   IconPencil,
   IconPlus,
   IconShield,
   IconTrash,
   IconUsers,
+  IconX,
 } from '../components/ui';
 
 const EMPTY_LEADER = { first_name: '', last_name: '', phone: '', photo: null, status: 'active' };
@@ -676,8 +678,14 @@ export default function Leaders() {
                     <span className="tabular-nums">
                       {l.sessions_count} {t('leader.sessionsLed')}
                     </span>
-                    <Badge variant="success">✓ {l.present_count}</Badge>
-                    <Badge variant="destructive">✗ {l.absent_count}</Badge>
+                    <Badge variant="success">
+                      <IconCheck className="h-3 w-3" />
+                      {l.present_count}
+                    </Badge>
+                    <Badge variant="destructive">
+                      <IconX className="h-3 w-3" />
+                      {l.absent_count}
+                    </Badge>
                     {/* بطاقة تقدم القائد لسنة التشكيلة الجارية */}
                     {l.card?.total > 0 && (
                       <Badge variant={l.card.done_count === l.card.total ? 'success' : 'outline'}>

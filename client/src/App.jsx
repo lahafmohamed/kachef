@@ -94,13 +94,13 @@ function AdminRoute({ children }) {
 function Shell() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  // Mirrors the server rule; the server enforces it again on every request
+  const { can } = usePerms();
 
   // No session → nothing but the login screen, whatever the URL says
   if (!user) return <Login />;
 
   const isAdmin = user.role === 'admin';
-  // Mirrors the server rule; the server enforces it again on every request
-  const { can } = usePerms();
 
   return (
     <Layout>

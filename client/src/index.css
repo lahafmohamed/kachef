@@ -5,64 +5,50 @@
 
 /* ============================================================
    Design tokens
-   Palette is sampled from the group logo:
-     teal    #12B0C4   the lake / dominant mark
-     purple  #9B5FB0   the near peak + wordmark
-     plum    #3E1D4F   the shadowed peak — used as ink & dark ground
-     orange  #F58220   the outer ring
-     gold    #FBC55B   the sun
-     cream   #F3EBD7   the dome field
+   Solid-color system built around the logo's dominant teal (the lake).
+   One accent color carries every interactive surface; everything else
+   is a quiet neutral so data stays the loudest thing on screen.
+   Logo orange is reserved for warnings, logo plum for info.
    Raw values live here so light/dark can swap at runtime.
    Tailwind utilities read them through the @theme inline block.
    ============================================================ */
 
 :root {
-  /* Surfaces */
-  --background: hsl(192 44% 98%);
-  --foreground: hsl(275 32% 12%);
+  /* Surfaces — warm neutral ground, pure white cards */
+  --background: hsl(45 12% 97%);
+  --foreground: hsl(220 15% 14%);
   --card: hsl(0 0% 100%);
-  --card-foreground: hsl(275 32% 12%);
+  --card-foreground: hsl(220 15% 14%);
   --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(275 32% 12%);
+  --popover-foreground: hsl(220 15% 14%);
 
-  /* Brand — deep teal reads as the action color; the gradient runs
-     lake → peak, the same left-to-right move as the emblem. */
-  --primary: hsl(191 92% 27%);
+  /* Brand — the logo's lake teal, solid. The only accent in the UI. */
+  --primary: hsl(193 82% 31%);
   --primary-foreground: hsl(190 60% 98%);
-  --primary-hover: hsl(191 94% 21%);
-  --brand-from: hsl(189 86% 36%);
-  --brand-to: hsl(284 42% 48%);
+  --primary-hover: hsl(193 86% 24%);
 
-  /* Logo accents — available directly for illustrative / decorative use */
-  --brand-teal: hsl(187 83% 42%);
-  --brand-purple: hsl(284 34% 53%);
-  --brand-plum: hsl(280 46% 21%);
-  --brand-orange: hsl(28 91% 54%);
-  --brand-gold: hsl(40 95% 67%);
-  --brand-cream: hsl(42 55% 92%);
+  /* Neutrals — plain cool greys, no brand tint */
+  --secondary: hsl(220 12% 95%);
+  --secondary-foreground: hsl(220 12% 25%);
+  --muted: hsl(220 12% 95%);
+  --muted-foreground: hsl(220 8% 44%);
+  --accent: hsl(190 55% 94%);
+  --accent-foreground: hsl(193 85% 22%);
 
-  /* Neutrals — tinted toward the plum so greys never read as dead grey */
-  --secondary: hsl(200 24% 95%);
-  --secondary-foreground: hsl(275 22% 22%);
-  --muted: hsl(200 24% 95%);
-  --muted-foreground: hsl(265 10% 45%);
-  --accent: hsl(188 62% 95%);
-  --accent-foreground: hsl(191 92% 24%);
-
-  /* Semantic — info borrows the logo purple so it never fights the teal */
+  /* Semantic — warning keeps the logo orange, info a muted logo plum */
   --success: hsl(150 68% 29%);
   --success-foreground: hsl(150 40% 98%);
   --warning: hsl(28 90% 35%);
   --warning-foreground: hsl(40 60% 98%);
   --destructive: hsl(0 72% 44%);
   --destructive-foreground: hsl(0 0% 98%);
-  --info: hsl(284 45% 42%);
+  --info: hsl(280 26% 42%);
   --info-foreground: hsl(285 40% 98%);
 
   /* Lines & focus */
-  --border: hsl(200 22% 90%);
-  --input: hsl(200 20% 84%);
-  --ring: hsl(189 86% 38%);
+  --border: hsl(220 12% 89%);
+  --input: hsl(220 10% 82%);
+  --ring: hsl(193 82% 36%);
 
   /* Radii — softer than the old set; the emblem is all round forms */
   --radius-xs: 0.375rem;
@@ -73,14 +59,14 @@
   --radius-2xl: 1.5rem;
   --radius-3xl: 2rem;
 
-  /* Elevation — plum-tinted, layered close+far pairs rather than flat black */
-  --shadow-xs: 0 1px 2px 0 hsl(278 40% 14% / 0.05);
-  --shadow-sm: 0 1px 3px 0 hsl(278 40% 14% / 0.07), 0 1px 2px -1px hsl(278 40% 14% / 0.06);
-  --shadow-md: 0 4px 14px -3px hsl(278 40% 14% / 0.10), 0 2px 5px -2px hsl(278 40% 14% / 0.05);
-  --shadow-lg: 0 14px 32px -8px hsl(278 40% 14% / 0.16), 0 4px 10px -4px hsl(278 40% 14% / 0.07);
-  --shadow-xl: 0 28px 56px -14px hsl(278 40% 14% / 0.24);
-  /* Coloured glow for primary/brand surfaces */
-  --shadow-brand: 0 8px 24px -8px hsl(191 92% 27% / 0.45);
+  /* Elevation — neutral, layered close+far pairs rather than flat black */
+  --shadow-xs: 0 1px 2px 0 hsl(220 25% 12% / 0.05);
+  --shadow-sm: 0 1px 3px 0 hsl(220 25% 12% / 0.07), 0 1px 2px -1px hsl(220 25% 12% / 0.06);
+  --shadow-md: 0 4px 14px -3px hsl(220 25% 12% / 0.10), 0 2px 5px -2px hsl(220 25% 12% / 0.05);
+  --shadow-lg: 0 14px 32px -8px hsl(220 25% 12% / 0.16), 0 4px 10px -4px hsl(220 25% 12% / 0.07);
+  --shadow-xl: 0 28px 56px -14px hsl(220 25% 12% / 0.24);
+  /* Primary surfaces share the neutral shadow — no coloured glow */
+  --shadow-brand: 0 4px 14px -3px hsl(220 25% 12% / 0.14), 0 2px 5px -2px hsl(220 25% 12% / 0.06);
 
   /* Motion */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
@@ -98,53 +84,44 @@
 }
 
 .dark {
-  /* Ground is the logo's shadowed peak, not a neutral charcoal */
-  --background: hsl(274 28% 7%);
-  --foreground: hsl(280 14% 93%);
-  --card: hsl(275 24% 11%);
-  --card-foreground: hsl(280 14% 93%);
-  --popover: hsl(275 24% 13%);
-  --popover-foreground: hsl(280 14% 93%);
+  /* Neutral charcoal ground — the teal accent does the branding */
+  --background: hsl(220 12% 7%);
+  --foreground: hsl(220 10% 92%);
+  --card: hsl(220 10% 11%);
+  --card-foreground: hsl(220 10% 92%);
+  --popover: hsl(220 10% 13%);
+  --popover-foreground: hsl(220 10% 92%);
 
-  --primary: hsl(187 76% 50%);
-  --primary-foreground: hsl(275 40% 9%);
-  --primary-hover: hsl(187 82% 58%);
-  --brand-from: hsl(187 78% 56%);
-  --brand-to: hsl(284 60% 70%);
+  --primary: hsl(190 72% 46%);
+  --primary-foreground: hsl(210 30% 8%);
+  --primary-hover: hsl(190 78% 54%);
 
-  --brand-teal: hsl(187 76% 52%);
-  --brand-purple: hsl(284 48% 66%);
-  --brand-plum: hsl(280 30% 16%);
-  --brand-orange: hsl(28 92% 62%);
-  --brand-gold: hsl(40 95% 70%);
-  --brand-cream: hsl(42 30% 86%);
-
-  --secondary: hsl(275 18% 18%);
-  --secondary-foreground: hsl(280 14% 90%);
-  --muted: hsl(275 18% 18%);
-  --muted-foreground: hsl(275 10% 64%);
-  --accent: hsl(272 26% 20%);
-  --accent-foreground: hsl(187 70% 76%);
+  --secondary: hsl(220 8% 17%);
+  --secondary-foreground: hsl(220 10% 90%);
+  --muted: hsl(220 8% 17%);
+  --muted-foreground: hsl(220 6% 63%);
+  --accent: hsl(195 25% 18%);
+  --accent-foreground: hsl(190 65% 72%);
 
   --success: hsl(150 58% 48%);
   --success-foreground: hsl(150 40% 8%);
   --warning: hsl(38 90% 60%);
   --warning-foreground: hsl(30 45% 10%);
-  --destructive: hsl(0 68% 58%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --info: hsl(284 62% 72%);
-  --info-foreground: hsl(284 45% 10%);
+  --destructive: hsl(0 75% 64%);
+  --destructive-foreground: hsl(0 50% 10%);
+  --info: hsl(280 32% 70%);
+  --info-foreground: hsl(280 30% 10%);
 
-  --border: hsl(275 16% 21%);
-  --input: hsl(275 16% 26%);
-  --ring: hsl(187 76% 55%);
+  --border: hsl(220 8% 20%);
+  --input: hsl(220 8% 26%);
+  --ring: hsl(190 72% 52%);
 
   --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.35);
   --shadow-sm: 0 1px 3px 0 hsl(0 0% 0% / 0.45), 0 1px 2px -1px hsl(0 0% 0% / 0.35);
   --shadow-md: 0 4px 14px -3px hsl(0 0% 0% / 0.5), 0 2px 5px -2px hsl(0 0% 0% / 0.35);
   --shadow-lg: 0 14px 32px -8px hsl(0 0% 0% / 0.6), 0 4px 10px -4px hsl(0 0% 0% / 0.4);
   --shadow-xl: 0 28px 56px -14px hsl(0 0% 0% / 0.75);
-  --shadow-brand: 0 8px 24px -8px hsl(187 76% 50% / 0.4);
+  --shadow-brand: 0 4px 14px -3px hsl(0 0% 0% / 0.5), 0 2px 5px -2px hsl(0 0% 0% / 0.35);
 
   color-scheme: dark;
 }
@@ -160,15 +137,6 @@
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-hover: var(--primary-hover);
-  --color-brand-from: var(--brand-from);
-  --color-brand-to: var(--brand-to);
-
-  --color-brand-teal: var(--brand-teal);
-  --color-brand-purple: var(--brand-purple);
-  --color-brand-plum: var(--brand-plum);
-  --color-brand-orange: var(--brand-orange);
-  --color-brand-gold: var(--brand-gold);
-  --color-brand-cream: var(--brand-cream);
 
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -319,25 +287,9 @@ input[type="radio"] {
   }
 }
 
-/* Brand gradient text — lake → peak */
-@utility text-brand-gradient {
-  background-image: linear-gradient(110deg, var(--brand-from), var(--brand-to));
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-}
-
-@utility bg-brand-gradient {
-  background-image: linear-gradient(135deg, var(--brand-from), var(--brand-to));
-}
-
-/* Faint tinted wash for hero panels and empty states */
+/* Faint solid tint for hero panels and empty states */
 @utility bg-brand-soft {
-  background-image: linear-gradient(
-    135deg,
-    color-mix(in oklab, var(--brand-from) 12%, transparent),
-    color-mix(in oklab, var(--brand-to) 12%, transparent)
-  );
+  background-color: color-mix(in oklab, var(--primary) 10%, transparent);
 }
 
 /* Frosted surface for sticky bars — real blur, tinted by the card token */
@@ -359,17 +311,6 @@ input[type="radio"] {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
-}
-
-/* Soft aurora backdrop — three logo-colored blooms, faded out downward.
-   Replaces the old dot grid; keeps the same element contract. */
-.aurora {
-  background-image:
-    radial-gradient(44rem 26rem at 4% -8%, color-mix(in oklab, var(--brand-teal) 42%, transparent), transparent 68%),
-    radial-gradient(38rem 24rem at 88% -14%, color-mix(in oklab, var(--brand-purple) 36%, transparent), transparent 68%),
-    radial-gradient(30rem 20rem at 48% -22%, color-mix(in oklab, var(--brand-gold) 30%, transparent), transparent 68%);
-  mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
-  -webkit-mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
 }
 
 /* ============================================================

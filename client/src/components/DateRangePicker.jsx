@@ -44,7 +44,7 @@ export default function DateRangePicker({ value, onChange, className }) {
   const label = !hasRange
     ? t('session.anyDate')
     : value.from && value.to
-      ? `${fmtDate(value.from)} → ${fmtDate(value.to)}`
+      ? `${fmtDate(value.from)} – ${fmtDate(value.to)}`
       : value.from
         ? `${t('session.dateFrom')} ${fmtDate(value.from)}`
         : `${t('session.dateTo')} ${fmtDate(value.to)}`;

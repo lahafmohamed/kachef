@@ -1,13 +1,13 @@
 {
-  "name": "Kachef Scout",
+  "name": "Kachef Alghadir",
   "short_name": "Kachef",
   "description": "Gestion de groupe scout : membres, matalib, présences et promotions.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#f8fbfc",
-  "theme_color": "#f8fbfc",
+  "background_color": "#f8f7f4",
+  "theme_color": "#f8f7f4",
   "icons": [
     {
       "src": "/logo.png",

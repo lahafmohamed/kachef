@@ -21,6 +21,7 @@ import {
   useToast,
   IconLanguages,
   IconMoon,
+  IconPencil,
   IconPlus,
   IconSettings,
   IconSun,
@@ -131,6 +132,185 @@ function LeaderMatalibCard() {
           <Button type="submit" loading={saving}>
             <IconPlus />
             {t('settings.newMatlab')}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * لوائح مكان السكن والمدارس — the values registration picks from. They live here
+ * because a quartier typed by hand ends up spelled three ways, and each spelling
+ * becomes its own filter entry holding a third of the people who live there.
+ */
+const LOOKUP_KINDS = [
+  { key: 'residence_abidjan', label: 'settings.lookupAbidjan' },
+  { key: 'residence_lebanon', label: 'settings.lookupLebanon' },
+  { key: 'school', label: 'settings.lookupSchool' },
+];
+
+function LookupListsCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { data, loading, error, reload } = useFetch('/lookups');
+  const [kind, setKind] = useState(LOOKUP_KINDS[0].key);
+  const [label, setLabel] = useState('');
+  const [saving, setSaving] = useState(false);
+  // id of the row being renamed, plus its draft text
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState('');
+
+  const list = data?.[kind] || [];
+
+  async function add(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post('/lookups', { kind, label });
+      setLabel('');
+      reload({ quiet: true });
+      toast.success(t('settings.lookupCreated'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function rename(v) {
+    if (!draft.trim() || draft.trim() === v.label) return setEditing(null);
+    try {
+      await api.put(`/lookups/${v.id}`, { label: draft.trim() });
+      setEditing(null);
+      reload({ quiet: true });
+      toast.success(t('settings.lookupRenamed'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  async function remove(v) {
+    const message = v.usage_count
+      ? t('settings.confirmDeleteLookupInUse', { count: v.usage_count })
+      : t('settings.confirmDeleteLookup');
+    if (!(await confirm({ title: t('common.delete'), message }))) return;
+    try {
+      await api.del(`/lookups/${v.id}`);
+      reload({ quiet: true });
+      toast.success(t('settings.lookupDeleted'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  return (
+    <Card className="max-w-3xl">
+      <CardHeader>
+        <CardTitle>{t('settings.lookups')}</CardTitle>
+        <p className="text-sm text-muted-foreground">{t('settings.lookupsHint')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {LOOKUP_KINDS.map((k) => (
+            <Button
+              key={k.key}
+              size="sm"
+              variant={k.key === kind ? 'brand' : 'outline'}
+              onClick={() => {
+                setKind(k.key);
+                setEditing(null);
+              }}
+            >
+              {t(k.label)}
+              <Badge
+                variant="outline"
+                className={
+                  k.key === kind ? 'border-primary-foreground/35 text-primary-foreground' : undefined
+                }
+              >
+                {(data?.[k.key] || []).length}
+              </Badge>
+            </Button>
+          ))}
+        </div>
+
+        {error ? (
+          <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
+        ) : loading ? (
+          <Skeleton className="h-24" />
+        ) : list.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('settings.noLookup')}</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-lg border border-border">
+            {list.map((v) => (
+              <li key={v.id} className="flex items-center gap-2 px-3 py-2">
+                {editing === v.id ? (
+                  <>
+                    <Input
+                      autoFocus
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') rename(v);
+                        if (e.key === 'Escape') setEditing(null);
+                      }}
+                      className="h-9 flex-1"
+                    />
+                    <Button size="sm" onClick={() => rename(v)}>
+                      {t('common.save')}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+                      {t('common.cancel')}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1 truncate text-sm">{v.label}</span>
+                    {/* Says what a delete would leave behind, before it is clicked */}
+                    {v.usage_count > 0 && <Badge variant="outline">{v.usage_count}</Badge>}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => {
+                        setEditing(v.id);
+                        setDraft(v.label);
+                      }}
+                      aria-label={t('common.edit')}
+                    >
+                      <IconPencil />
+                    </Button>
+                    <Button
+                      variant="destructive-ghost"
+                      size="icon-sm"
+                      onClick={() => remove(v)}
+                      aria-label={t('common.delete')}
+                    >
+                      <IconTrash />
+                    </Button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
+          <div className="min-w-48 flex-1 space-y-1.5">
+            <Label htmlFor="lookup_label">{t('settings.lookupLabel')}</Label>
+            <Input
+              id="lookup_label"
+              required
+              autoComplete="off"
+              placeholder={t('settings.lookupPlaceholder')}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+            />
+          </div>
+          <Button type="submit" loading={saving}>
+            <IconPlus />
+            {t('settings.newLookup')}
           </Button>
         </form>
       </CardContent>
@@ -384,7 +564,6 @@ export default function Settings() {
                       type="number"
                       inputMode="numeric"
                       min="0"
-                      placeholder="∞"
                       value={b.max_age ?? ''}
                       onChange={(e) => setField(b.id, 'max_age', e.target.value)}
                     />
@@ -424,6 +603,9 @@ export default function Settings() {
         </CardContent>
       </Card>
 
+      {/* ---------- لوائح مكان السكن والمدارس ---------- */}
+      <LookupListsCard />
+
       {/* ---------- مطالب القادة (بطاقة تقدم القائد) ---------- */}
       <LeaderMatalibCard />
 
@@ -459,7 +641,6 @@ export default function Settings() {
                 type="number"
                 inputMode="numeric"
                 min="0"
-                placeholder="∞"
                 value={newBranch.max_age}
                 onChange={setNew('max_age')}
               />

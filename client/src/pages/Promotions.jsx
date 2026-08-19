@@ -148,7 +148,19 @@ export default function Promotions() {
           <CardTitle>{t('promotion.history')}</CardTitle>
         </CardHeader>
         <CardContent className="p-0 pb-2">
-          {historyList.length === 0 ? (
+          {history.error ? (
+            <div className="px-4 py-2">
+              <ErrorState message={t('error.loadFailed')} onRetry={history.reload} retryLabel={t('error.retry')} />
+            </div>
+          ) : history.loading ? (
+            <div className="divide-y divide-border">
+              {Array.from({ length: 3 }, (_, i) => (
+                <div key={i} className="flex items-center gap-3 p-4">
+                  <Skeleton className="h-4 flex-1" />
+                </div>
+              ))}
+            </div>
+          ) : historyList.length === 0 ? (
             <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('promotion.noHistory')} />
           ) : (
             <>

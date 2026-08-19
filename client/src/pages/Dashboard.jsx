@@ -194,7 +194,11 @@ export default function Dashboard() {
           </Link>
         </CardHeader>
         <CardContent className="p-0 pb-2">
-          {sessions.loading ? (
+          {sessions.error ? (
+            <div className="px-4 py-2">
+              <ErrorState message={t('error.loadFailed')} onRetry={sessions.reload} retryLabel={t('error.retry')} />
+            </div>
+          ) : sessions.loading ? (
             <div className="space-y-3 p-4 sm:p-5">
               <div className="skeleton h-12 rounded-md" />
               <div className="skeleton h-12 rounded-md" />

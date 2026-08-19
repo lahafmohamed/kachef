@@ -6,8 +6,10 @@ import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
 import { fmtDate, todayISO, branchName, fileToDataUrl, birthdayWhen } from '../utils';
 import DatePicker from '../components/DatePicker';
+import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
+import SearchSelect from '../components/SearchSelect';
 import {
   Avatar,
   Badge,
@@ -27,6 +29,7 @@ import {
   useConfirm,
   useToast,
   IconCake,
+  IconFilter,
   IconPencil,
   IconPin,
   IconPlus,
@@ -36,6 +39,9 @@ import {
   IconTrash,
   IconUsers,
 } from '../components/ui';
+
+// Kept in step with BLOOD_TYPES on the server, which rejects anything else
+const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
 const EMPTY_FORM = {
   first_name: '',
@@ -47,6 +53,7 @@ const EMPTY_FORM = {
   address_abidjan: '',
   address_lebanon: '',
   school: '',
+  blood_type: '',
   sex: 'M',
   branch_id: '',
   member_phone: '',
@@ -56,7 +63,7 @@ const EMPTY_FORM = {
   status: 'active',
 };
 
-function MemberForm({ initial, branches, onSave, onCancel }) {
+function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
   const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -117,27 +124,59 @@ function MemberForm({ initial, branches, onSave, onCancel }) {
           <Label htmlFor="birth_place">{t('member.birthPlace')}</Label>
           <Input id="birth_place" autoComplete="off" value={form.birth_place || ''} onChange={set('birth_place')} />
         </div>
+        {/* Picked from the lists an admin curates in الإعدادات, never typed: a quartier
+            spelled two ways would split its people across two filters. */}
         <div className="space-y-1.5">
           <Label htmlFor="address_abidjan">{t('member.addressAbidjan')}</Label>
-          <Input
+          <SearchSelect
             id="address_abidjan"
-            autoComplete="off"
             value={form.address_abidjan || ''}
             onChange={set('address_abidjan')}
+            options={lookups.residence_abidjan}
+            placeholder={t('member.pickValue')}
+            searchPlaceholder={t('common.search')}
+            emptyLabel={t('member.noListValue')}
+            clearLabel={t('member.noValue')}
           />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="address_lebanon">{t('member.addressLebanon')}</Label>
-          <Input
+          <SearchSelect
             id="address_lebanon"
-            autoComplete="off"
             value={form.address_lebanon || ''}
             onChange={set('address_lebanon')}
+            options={lookups.residence_lebanon}
+            placeholder={t('member.pickValue')}
+            searchPlaceholder={t('common.search')}
+            emptyLabel={t('member.noListValue')}
+            clearLabel={t('member.noValue')}
           />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="school">{t('member.school')}</Label>
-          <Input id="school" autoComplete="off" value={form.school || ''} onChange={set('school')} />
+          <SearchSelect
+            id="school"
+            value={form.school || ''}
+            onChange={set('school')}
+            options={lookups.school}
+            placeholder={t('member.pickValue')}
+            searchPlaceholder={t('common.search')}
+            emptyLabel={t('member.noListValue')}
+            clearLabel={t('member.noValue')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="blood_type">{t('member.bloodType')}</Label>
+          <Select id="blood_type" required value={form.blood_type || ''} onChange={set('blood_type')}>
+            <option value="" disabled>
+              {t('member.pickBloodType')}
+            </option>
+            {BLOOD_TYPES.map((bt) => (
+              <option key={bt} value={bt}>
+                {bt}
+              </option>
+            ))}
+          </Select>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="sex">{t('member.sex')}</Label>
@@ -308,21 +347,38 @@ export default function Members() {
   const [status, setStatus] = useState('');
   const [school, setSchool] = useState('');
   const [residence, setResidence] = useState('');
+  const [residenceLebanon, setResidenceLebanon] = useState('');
+  const [blood, setBlood] = useState('');
+  const [ageMin, setAgeMin] = useState('');
+  const [ageMax, setAgeMax] = useState('');
+  const [parentPhone, setParentPhone] = useState('');
+  const [joined, setJoined] = useState({ from: '', to: '' });
+  const [showFilters, setShowFilters] = useState(false);
   // Sorting is a preference, not a filter: it survives from one visit to the next
   const [sort, setSort] = useLocalStorage('members.sort', 'name');
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null); // null | 'new' | member object
 
   const dq = useDebounced(q, 250);
+  const dPhone = useDebounced(parentPhone, 250);
   const branches = useFetch('/branches');
   // Distinct مدارس / أماكن سكن actually in the base — the filters only offer real values
   const filterValues = useFetch('/members/filters');
+  // The curated lists behind the registration pickers
+  const lookups = useFetch('/lookups');
 
   const params = new URLSearchParams();
   if (branch) params.set('branch', branch);
   if (status) params.set('status', status);
   if (school) params.set('school', school);
   if (residence) params.set('residence', residence);
+  if (residenceLebanon) params.set('residence_lebanon', residenceLebanon);
+  if (blood) params.set('blood', blood);
+  if (ageMin !== '') params.set('age_min', ageMin);
+  if (ageMax !== '') params.set('age_max', ageMax);
+  if (dPhone.trim()) params.set('parent_phone', dPhone.trim());
+  if (joined.from) params.set('joined_from', joined.from);
+  if (joined.to) params.set('joined_to', joined.to);
   if (sort && sort !== 'name') params.set('sort', sort);
   if (dq) params.set('q', dq);
   const members = useFetch(`/members?${params}`);
@@ -331,7 +387,27 @@ export default function Members() {
   const branchList = branches.data || [];
   const schools = filterValues.data?.schools || [];
   const residences = filterValues.data?.residences || [];
-  const filtering = !!(branch || status || school || residence || q);
+  const residencesLebanon = filterValues.data?.residencesLebanon || [];
+  // The pickers take plain labels; a value retired from a list still shows on the
+  // فرد who carries it, it simply can no longer be picked again.
+  const lookupLists = {
+    residence_abidjan: (lookups.data?.residence_abidjan || []).map((v) => v.label),
+    residence_lebanon: (lookups.data?.residence_lebanon || []).map((v) => v.label),
+    school: (lookups.data?.school || []).map((v) => v.label),
+  };
+  const bloodTypes = filterValues.data?.bloodTypes || [];
+  // What the collapsed panel hides — the badge has to say it, or a filtered list
+  // looks like a bug to whoever opens the page next
+  const advancedCount = [
+    school,
+    residence,
+    residenceLebanon,
+    blood,
+    ageMin !== '' || ageMax !== '' ? 'age' : '',
+    parentPhone.trim(),
+    joined.from || joined.to ? 'joined' : '',
+  ].filter(Boolean).length;
+  const filtering = !!(branch || status || q || advancedCount);
 
   function clearFilters() {
     setQ('');
@@ -339,6 +415,12 @@ export default function Members() {
     setStatus('');
     setSchool('');
     setResidence('');
+    setResidenceLebanon('');
+    setBlood('');
+    setAgeMin('');
+    setAgeMax('');
+    setParentPhone('');
+    setJoined({ from: '', to: '' });
   }
 
   async function save(form) {
@@ -373,80 +455,176 @@ export default function Members() {
         )}
       </PageHeader>
 
-      {/* Filters — search takes the full width on mobile, selects sit side by side */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <SearchInput
-          value={q}
-          onChange={setQ}
-          placeholder={t('common.search')}
-          className="sm:min-w-56"
-        />
-        <div className="flex gap-2">
-          <FilterSelect
-            value={branch}
-            onChange={setBranch}
-            allLabel={t('member.allBranches')}
-            ariaLabel={t('member.branch')}
-            className="sm:w-auto sm:min-w-40"
-            icon={<IconShield className="opacity-60" />}
-            options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
+      {/* Filters — the three everyone uses stay in the bar; the rest live one click
+          away so the page does not open on a wall of dropdowns */}
+      <div className="space-y-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <SearchInput
+            value={q}
+            onChange={setQ}
+            placeholder={t('member.searchAny')}
+            className="sm:min-w-64"
           />
-          <FilterSelect
-            value={status}
-            onChange={setStatus}
-            allLabel={t('member.allStatuses')}
-            ariaLabel={t('member.status')}
-            className="sm:w-auto sm:min-w-36"
-            options={[
-              { value: 'active', label: t('member.active') },
-              { value: 'inactive', label: t('member.inactive') },
-            ]}
-          />
-        </div>
-        {/* حسب المدرسة / مكان السكن — only offered once the base holds such values */}
-        <div className="flex flex-wrap gap-2">
-          {schools.length > 0 && (
+          <div className="flex gap-2">
             <FilterSelect
-              value={school}
-              onChange={setSchool}
-              allLabel={t('member.allSchools')}
-              ariaLabel={t('member.school')}
-              className="sm:w-auto sm:min-w-44"
-              icon={<IconSchool className="opacity-60" />}
-              options={schools.map((s) => ({ value: s, label: s }))}
+              value={branch}
+              onChange={setBranch}
+              allLabel={t('member.allBranches')}
+              ariaLabel={t('member.branch')}
+              className="sm:w-auto sm:min-w-40"
+              icon={<IconShield className="opacity-60" />}
+              options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
             />
-          )}
-          {residences.length > 0 && (
             <FilterSelect
-              value={residence}
-              onChange={setResidence}
-              allLabel={t('member.allResidences')}
-              ariaLabel={t('member.residence')}
-              className="sm:w-auto sm:min-w-44"
-              icon={<IconPin className="opacity-60" />}
-              options={residences.map((r) => ({ value: r, label: r }))}
+              value={status}
+              onChange={setStatus}
+              allLabel={t('member.allStatuses')}
+              ariaLabel={t('member.status')}
+              className="sm:w-auto sm:min-w-36"
+              options={[
+                { value: 'active', label: t('member.active') },
+                { value: 'inactive', label: t('member.inactive') },
+              ]}
             />
-          )}
-          <FilterSelect
-            value={sort}
-            onChange={setSort}
-            ariaLabel={t('member.sortBy')}
-            className="sm:w-auto sm:min-w-48"
-            icon={<IconSort className="opacity-60" />}
-            options={[
-              { value: 'name', label: t('member.sortName') },
-              { value: 'age_desc', label: t('member.sortAgeDesc') },
-              { value: 'age_asc', label: t('member.sortAgeAsc') },
-              ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
-              ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
-            ]}
-          />
-          {filtering && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              {t('common.clearFilters')}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant={showFilters ? 'secondary' : 'outline'}
+              onClick={() => setShowFilters((v) => !v)}
+              aria-expanded={showFilters}
+            >
+              <IconFilter />
+              {t('member.moreFilters')}
+              {advancedCount > 0 && <Badge variant="default">{advancedCount}</Badge>}
             </Button>
-          )}
+            <FilterSelect
+              value={sort}
+              onChange={setSort}
+              ariaLabel={t('member.sortBy')}
+              className="sm:w-auto sm:min-w-48"
+              icon={<IconSort className="opacity-60" />}
+              options={[
+                { value: 'name', label: t('member.sortName') },
+                { value: 'age_desc', label: t('member.sortAgeDesc') },
+                { value: 'age_asc', label: t('member.sortAgeAsc') },
+                ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
+                ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
+              ]}
+            />
+            {filtering && (
+              <Button variant="ghost" size="sm" onClick={clearFilters}>
+                {t('common.clearFilters')}
+              </Button>
+            )}
+          </div>
         </div>
+
+        {showFilters && (
+          <div className="grid gap-3 rounded-xl border border-border bg-card p-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="f_blood">{t('member.bloodType')}</Label>
+              <FilterSelect
+                value={blood}
+                onChange={setBlood}
+                allLabel={t('member.allBloodTypes')}
+                ariaLabel={t('member.bloodType')}
+                options={bloodTypes.map((bt) => ({ value: bt, label: bt }))}
+              />
+            </div>
+            {/* Age is a range, not a value: "les 12-14 ans" is the actual question */}
+            <div className="space-y-1.5">
+              <Label htmlFor="f_age_min">{t('member.ageRange')}</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="f_age_min"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  max="99"
+                  placeholder={t('member.ageMin')}
+                  value={ageMin}
+                  onChange={(e) => setAgeMin(e.target.value)}
+                />
+                <span className="text-sm text-muted-foreground">–</span>
+                <Input
+                  id="f_age_max"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  max="99"
+                  placeholder={t('member.ageMax')}
+                  value={ageMax}
+                  onChange={(e) => setAgeMax(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="f_phone">{t('member.parentPhone')}</Label>
+              <Input
+                id="f_phone"
+                type="tel"
+                inputMode="tel"
+                dir="ltr"
+                placeholder={t('member.phoneFilterHint')}
+                value={parentPhone}
+                onChange={(e) => setParentPhone(e.target.value)}
+              />
+            </div>
+            {/* Searchable: a فوج ends up with dozens of quartiers and schools */}
+            {schools.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>{t('member.school')}</Label>
+                <SearchSelect
+                  value={school}
+                  onChange={(e) => setSchool(e.target.value)}
+                  options={schools}
+                  clearLabel={t('member.allSchools')}
+                  placeholder={t('member.allSchools')}
+                  searchPlaceholder={t('common.search')}
+                  emptyLabel={t('member.noListValue')}
+                  ariaLabel={t('member.school')}
+                  icon={<IconSchool className="opacity-60" />}
+                />
+              </div>
+            )}
+            {residences.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>{t('member.residence')}</Label>
+                <SearchSelect
+                  value={residence}
+                  onChange={(e) => setResidence(e.target.value)}
+                  options={residences}
+                  clearLabel={t('member.allResidences')}
+                  placeholder={t('member.allResidences')}
+                  searchPlaceholder={t('common.search')}
+                  emptyLabel={t('member.noListValue')}
+                  ariaLabel={t('member.residence')}
+                  icon={<IconPin className="opacity-60" />}
+                />
+              </div>
+            )}
+            {residencesLebanon.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>{t('member.addressLebanon')}</Label>
+                <SearchSelect
+                  value={residenceLebanon}
+                  onChange={(e) => setResidenceLebanon(e.target.value)}
+                  options={residencesLebanon}
+                  clearLabel={t('member.allResidencesLebanon')}
+                  placeholder={t('member.allResidencesLebanon')}
+                  searchPlaceholder={t('common.search')}
+                  emptyLabel={t('member.noListValue')}
+                  ariaLabel={t('member.addressLebanon')}
+                  icon={<IconPin className="opacity-60" />}
+                />
+              </div>
+            )}
+            <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+              <Label>{t('member.joinedBetween')}</Label>
+              <DateRangePicker value={joined} onChange={setJoined} />
+            </div>
+          </div>
+        )}
       </div>
 
       {members.error ? (
@@ -607,6 +785,7 @@ export default function Members() {
                     address_abidjan: editing.address_abidjan || '',
                     address_lebanon: editing.address_lebanon || '',
                     school: editing.school || '',
+                    blood_type: editing.blood_type || '',
                     sex: editing.sex,
                     branch_id: editing.branch_id,
                     member_phone: editing.member_phone || '',
@@ -617,6 +796,7 @@ export default function Members() {
                   }
             }
             branches={branchList}
+            lookups={lookupLists}
             onSave={save}
             onCancel={() => setEditing(null)}
           />

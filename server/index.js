@@ -589,14 +589,101 @@ app.delete('/api/branches/:id', requireAdmin, (req, res) => {
   res.status(204).end();
 });
 
+// ---------- Referential lists (مكان السكن، المدرسة) ----------
+
+// Each list backs one free-text member column. Registration picks from the list so the
+// same quartier is always spelled the same way and filtering on it returns everybody.
+const LOOKUP_COLUMNS = {
+  residence_abidjan: 'address_abidjan',
+  residence_lebanon: 'address_lebanon',
+  school: 'school',
+};
+const LOOKUP_KINDS = Object.keys(LOOKUP_COLUMNS);
+
+// usage_count is what makes a delete decidable: it says how many فرد still carry the value.
+function lookupList(kind) {
+  return db
+    .prepare(
+      `SELECT lv.*,
+              (SELECT COUNT(*) FROM members m WHERE TRIM(m.${LOOKUP_COLUMNS[kind]}) = lv.label) AS usage_count
+         FROM lookup_values lv WHERE lv.kind = ? ORDER BY lv.sort_order, lv.label`
+    )
+    .all(kind);
+}
+
+// Anyone who may open a member file needs the lists — they fill the pickers and the filters.
+app.get('/api/lookups', requirePerm('members.read'), (req, res) => {
+  res.json(Object.fromEntries(LOOKUP_KINDS.map((k) => [k, lookupList(k)])));
+});
+
+function validateLookup(body) {
+  if (!LOOKUP_KINDS.includes(body.kind)) return 'invalid kind';
+  if (!body.label || !String(body.label).trim()) return 'label required';
+  return null;
+}
+
+app.post('/api/lookups', requireAdmin, (req, res) => {
+  const err = validateLookup(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const label = String(req.body.label).trim();
+  const dup = db
+    .prepare('SELECT id FROM lookup_values WHERE kind = ? AND label = ?')
+    .get(req.body.kind, label);
+  if (dup) return res.status(400).json({ error: 'duplicate label' });
+  const info = db
+    .prepare('INSERT INTO lookup_values (kind, label, sort_order) VALUES (?, ?, ?)')
+    .run(req.body.kind, label, Number.isInteger(req.body.sort_order) ? req.body.sort_order : 0);
+  res.status(201).json(db.prepare('SELECT * FROM lookup_values WHERE id = ?').get(info.lastInsertRowid));
+});
+
+// Renaming an entry rewrites it on every فرد that carries it: an admin fixing a spelling
+// means "this place is now written like that", not "orphan everyone who lives there".
+app.put('/api/lookups/:id', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM lookup_values WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const body = { ...existing, ...req.body, kind: existing.kind };
+  const err = validateLookup(body);
+  if (err) return res.status(400).json({ error: err });
+  const label = String(body.label).trim();
+  const dup = db
+    .prepare('SELECT id FROM lookup_values WHERE kind = ? AND label = ? AND id != ?')
+    .get(existing.kind, label, existing.id);
+  if (dup) return res.status(400).json({ error: 'duplicate label' });
+  const col = LOOKUP_COLUMNS[existing.kind];
+  db.transaction(() => {
+    db.prepare('UPDATE lookup_values SET label = ?, sort_order = ? WHERE id = ?').run(
+      label,
+      Number.isInteger(body.sort_order) ? body.sort_order : 0,
+      existing.id
+    );
+    if (label !== existing.label) {
+      db.prepare(`UPDATE members SET ${col} = ? WHERE TRIM(${col}) = ?`).run(label, existing.label);
+    }
+  })();
+  res.json(db.prepare('SELECT * FROM lookup_values WHERE id = ?').get(existing.id));
+});
+
+// Deleting only retires the entry from the pickers. The فرد who live there keep their
+// address on file — the list curates future input, it does not own past data.
+app.delete('/api/lookups/:id', requireAdmin, (req, res) => {
+  const info = db.prepare('DELETE FROM lookup_values WHERE id = ?').run(req.params.id);
+  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.status(204).end();
+});
+
 // ---------- Members ----------
 
-const MEMBER_FIELDS = ['first_name', 'last_name', 'birth_date', 'sex', 'branch_id', 'join_date'];
+const MEMBER_FIELDS = ['first_name', 'last_name', 'birth_date', 'sex', 'branch_id', 'join_date', 'blood_type'];
+
+// فصيلة الدم — a closed list: a group outing needs it readable at a glance, and a
+// free-text field would fill up with "O positif", "o+", "O +" for the same thing.
+const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
 function validateMember(body) {
   for (const f of MEMBER_FIELDS) {
     if (body[f] === undefined || body[f] === null || body[f] === '') return `missing field: ${f}`;
   }
+  if (!BLOOD_TYPES.includes(body.blood_type)) return 'invalid blood_type';
   if (!['M', 'F'].includes(body.sex)) return 'invalid sex';
   if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
   if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(body.branch_id)) return 'invalid branch_id';
@@ -613,8 +700,27 @@ const MEMBER_SORTS = {
   residence: "COALESCE(NULLIF(m.address_abidjan, ''), 'zzz'), m.last_name, m.first_name",
 };
 
+// Local calendar date, N years back — the bound that turns an age filter into a
+// birth_date range. Matching calcAge exactly: age >= N means born on or before this day.
+function isoYearsAgo(years) {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - Number(years));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Phones are typed with spaces, dashes and +225 prefixes: compare digits to digits
+const phoneDigits = (col) =>
+  `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col}, ' ', ''), '-', ''), '.', ''), '(', ''), ')', ''), '+', '')`;
+
 app.get('/api/members', requirePerm('members.read'), (req, res) => {
-  const { branch, q, status, school, residence } = req.query;
+  const {
+    branch, q, status, school, residence,
+    residence_lebanon: residenceLebanon,
+    blood, age_min: ageMin, age_max: ageMax,
+    parent_phone: parentPhone,
+    joined_from: joinedFrom, joined_to: joinedTo,
+  } = req.query;
+  const canContact = hasPerm(req, 'members.contact');
   let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
              FROM members m JOIN branches b ON b.id = m.branch_id WHERE 1=1`;
   const params = [];
@@ -622,14 +728,56 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
   if (branch) { sql += ' AND m.branch_id = ?'; params.push(branch); }
   if (status) { sql += ' AND m.status = ?'; params.push(status); }
   if (school) { sql += ' AND m.school = ?'; params.push(school); }
-  // مكان السكن is contact data: an account that may not read it may not filter on it either
-  if (residence && hasPerm(req, 'members.contact')) {
+  if (blood) { sql += ' AND m.blood_type = ?'; params.push(blood); }
+  // Age is derived, so filtering on it filters birth_date: the older the عنصر, the earlier the date
+  if (ageMin !== undefined && ageMin !== '') { sql += ' AND m.birth_date <= ?'; params.push(isoYearsAgo(ageMin)); }
+  if (ageMax !== undefined && ageMax !== '') { sql += ' AND m.birth_date > ?'; params.push(isoYearsAgo(Number(ageMax) + 1)); }
+  if (joinedFrom) { sql += ' AND m.join_date >= ?'; params.push(joinedFrom); }
+  if (joinedTo) { sql += ' AND m.join_date <= ?'; params.push(joinedTo); }
+  // مكان السكن and phones are contact data: an account that may not read them may not filter on them either
+  if (residence && canContact) {
     sql += ' AND m.address_abidjan = ?';
     params.push(residence);
   }
+  if (residenceLebanon && canContact) {
+    sql += ' AND m.address_lebanon = ?';
+    params.push(residenceLebanon);
+  }
+  if (parentPhone && canContact) {
+    const digits = String(parentPhone).replace(/[^0-9]/g, '');
+    if (digits) {
+      sql += ` AND ${phoneDigits('m.parent_phone')} LIKE ?`;
+      params.push(`%${digits}%`);
+    }
+  }
   if (q) {
-    sql += " AND (m.first_name LIKE ? OR m.last_name LIKE ? OR (m.first_name || ' ' || m.last_name) LIKE ?)";
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    // One box for every way a قائد recognises a عنصر: name, school, quartier,
+    // فصيلة الدم, a phone number read off a screen, or plain age typed as a number.
+    const like = `%${q}%`;
+    const or = [
+      'm.first_name LIKE ?',
+      'm.last_name LIKE ?',
+      "(m.first_name || ' ' || m.last_name) LIKE ?",
+      'm.school LIKE ?',
+      'm.blood_type = ?',
+    ];
+    params.push(like, like, like, like, String(q).trim().toUpperCase());
+    if (canContact) {
+      or.push('m.address_abidjan LIKE ?', 'm.address_lebanon LIKE ?');
+      params.push(like, like);
+      const digits = String(q).replace(/[^0-9]/g, '');
+      if (digits) {
+        or.push(`${phoneDigits('m.member_phone')} LIKE ?`, `${phoneDigits('m.parent_phone')} LIKE ?`);
+        params.push(`%${digits}%`, `%${digits}%`);
+      }
+    }
+    // A bare number is read as an age — "12" should list the twelve-year-olds
+    const asAge = Number(String(q).trim());
+    if (Number.isInteger(asAge) && asAge >= 0 && asAge < 120) {
+      or.push('(m.birth_date <= ? AND m.birth_date > ?)');
+      params.push(isoYearsAgo(asAge), isoYearsAgo(asAge + 1));
+    }
+    sql += ` AND (${or.join(' OR ')})`;
   }
   sql += ` ORDER BY ${MEMBER_SORTS[req.query.sort] || MEMBER_SORTS.name}`;
   const rows = db
@@ -654,6 +802,9 @@ app.get('/api/members/filters', requirePerm('members.read'), (req, res) => {
   res.json({
     schools: distinct('m.school'),
     residences: hasPerm(req, 'members.contact') ? distinct('m.address_abidjan') : [],
+    residencesLebanon: hasPerm(req, 'members.contact') ? distinct('m.address_lebanon') : [],
+    // The closed list, not what happens to be in the base: an empty فصيلة must stay pickable
+    bloodTypes: BLOOD_TYPES,
   });
 });
 
@@ -702,13 +853,14 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
-        address_abidjan, address_lebanon, school, sex, branch_id, member_phone, parent_phone, join_date, photo, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        address_abidjan, address_lebanon, school, blood_type, sex, branch_id, member_phone, parent_phone,
+        join_date, photo, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
       b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-      b.school || null, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
+      b.school || null, b.blood_type, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
       b.join_date, b.photo || null, b.status || 'active'
     );
   res.status(201).json(db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid));
@@ -725,12 +877,12 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   const b = req.body;
   db.prepare(
     `UPDATE members SET first_name = ?, last_name = ?, father_name = ?, mother_name = ?,
-     birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, sex = ?, branch_id = ?,
-     member_phone = ?, parent_phone = ?, join_date = ?, photo = ?, status = ? WHERE id = ?`
+     birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, blood_type = ?,
+     sex = ?, branch_id = ?, member_phone = ?, parent_phone = ?, join_date = ?, photo = ?, status = ? WHERE id = ?`
   ).run(
     b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
     b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-    b.school || null, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
+    b.school || null, b.blood_type, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
     b.join_date, b.photo || null, b.status || 'active', req.params.id
   );
   res.json(db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id));
@@ -1339,14 +1491,29 @@ const saveBranchCounts = db.transaction((sessionId, counts) => {
   for (const c of counts) insert.run(sessionId, c.branch_id, c.count);
 });
 
+// Sorting a نشاط by présence answers "which activity did they skip": the counts are
+// already selected above, so ORDER BY reads them back by alias. `rate` divides by the
+// marked roster, the same way a عنصر's own rate is computed — an unmarked نشاط has none,
+// so NULLIF keeps it out of the way instead of ranking it as a perfect 0%.
+const SESSION_SORTS = {
+  date_desc: 's.date DESC, s.id DESC',
+  date_asc: 's.date ASC, s.id ASC',
+  present_desc: 'present_count DESC, s.date DESC',
+  absent_desc: 'absent_count DESC, s.date DESC',
+  rate_desc: 'rate IS NULL, rate DESC, s.date DESC',
+  rate_asc: 'rate IS NULL, rate ASC, s.date DESC',
+};
+
 app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
-  const { q, branch, from, to } = req.query;
+  const { q, branch, from, to, leader, activity_type: activityType, kind } = req.query;
   let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
         COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader,
         (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') AS absent_count,
-        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count,
+        (SELECT ROUND(100.0 * SUM(a.status = 'present') / NULLIF(COUNT(*), 0))
+           FROM attendance a WHERE a.session_id = s.id) AS rate
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
        WHERE 1=1${branchFilterSQL(req, 's.branch_id')}`;
@@ -1355,11 +1522,23 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   // Dates are stored as YYYY-MM-DD, so plain string comparison sorts correctly
   if (from) { sql += ' AND s.date >= ?'; params.push(from); }
   if (to) { sql += ' AND s.date <= ?'; params.push(to); }
-  if (q) {
-    sql += ` AND (s.title LIKE ? OR COALESCE(l.first_name || ' ' || l.last_name, s.leader) LIKE ?)`;
-    params.push(`%${q}%`, `%${q}%`);
+  if (activityType) { sql += ' AND s.activity_type = ?'; params.push(activityType); }
+  if (kind) { sql += ' AND s.kind = ?'; params.push(kind); }
+  // "What did this قائد run" covers both roles: the animateur principal recorded on the
+  // نشاط itself, and the مساعدين listed in session_leaders.
+  if (leader) {
+    sql += ` AND (s.leader_id = ? OR EXISTS (
+               SELECT 1 FROM session_leaders sl WHERE sl.session_id = s.id AND sl.leader_id = ?))`;
+    params.push(leader, leader);
   }
-  sql += ' ORDER BY s.date DESC, s.id DESC';
+  if (q) {
+    sql += ` AND (s.title LIKE ? OR COALESCE(l.first_name || ' ' || l.last_name, s.leader) LIKE ?
+                  OR s.place LIKE ?
+                  OR EXISTS (SELECT 1 FROM session_leaders sl JOIN leaders l2 ON l2.id = sl.leader_id
+                             WHERE sl.session_id = s.id AND (l2.first_name || ' ' || l2.last_name) LIKE ?))`;
+    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
   const rows = db
     .prepare(sql)
     .all(...params)

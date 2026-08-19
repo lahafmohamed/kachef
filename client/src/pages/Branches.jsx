@@ -37,7 +37,7 @@ function Metric({ icon, label, value, hint }) {
         <span className="truncate">{label}</span>
       </div>
       <div className="tabular mt-1 text-2xl font-bold leading-none">{value}</div>
-      {hint && <div className="mt-1 text-xs text-muted-foreground/80">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }
@@ -241,7 +241,14 @@ export default function Branches() {
               onClick={() => setSelectedId(x.id)}
             >
               {branchName(x, i18n.language)}
-              <Badge variant="outline">{x.members.active}</Badge>
+              <Badge
+                variant="outline"
+                className={
+                  x.id === b.id ? 'border-primary-foreground/35 text-primary-foreground' : undefined
+                }
+              >
+                {x.members.active}
+              </Badge>
             </Button>
           ))}
         </div>

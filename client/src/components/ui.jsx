@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/utils';
 import {
   Select as SelectRoot,
@@ -309,7 +310,7 @@ const buttonVariants = {
   default:
     'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.98]',
   brand:
-    'ring-inset-light bg-brand-gradient text-primary-foreground shadow-brand hover:shadow-lg hover:brightness-[1.06] active:scale-[0.98]',
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.98]',
   secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.98]',
   outline:
     'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
@@ -578,7 +579,7 @@ export function Avatar({ photo, name, className }) {
       aria-hidden="true"
       className={cn(
         base,
-        'bg-brand-gradient ring-inset-light flex items-center justify-center text-xs font-semibold text-white',
+        'bg-primary ring-inset-light flex items-center justify-center text-xs font-semibold text-primary-foreground',
         className
       )}
     >
@@ -597,6 +598,7 @@ export function SkeletonPage({ rows = 5 }) {
     <div className="space-y-4" aria-busy="true" aria-live="polite">
       <Skeleton className="h-8 w-48" />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <Skeleton className="h-24" />
         <Skeleton className="h-24" />
         <Skeleton className="h-24" />
         <Skeleton className="h-24" />
@@ -629,7 +631,7 @@ export function ProgressBar({ value, className, label }) {
       aria-label={label}
     >
       <div
-        className="bg-brand-gradient h-full rounded-full transition-[width] duration-500 ease-out"
+        className="bg-primary h-full rounded-full transition-[width] duration-500 ease-out"
         style={{ width: `${pct}%` }}
       />
     </div>
@@ -653,9 +655,15 @@ let openOverlays = 0;
  * bottom sheet on phones (thumb-reachable, native-feeling).
  */
 export function Dialog({ open, onClose, title, description, children, size = 'md' }) {
+  const { t } = useTranslation();
   const panelRef = useRef(null);
+  const contentRef = useRef(null);
   const restoreRef = useRef(null);
   const titleId = useId();
+  // Callers pass inline arrows; a ref keeps the effect from re-running (and
+  // re-focusing) on every parent render while Escape still sees the latest.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -665,7 +673,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
 
     const panel = panelRef.current;
     // Focus the first field, not the close button, so keyboards land on content.
-    const first = panel?.querySelector(FOCUSABLE);
+    const first = contentRef.current?.querySelector(FOCUSABLE);
     (first || panel)?.focus({ preventScroll: true });
 
     function onKeyDown(e) {
@@ -674,7 +682,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
         // otherwise closing a dropdown would throw the whole form away.
         if (document.querySelector('[data-radix-popper-content-wrapper]')) return;
         e.stopPropagation();
-        onClose?.();
+        onCloseRef.current?.();
         return;
       }
       if (e.key !== 'Tab' || !panel) return;
@@ -698,7 +706,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
       if (openOverlays === 0) document.body.removeAttribute('data-scroll-locked');
       restoreRef.current?.focus?.({ preventScroll: true });
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -707,7 +715,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <div
-        className="animate-overlay-in absolute inset-0 bg-brand-plum/50 backdrop-blur-md"
+        className="animate-overlay-in absolute inset-0 bg-black/50 backdrop-blur-md"
         onClick={onClose}
       />
       <div
@@ -732,11 +740,11 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
             </h2>
             {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="close">
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label={t('common.close')}>
             <IconX />
           </Button>
         </div>
-        <div className="safe-b flex-1 overflow-y-auto p-4 sm:p-5">{children}</div>
+        <div ref={contentRef} className="safe-b flex-1 overflow-y-auto p-4 sm:p-5">{children}</div>
       </div>
     </div>,
     document.body
@@ -1055,7 +1063,7 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
 /** Big number tile. Optional `to` turns the whole tile into a link target. */
 export function StatTile({ icon, label, value, hint, tone = 'brand', className }) {
   const tones = {
-    brand: 'text-brand-gradient',
+    brand: 'text-primary',
     success: 'text-success',
     destructive: 'text-destructive',
     warning: 'text-warning',
@@ -1073,7 +1081,7 @@ export function StatTile({ icon, label, value, hint, tone = 'brand', className }
           {value}
         </div>
         <div className="mt-1.5 truncate text-sm text-muted-foreground">{label}</div>
-        {hint && <div className="text-xs text-muted-foreground/80">{hint}</div>}
+        {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
       </div>
     </div>
   );

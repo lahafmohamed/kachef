@@ -24,6 +24,7 @@ import {
   Th,
   useToast,
   IconAlert,
+  IconArrow,
   IconAward,
   IconBack,
   IconCake,
@@ -101,7 +102,7 @@ export default function MemberDetail() {
 
       {/* ---------- Identity header ---------- */}
       <Card className="overflow-hidden">
-        <div className="bg-brand-gradient h-1.5" />
+        <div className="bg-primary h-1.5" />
         <CardContent className="p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex items-center gap-4">
@@ -157,6 +158,14 @@ export default function MemberDetail() {
                 {member.school && (
                   <Row icon={<IconSchool className="h-3.5 w-3.5" />} label={t('member.school')}>
                     {member.school}
+                  </Row>
+                )}
+                {/* Right under the identity block: on an outing it is what gets looked up first */}
+                {member.blood_type && (
+                  <Row icon={<IconAlert className="h-3.5 w-3.5" />} label={t('member.bloodType')}>
+                    <span className="font-medium" dir="ltr">
+                      {member.blood_type}
+                    </span>
                   </Row>
                 )}
                 {member.father_name && (
@@ -320,7 +329,7 @@ export default function MemberDetail() {
                   <IconAward className="h-4 w-4 text-primary" />
                   <span className="tabular-nums text-muted-foreground">{fmtDate(p.promoted_at)}</span>
                   <Badge variant="secondary">{i18n.language === 'ar' ? p.old_name_ar : p.old_name_fr}</Badge>
-                  <span className="text-muted-foreground rtl:inline-block rtl:rotate-180">→</span>
+                  <IconArrow className="h-3.5 w-3.5 text-muted-foreground rtl:rotate-180" />
                   <Badge>{i18n.language === 'ar' ? p.new_name_ar : p.new_name_fr}</Badge>
                   <span className="ms-auto font-medium text-primary tabular-nums">
                     {t('member.requirementsOf', {

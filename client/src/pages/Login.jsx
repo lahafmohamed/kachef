@@ -24,10 +24,7 @@ export default function Login() {
   }
 
   return (
-    <div className="relative isolate flex min-h-dvh items-center justify-center p-4">
-      <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-96 overflow-hidden">
-        <div className="aurora h-full w-full" />
-      </div>
+    <div className="relative flex min-h-dvh items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardContent className="space-y-5 p-6 sm:p-8">
           <div className="flex flex-col items-center gap-2 text-center">
@@ -38,7 +35,7 @@ export default function Login() {
               height={96}
               className="h-24 w-24 object-cover object-[50%_18%]"
             />
-            <h1 className="text-brand-gradient text-xl font-bold tracking-tight">{t('app.name')}</h1>
+            <h1 className="text-xl font-bold tracking-tight text-primary">{t('app.name')}</h1>
             <p className="text-sm text-muted-foreground">{t('auth.subtitle')}</p>
           </div>
 

@@ -3,13 +3,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
-import { useDebounced, useFetch } from '../hooks';
+import { useDebounced, useFetch, useLocalStorage } from '../hooks';
 import { fmtDate, fmtTime, todayISO, branchName, ACTIVITY_TYPES, activityTypeKey } from '../utils';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
 import TimePicker from '../components/TimePicker';
 import SearchInput from '../components/SearchInput';
+import SearchSelect from '../components/SearchSelect';
 import {
   Badge,
   Button,
@@ -32,6 +33,7 @@ import {
   IconFilter,
   IconPlus,
   IconShield,
+  IconSort,
   IconX,
 } from '../components/ui';
 
@@ -106,6 +108,11 @@ export default function Sessions() {
   const [branch, setBranch] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [leaderFilter, setLeaderFilter] = useState('');
+  const [activityType, setActivityType] = useState('');
+  const [kindFilter, setKindFilter] = useState('');
+  // Sorting is a preference, not a filter: it survives from one visit to the next
+  const [sort, setSort] = useLocalStorage('sessions.sort', 'date_desc');
   const [showFilters, setShowFilters] = useState(false);
 
   const dq = useDebounced(q, 250);
@@ -114,6 +121,10 @@ export default function Sessions() {
   if (branch) params.set('branch', branch);
   if (from) params.set('from', from);
   if (to) params.set('to', to);
+  if (leaderFilter) params.set('leader', leaderFilter);
+  if (activityType) params.set('activity_type', activityType);
+  if (kindFilter) params.set('kind', kindFilter);
+  if (sort && sort !== 'date_desc') params.set('sort', sort);
 
   const sessions = useFetch(`/sessions?${params}`);
   const branches = useFetch('/branches');
@@ -121,7 +132,7 @@ export default function Sessions() {
   // Visit picker needs the roster; without members.read the fetch would 403
   const members = useFetch('/members', { skip: !has('members.read') });
 
-  const activeFilters = [branch, from, to].filter(Boolean).length;
+  const activeFilters = [branch, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;
 
   function clearFilters() {
@@ -129,6 +140,9 @@ export default function Sessions() {
     setBranch('');
     setFrom('');
     setTo('');
+    setLeaderFilter('');
+    setActivityType('');
+    setKindFilter('');
   }
 
   const [creating, setCreating] = useState(false);
@@ -206,6 +220,17 @@ export default function Sessions() {
     }));
   }
 
+  // اختيار الكل only touches the rows currently on screen, so a search narrows what
+  // the button ticks instead of silently selecting names nobody can see.
+  function toggleAll(field, ids, allPicked) {
+    setForm((f) => ({
+      ...f,
+      [field]: allPicked
+        ? f[field].filter((x) => !ids.includes(x))
+        : [...new Set([...f[field], ...ids])],
+    }));
+  }
+
   async function create(e) {
     e.preventDefault();
     setError(null);
@@ -265,6 +290,10 @@ export default function Sessions() {
   const shownHelpers = availableHelpers.filter(
     (l) => !helperQuery || form.helper_ids.includes(l.id) || matches(l, helperQuery)
   );
+  const allMembersPicked =
+    visitableMembers.length > 0 && visitableMembers.every((m) => form.member_ids.includes(m.id));
+  const allHelpersPicked =
+    shownHelpers.length > 0 && shownHelpers.every((l) => form.helper_ids.includes(l.id));
 
   return (
     <div className="space-y-4">
@@ -297,7 +326,7 @@ export default function Sessions() {
           >
             <IconFilter />
             {activeFilters > 0 && (
-              <span className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[0.6rem] font-bold text-primary-foreground">
+              <span className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[0.6875rem] font-bold text-primary-foreground">
                 {activeFilters}
               </span>
             )}
@@ -328,6 +357,57 @@ export default function Sessions() {
               setFrom(f);
               setTo(tt);
             }}
+          />
+          {/* Searchable: the قادة list runs to 40+ names, and this is the "what did
+              he actually run this year" question — it matches مساعدين too. */}
+          <SearchSelect
+            value={leaderFilter}
+            onChange={(e) => setLeaderFilter(e.target.value)}
+            options={leaderList.map((l) => ({ value: l.id, label: `${l.first_name} ${l.last_name}` }))}
+            clearLabel={t('session.allAnimators')}
+            placeholder={t('session.allAnimators')}
+            searchPlaceholder={t('session.searchLeader')}
+            emptyLabel={t('member.noListValue')}
+            ariaLabel={t('session.leader')}
+            className="sm:w-auto sm:min-w-48"
+          />
+          <FilterSelect
+            value={activityType}
+            onChange={setActivityType}
+            allLabel={t('session.allNatures')}
+            ariaLabel={t('session.nature')}
+            className="sm:w-auto sm:min-w-44"
+            options={ACTIVITY_TYPES.map((a) => ({ value: a.value, label: t(a.key) }))}
+          />
+          <FilterSelect
+            value={kindFilter}
+            onChange={setKindFilter}
+            allLabel={t('session.allKinds')}
+            ariaLabel={t('session.kind')}
+            className="sm:w-auto sm:min-w-40"
+            options={[
+              { value: 'activity', label: t('session.kindActivity') },
+              { value: 'visit', label: t('session.kindVisit') },
+              { value: 'leaders', label: t('session.kindLeaders') },
+              { value: 'group', label: t('session.kindGroup') },
+            ]}
+          />
+          {/* "Which نشاط did they skip" is a ranking, not a filter — the counts are
+              already on every row, so it is one ORDER BY away. */}
+          <FilterSelect
+            value={sort}
+            onChange={setSort}
+            ariaLabel={t('member.sortBy')}
+            className="sm:w-auto sm:min-w-52"
+            icon={<IconSort className="opacity-60" />}
+            options={[
+              { value: 'date_desc', label: t('session.sortDateDesc') },
+              { value: 'date_asc', label: t('session.sortDateAsc') },
+              { value: 'absent_desc', label: t('session.sortAbsentDesc') },
+              { value: 'present_desc', label: t('session.sortPresentDesc') },
+              { value: 'rate_asc', label: t('session.sortRateAsc') },
+              { value: 'rate_desc', label: t('session.sortRateDesc') },
+            ]}
           />
           {filtering && (
             <Button variant="ghost" size="sm" onClick={clearFilters}>
@@ -488,6 +568,16 @@ export default function Sessions() {
                 : 'session.newSession'
         )}
       >
+        {branches.error || leaders.error ? (
+          <ErrorState
+            message={t('error.loadFailed')}
+            onRetry={() => {
+              if (branches.error) branches.reload();
+              if (leaders.error) leaders.reload();
+            }}
+            retryLabel={t('error.retry')}
+          />
+        ) : (
         <form onSubmit={create} className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="s_kind">{t('session.kind')}</Label>
@@ -617,12 +707,31 @@ export default function Sessions() {
               visit recorded in their file the moment the نشاط is saved */}
           {isVisit && (
             <div className="space-y-1.5">
-              <Label>
-                {t('session.visitedMembers')}
-                <span className="ms-2 font-normal text-muted-foreground">
-                  {t('session.selectedCount', { count: form.member_ids.length })}
-                </span>
-              </Label>
+              <div className="flex flex-wrap items-center justify-between gap-x-2">
+                <Label>
+                  {t('session.visitedMembers')}
+                  <span className="ms-2 font-normal text-muted-foreground">
+                    {t('session.selectedCount', { count: form.member_ids.length })}
+                  </span>
+                </Label>
+                {visitableMembers.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-my-1 px-2 text-primary"
+                    aria-pressed={allMembersPicked}
+                    onClick={() =>
+                      toggleAll(
+                        'member_ids',
+                        visitableMembers.map((m) => m.id),
+                        allMembersPicked
+                      )
+                    }
+                  >
+                    {t(allMembersPicked ? 'common.clearSelection' : 'common.selectAll')}
+                  </Button>
+                )}
+              </div>
               <SearchInput
                 value={memberQuery}
                 onChange={setMemberQuery}
@@ -696,12 +805,31 @@ export default function Sessions() {
 
           {!isGroup && (
           <div className="space-y-1.5">
-            <Label>
-              {t(isVisit || isLeadersOnly ? 'session.visitParticipants' : 'session.helpers')}
-              <span className="ms-2 font-normal text-muted-foreground">
-                {t('session.selectedCount', { count: form.helper_ids.length })}
-              </span>
-            </Label>
+            <div className="flex flex-wrap items-center justify-between gap-x-2">
+              <Label>
+                {t(isVisit || isLeadersOnly ? 'session.visitParticipants' : 'session.helpers')}
+                <span className="ms-2 font-normal text-muted-foreground">
+                  {t('session.selectedCount', { count: form.helper_ids.length })}
+                </span>
+              </Label>
+              {shownHelpers.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-my-1 px-2 text-primary"
+                  aria-pressed={allHelpersPicked}
+                  onClick={() =>
+                    toggleAll(
+                      'helper_ids',
+                      shownHelpers.map((l) => l.id),
+                      allHelpersPicked
+                    )
+                  }
+                >
+                  {t(allHelpersPicked ? 'common.clearSelection' : 'common.selectAll')}
+                </Button>
+              )}
+            </div>
             {availableHelpers.length > 0 && (
               <SearchInput
                 value={helperQuery}
@@ -768,6 +896,7 @@ export default function Sessions() {
             </Button>
           </div>
         </form>
+        )}
       </Dialog>
     </div>
   );
