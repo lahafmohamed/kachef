@@ -39,7 +39,8 @@ const PERM_GROUPS = {
     'members.matalib',
   ],
   sessions: ['sessions.read', 'sessions.create', 'sessions.attendance', 'sessions.read.fees'],
-  branches: ['branches.read'],
+  // Reading الفرق, plus writing الخطة السنوية of a فرقة
+  branches: ['branches.read', 'branches.plan'],
   promotions: ['promotions.read', 'promotions.apply'],
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
@@ -92,6 +93,11 @@ const hasPerm = (req, key) =>
 
 const requirePerm = (key) => (req, res, next) =>
   hasPerm(req, key) ? next() : res.status(403).json({ error: 'forbidden' });
+
+// One of several permissions is enough — used where the same action is reachable
+// from more than one page (adding a quartier while registering or while editing).
+const requireAnyPerm = (...keys) => (req, res, next) =>
+  keys.some((k) => hasPerm(req, k)) ? next() : res.status(403).json({ error: 'forbidden' });
 
 // Coordinates are personal data: without members.contact they never leave the server
 const CONTACT_FIELDS = ['member_phone', 'parent_phone', 'address_abidjan', 'address_lebanon'];
@@ -526,6 +532,153 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
   );
 });
 
+// ---------- الخطة السنوية ----------
+// خطة كل فرقة على مدار السنة الكشفية، مكتوبة بالأيام: عادةً نشاط كل سبت، مع إمكانية
+// برمجة أي يوم آخر. التحقيق لا يُخزَّن أبدًا، بل يُستنتج من الأنشطة:
+//   - القائد يختار بند الخطة عند إنشاء النشاط  → ربط صريح (plan_item_id)
+//   - أو ينشئ نشاطًا بنفس الاسم داخل السنة    → يُحتسب أيضًا، للقائد الذي لم يختر
+// So a قائد who never opens the picker still moves the percentage.
+
+// A scout year "2025-2026" runs September 1st to August 31st
+function scoutYearRange(year) {
+  const m = /^(\d{4})-(\d{4})$/.exec(normYear(year));
+  return m ? { from: `${m[1]}-09-01`, to: `${m[2]}-08-31` } : null;
+}
+
+function currentScoutYear() {
+  const now = new Date();
+  const start = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  return `${start}-${start + 1}`;
+}
+
+// Titles compare trimmed and case-folded, so a stray space or capital never
+// costs the فرقة its achievement
+const planTitleKey = (t) => String(t || '').trim().toLowerCase();
+
+// Years offered in the picker: every year that has plan rows, the current scout
+// year, and the next one — an annual plan is written before its year starts.
+function planYears() {
+  const cur = currentScoutYear();
+  const next = `${Number(cur.slice(0, 4)) + 1}-${Number(cur.slice(5)) + 1}`;
+  const years = new Set([cur, next]);
+  for (const r of db.prepare('SELECT DISTINCT year FROM annual_plan').all()) years.add(r.year);
+  return [...years].sort().reverse();
+}
+
+// الخطة الكاملة لفرقة في سنة، مع النشاط الذي حقّق كل بند إن وُجد
+function planFor(branchId, year) {
+  const items = db
+    .prepare('SELECT id, year, branch_id, date, title FROM annual_plan WHERE branch_id = ? AND year = ? ORDER BY date, id')
+    .all(branchId, year);
+  const range = scoutYearRange(year);
+  const sessions = range
+    ? db
+        .prepare(
+          `SELECT id, title, date, plan_item_id FROM sessions
+            WHERE branch_id = ? AND kind = 'activity' AND date >= ? AND date <= ?
+            ORDER BY date, id`
+        )
+        .all(branchId, range.from, range.to)
+    : [];
+  // A نشاط linked on purpose belongs to that بند alone; only unlinked ones are
+  // offered to the title fallback, so one نشاط can never tick two بنود.
+  const byPlan = new Map();
+  const byTitle = new Map();
+  for (const s of sessions) {
+    if (s.plan_item_id) {
+      if (!byPlan.has(s.plan_item_id)) byPlan.set(s.plan_item_id, s);
+    } else {
+      const k = planTitleKey(s.title);
+      if (!byTitle.has(k)) byTitle.set(k, s);
+    }
+  }
+  const rows = items.map((i) => {
+    const s = byPlan.get(i.id) || byTitle.get(planTitleKey(i.title)) || null;
+    return {
+      ...i,
+      session: s ? { id: s.id, title: s.title, date: s.date, linked: s.plan_item_id === i.id } : null,
+    };
+  });
+  const doneCount = rows.filter((r) => r.session).length;
+  return {
+    year,
+    years: planYears(),
+    items: rows,
+    total: rows.length,
+    done_count: doneCount,
+    rate: rows.length ? Math.round((doneCount / rows.length) * 100) : null,
+  };
+}
+
+app.get('/api/branches/:id/plan', requirePerm('branches.read'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const wanted = normYear(req.query.year);
+  const year = scoutYearRange(wanted) ? wanted : currentScoutYear();
+  res.json(planFor(branch.id, year));
+});
+
+// بنود الخطة المتاحة عند إنشاء نشاط: ما لم يُنفَّذ بعد، مرتّبة بالتاريخ. القائد يختار
+// البند فيُملأ الاسم و التاريخ تلقائيًا و يُربط النشاط بالخطة.
+app.get('/api/branches/:id/plan/options', requirePerm('sessions.create'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const wanted = normYear(req.query.year);
+  const year = scoutYearRange(wanted) ? wanted : currentScoutYear();
+  const plan = planFor(branch.id, year);
+  res.json({
+    year: plan.year,
+    items: plan.items.filter((i) => !i.session).map((i) => ({ id: i.id, date: i.date, title: i.title })),
+  });
+});
+
+// حفظ خطة شهر كامل دفعة واحدة — this is the editing unit: the قائد fills the four
+// Saturdays (plus any extra day) and saves once.
+// Rows keep their id across a save, so a نشاط already linked to a بند stays linked;
+// a row whose title was emptied is dropped, and dropping it only unlinks its نشاط.
+app.put('/api/branches/:id/plan/month', requirePerm('branches.plan'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const year = normYear(req.body?.year);
+  const range = scoutYearRange(year);
+  if (!range) return res.status(400).json({ error: 'invalid year' });
+  const month = String(req.body?.month || '');
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: 'invalid month' });
+  if (!Array.isArray(req.body?.items)) return res.status(400).json({ error: 'invalid items' });
+
+  const items = [];
+  for (const r of req.body.items) {
+    // An empty title is not an error: it is a day with nothing planned
+    const title = String(r?.title || '').trim();
+    if (!title) continue;
+    const date = String(r?.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'invalid date' });
+    if (!date.startsWith(month)) return res.status(400).json({ error: 'date_outside_month' });
+    if (date < range.from || date > range.to)
+      return res.status(400).json({ error: 'date_outside_year' });
+    items.push({ id: Number.isInteger(r?.id) ? r.id : null, date, title });
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM annual_plan WHERE branch_id = ? AND year = ? AND substr(date, 1, 7) = ?')
+    .all(branch.id, year, month);
+  const kept = new Set(items.map((i) => i.id).filter(Boolean));
+  const del = db.prepare('DELETE FROM annual_plan WHERE id = ? AND branch_id = ?');
+  const upd = db.prepare('UPDATE annual_plan SET date = ?, title = ? WHERE id = ? AND branch_id = ?');
+  const ins = db.prepare('INSERT INTO annual_plan (year, branch_id, date, title) VALUES (?, ?, ?, ?)');
+  db.transaction(() => {
+    for (const e of existing) if (!kept.has(e.id)) del.run(e.id, branch.id);
+    for (const i of items) {
+      if (i.id) upd.run(i.date, i.title, i.id, branch.id);
+      else ins.run(year, branch.id, i.date, i.title);
+    }
+  })();
+  res.json(planFor(branch.id, year));
+});
+
 function validateBranchBody(body, { requireNames }) {
   const { min_age, max_age, total_requirements, name_fr, name_ar } = body;
   if (!Number.isInteger(min_age) || min_age < 0) return 'invalid min_age';
@@ -622,7 +775,10 @@ function validateLookup(body) {
   return null;
 }
 
-app.post('/api/lookups', requireAdmin, (req, res) => {
+// Adding to a list is part of registering: a quartier missing from the picker must be
+// creatable on the spot, not through a trip to الإعدادات. Renaming and deleting stay
+// admin-only — those rewrite or retire what everybody else already recorded.
+app.post('/api/lookups', requireAnyPerm('members.create', 'members.edit'), (req, res) => {
   const err = validateLookup(req.body);
   if (err) return res.status(400).json({ error: err });
   const label = String(req.body.label).trim();
@@ -1453,6 +1609,68 @@ app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.yea
   res.status(201).json({ year, added: missing.length });
 });
 
+// ---------- إشعارات الأدمن ----------
+// Written when a non-admin account touches a نشاط: creation, présence, counts,
+// animators. An admin doing the same thing notifies nobody — he is the audience.
+
+// Repeated edits of the same type on the same نشاط by the same قائد within an
+// hour collapse into one line: marking présence is one tap per عنصر, and thirty
+// rows saying "عدّل الحضور" would drown the notification that matters.
+function notifyAdmins(req, type, session) {
+  if (req.user.role === 'admin') return;
+  const recent = db
+    .prepare(
+      `SELECT id FROM notifications
+        WHERE type = ? AND session_id = ? AND actor_user_id = ?
+          AND created_at >= datetime('now', '-1 hour')`
+    )
+    .get(type, session.id, req.user.id);
+  if (recent) {
+    db.prepare("UPDATE notifications SET created_at = datetime('now') WHERE id = ?").run(recent.id);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO notifications (type, session_id, session_title, branch_id, kind, actor, actor_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    type,
+    session.id,
+    session.title || null,
+    session.branch_id ?? null,
+    session.kind || 'activity',
+    req.user.display_name || req.user.username,
+    req.user.id
+  );
+  // The feed is a recent-activity log, not an archive — keep the last 200 rows
+  db.prepare(
+    `DELETE FROM notifications WHERE id NOT IN
+      (SELECT id FROM notifications ORDER BY created_at DESC, id DESC LIMIT 200)`
+  ).run();
+}
+
+app.get('/api/notifications', requireAdmin, (req, res) => {
+  // datetime('now') and seen_at share the same UTC format, so string compare works
+  const seen =
+    db.prepare('SELECT seen_at FROM notification_seen WHERE user_id = ?').get(req.user.id)?.seen_at || '';
+  const rows = db
+    .prepare(
+      `SELECT n.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM notifications n LEFT JOIN branches b ON b.id = n.branch_id
+       ORDER BY n.created_at DESC, n.id DESC LIMIT 50`
+    )
+    .all()
+    .map((n) => ({ ...n, unread: n.created_at > seen }));
+  res.json({ items: rows, unread_count: rows.filter((n) => n.unread).length });
+});
+
+app.post('/api/notifications/seen', requireAdmin, (req, res) => {
+  db.prepare(
+    `INSERT INTO notification_seen (user_id, seen_at) VALUES (?, datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET seen_at = excluded.seen_at`
+  ).run(req.user.id);
+  res.status(204).end();
+});
+
 // ---------- Sessions & attendance ----------
 
 // طبيعة النشاط — a fixed list, translated client-side
@@ -1599,6 +1817,13 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   }
   if (kind === 'visit' && visited.length === 0)
     return res.status(400).json({ error: 'member_ids required for a visit' });
+  // بند الخطة الذي ينفّذه هذا النشاط — نشاط فرقة فقط، و من خطة نفس الفرقة
+  const planItemId = kind === 'activity' ? optionalId(req.body.plan_item_id) : null;
+  if (planItemId !== null) {
+    const item = db.prepare('SELECT branch_id FROM annual_plan WHERE id = ?').get(planItemId);
+    if (!item || item.branch_id !== Number(branchId))
+      return res.status(400).json({ error: 'invalid plan_item_id' });
+  }
   // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
   const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leader || null;
   const insertAnimator = db.prepare(
@@ -1613,8 +1838,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     sessionId = db
       .prepare(
         `INSERT INTO sessions
-          (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind, plan_item_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         title,
@@ -1628,7 +1853,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         req.body.place || null,
         activityType,
         leadersCount,
-        kind
+        kind,
+        planItemId
       )
       .lastInsertRowid;
     if (leaderRow) insertAnimator.run(sessionId, leaderRow.id, 'main');
@@ -1644,6 +1870,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         .run(sessionId, c.branch_id, c.count);
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+  notifyAdmins(req, 'session_create', row);
   res.status(201).json({ ...row, matalib: JSON.parse(row.matalib) });
 });
 
@@ -1699,7 +1926,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
 // عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,
 // the same way présence is marked on the other kinds of نشاط.
 app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (s.kind !== 'group') return res.status(400).json({ error: 'not_a_group_activity' });
   const counts = parseBranchCounts(req.body?.branch_counts);
@@ -1712,12 +1939,13 @@ app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, r
     saveBranchCounts(s.id, counts);
     db.prepare('UPDATE sessions SET leaders_count = ? WHERE id = ?').run(leadersCount, s.id);
   })();
+  notifyAdmins(req, 'counts', s);
   res.json({ branch_counts: branchCountsOf(s.id), leaders_count: leadersCount });
 });
 
 // Add / remove helpers and mark animator présence on a session
 app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, branch_id FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
   const { leader_id, status, remove } = req.body;
@@ -1726,6 +1954,7 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
   if (remove) {
     db.prepare("DELETE FROM session_leaders WHERE session_id = ? AND leader_id = ? AND role = 'helper'")
       .run(s.id, leader_id);
+    notifyAdmins(req, 'animators', s);
     return res.json({ ok: true });
   }
   if (status !== null && status !== undefined && !['present', 'absent'].includes(status))
@@ -1734,6 +1963,7 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
     `INSERT INTO session_leaders (session_id, leader_id, role, status) VALUES (?, ?, 'helper', ?)
      ON CONFLICT(session_id, leader_id) DO UPDATE SET status = excluded.status`
   ).run(s.id, leader_id, status ?? null);
+  notifyAdmins(req, 'animators', s);
   res.json({ ok: true });
 });
 
@@ -1758,6 +1988,7 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
+  notifyAdmins(req, 'attendance', s);
   res.json({ ok: true });
 });
 

@@ -5,6 +5,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
 import { fmtDate, fmtTime, todayISO, branchName, ACTIVITY_TYPES, activityTypeKey } from '../utils';
+import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
@@ -30,6 +31,7 @@ import {
   Th,
   useToast,
   IconCalendar,
+  IconCheck,
   IconFilter,
   IconPlus,
   IconShield,
@@ -39,6 +41,8 @@ import {
 
 const EMPTY = {
   kind: 'activity',
+  // بند الخطة السنوية الذي ينفّذه النشاط — '' يعني نشاط خارج الخطة
+  plan_item_id: '',
   title: '',
   date: todayISO(),
   start_time: '',
@@ -152,6 +156,14 @@ export default function Sessions() {
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState(null);
 
+  // بنود خطة الفرقة التي لم تُنفَّذ بعد — loaded only while the dialog is open on a
+  // نشاط فرقة, so picking one is a one-tap way to fill the title and the date.
+  const planScope = creating && form.kind === 'activity' && form.branch_id ? form.branch_id : null;
+  const planOptions = useFetch(planScope ? `/branches/${planScope}/plan/options` : null, {
+    skip: !planScope,
+  });
+  const planItems = planOptions.data?.items || [];
+
   const branchList = branches.data || [];
   const leaderList = leaders.data || [];
   const list = sessions.data || [];
@@ -179,8 +191,19 @@ export default function Sessions() {
       matalib: [],
       // عناصر of the previous فرقة are no longer visitable
       member_ids: [],
+      // The plan belongs to a فرقة: another فرقة means another plan
+      plan_item_id: '',
       leader_id: b?.leader_id || f.leader_id,
     }));
+  }
+
+  // Taking the بند announced by the plan: its name goes into the title and the نشاط
+  // is linked to it. The date stays the one the قائد picked — a نشاط held a day late
+  // is still that نشاط, and the plan should tick all the same.
+  function pickPlanItem(id) {
+    const item = planItems.find((i) => String(i.id) === String(id));
+    if (!item) return;
+    setForm((f) => ({ ...f, title: item.title, plan_item_id: String(item.id) }));
   }
 
   // Switching type resets what no longer applies: مطالب and عناصر belong to a فرقة نشاط only,
@@ -190,6 +213,8 @@ export default function Sessions() {
       ...f,
       kind,
       title: kind === 'visit' ? t('session.familyVisit') : f.title === t('session.familyVisit') ? '' : f.title,
+      // Only a نشاط فرقة executes a بند of the plan
+      plan_item_id: kind === 'activity' ? f.plan_item_id : '',
       matalib: [],
       member_ids: [],
       fee: kind === 'visit' || kind === 'group' ? '' : f.fee,
@@ -244,6 +269,7 @@ export default function Sessions() {
         member_ids: form.kind === 'visit' ? form.member_ids : [],
         fee: form.fee === '' ? null : Number(form.fee),
         matalib: form.kind === 'visit' ? [] : form.matalib,
+        plan_item_id: form.kind === 'activity' && form.plan_item_id ? Number(form.plan_item_id) : null,
         activity_type: form.activity_type || null,
         start_time: form.start_time || null,
         place: form.place || null,
@@ -275,6 +301,23 @@ export default function Sessions() {
   const isLeadersOnly = form.kind === 'leaders';
   // نشاط عام للفوج: no فرقة either, présence recorded as a count per فرقة
   const isGroup = form.kind === 'group';
+
+  // الخطة السنوية تخصّ نشاط الفرقة وحده
+  const usesPlan = !isVisit && !isLeadersOnly && !isGroup;
+  // ما هو مبرمج في اليوم المختار بالذات — يُعرض للقائد فور اختياره التاريخ
+  const plannedThisDay = planItems.find((i) => i.date === form.date) || null;
+  const linkedItem = planItems.find((i) => String(i.id) === String(form.plan_item_id)) || null;
+  // اقتراحات العنوان: بنود الخطة غير المنجزة، و ما يوافق اليوم المختار في الأعلى
+  const planSuggestions = planItems
+    .map((i) => ({
+      key: String(i.id),
+      id: i.id,
+      value: i.title,
+      label: i.title,
+      hint: fmtDate(i.date),
+      badge: i.date === form.date ? t('session.planToday') : null,
+    }))
+    .sort((a, b) => (a.badge ? 0 : 1) - (b.badge ? 0 : 1));
   // Both pickers stay usable with 40+ names: filter on the full name, and never
   // hide an already-ticked row — otherwise a search makes selections look lost.
   const matches = (person, query) =>
@@ -469,6 +512,7 @@ export default function Sessions() {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
                       <ScopeBadge s={s} lang={i18n.language} t={t} />
+                      {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
                       {s.kind === 'visit' && <Badge variant="warning">{t('session.kindVisit')}</Badge>}
                       {activityTypeKey(s.activity_type) && (
                         <Badge variant="outline">{t(activityTypeKey(s.activity_type))}</Badge>
@@ -523,6 +567,11 @@ export default function Sessions() {
                       {s.kind === 'visit' && (
                         <Badge variant="warning" className="ms-2">
                           {t('session.kindVisit')}
+                        </Badge>
+                      )}
+                      {s.plan_item_id && (
+                        <Badge variant="success" className="ms-2">
+                          {t('session.fromPlan')}
                         </Badge>
                       )}
                       {(s.start_time || s.place || s.activity_type) && (
@@ -593,18 +642,52 @@ export default function Sessions() {
 
           <div className="space-y-1.5">
             <Label htmlFor="s_title">{t(isGroup ? 'session.occasion' : 'session.sessionTitle')}</Label>
-            <Input
+            {/* عنوان النشاط يقترح بنود الخطة السنوية غير المنجزة، و المبرمج في نفس اليوم
+                يأتي أولًا. الكتابة حرّة دائمًا: نشاط خارج الخطة يُكتب كما هو. */}
+            <Combobox
               id="s_title"
               required
-              autoComplete="off"
               placeholder={t('session.sessionTitleHint')}
               value={form.title}
-              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              options={usesPlan ? planSuggestions : []}
+              onPick={(o) => setForm((f) => ({ ...f, title: o.value, plan_item_id: String(o.id) }))}
+              // Typing by hand means "not that plan item any more" — the link only
+              // survives while the title is the one that was picked.
+              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value, plan_item_id: '' }))}
             />
-            {!isVisit && (
-              <p className="text-xs text-muted-foreground">{t('session.sessionTitleHint')}</p>
-            )}
+            {!isVisit && <p className="text-xs text-muted-foreground">{t('session.sessionTitleHint')}</p>}
           </div>
+
+          {/* ما تقوله الخطة عن هذا اليوم: يُعرض بمجرد اختيار التاريخ، و ينتقل إلى العنوان بنقرة */}
+          {usesPlan && linkedItem && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-xs">
+              <IconCheck className="h-3.5 w-3.5 shrink-0 text-success" />
+              <span className="min-w-0 flex-1">
+                {t('session.linkedToPlan', { date: fmtDate(linkedItem.date) })}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setForm((f) => ({ ...f, plan_item_id: '' }))}
+              >
+                {t('session.unlinkPlan')}
+              </Button>
+            </div>
+          )}
+          {/* Still shown next to the green chip when the قائد moved the date onto a day
+              carrying another بند — switching to it stays one tap away. */}
+          {usesPlan && plannedThisDay && plannedThisDay.id !== linkedItem?.id && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/8 px-3 py-2 text-xs">
+              <IconCalendar className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1">
+                <span className="text-muted-foreground">{t('session.plannedThisDay')}</span>{' '}
+                <span className="font-medium">{plannedThisDay.title}</span>
+              </span>
+              <Button size="sm" variant="outline" onClick={() => pickPlanItem(plannedThisDay.id)}>
+                {t('session.usePlanned')}
+              </Button>
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">

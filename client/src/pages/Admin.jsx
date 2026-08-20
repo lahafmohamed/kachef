@@ -50,7 +50,10 @@ const PERM_GROUPS = [
   },
   {
     page: 'nav.branches',
-    items: [{ key: 'branches.read', label: 'admin.permAccess' }],
+    items: [
+      { key: 'branches.read', label: 'admin.permAccess' },
+      { key: 'branches.plan', label: 'admin.permBranchesPlan' },
+    ],
   },
   {
     page: 'nav.promotions',

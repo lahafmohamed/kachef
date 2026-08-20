@@ -1,12 +1,20 @@
-import { NavLink } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
+import { branchName } from '../utils';
 import {
   cn,
   Button,
+  Dialog,
+  EmptyState,
+  Skeleton,
   useTheme,
   IconAward,
+  IconBell,
   IconHome,
+  IconInbox,
   IconUsers,
   IconCalendar,
   IconTrendingUp,
@@ -155,6 +163,146 @@ function ThemeToggle({ compact }) {
   );
 }
 
+// created_at is UTC "YYYY-MM-DD HH:MM:SS" — parse as such, show local, latin digits
+const notifTimeFormats = {};
+function fmtNotifTime(createdAt, lng) {
+  const locale = lng === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
+  const f = (notifTimeFormats[locale] ??= new Intl.DateTimeFormat(locale, {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }));
+  return f.format(new Date(createdAt.replace(' ', 'T') + 'Z')).replace(/[‎‏؜]/g, '');
+}
+
+/**
+ * جرس إشعارات الأدمن: ما فعله القادة على الأنشطة — إضافة، حضور، منشّطون، أعداد.
+ * Polls the unread count once a minute; opening the panel marks everything seen.
+ * Rendered only for admins — the server refuses everyone else anyway.
+ */
+function NotificationsBell({ compact }) {
+  const { t, i18n } = useTranslation();
+  const { user } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const [items, setItems] = useState(null);
+  const isAdmin = user?.role === 'admin';
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let alive = true;
+    const poll = () =>
+      api
+        .get('/notifications')
+        .then((d) => alive && setUnread(d.unread_count))
+        .catch(() => {}); // a failed poll just keeps the previous badge
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [isAdmin]);
+
+  if (!isAdmin) return null;
+
+  async function openPanel() {
+    setOpen(true);
+    setItems(null);
+    try {
+      const d = await api.get('/notifications');
+      setItems(d.items);
+      // Everything shown is now seen — the badge restarts from zero
+      await api.post('/notifications/seen');
+      setUnread(0);
+    } catch {
+      setItems([]);
+    }
+  }
+
+  const badge =
+    unread > 0 ? (
+      <span
+        aria-hidden="true"
+        className="absolute -end-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[0.625rem] font-bold leading-none text-destructive-foreground"
+      >
+        {unread > 9 ? '9+' : unread}
+      </span>
+    ) : null;
+
+  const label = unread > 0 ? t('notif.openUnread', { count: unread }) : t('notif.title');
+
+  return (
+    <>
+      {compact ? (
+        <Button variant="outline" size="icon" onClick={openPanel} aria-label={label} title={label} className="relative">
+          <IconBell />
+          {badge}
+        </Button>
+      ) : (
+        <Button variant="outline" size="sm" onClick={openPanel} className="w-full gap-2">
+          <span className="relative inline-flex">
+            <IconBell />
+            {badge}
+          </span>
+          {t('notif.title')}
+        </Button>
+      )}
+
+      <Dialog open={open} onClose={() => setOpen(false)} title={t('notif.title')}>
+        {items === null ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12" />
+            <Skeleton className="h-12" />
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('notif.empty')} />
+        ) : (
+          <ul className="divide-y divide-border">
+            {items.map((n) => {
+              const body = (
+                <>
+                  <span
+                    className={cn(
+                      'mt-1.5 h-2 w-2 shrink-0 rounded-full',
+                      n.unread ? 'bg-primary' : 'bg-transparent'
+                    )}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm">
+                      {t(`notif.${n.type}`, { actor: n.actor })}
+                      {n.session_title && <span className="font-medium"> «{n.session_title}»</span>}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {[branchName(n, i18n.language), fmtNotifTime(n.created_at, i18n.language)]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  </span>
+                </>
+              );
+              return (
+                <li key={n.id}>
+                  {n.session_id ? (
+                    <Link
+                      to={`/sessions/${n.session_id}`}
+                      onClick={() => setOpen(false)}
+                      className="focus-ring flex items-start gap-2.5 rounded-md px-1 py-2.5 transition-colors hover:bg-accent/50"
+                    >
+                      {body}
+                    </Link>
+                  ) : (
+                    <div className="flex items-start gap-2.5 px-1 py-2.5">{body}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Dialog>
+    </>
+  );
+}
+
 function Brand({ className }) {
   const { t } = useTranslation();
   return (
@@ -229,6 +377,7 @@ export default function Layout({ children }) {
         </nav>
         <div className="flex flex-col gap-2 border-t border-border p-3">
           <UserMenu />
+          <NotificationsBell />
           <LangToggle />
           <ThemeToggle />
         </div>
@@ -239,6 +388,7 @@ export default function Layout({ children }) {
         <div className="flex h-24 items-center justify-between gap-2 px-4">
           <Brand />
           <div className="flex items-center gap-1.5">
+            <NotificationsBell compact />
             <ThemeToggle compact />
             <LangToggle compact />
             <UserMenu compact />

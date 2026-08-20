@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   activity_type TEXT,
   -- نشاط عام للفوج only: عدد حضور القادة (a count, there is no قادة roster to mark)
   leaders_count INTEGER,
+  -- بند الخطة السنوية الذي ينفّذه هذا النشاط، يختاره القائد عند الإنشاء.
+  -- SET NULL: حذف بند من الخطة لا يحذف النشاط، يفكّ الربط فقط.
+  plan_item_id INTEGER REFERENCES annual_plan(id) ON DELETE SET NULL,
   -- 'activity' = نشاط فرقة, 'visit' = زيارة الأهل (présence = who was visited),
   -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves),
   -- 'group' = نشاط عام للفوج (حضور مسجّل بالعدد لكل فرقة, لا بالأسماء)
@@ -185,6 +188,38 @@ CREATE TABLE IF NOT EXISTS attendance (
   member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'excused')),
   UNIQUE(session_id, member_id)
+);
+
+-- إشعارات للأدمن: قائد أضاف نشاطًا أو عدّل حضوره/منشّطيه/أعداده. Rows are written only
+-- for non-admin actors. session_title is a snapshot so the line still reads after the
+-- نشاط itself changes; the FK only nulls the link.
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL CHECK (type IN ('session_create', 'attendance', 'counts', 'animators')),
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  session_title TEXT,
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  kind TEXT,
+  actor TEXT,
+  actor_user_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- "آخر اطّلاع" لكل أدمن — everything newer than seen_at counts as unread for him
+CREATE TABLE IF NOT EXISTS notification_seen (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  seen_at TEXT NOT NULL
+);
+
+-- الخطة السنوية للفوج، مفصّلة فرقةً فرقة: كل صف = يوم مبرمج و اسم النشاط المتوقع فيه،
+-- ضمن سنة كشفية ("2025-2026" = أيلول حتى آب). عادةً كل سبت فيه نشاط، و يمكن برمجة أي
+-- يوم آخر. A row is only the intent: achievement is derived from the أنشطة, never stored.
+CREATE TABLE IF NOT EXISTS annual_plan (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  year TEXT NOT NULL,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  title TEXT NOT NULL
 );
 
 -- Referential lists an admin curates (quartiers d'Abidjan, régions du Liban, écoles).
@@ -350,6 +385,35 @@ function migrateSessions() {
   db.pragma('foreign_keys = ON');
 }
 
+// الخطة كانت بالشهر، صارت باليوم: كل سبت (أو أي يوم) صف مستقل. الصفوف القديمة تُنقل
+// إلى أول يوم من شهرها — the month is the only thing that version ever knew.
+function migrateAnnualPlan() {
+  const cols = db.prepare('PRAGMA table_info(annual_plan)').all().map((c) => c.name);
+  if (!cols.includes('month')) return;
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE annual_plan_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year TEXT NOT NULL,
+        branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        date TEXT NOT NULL,
+        title TEXT NOT NULL
+      );
+      INSERT INTO annual_plan_new (id, year, branch_id, date, title)
+        SELECT id, year, branch_id,
+          -- أيلول..كانون الأول تقع في السنة الأولى من السنة الكشفية، والباقي في الثانية
+          (CASE WHEN month >= 9 THEN substr(year, 1, 4) ELSE substr(year, 6, 4) END)
+            || '-' || substr('0' || month, -2) || '-01',
+          title
+        FROM annual_plan;
+      DROP TABLE annual_plan;
+      ALTER TABLE annual_plan_new RENAME TO annual_plan;
+    `);
+  })();
+  db.pragma('foreign_keys = ON');
+}
+
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
@@ -367,6 +431,13 @@ function migrate() {
   // نشاط عام للفوج: عدد حضور القادة
   ensureColumn('sessions', 'leaders_count', 'leaders_count INTEGER');
   migrateSessions();
+  // Added after migrateSessions on purpose: its rebuild only knows the older column set
+  ensureColumn(
+    'sessions',
+    'plan_item_id',
+    'plan_item_id INTEGER REFERENCES annual_plan(id) ON DELETE SET NULL'
+  );
+  migrateAnnualPlan();
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   migrateAssignments();
   // Registration form fields added after the first release — all nullable so old rows stay valid

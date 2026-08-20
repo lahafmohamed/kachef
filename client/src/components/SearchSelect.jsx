@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
-import { cn, IconCheck, IconChevronDown, IconSearch, Input } from './ui';
+import { cn, IconCheck, IconChevronDown, IconPlus, IconSearch, Input, Spinner } from './ui';
 
 /**
  * Dropdown constrained to a curated list, with a search box — for lists too long
@@ -11,6 +11,10 @@ import { cn, IconCheck, IconChevronDown, IconSearch, Input } from './ui';
  * `options` is either a flat array of strings or `{value, label}` objects — the
  * second form is what a picker over ids (a قائد, a فرقة) needs. `onChange` receives
  * a native-looking event so call sites keep their `set('field')` handlers.
+ *
+ * `onCreate` turns the list into a curated-but-extensible one: when what was typed
+ * is nowhere in it, a last row offers to add it. The list stays the authority on
+ * spelling — the new entry joins it instead of becoming loose free text.
  */
 export default function SearchSelect({
   id,
@@ -23,6 +27,10 @@ export default function SearchSelect({
   emptyLabel,
   // When set, a first row clears the field (form) or drops the filter (list)
   clearLabel,
+  // async (label) => the stored label, or null when it could not be created
+  onCreate,
+  // string, or (typed) => string
+  createLabel,
   icon,
   className,
   disabled,
@@ -32,6 +40,7 @@ export default function SearchSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
+  const [creating, setCreating] = useState(false);
   const listRef = useRef(null);
 
   const current = value == null ? '' : String(value);
@@ -66,9 +75,30 @@ export default function SearchSelect({
     listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [active, rows.length]);
 
+  // Adding is offered only for something the list does not already hold, whatever
+  // the casing — otherwise "Zone 4" and "zone 4" would both look creatable.
+  const typed = query.trim();
+  const canCreate =
+    !!onCreate &&
+    !!typed &&
+    !normalized.some((o) => String(o.label).toLowerCase() === typed.toLowerCase());
+
   function select(v) {
     onChange?.({ target: { value: v, name, id } });
     setOpen(false);
+  }
+
+  // The new entry is picked straight away: the قائد typed it to use it
+  async function create() {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const label = await onCreate(typed);
+      if (label) select(label);
+      else setOpen(false);
+    } finally {
+      setCreating(false);
+    }
   }
 
   function onKeyDown(e) {
@@ -79,7 +109,9 @@ export default function SearchSelect({
       setActive((i) => (i + step + rows.length) % rows.length);
     } else if (e.key === 'Enter') {
       e.preventDefault();
+      // Nothing matched what was typed: Enter is the shortcut for adding it
       if (rows[active]) select(rows[active].value);
+      else if (canCreate) create();
     } else if (e.key === 'Escape') {
       // Stop here or the surrounding Dialog closes with the popover
       e.stopPropagation();
@@ -136,7 +168,9 @@ export default function SearchSelect({
           </div>
           <div ref={listRef} role="listbox" className="mt-1.5 max-h-60 overflow-y-auto">
             {rows.length === 0 ? (
-              <p className="px-2.5 py-6 text-center text-sm text-muted-foreground">{emptyLabel}</p>
+              !canCreate && (
+                <p className="px-2.5 py-6 text-center text-sm text-muted-foreground">{emptyLabel}</p>
+              )
             ) : (
               rows.map((r, i) => (
                 <button
@@ -161,6 +195,23 @@ export default function SearchSelect({
               ))
             )}
           </div>
+
+          {canCreate && (
+            <button
+              type="button"
+              onClick={create}
+              disabled={creating}
+              className={cn(
+                'focus-ring mt-1.5 flex min-h-11 w-full items-center gap-2 rounded-md border-t border-border px-2.5 py-2',
+                'text-start text-sm font-medium text-primary hover:bg-accent disabled:opacity-60 sm:min-h-9'
+              )}
+            >
+              {creating ? <Spinner className="shrink-0" /> : <IconPlus className="shrink-0" />}
+              <span className="truncate">
+                {typeof createLabel === 'function' ? createLabel(typed) : createLabel}
+              </span>
+            </button>
+          )}
         </PopoverContent>
       </Popover>
 

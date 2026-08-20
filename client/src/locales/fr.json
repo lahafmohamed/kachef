@@ -125,6 +125,8 @@
     "pickValue": "Choisir dans la liste...",
     "noValue": "Non renseigné",
     "noListValue": "Aucun résultat",
+    "searchOrAdd": "Rechercher ou saisir un nouveau nom...",
+    "addListValue": "Ajouter « {{value}} » à la liste",
     "sortBy": "Trier",
     "sortName": "Par nom",
     "sortAgeDesc": "Âge : du plus grand au plus petit",
@@ -215,6 +217,12 @@
     "groupHint": "La présence est enregistrée en nombres par branche, pas par noms.",
     "occasion": "Occasion",
     "sessionTitleHint": "Nom de la leçon ou de l'occasion",
+    "planToday": "prévue ce jour",
+    "plannedThisDay": "Prévu au plan ce jour :",
+    "usePlanned": "Utiliser",
+    "linkedToPlan": "Reliée au plan annuel (prévue le {{date}})",
+    "unlinkPlan": "Délier",
+    "fromPlan": "Du plan",
     "place": "Lieu",
     "time": "Heure",
     "nature": "Nature de l'activité",
@@ -407,7 +415,18 @@
     "noParticipants": "Aucune présence enregistrée",
     "openSession": "Ouvrir l'activité",
     "showMore": "Voir {{count}} activités de plus",
-    "searchSessions": "Rechercher une activité ou un participant..."
+    "searchSessions": "Rechercher une activité ou un participant...",
+    "planTitle": "Plan annuel",
+    "planAddDay": "Autre jour",
+    "planActivity": "Activité prévue",
+    "planActivityHint": "Nom de l'activité prévue",
+    "planState": "État",
+    "planRate": "Taux de réalisation du plan",
+    "planProgress": "{{done}}/{{total}} réalisées",
+    "planHint": "Les samedis du mois sont proposés d'office. Une activité compte comme réalisée quand le chef la relie au plan à sa création, ou qu'il lui donne exactement le même nom.",
+    "planEmptyMonth": "Aucun jour dans ce mois",
+    "planFree": "Rien de prévu",
+    "planNotDone": "Pas encore réalisée"
   },
   "auth": {
     "subtitle": "Connectez-vous pour continuer",
@@ -454,6 +473,16 @@
     "permSessionsAttendance": "Marquer les présences et gérer les animateurs",
     "permPromotionsApply": "Valider les promotions",
     "permMembersMatalib": "Ajouter et annuler un matlab pour un membre",
-    "permLeadersProgress": "Remplir la carte de progression du chef"
+    "permLeadersProgress": "Remplir la carte de progression du chef",
+    "permBranchesPlan": "Gérer le plan annuel"
+  },
+  "notif": {
+    "title": "Notifications",
+    "openUnread": "Notifications — {{count}} non lues",
+    "empty": "Aucune notification",
+    "session_create": "{{actor}} a ajouté une activité",
+    "attendance": "{{actor}} a modifié la présence de",
+    "counts": "{{actor}} a modifié les effectifs de",
+    "animators": "{{actor}} a modifié les animateurs de"
   }
 }

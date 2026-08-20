@@ -63,7 +63,7 @@ const EMPTY_FORM = {
   status: 'active',
 };
 
-function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
+function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCancel }) {
   const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -124,8 +124,9 @@ function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
           <Label htmlFor="birth_place">{t('member.birthPlace')}</Label>
           <Input id="birth_place" autoComplete="off" value={form.birth_place || ''} onChange={set('birth_place')} />
         </div>
-        {/* Picked from the lists an admin curates in الإعدادات, never typed: a quartier
-            spelled two ways would split its people across two filters. */}
+        {/* Picked from the curated lists, never typed loose: a quartier spelled two ways
+            would split its people across two filters. A value the list is missing is added
+            from here — the entry joins the list, so the next تسجيل finds it ready. */}
         <div className="space-y-1.5">
           <Label htmlFor="address_abidjan">{t('member.addressAbidjan')}</Label>
           <SearchSelect
@@ -134,9 +135,11 @@ function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
             onChange={set('address_abidjan')}
             options={lookups.residence_abidjan}
             placeholder={t('member.pickValue')}
-            searchPlaceholder={t('common.search')}
+            searchPlaceholder={t('member.searchOrAdd')}
             emptyLabel={t('member.noListValue')}
             clearLabel={t('member.noValue')}
+            onCreate={(label) => onCreateLookup('residence_abidjan', label)}
+            createLabel={(v) => t('member.addListValue', { value: v })}
           />
         </div>
         <div className="space-y-1.5">
@@ -147,9 +150,11 @@ function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
             onChange={set('address_lebanon')}
             options={lookups.residence_lebanon}
             placeholder={t('member.pickValue')}
-            searchPlaceholder={t('common.search')}
+            searchPlaceholder={t('member.searchOrAdd')}
             emptyLabel={t('member.noListValue')}
             clearLabel={t('member.noValue')}
+            onCreate={(label) => onCreateLookup('residence_lebanon', label)}
+            createLabel={(v) => t('member.addListValue', { value: v })}
           />
         </div>
         <div className="space-y-1.5">
@@ -160,9 +165,11 @@ function MemberForm({ initial, branches, lookups, onSave, onCancel }) {
             onChange={set('school')}
             options={lookups.school}
             placeholder={t('member.pickValue')}
-            searchPlaceholder={t('common.search')}
+            searchPlaceholder={t('member.searchOrAdd')}
             emptyLabel={t('member.noListValue')}
             clearLabel={t('member.noValue')}
+            onCreate={(label) => onCreateLookup('school', label)}
+            createLabel={(v) => t('member.addListValue', { value: v })}
           />
         </div>
         <div className="space-y-1.5">
@@ -396,6 +403,27 @@ export default function Members() {
     school: (lookups.data?.school || []).map((v) => v.label),
   };
   const bloodTypes = filterValues.data?.bloodTypes || [];
+
+  // Adding a quartier / école straight from the registration form. A value someone
+  // else added meanwhile comes back as a duplicate: that is not a failure, the entry
+  // simply exists already — pick its stored spelling and carry on.
+  async function createLookup(kind, label) {
+    const wanted = String(label).trim();
+    try {
+      const row = await api.post('/lookups', { kind, label: wanted });
+      lookups.reload({ quiet: true });
+      return row.label;
+    } catch (err) {
+      if (err.message === 'duplicate label') {
+        const existing = (lookups.data?.[kind] || []).find(
+          (v) => v.label.toLowerCase() === wanted.toLowerCase()
+        );
+        return existing?.label || wanted;
+      }
+      toast.error(err.message);
+      return null;
+    }
+  }
   // What the collapsed panel hides — the badge has to say it, or a filtered list
   // looks like a bug to whoever opens the page next
   const advancedCount = [
@@ -797,6 +825,7 @@ export default function Members() {
             }
             branches={branchList}
             lookups={lookupLists}
+            onCreateLookup={createLookup}
             onSave={save}
             onCancel={() => setEditing(null)}
           />

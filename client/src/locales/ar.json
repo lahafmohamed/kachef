@@ -125,6 +125,8 @@
     "pickValue": "اختر من اللائحة...",
     "noValue": "غير محدّد",
     "noListValue": "لا نتيجة",
+    "searchOrAdd": "ابحث أو اكتب اسمًا جديدًا...",
+    "addListValue": "إضافة «{{value}}» إلى القائمة",
     "sortBy": "الترتيب",
     "sortName": "حسب الاسم",
     "sortAgeDesc": "العمر: من الأكبر إلى الأصغر",
@@ -215,6 +217,12 @@
     "groupHint": "يُسجَّل الحضور بالأعداد لكل فرقة، لا بالأسماء.",
     "occasion": "المناسبة",
     "sessionTitleHint": "اسم الدرس أو المناسبة",
+    "planToday": "مبرمج اليوم",
+    "plannedThisDay": "المبرمج في الخطة هذا اليوم:",
+    "usePlanned": "اعتماده",
+    "linkedToPlan": "مرتبط بالخطة السنوية (مبرمج في {{date}})",
+    "unlinkPlan": "فكّ الربط",
+    "fromPlan": "من الخطة",
     "place": "المكان",
     "time": "الزمان",
     "nature": "طبيعة النشاط",
@@ -407,7 +415,18 @@
     "noParticipants": "لا يوجد حضور مسجّل",
     "openSession": "فتح النشاط",
     "showMore": "عرض {{count}} نشاطًا آخر",
-    "searchSessions": "ابحث عن نشاط أو مشارك..."
+    "searchSessions": "ابحث عن نشاط أو مشارك...",
+    "planTitle": "الخطة السنوية",
+    "planAddDay": "يوم آخر",
+    "planActivity": "النشاط المبرمج",
+    "planActivityHint": "اسم النشاط المبرمج",
+    "planState": "الحالة",
+    "planRate": "نسبة تحقيق الخطة",
+    "planProgress": "{{done}}/{{total}} منجز",
+    "planHint": "سبوت الشهر معروضة تلقائيًا. يُحتسب النشاط منجزًا إذا ربطه القائد بالخطة عند إنشائه، أو أعطاه نفس الاسم تمامًا.",
+    "planEmptyMonth": "لا أيام في هذا الشهر",
+    "planFree": "لا شيء مبرمج",
+    "planNotDone": "لم يُنفَّذ بعد"
   },
   "auth": {
     "subtitle": "سجّل الدخول للمتابعة",
@@ -454,6 +473,16 @@
     "permSessionsAttendance": "تسجيل الحضور وإدارة المنشطين",
     "permPromotionsApply": "تنفيذ الترقيات",
     "permMembersMatalib": "زيادة وإلغاء مطلب لأي عنصر",
-    "permLeadersProgress": "تعبئة بطاقة تقدم القائد"
+    "permLeadersProgress": "تعبئة بطاقة تقدم القائد",
+    "permBranchesPlan": "إدارة الخطة السنوية"
+  },
+  "notif": {
+    "title": "الإشعارات",
+    "openUnread": "الإشعارات — {{count}} غير مقروء",
+    "empty": "لا إشعارات بعد",
+    "session_create": "{{actor}} أضاف نشاطًا",
+    "attendance": "{{actor}} عدّل الحضور في",
+    "counts": "{{actor}} عدّل أعداد الحضور في",
+    "animators": "{{actor}} عدّل المنشّطين في"
   }
 }

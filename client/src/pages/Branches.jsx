@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api';
+import { usePerms } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
+import { toDate, toISO } from '../lib/date';
 import { branchName, fmtDate } from '../utils';
 import SearchInput from '../components/SearchInput';
 import {
@@ -14,17 +17,23 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  Input,
   PageHeader,
   ProgressBar,
   Select,
   Skeleton,
   SkeletonPage,
+  useToast,
   IconAward,
   IconCalendar,
   IconCheck,
   IconChevronDown,
+  IconClock,
   IconInbox,
+  IconPlus,
   IconShield,
+  IconTrash,
+  IconTrendingUp,
   IconUsers,
 } from '../components/ui';
 
@@ -121,6 +130,309 @@ function SessionRow({ s }) {
     </li>
   );
 }
+
+// Scout-year order: أيلول opens the year, آب closes it
+const SCOUT_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
+
+// ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses
+const monthName = (m, lng) =>
+  new Intl.DateTimeFormat(lng === 'ar' ? 'ar-LB' : 'fr-FR', { month: 'long' }).format(
+    new Date(2000, m - 1, 1)
+  );
+
+// "2025-2026" + شهر 9 → "2025-09"، و شهر 3 → "2026-03": أيلول..كانون الأول من السنة
+// الأولى، و الباقي من الثانية.
+const monthKey = (year, month) =>
+  `${month >= 9 ? year.slice(0, 4) : year.slice(5)}-${String(month).padStart(2, '0')}`;
+
+/** كل أيام الشهر، من الأول إلى الآخر. */
+function daysOf(key) {
+  const [y, m] = key.split('-').map(Number);
+  const out = [];
+  for (const d = new Date(y, m - 1, 1); d.getMonth() === m - 1; d.setDate(d.getDate() + 1))
+    out.push(toISO(d));
+  return out;
+}
+
+// كل سبوت الشهر — the plan's default rows: normally every سبت carries a نشاط
+const saturdaysOf = (key) => daysOf(key).filter((d) => toDate(d).getDay() === 6);
+
+// "sam. 06/09" — weekday and day, latin digits in both locales
+const dayLabelFormats = {};
+function fmtDay(iso, lng) {
+  const locale = lng === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
+  const f = (dayLabelFormats[locale] ??= new Intl.DateTimeFormat(locale, {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+  }));
+  return f.format(toDate(iso)).replace(/[‎‏؜]/g, '');
+}
+
+/** صف واحد من جدول الشهر: يوم + النشاط المبرمج فيه + حالته. */
+function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove }) {
+  const { t, i18n } = useTranslation();
+  const isSaturday = toDate(row.date)?.getDay() === 6;
+
+  return (
+    <li className="grid grid-cols-[7.5rem_1fr] items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:grid-cols-[9rem_1fr_auto]">
+      {/* An extra day stays changeable; the Saturdays of the month are fixed rows */}
+      {row.extra && canEdit ? (
+        <Select
+          value={row.date}
+          onChange={(e) => onDate(index, e.target.value)}
+          aria-label={t('common.date')}
+          className="h-9 sm:h-9"
+        >
+          {days.map((d) => (
+            <option key={d} value={d}>
+              {fmtDay(d, i18n.language)}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <span className="flex items-center gap-1.5 text-sm tabular-nums">
+          {isSaturday && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />}
+          <span className={isSaturday ? 'font-medium' : 'text-muted-foreground'}>
+            {fmtDay(row.date, i18n.language)}
+          </span>
+        </span>
+      )}
+
+      {canEdit ? (
+        <Input
+          value={row.title}
+          onChange={(e) => onTitle(index, e.target.value)}
+          placeholder={t('branch.planActivityHint')}
+          autoComplete="off"
+          className="h-9 sm:h-9"
+          aria-label={t('branch.planActivity')}
+        />
+      ) : (
+        <span className="text-sm">{row.title || <span className="text-muted-foreground">—</span>}</span>
+      )}
+
+      <div className="col-span-2 flex items-center gap-2 sm:col-span-1">
+        {row.session ? (
+          <Link
+            to={`/sessions/${row.session.id}`}
+            className="focus-ring inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/12 px-2 py-0.5 text-xs font-medium text-success"
+          >
+            <IconCheck className="h-3 w-3" />
+            {fmtDate(row.session.date)}
+          </Link>
+        ) : row.title.trim() ? (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <IconClock className="h-3 w-3" />
+            {t('branch.planNotDone')}
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
+        )}
+        {canEdit && row.extra && (
+          <Button size="icon-sm" variant="ghost" onClick={() => onRemove(index)} aria-label={t('common.delete')}>
+            <IconTrash />
+          </Button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * الخطة السنوية لفرقة واحدة، شهرًا بشهر: سبوت الشهر جاهزة كصفوف، القائد يكتب اسم
+ * النشاط في كل سطر و يحفظ الشهر دفعة واحدة، و يضيف أي يوم آخر عند الحاجة.
+ * التحقيق يُحسب في السيرفر: بند الخطة يخضرّ متى رُبط به نشاط أو أُنشئ نشاط بنفس الاسم.
+ */
+function AnnualPlan({ branchId }) {
+  const { t, i18n } = useTranslation();
+  const { can } = usePerms();
+  const toast = useToast();
+  const [year, setYear] = useState('');
+  // Opens on the month the قائد is living in, not on أيلول
+  const [month, setMonth] = useState(() => new Date().getMonth() + 1);
+  const [rows, setRows] = useState([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const res = useFetch(`/branches/${branchId}/plan${year ? `?year=${encodeURIComponent(year)}` : ''}`);
+  const canEdit = can('branches.plan');
+
+  const plan = res.data;
+  const key = plan ? monthKey(plan.year, month) : null;
+
+  // The draft is rebuilt whenever the month or the saved plan changes: every سبت is
+  // offered even when empty, saved days join them, and the whole month sorts by date.
+  useEffect(() => {
+    if (!plan || !key) return;
+    const saved = plan.items.filter((i) => i.date.startsWith(key));
+    const byDate = new Map(
+      saved.map((i) => [i.date, { ...i, extra: toDate(i.date).getDay() !== 6 }])
+    );
+    for (const d of saturdaysOf(key))
+      if (!byDate.has(d)) byDate.set(d, { id: null, date: d, title: '', session: null, extra: false });
+    setRows([...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)));
+    setDirty(false);
+  }, [plan, key]);
+
+  const edit = (fn) => {
+    setRows(fn);
+    setDirty(true);
+  };
+  const setTitle = (i, v) => edit((r) => r.map((x, n) => (n === i ? { ...x, title: v } : x)));
+  const setDate = (i, v) => edit((r) => r.map((x, n) => (n === i ? { ...x, date: v } : x)));
+  const removeRow = (i) => edit((r) => r.filter((_, n) => n !== i));
+
+  // A new day defaults to the first day of the month nothing is planned on yet
+  function addDay() {
+    const taken = new Set(rows.map((r) => r.date));
+    const free = daysOf(key).find((d) => !taken.has(d));
+    if (!free) return;
+    edit((r) =>
+      [...r, { id: null, date: free, title: '', session: null, extra: true }].sort((a, b) =>
+        a.date.localeCompare(b.date)
+      )
+    );
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const fresh = await api.put(`/branches/${branchId}/plan/month`, {
+        year: plan.year,
+        month: key,
+        items: rows
+          .filter((r) => r.date && r.title.trim())
+          .map((r) => ({ ...(r.id ? { id: r.id } : {}), date: r.date, title: r.title.trim() })),
+      });
+      res.setData(fresh);
+      setDirty(false);
+      toast.success(t('common.saved'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const monthDone = rows.filter((r) => r.session).length;
+  const monthPlanned = rows.filter((r) => r.title.trim()).length;
+  // Days still selectable for an extra row: the free ones, plus the row's own date
+  const takenDates = new Set(rows.filter((r) => !r.extra).map((r) => r.date));
+
+  return (
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
+          {t('branch.planTitle')}
+        </CardTitle>
+        {plan && (
+          <div className="flex flex-wrap items-center gap-2">
+            {plan.total > 0 && (
+              <Badge variant="outline">
+                {t('branch.planProgress', { done: plan.done_count, total: plan.total })}
+              </Badge>
+            )}
+            <Select
+              className="w-auto"
+              value={plan.year}
+              onChange={(e) => setYear(e.target.value)}
+              aria-label={t('common.year')}
+            >
+              {plan.years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {res.loading && <Skeleton className="h-40" />}
+        {res.error && (
+          <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
+        )}
+
+        {plan && (
+          <>
+            {plan.total > 0 && (
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between text-sm">
+                  <span className="font-medium">{t('branch.planRate')}</span>
+                  <span className="tabular-nums text-muted-foreground">{plan.rate}%</span>
+                </div>
+                <ProgressBar value={plan.rate} label={t('branch.planRate')} />
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                className="w-auto"
+                value={month}
+                onChange={(e) => setMonth(Number(e.target.value))}
+                aria-label={t('common.month')}
+              >
+                {SCOUT_MONTHS.map((m) => (
+                  <option key={m} value={m}>
+                    {monthName(m, i18n.language)}
+                  </option>
+                ))}
+              </Select>
+              <Badge variant={monthDone === monthPlanned && monthPlanned > 0 ? 'success' : 'outline'}>
+                {t('branch.planProgress', { done: monthDone, total: monthPlanned })}
+              </Badge>
+              <span className="grow" />
+              {canEdit && (
+                <>
+                  <Button size="sm" variant="outline" onClick={addDay}>
+                    <IconPlus />
+                    {t('branch.planAddDay')}
+                  </Button>
+                  <Button size="sm" variant="brand" onClick={save} loading={saving} disabled={!dirty}>
+                    {t('common.save')}
+                  </Button>
+                </>
+              )}
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-border">
+              <div className="hidden grid-cols-[9rem_1fr_auto] gap-3 border-b border-border bg-muted/30 px-3 py-2 text-xs font-medium text-muted-foreground sm:grid">
+                <span>{t('common.date')}</span>
+                <span>{t('branch.planActivity')}</span>
+                <span>{t('branch.planState')}</span>
+              </div>
+              {rows.length === 0 ? (
+                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  {t('branch.planEmptyMonth')}
+                </p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {rows.map((row, i) => (
+                    <PlanRow
+                      key={`${row.id ?? 'new'}-${i}`}
+                      row={row}
+                      index={i}
+                      days={daysOf(key).filter((d) => d === row.date || !takenDates.has(d))}
+                      canEdit={canEdit}
+                      onTitle={setTitle}
+                      onDate={setDate}
+                      onRemove={removeRow}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planHint')}</p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 /** أنشطة of the selected فرقة, newest first, paged so a long history stays usable. */
 function BranchSessions({ branchId }) {
@@ -354,6 +666,9 @@ export default function Branches() {
           </div>
         </CardContent>
       </Card>
+
+      {/* key: switching فرقة must refetch its own plan, not show the previous one */}
+      <AnnualPlan key={`plan-${b.id}`} branchId={b.id} />
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">
