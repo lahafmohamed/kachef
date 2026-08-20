@@ -27,7 +27,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Amari',
       birth_date: '2005-04-12',
       sex: 'M',
-      parent_phone: '+216 21 456 789',
+      father_phone: '+216 21 456 789',
       join_date: '2011-09-10',
       promotions: [
         { old: baraem, new: louveteaux, date: '2013-09-15', count: 85 },
@@ -40,7 +40,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Ben Mahmoud',
       birth_date: '2006-02-18',
       sex: 'F',
-      parent_phone: '+216 98 123 456',
+      father_phone: '+216 98 123 456',
       join_date: '2012-10-01',
       promotions: [
         { old: baraem, new: louveteaux, date: '2014-09-10', count: 90 },
@@ -53,7 +53,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Triki',
       birth_date: '2005-11-05',
       sex: 'M',
-      parent_phone: '+216 50 789 012',
+      father_phone: '+216 50 789 012',
       join_date: '2011-10-15',
       promotions: [
         { old: baraem, new: louveteaux, date: '2013-10-01', count: 92 },
@@ -66,7 +66,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Karray',
       birth_date: '2007-01-22',
       sex: 'F',
-      parent_phone: '+216 26 345 678',
+      father_phone: '+216 26 345 678',
       join_date: '2013-09-01',
       promotions: [
         { old: baraem, new: louveteaux, date: '2015-09-15', count: 88 },
@@ -79,7 +79,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Saidi',
       birth_date: '2006-08-30',
       sex: 'M',
-      parent_phone: '+216 97 654 321',
+      father_phone: '+216 97 654 321',
       join_date: '2012-09-15',
       promotions: [
         { old: baraem, new: louveteaux, date: '2014-09-20', count: 95 },
@@ -92,7 +92,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Jaziri',
       birth_date: '2007-06-14',
       sex: 'F',
-      parent_phone: '+216 22 890 123',
+      father_phone: '+216 22 890 123',
       join_date: '2013-10-10',
       promotions: [
         { old: baraem, new: louveteaux, date: '2015-10-05', count: 82 },
@@ -105,7 +105,7 @@ function seedBaraemToRoutiers() {
       last_name: 'Elloumi',
       birth_date: '2008-02-10',
       sex: 'M',
-      parent_phone: '+216 53 112 233',
+      father_phone: '+216 53 112 233',
       join_date: '2014-09-01',
       promotions: [
         { old: baraem, new: louveteaux, date: '2016-09-10', count: 94 },
@@ -116,7 +116,7 @@ function seedBaraemToRoutiers() {
   ];
 
   const insertMember = db.prepare(`
-    INSERT INTO members (first_name, last_name, birth_date, sex, branch_id, parent_phone, join_date, status)
+    INSERT INTO members (first_name, last_name, birth_date, sex, branch_id, father_phone, join_date, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
   `);
 
@@ -143,7 +143,7 @@ function seedBaraemToRoutiers() {
           mData.birth_date,
           mData.sex,
           routiers.id,
-          mData.parent_phone,
+          mData.father_phone,
           mData.join_date
         );
         memberId = result.lastInsertRowid;

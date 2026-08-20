@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
 import { usePerms } from '../auth';
-import { branchName, fmtDate } from '../utils';
+import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -108,10 +108,10 @@ export default function Dashboard() {
                   to={`/members/${b.id}`}
                   className="focus-ring flex items-center gap-3 rounded-lg bg-card/70 px-3 py-2 transition-colors hover:bg-card"
                 >
-                  <Avatar photo={b.photo} name={`${b.first_name} ${b.last_name}`} className="h-9 w-9" />
+                  <Avatar photo={b.photo} name={avatarName(b)} className="h-9 w-9" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">
-                      {b.first_name} {b.last_name}
+                      {memberName(b)}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {t('birthday.turning', { age: b.turning })} ·{' '}

@@ -39,8 +39,10 @@ const PERM_GROUPS = {
     'members.matalib',
   ],
   sessions: ['sessions.read', 'sessions.create', 'sessions.attendance', 'sessions.read.fees'],
-  // Reading الفرق, plus writing الخطة السنوية of a فرقة
-  branches: ['branches.read', 'branches.plan'],
+  // Reading الفرق, plus writing الخطة السنوية of a فرقة and its مجموعات.
+  // branches.groups also moves عناصر between مجموعات: تقسيم الفرقة عمل قائدها،
+  // و هو تنظيم داخلي لا يمسّ ملف العنصر، فلا يُشترط له members.edit.
+  branches: ['branches.read', 'branches.plan', 'branches.groups'],
   promotions: ['promotions.read', 'promotions.apply'],
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
@@ -100,7 +102,7 @@ const requireAnyPerm = (...keys) => (req, res, next) =>
   keys.some((k) => hasPerm(req, k)) ? next() : res.status(403).json({ error: 'forbidden' });
 
 // Coordinates are personal data: without members.contact they never leave the server
-const CONTACT_FIELDS = ['member_phone', 'parent_phone', 'address_abidjan', 'address_lebanon'];
+const CONTACT_FIELDS = ['member_phone', 'father_phone', 'mother_phone', 'address_abidjan', 'address_lebanon'];
 function stripContact(req, m) {
   if (hasPerm(req, 'members.contact')) return m;
   const out = { ...m };
@@ -161,6 +163,123 @@ function branchFilterSQL(req, col) {
   if (!scope) return '';
   const ids = [...scope].map(Number).filter(Number.isInteger);
   return ` AND (${col} IS NULL OR ${col} IN (${ids.length ? ids.join(',') : -1}))`;
+}
+
+// ---------- فرق النشاط ----------
+// نفس الحصّة تُعطى أحيانًا لفرقتين معًا، فتُسجَّل نشاطًا واحدًا يشمل الفرقتين. لذلك
+// سؤال «هل يخصّ هذا النشاط الفرقة س؟» يُقرأ من session_branches، لا من sessions.branch_id
+// الذي صار يعني الفرقة الرئيسية فقط. أرقام الفرق مُتحقَّق منها قبل أن تصل إلى هنا،
+// فدمجها في نص الاستعلام آمن و يترك المعاملات الموضعية القائمة على حالها.
+
+// -1 لأي مُدخل ليس رقمًا صحيحًا: الاستعلام يبقى صالحًا و لا يطابق شيئًا
+const intOr = (v) => (Number.isInteger(Number(v)) ? Number(v) : -1);
+
+// "3,5" (GROUP_CONCAT) -> [3, 5]; NULL -> []
+const parseIdList = (v) =>
+  v === null || v === undefined || v === '' ? [] : String(v).split(',').map(Number).sort((a, b) => a - b);
+
+const branchIdsOfSession = (sessionId) =>
+  db
+    .prepare('SELECT branch_id FROM session_branches WHERE session_id = ? ORDER BY branch_id')
+    .all(sessionId)
+    .map((r) => r.branch_id);
+
+const sessionInBranchSQL = (branchId, alias = 's') =>
+  `EXISTS (SELECT 1 FROM session_branches sb WHERE sb.session_id = ${alias}.id AND sb.branch_id = ${intOr(branchId)})`;
+
+// صف حضور يُحتسب لفرقة: النشاط المشترك يوزّع حضوره حسب فرقة العنصر، بينما النشاط ذو
+// الفرقة الواحدة يبقى محسوبًا لها بالكامل — و لو انتقل العنصر إلى فرقة أخرى لاحقًا.
+const attendanceInBranchSQL = (branchId, sAlias = 's', aAlias = 'a') => {
+  const id = intOr(branchId);
+  return `(${sessionInBranchSQL(id, sAlias)} AND (
+      (SELECT COUNT(*) FROM session_branches sb2 WHERE sb2.session_id = ${sAlias}.id) = 1
+      OR (SELECT m2.branch_id FROM members m2 WHERE m2.id = ${aAlias}.member_id) = ${id}))`;
+};
+
+// SQL fragment limiting أنشطة to the caller's فرق — نشاط بلا فرقة (قادة / فوج) يمرّ
+function sessionScopeSQL(req, alias = 's') {
+  const scope = allowedBranches(req);
+  if (!scope) return '';
+  const ids = [...scope].map(Number).filter(Number.isInteger);
+  const list = ids.length ? ids.join(',') : -1;
+  return ` AND (${alias}.branch_id IS NULL OR EXISTS (
+      SELECT 1 FROM session_branches sb WHERE sb.session_id = ${alias}.id AND sb.branch_id IN (${list})))`;
+}
+
+// هل يرى المستخدم هذا النشاط؟ تكفي فرقة واحدة مشتركة بينه و بين فرق النشاط
+function sessionOk(req, session) {
+  const scope = allowedBranches(req);
+  if (!scope) return true;
+  if (session.branch_id === null || session.branch_id === undefined) return true;
+  return branchIdsOfSession(session.id).some((b) => scope.has(b));
+}
+
+// فرق النشاط التي يملك المستخدم صلاحية عليها: قائد الفرقة (أو مساعده) يضع حضور
+// فرقته وحدها، فلا يكتب أحد حضور عناصر فرقة غيره في نشاط مشترك.
+function myBranchesOfSession(req, sessionId) {
+  const scope = allowedBranches(req);
+  const all = branchIdsOfSession(sessionId);
+  return scope ? all.filter((b) => scope.has(b)) : all;
+}
+
+// ---------- مجموعات الفرقة ----------
+// الفرقة الكبيرة تُقسَّم إلى مجموعات يُوزَّع عليها العناصر يدويًا، فتُقام لكل مجموعة
+// حصّتها الخاصة مع قائدها. النشاط يختار مجموعاته بعد فرقه: فرقةٌ اختيرت لها مجموعة
+// أو أكثر لا يشارك منها إلا عناصرها، و فرقةٌ لم تُختر لها مجموعة تشارك كاملةً.
+// هذه القاعدة هي التي تجعل كل نشاط قديم (بلا صفوف في session_groups) يبقى كما هو.
+
+const groupIdsOfSession = (sessionId) =>
+  db
+    .prepare('SELECT group_id FROM session_groups WHERE session_id = ? ORDER BY group_id')
+    .all(sessionId)
+    .map((r) => r.group_id);
+
+// الفرق التي حُصر النشاط فيها بمجموعات بعينها — بقيّة فرق النشاط تشارك كاملةً
+const groupedBranchesOfSession = (sessionId) =>
+  db
+    .prepare(
+      `SELECT DISTINCT g.branch_id FROM session_groups sg
+       JOIN branch_groups g ON g.id = sg.group_id WHERE sg.session_id = ?`
+    )
+    .all(sessionId)
+    .map((r) => r.branch_id);
+
+// شرط SQL: هل يشارك هذا العنصر في النشاط؟ نشاطٌ بلا مجموعات يقبل الجميع.
+function memberInSessionGroupsSQL(sessionId, alias = 'm') {
+  const ids = groupIdsOfSession(sessionId);
+  if (!ids.length) return '1=1';
+  const groups = ids.map(intOr).join(',');
+  const branches = groupedBranchesOfSession(sessionId).map(intOr).join(',');
+  return `(${alias}.branch_id NOT IN (${branches}) OR ${alias}.group_id IN (${groups}))`;
+}
+
+// نفس القاعدة في JS، لحرس الكتابة: لا يُسجَّل حضور عنصر خارج مجموعات النشاط
+function memberInSessionGroups(sessionId, member) {
+  const ids = groupIdsOfSession(sessionId);
+  if (!ids.length) return true;
+  if (!groupedBranchesOfSession(sessionId).includes(member.branch_id)) return true;
+  return ids.includes(member.group_id);
+}
+
+// مجموعات فرقة، و عدد عناصرها النشطين
+const groupsOfBranch = (branchId) =>
+  db
+    .prepare(
+      `SELECT g.id, g.branch_id, g.name, g.sort_order,
+        (SELECT COUNT(*) FROM members m WHERE m.group_id = g.id AND m.status = 'active') AS member_count
+       FROM branch_groups g WHERE g.branch_id = ? ORDER BY g.sort_order, g.id`
+    )
+    .all(branchId);
+
+// المجموعة صالحة لعنصر في هذه الفرقة؟ '' و null و undefined كلها «بلا مجموعة».
+// يُعيد undefined إذا كانت المجموعة غير موجودة أو من فرقة أخرى.
+function resolveGroupId(raw, branchId) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return undefined;
+  const g = db.prepare('SELECT branch_id FROM branch_groups WHERE id = ?').get(id);
+  if (!g || Number(g.branch_id) !== Number(branchId)) return undefined;
+  return id;
 }
 
 // ---------- Users (admin) ----------
@@ -290,6 +409,7 @@ function pendingPromotions() {
     out.push({
       id: m.id,
       first_name: m.first_name,
+      father_name: m.father_name,
       last_name: m.last_name,
       photo: m.photo,
       age,
@@ -315,7 +435,7 @@ function upcomingBirthdays() {
 
   return db
     .prepare(
-      `SELECT m.id, m.first_name, m.last_name, m.photo, m.birth_date, m.branch_id,
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.birth_date, m.branch_id,
               b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
          FROM members m LEFT JOIN branches b ON b.id = m.branch_id
         WHERE m.status = 'active' AND substr(m.birth_date, 6, 5) IN (?, ?)`
@@ -343,9 +463,10 @@ function earnedNumbersInBranch(memberId, branchId) {
   const rows = db
     .prepare(
       `SELECT s.matalib FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE a.member_id = ? AND a.status = 'present' AND s.branch_id = ? AND s.kind = 'activity'`
+       WHERE a.member_id = ? AND a.status = 'present' AND s.kind = 'activity'
+         AND ${sessionInBranchSQL(branchId)}`
     )
-    .all(memberId, branchId);
+    .all(memberId);
   const set = new Set();
   for (const r of rows) JSON.parse(r.matalib || '[]').forEach((n) => set.add(n));
   for (const m of manualMatalib(memberId, branchId)) {
@@ -418,7 +539,9 @@ app.get('/api/branches', (req, res) => {
        FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY b.sort_order`
     )
     .all();
-  res.json(rows);
+  // مجموعات كل فرقة تُرسل مع الفرقة نفسها: نموذج إنشاء النشاط يحتاجها فورًا ليعرض
+  // مجموعات الفرقة المختارة، فلا يستحقّ ذلك طلبًا ثانيًا.
+  res.json(rows.map((b) => ({ ...b, groups: groupsOfBranch(b.id) })));
 });
 
 // Everything the الفرق tab shows about one فرقة: عناصر، قادة، أنشطة، حضور، مطالب.
@@ -438,41 +561,54 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
        COALESCE(SUM(status = 'active' AND sex = 'F'), 0) AS female
      FROM members WHERE branch_id = ?`
   );
-  const sessionsStmt = db.prepare(
-    `SELECT
-       COALESCE(SUM(kind = 'activity'), 0) AS total,
-       COALESCE(SUM(kind = 'activity' AND substr(date, 1, 7) = ?), 0) AS this_month,
-       COALESCE(SUM(kind = 'visit'), 0) AS visits
-     FROM sessions WHERE branch_id = ?`
-  );
-  const attendanceStmt = db.prepare(
-    `SELECT
-       COALESCE(SUM(a.status = 'present'), 0) AS present,
-       COALESCE(SUM(a.status = 'absent'), 0) AS absent,
-       COALESCE(SUM(a.status = 'excused'), 0) AS excused
-     FROM attendance a JOIN sessions s ON s.id = a.session_id
-     WHERE s.branch_id = ? AND s.kind = 'activity'`
-  );
+  // الاستعلامات التي تسأل «هل يخصّ هذا النشاط هذه الفرقة؟» تُبنى لكل فرقة على حدة:
+  // رقم الفرقة مدمج في النص، فلا يمكن تحضير الاستعلام مرّة واحدة للجميع.
+  const sessionsOf = (id) =>
+    db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(kind = 'activity'), 0) AS total,
+           COALESCE(SUM(kind = 'activity' AND substr(date, 1, 7) = ?), 0) AS this_month,
+           COALESCE(SUM(kind = 'visit'), 0) AS visits
+         FROM sessions s WHERE ${sessionInBranchSQL(id)}`
+      )
+      .get(ym);
+  const attendanceOf = (id) =>
+    db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(a.status = 'present'), 0) AS present,
+           COALESCE(SUM(a.status = 'absent'), 0) AS absent,
+           COALESCE(SUM(a.status = 'excused'), 0) AS excused
+         FROM attendance a JOIN sessions s ON s.id = a.session_id
+         WHERE s.kind = 'activity' AND ${attendanceInBranchSQL(id)}`
+      )
+      .get();
   const leadersStmt = db.prepare(
     `SELECT a.id, a.title, a.leader_id, l.first_name, l.last_name, l.photo
      FROM assignments a LEFT JOIN leaders l ON l.id = a.leader_id
      WHERE a.branch_id = ? AND a.year = ?
      ORDER BY a.sort_order, a.id`
   );
-  const mataliOfBranch = db.prepare("SELECT matalib FROM sessions WHERE branch_id = ? AND kind = 'activity'");
-  const lastSessionStmt = db.prepare(
-    "SELECT id, title, date FROM sessions WHERE branch_id = ? AND kind = 'activity' ORDER BY date DESC, id DESC LIMIT 1"
-  );
+  const mataliOf = (id) =>
+    db.prepare(`SELECT matalib FROM sessions s WHERE kind = 'activity' AND ${sessionInBranchSQL(id)}`).all();
+  const lastSessionOf = (id) =>
+    db
+      .prepare(
+        `SELECT id, title, date FROM sessions s
+          WHERE kind = 'activity' AND ${sessionInBranchSQL(id)}
+          ORDER BY date DESC, id DESC LIMIT 1`
+      )
+      .get();
 
   const rows = branches.map((b) => {
     const members = membersStmt.get(b.id);
-    const sessions = sessionsStmt.get(ym, b.id);
-    const att = attendanceStmt.get(b.id);
+    const sessions = sessionsOf(b.id);
+    const att = attendanceOf(b.id);
     const marked = att.present + att.absent + att.excused;
     // A مطلب counts as covered once any نشاط of the فرقة has worked on it
     const covered = new Set();
-    for (const r of mataliOfBranch.all(b.id))
-      JSON.parse(r.matalib || '[]').forEach((n) => covered.add(n));
+    for (const r of mataliOf(b.id)) JSON.parse(r.matalib || '[]').forEach((n) => covered.add(n));
     return {
       ...b,
       members,
@@ -487,7 +623,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
         covered_count: covered.size,
         total: b.total_requirements,
       },
-      last_session: lastSessionStmt.get(b.id) || null,
+      last_session: lastSessionOf(b.id) || null,
     };
   });
   res.json(rows);
@@ -502,13 +638,13 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
   const sessions = db
     .prepare(
       `SELECT s.id, s.title, s.date, s.leader, s.matalib, s.kind
-       FROM sessions s WHERE s.branch_id = ? ORDER BY s.date DESC, s.id DESC`
+       FROM sessions s WHERE ${sessionInBranchSQL(branch.id)} ORDER BY s.date DESC, s.id DESC`
     )
-    .all(branch.id)
+    .all()
     .map((s) => ({ ...s, matalib: JSON.parse(s.matalib || '[]') }));
 
   const attendeesStmt = db.prepare(
-    `SELECT a.status, m.id, m.first_name, m.last_name, m.photo
+    `SELECT a.status, m.id, m.first_name, m.father_name, m.last_name, m.photo
      FROM attendance a JOIN members m ON m.id = a.member_id
      WHERE a.session_id = ? ORDER BY m.last_name, m.first_name`
   );
@@ -565,6 +701,19 @@ function planYears() {
   return [...years].sort().reverse();
 }
 
+// sessions.plan_item_id مرآة لبند الفرقة الرئيسية وحده — القوائم القديمة تقرأه لتعرف
+// أن النشاط "من الخطة". المرجع الكامل هو session_plan_items.
+function syncPrimaryPlanItem(sessionId) {
+  db.prepare(
+    `UPDATE sessions SET plan_item_id = (
+       SELECT spi.plan_item_id FROM session_plan_items spi
+         JOIN annual_plan p ON p.id = spi.plan_item_id
+        WHERE spi.session_id = sessions.id AND p.branch_id = sessions.branch_id
+        LIMIT 1)
+     WHERE id = ?`
+  ).run(sessionId);
+}
+
 // الخطة الكاملة لفرقة في سنة، مع النشاط الذي حقّق كل بند إن وُجد
 function planFor(branchId, year) {
   const items = db
@@ -574,19 +723,27 @@ function planFor(branchId, year) {
   const sessions = range
     ? db
         .prepare(
-          `SELECT id, title, date, plan_item_id FROM sessions
-            WHERE branch_id = ? AND kind = 'activity' AND date >= ? AND date <= ?
+          `SELECT id, title, date,
+              (SELECT GROUP_CONCAT(spi.plan_item_id) FROM session_plan_items spi
+                WHERE spi.session_id = s.id) AS plan_item_ids
+            FROM sessions s
+            WHERE kind = 'activity' AND date >= ? AND date <= ? AND ${sessionInBranchSQL(branchId)}
             ORDER BY date, id`
         )
-        .all(branchId, range.from, range.to)
+        .all(range.from, range.to)
     : [];
-  // A نشاط linked on purpose belongs to that بند alone; only unlinked ones are
-  // offered to the title fallback, so one نشاط can never tick two بنود.
+  // A نشاط linked on purpose belongs to that بند alone; only ones unlinked *in this
+  // plan* are offered to the title fallback, so one نشاط can never tick two بنود of
+  // the same فرقة. النشاط المشترك المربوط ببند فرقة أخرى يبقى مرشّحًا بالاسم هنا:
+  // ربطه هناك لا يقول شيئًا عن خطة هذه الفرقة.
+  const itemIds = new Set(items.map((i) => i.id));
   const byPlan = new Map();
   const byTitle = new Map();
   for (const s of sessions) {
-    if (s.plan_item_id) {
-      if (!byPlan.has(s.plan_item_id)) byPlan.set(s.plan_item_id, s);
+    const linkedHere = parseIdList(s.plan_item_ids).find((id) => itemIds.has(id)) ?? null;
+    s.linked_item_id = linkedHere;
+    if (linkedHere !== null) {
+      if (!byPlan.has(linkedHere)) byPlan.set(linkedHere, s);
     } else {
       const k = planTitleKey(s.title);
       if (!byTitle.has(k)) byTitle.set(k, s);
@@ -596,7 +753,7 @@ function planFor(branchId, year) {
     const s = byPlan.get(i.id) || byTitle.get(planTitleKey(i.title)) || null;
     return {
       ...i,
-      session: s ? { id: s.id, title: s.title, date: s.date, linked: s.plan_item_id === i.id } : null,
+      session: s ? { id: s.id, title: s.title, date: s.date, linked: s.linked_item_id === i.id } : null,
     };
   });
   const doneCount = rows.filter((r) => r.session).length;
@@ -632,6 +789,87 @@ app.get('/api/branches/:id/plan/options', requirePerm('sessions.create'), (req, 
     year: plan.year,
     items: plan.items.filter((i) => !i.session).map((i) => ({ id: i.id, date: i.date, title: i.title })),
   });
+});
+
+// أنشطة الفرقة في السنة الكشفية — قائمة الاختيار عند ربط نشاط موجود ببند من الخطة.
+// النشاط المربوط ببند آخر يبقى معروضًا مع اسم بنده: القائد يرى أنه سيُنقل، لا أنه ضائع.
+app.get('/api/branches/:id/plan/sessions', requirePerm('branches.read'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const wanted = normYear(req.query.year);
+  const year = scoutYearRange(wanted) ? wanted : currentScoutYear();
+  const range = scoutYearRange(year);
+  const sessions = db
+    .prepare(
+      // البند المعروض هو بند خطة هذه الفرقة: ربط النشاط ببند فرقة أخرى لا يعني هنا شيئًا.
+      // بند واحد على الأكثر لكل فرقة، فبقية الصفوف NULL و MAX يلتقط الصف المعني.
+      `SELECT s.id, s.title, s.date,
+              MAX(p.id) AS plan_item_id, MAX(p.title) AS plan_title, MAX(p.date) AS plan_date
+         FROM sessions s
+         LEFT JOIN session_plan_items spi ON spi.session_id = s.id
+         LEFT JOIN annual_plan p ON p.id = spi.plan_item_id AND p.branch_id = ${intOr(branch.id)}
+        WHERE s.kind = 'activity' AND s.date >= ? AND s.date <= ? AND ${sessionInBranchSQL(branch.id)}
+        GROUP BY s.id
+        ORDER BY s.date DESC, s.id DESC`
+    )
+    .all(range.from, range.to);
+  res.json({ year, sessions });
+});
+
+// ربط نشاط موجود ببند من الخطة، أو فكّ الربط — بعد إنشاء الاثنين.
+// الحالة الشائعة: أُنشئ النشاط باسم مختلف عن اسم البند، فلا يلتقطه التطابق بالاسم،
+// و لا يمكن إصلاح ذلك إلا بتغيير الخطة أو إعادة كتابة اسم النشاط. هنا يُربط مباشرةً.
+// البند يحقّقه نشاط واحد: ربط نشاط جديد به يفكّ ربط سابقه في نفس المعاملة.
+app.put('/api/branches/:id/plan/:itemId/session', requirePerm('branches.plan'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const item = db
+    .prepare('SELECT id, year, branch_id FROM annual_plan WHERE id = ?')
+    .get(req.params.itemId);
+  if (!item || item.branch_id !== branch.id)
+    return res.status(404).json({ error: 'plan item not found' });
+  const range = scoutYearRange(item.year);
+  if (!range) return res.status(400).json({ error: 'invalid year' });
+
+  const raw = req.body?.session_id;
+  // null = فكّ الربط: البند يعود "لم يُنفَّذ بعد" و النشاط يبقى كما هو
+  const sessionId = raw === undefined || raw === null || raw === '' ? null : Number(raw);
+  if (sessionId !== null && !Number.isInteger(sessionId))
+    return res.status(400).json({ error: 'invalid session_id' });
+
+  let session = null;
+  if (sessionId !== null) {
+    session = db.prepare('SELECT id, branch_id, kind, date FROM sessions WHERE id = ?').get(sessionId);
+    // النشاط المشترك يخصّ عدة فرق: يكفي أن تكون فرقة الخطة إحداها
+    if (!session || session.kind !== 'activity' || !branchIdsOfSession(session.id).includes(branch.id))
+      return res.status(400).json({ error: 'invalid session_id' });
+    // خارج السنة الكشفية للبند: الربط سيبدو بلا أثر، فالخطة لا تقرأ إلا أنشطة سنتها
+    if (session.date < range.from || session.date > range.to)
+      return res.status(400).json({ error: 'session_outside_year' });
+  }
+
+  db.transaction(() => {
+    // البند يحقّقه نشاط واحد: أي ربط سابق به يُفكّ
+    const previous = db
+      .prepare('SELECT session_id FROM session_plan_items WHERE plan_item_id = ?')
+      .all(item.id)
+      .map((r) => r.session_id);
+    db.prepare('DELETE FROM session_plan_items WHERE plan_item_id = ?').run(item.id);
+    if (session) {
+      // بند واحد لكل فرقة: الربط الجديد يحلّ محلّ ربط هذا النشاط ببند آخر من نفس الخطة
+      db.prepare(
+        `DELETE FROM session_plan_items WHERE session_id = ? AND plan_item_id IN
+           (SELECT id FROM annual_plan WHERE branch_id = ? AND year = ?)`
+      ).run(session.id, branch.id, item.year);
+      db.prepare('INSERT OR IGNORE INTO session_plan_items (session_id, plan_item_id) VALUES (?, ?)')
+        .run(session.id, item.id);
+    }
+    for (const sid of new Set([...previous, ...(session ? [session.id] : [])]))
+      syncPrimaryPlanItem(sid);
+  })();
+  res.json(planFor(branch.id, item.year));
 });
 
 // حفظ خطة شهر كامل دفعة واحدة — this is the editing unit: the قائد fills the four
@@ -695,6 +933,115 @@ function validateBranchBody(body, { requireNames }) {
   return null;
 }
 
+// ---------- مجموعات الفرقة ----------
+
+// The فرقة whose مجموعات are being read or written, once the caller's scope is checked
+function branchForGroups(req, res, perm) {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) {
+    res.status(404).json({ error: 'branch not found' });
+    return null;
+  }
+  if (!branchOk(req, branch.id) || !hasPerm(req, perm)) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return branch;
+}
+
+const groupName = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+// المجموعات مع عناصر الفرقة و توزيعهم الحالي — صفحة الفرق توزّع منها بيد واحدة
+app.get('/api/branches/:id/groups', requirePerm('branches.read'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.read');
+  if (!branch) return;
+  res.json({
+    groups: groupsOfBranch(branch.id),
+    // العناصر غير النشطين يظهرون أيضًا: توزيعهم محفوظ، و عودتهم لا تحتاج إعادة توزيع
+    members: db
+      .prepare(
+        `SELECT id, first_name, father_name, last_name, photo, status, group_id FROM members
+         WHERE branch_id = ? ORDER BY status != 'active', last_name, first_name`
+      )
+      .all(branch.id),
+  });
+});
+
+app.post('/api/branches/:id/groups', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const name = groupName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const next =
+    db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM branch_groups WHERE branch_id = ?')
+      .get(branch.id).n;
+  try {
+    const id = db
+      .prepare('INSERT INTO branch_groups (branch_id, name, sort_order) VALUES (?, ?, ?)')
+      .run(branch.id, name, next).lastInsertRowid;
+    res.status(201).json(db.prepare('SELECT * FROM branch_groups WHERE id = ?').get(id));
+  } catch (e) {
+    // UNIQUE(branch_id, name) — مجموعتان بنفس الاسم في فرقة واحدة لا تُميَّزان
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'group_exists' });
+    throw e;
+  }
+});
+
+app.put('/api/branches/:id/groups/:gid', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const g = db.prepare('SELECT * FROM branch_groups WHERE id = ? AND branch_id = ?')
+    .get(req.params.gid, branch.id);
+  if (!g) return res.status(404).json({ error: 'group not found' });
+  const name = groupName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'name required' });
+  try {
+    db.prepare('UPDATE branch_groups SET name = ? WHERE id = ?').run(name, g.id);
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'group_exists' });
+    throw e;
+  }
+  res.json(db.prepare('SELECT * FROM branch_groups WHERE id = ?').get(g.id));
+});
+
+// حذف مجموعة يعيد عناصرها «بلا مجموعة» و يخرجها من الأنشطة التي كانت مختارة فيها.
+// النشاط الذي لم تبق له مجموعة في فرقةٍ ما يعود نشاط تلك الفرقة كاملةً — و هو أضبط
+// من إخفاء عناصرها كلهم، لأن الحضور المسجَّل باقٍ على أي حال.
+app.delete('/api/branches/:id/groups/:gid', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const g = db.prepare('SELECT id FROM branch_groups WHERE id = ? AND branch_id = ?')
+    .get(req.params.gid, branch.id);
+  if (!g) return res.status(404).json({ error: 'group not found' });
+  db.transaction(() => {
+    db.prepare('UPDATE members SET group_id = NULL WHERE group_id = ?').run(g.id);
+    db.prepare('DELETE FROM session_groups WHERE group_id = ?').run(g.id);
+    db.prepare('DELETE FROM branch_groups WHERE id = ?').run(g.id);
+  })();
+  res.status(204).end();
+});
+
+// التوزيع اليدوي: عناصر مختارون يُنقلون دفعةً واحدة إلى مجموعة، أو يُخرجون منها
+// جميعًا (group_id = null). كلّهم من هذه الفرقة، و إلا فالطلب مرفوض كاملًا.
+app.post('/api/branches/:id/groups/assign', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const ids = req.body?.member_ids;
+  if (!Array.isArray(ids) || !ids.every((n) => Number.isInteger(n)))
+    return res.status(400).json({ error: 'invalid member_ids' });
+  const groupId = resolveGroupId(req.body?.group_id, branch.id);
+  if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
+  const inBranch = db.prepare('SELECT id FROM members WHERE id = ? AND branch_id = ?');
+  for (const id of ids) {
+    if (!inBranch.get(id, branch.id)) return res.status(400).json({ error: 'invalid member_ids' });
+  }
+  const update = db.prepare('UPDATE members SET group_id = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const id of ids) update.run(groupId, id);
+  })();
+  res.json({ assigned: ids.length, group_id: groupId });
+});
+
 app.post('/api/branches', requireAdmin, (req, res) => {
   const err = validateBranchBody(req.body, { requireNames: true });
   if (err) return res.status(400).json({ error: err });
@@ -735,7 +1082,8 @@ app.delete('/api/branches/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'branch not found' });
   const inUse =
     db.prepare('SELECT COUNT(*) AS n FROM members WHERE branch_id = ?').get(id).n +
-    db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE branch_id = ?').get(id).n +
+    // فرقة شريكة في نشاط مشترك مستعملة أيضًا و لو لم تكن فرقته الرئيسية
+    db.prepare('SELECT COUNT(*) AS n FROM session_branches WHERE branch_id = ?').get(id).n +
     db.prepare('SELECT COUNT(*) AS n FROM promotions WHERE old_branch_id = ? OR new_branch_id = ?').get(id, id).n;
   if (inUse > 0) return res.status(400).json({ error: 'branch_in_use' });
   db.prepare('DELETE FROM branches WHERE id = ?').run(id);
@@ -877,11 +1225,16 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     joined_from: joinedFrom, joined_to: joinedTo,
   } = req.query;
   const canContact = hasPerm(req, 'members.contact');
-  let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
-             FROM members m JOIN branches b ON b.id = m.branch_id WHERE 1=1`;
+  let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+               g.name AS group_name
+             FROM members m JOIN branches b ON b.id = m.branch_id
+             LEFT JOIN branch_groups g ON g.id = m.group_id WHERE 1=1`;
   const params = [];
   sql += branchFilterSQL(req, 'm.branch_id');
   if (branch) { sql += ' AND m.branch_id = ?'; params.push(branch); }
+  // "none" = العناصر التي لم تُوزَّع على مجموعة بعد — هي أول ما يبحث عنه القائد وهو يوزّع
+  if (req.query.group === 'none') sql += ' AND m.group_id IS NULL';
+  else if (req.query.group) { sql += ' AND m.group_id = ?'; params.push(req.query.group); }
   if (status) { sql += ' AND m.status = ?'; params.push(status); }
   if (school) { sql += ' AND m.school = ?'; params.push(school); }
   if (blood) { sql += ' AND m.blood_type = ?'; params.push(blood); }
@@ -902,8 +1255,8 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
   if (parentPhone && canContact) {
     const digits = String(parentPhone).replace(/[^0-9]/g, '');
     if (digits) {
-      sql += ` AND ${phoneDigits('m.parent_phone')} LIKE ?`;
-      params.push(`%${digits}%`);
+      sql += ` AND (${phoneDigits('m.father_phone')} LIKE ? OR ${phoneDigits('m.mother_phone')} LIKE ?)`;
+      params.push(`%${digits}%`, `%${digits}%`);
     }
   }
   if (q) {
@@ -913,18 +1266,26 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     const or = [
       'm.first_name LIKE ?',
       'm.last_name LIKE ?',
+      // اسم الأب صار معروضًا في القوائم، فالبحث به لازم: هو ما يفرّق بين «علي أحمد»
+      // و «علي أحمد» الآخر. الشكل الثلاثي يُطابَق كاملًا، و بلا اسم أب يبقى ثنائيًا.
+      'm.father_name LIKE ?',
       "(m.first_name || ' ' || m.last_name) LIKE ?",
+      "(m.first_name || ' ' || COALESCE(m.father_name || ' ', '') || m.last_name) LIKE ?",
       'm.school LIKE ?',
       'm.blood_type = ?',
     ];
-    params.push(like, like, like, like, String(q).trim().toUpperCase());
+    params.push(like, like, like, like, like, like, String(q).trim().toUpperCase());
     if (canContact) {
       or.push('m.address_abidjan LIKE ?', 'm.address_lebanon LIKE ?');
       params.push(like, like);
       const digits = String(q).replace(/[^0-9]/g, '');
       if (digits) {
-        or.push(`${phoneDigits('m.member_phone')} LIKE ?`, `${phoneDigits('m.parent_phone')} LIKE ?`);
-        params.push(`%${digits}%`, `%${digits}%`);
+        or.push(
+          `${phoneDigits('m.member_phone')} LIKE ?`,
+          `${phoneDigits('m.father_phone')} LIKE ?`,
+          `${phoneDigits('m.mother_phone')} LIKE ?`
+        );
+        params.push(`%${digits}%`, `%${digits}%`, `%${digits}%`);
       }
     }
     // A bare number is read as an age — "12" should list the twelve-year-olds
@@ -968,8 +1329,9 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   const m = db
     .prepare(
       `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
-        b.total_requirements AS branch_total_requirements
-       FROM members m JOIN branches b ON b.id = m.branch_id WHERE m.id = ?`
+        b.total_requirements AS branch_total_requirements, g.name AS group_name
+       FROM members m JOIN branches b ON b.id = m.branch_id
+       LEFT JOIN branch_groups g ON g.id = m.group_id WHERE m.id = ?`
     )
     .get(req.params.id);
   if (!m) return res.status(404).json({ error: 'member not found' });
@@ -1006,18 +1368,20 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   if (err) return res.status(400).json({ error: err });
   if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
   const b = req.body;
+  const groupId = resolveGroupId(b.group_id, b.branch_id);
+  if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
-        address_abidjan, address_lebanon, school, blood_type, sex, branch_id, member_phone, parent_phone,
-        join_date, photo, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        address_abidjan, address_lebanon, school, blood_type, sex, branch_id, group_id, member_phone,
+        father_phone, mother_phone, join_date, photo, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
       b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-      b.school || null, b.blood_type, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
-      b.join_date, b.photo || null, b.status || 'active'
+      b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
+      b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null, b.status || 'active'
     );
   res.status(201).json(db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid));
 });
@@ -1031,15 +1395,21 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   if (!branchOk(req, existing.branch_id) || !branchOk(req, req.body.branch_id))
     return res.status(403).json({ error: 'forbidden' });
   const b = req.body;
+  // مجموعات الفرقة الجديدة وحدها مقبولة: نقل عنصر إلى فرقة أخرى يُخرجه من مجموعته
+  // القديمة، إلا أن يكون الطلب نفسه قد اختار له مجموعة من الفرقة الجديدة.
+  const groupId = resolveGroupId(b.group_id, b.branch_id);
+  if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
   db.prepare(
     `UPDATE members SET first_name = ?, last_name = ?, father_name = ?, mother_name = ?,
      birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, blood_type = ?,
-     sex = ?, branch_id = ?, member_phone = ?, parent_phone = ?, join_date = ?, photo = ?, status = ? WHERE id = ?`
+     sex = ?, branch_id = ?, group_id = ?, member_phone = ?, father_phone = ?, mother_phone = ?,
+     join_date = ?, photo = ?, status = ? WHERE id = ?`
   ).run(
     b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
     b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-    b.school || null, b.blood_type, b.sex, b.branch_id, b.member_phone || null, b.parent_phone || null,
-    b.join_date, b.photo || null, b.status || 'active', req.params.id
+    b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
+    b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null,
+    b.status || 'active', req.params.id
   );
   res.json(db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id));
 });
@@ -1104,7 +1474,9 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   const insert = db.prepare(
     'INSERT INTO promotions (member_id, old_branch_id, new_branch_id, promoted_at, matalib) VALUES (?, ?, ?, ?, ?)'
   );
-  const update = db.prepare('UPDATE members SET branch_id = ? WHERE id = ?');
+  // الترقية تنقل العنصر إلى فرقة أخرى، و المجموعة تخصّ فرقتها: يخرج منها ليُوزَّع
+  // من جديد في فرقته الجديدة.
+  const update = db.prepare('UPDATE members SET branch_id = ?, group_id = NULL WHERE id = ?');
   let promoted = 0;
   const run = db.transaction(() => {
     for (const id of ids) {
@@ -1124,7 +1496,7 @@ app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) =>
   const rows = db
     .prepare(
       `SELECT p.id, p.promoted_at, p.member_id, p.matalib,
-        m.first_name, m.last_name,
+        m.first_name, m.father_name, m.last_name,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
        FROM promotions p
@@ -1347,7 +1719,7 @@ app.get('/api/leaders/:id', (req, res) => {
   // زيارات الأهل are listed on their own: they are not أنشطة this قائد animated
   const activities = sessions.filter((s) => s.kind !== 'visit');
   const visitedNames = db.prepare(
-    `SELECT m.id, m.first_name, m.last_name FROM attendance a JOIN members m ON m.id = a.member_id
+    `SELECT m.id, m.first_name, m.father_name, m.last_name FROM attendance a JOIN members m ON m.id = a.member_id
      WHERE a.session_id = ? AND a.status = 'present' ORDER BY m.last_name, m.first_name`
   );
   const visits = sessions
@@ -1726,6 +2098,8 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   const { q, branch, from, to, leader, activity_type: activityType, kind } = req.query;
   let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
         COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader,
+        (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS branch_ids,
+        (SELECT GROUP_CONCAT(sg.group_id) FROM session_groups sg WHERE sg.session_id = s.id) AS group_ids,
         (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') AS absent_count,
@@ -1734,9 +2108,10 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
            FROM attendance a WHERE a.session_id = s.id) AS rate
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
-       WHERE 1=1${branchFilterSQL(req, 's.branch_id')}`;
+       WHERE 1=1${sessionScopeSQL(req)}`;
   const params = [];
-  if (branch) { sql += ' AND s.branch_id = ?'; params.push(branch); }
+  // فلترة بفرقة: النشاط المشترك يظهر في قائمة كل فرقة يشملها، لا في الرئيسية وحدها
+  if (branch) sql += ` AND ${sessionInBranchSQL(branch)}`;
   // Dates are stored as YYYY-MM-DD, so plain string comparison sorts correctly
   if (from) { sql += ' AND s.date >= ?'; params.push(from); }
   if (to) { sql += ' AND s.date <= ?'; params.push(to); }
@@ -1760,7 +2135,14 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   const rows = db
     .prepare(sql)
     .all(...params)
-    .map((r) => stripFee(req, { ...r, matalib: JSON.parse(r.matalib || '[]') }));
+    .map((r) =>
+      stripFee(req, {
+        ...r,
+        matalib: JSON.parse(r.matalib || '[]'),
+        branch_ids: parseIdList(r.branch_ids),
+        group_ids: parseIdList(r.group_ids),
+      })
+    );
   res.json(rows);
 });
 
@@ -1769,9 +2151,17 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   const kind = ['visit', 'leaders', 'group'].includes(req.body.kind) ? req.body.kind : 'activity';
   // نشاط قادة و نشاط عام للفوج belong to the whole فوج; every other kind still needs a فرقة
   const branchless = kind === 'leaders' || kind === 'group';
-  const branchId = branchless ? null : branch_id;
+  // نفس الحصّة قد تُعطى لفرقتين معًا: الطلب يرسل branch_ids، و branch_id القديم يبقى
+  // مقبولًا. الأولى في القائمة هي الفرقة الرئيسية المخزّنة في sessions.branch_id.
+  const rawBranchIds = Array.isArray(req.body.branch_ids)
+    ? req.body.branch_ids
+    : [branch_id].filter((v) => v !== undefined && v !== null && v !== '');
+  const branchIds = branchless ? [] : [...new Set(rawBranchIds.map(Number))];
+  const branchId = branchless ? null : (branchIds[0] ?? null);
   if (!title || !date) return res.status(400).json({ error: 'title, date required' });
   if (!branchless && !branchId) return res.status(400).json({ error: 'branch_id required' });
+  if (!branchIds.every((b) => Number.isInteger(b) && b > 0))
+    return res.status(400).json({ error: 'invalid branch_ids' });
   const activityType = req.body.activity_type || null;
   if (activityType !== null && !ACTIVITY_TYPES.includes(activityType))
     return res.status(400).json({ error: 'invalid activity_type' });
@@ -1785,9 +2175,24 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       : null;
   if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
     return res.status(400).json({ error: 'invalid leaders_count' });
-  if (!branchOk(req, branchId)) return res.status(403).json({ error: 'forbidden' });
-  if (branchId && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
-    return res.status(400).json({ error: 'invalid branch_id' });
+  // كل فرقة يشملها النشاط تُفحص على حدة: لا يُنشئ قائد نشاطًا لفرقة ليست له
+  for (const b of branchIds) {
+    if (!branchOk(req, b)) return res.status(403).json({ error: 'forbidden' });
+    if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(b))
+      return res.status(400).json({ error: 'invalid branch_id' });
+  }
+  // مجموعات النشاط — نشاط فرقة فقط. الفرقة التي اختيرت لها مجموعة أو أكثر لا يشارك
+  // منها إلا عناصرها؛ و التي لم تُختر لها مجموعة تشارك كاملةً. لا اختيار = كل الفرق كاملةً.
+  const rawGroupIds = kind === 'activity' && Array.isArray(req.body.group_ids) ? req.body.group_ids : [];
+  const groupIds = [...new Set(rawGroupIds.map(Number))];
+  if (!groupIds.every((g) => Number.isInteger(g) && g > 0))
+    return res.status(400).json({ error: 'invalid group_ids' });
+  for (const g of groupIds) {
+    const row = db.prepare('SELECT branch_id FROM branch_groups WHERE id = ?').get(g);
+    // مجموعة من فرقة خارج النشاط لا معنى لها: لا عنصر منها يحضر أصلًا
+    if (!row || !branchIds.includes(Number(row.branch_id)))
+      return res.status(400).json({ error: 'invalid group_ids' });
+  }
   const nums = matalib === undefined || matalib === null ? [] : matalib;
   if (!Array.isArray(nums) || !nums.every((n) => Number.isInteger(n) && n >= 1))
     return res.status(400).json({ error: 'invalid matalib' });
@@ -1817,11 +2222,11 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   }
   if (kind === 'visit' && visited.length === 0)
     return res.status(400).json({ error: 'member_ids required for a visit' });
-  // بند الخطة الذي ينفّذه هذا النشاط — نشاط فرقة فقط، و من خطة نفس الفرقة
+  // بند الخطة الذي ينفّذه هذا النشاط — نشاط فرقة فقط، و من خطة إحدى فرقه
   const planItemId = kind === 'activity' ? optionalId(req.body.plan_item_id) : null;
   if (planItemId !== null) {
     const item = db.prepare('SELECT branch_id FROM annual_plan WHERE id = ?').get(planItemId);
-    if (!item || item.branch_id !== Number(branchId))
+    if (!item || !branchIds.includes(Number(item.branch_id)))
       return res.status(400).json({ error: 'invalid plan_item_id' });
   }
   // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
@@ -1863,6 +2268,25 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       insertAnimator.run(sessionId, h, 'helper');
     }
     for (const m of visited) insertVisited.run(sessionId, m);
+    // فرق النشاط — الرئيسية منها مكرّرة في sessions.branch_id، و الجدول هو المرجع
+    for (const b of branchIds)
+      db.prepare('INSERT OR IGNORE INTO session_branches (session_id, branch_id) VALUES (?, ?)')
+        .run(sessionId, b);
+    for (const g of groupIds)
+      db.prepare('INSERT OR IGNORE INTO session_groups (session_id, group_id) VALUES (?, ?)')
+        .run(sessionId, g);
+    if (planItemId !== null) {
+      // البند يحقّقه نشاط واحد: إسناده لنشاط جديد يفكّ ربطه بسابقه
+      const previous = db
+        .prepare('SELECT session_id FROM session_plan_items WHERE plan_item_id = ?')
+        .all(planItemId)
+        .map((r) => r.session_id);
+      db.prepare('DELETE FROM session_plan_items WHERE plan_item_id = ?').run(planItemId);
+      db.prepare('INSERT INTO session_plan_items (session_id, plan_item_id) VALUES (?, ?)')
+        .run(sessionId, planItemId);
+      // البند قد يكون من خطة فرقة غير الرئيسية، فالعمود يُعاد حسابه لا يُفترض
+      for (const sid of new Set([...previous, sessionId])) syncPrimaryPlanItem(sid);
+    }
     // عدد الحضور لكل فرقة — kept out of the attendance table on purpose: these are
     // counts, and mixing them with named présence would corrupt every rate.
     for (const c of branchCounts)
@@ -1871,7 +2295,12 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   notifyAdmins(req, 'session_create', row);
-  res.status(201).json({ ...row, matalib: JSON.parse(row.matalib) });
+  res.status(201).json({
+    ...row,
+    matalib: JSON.parse(row.matalib),
+    branch_ids: branchIdsOfSession(sessionId),
+    group_ids: groupIdsOfSession(sessionId),
+  });
 });
 
 app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
@@ -1885,24 +2314,35 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     )
     .get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  const branchIds = branchIdsOfSession(s.id);
+  // النشاط المشترك يعرض فرق المستخدم وحدها: قائد فرقة لا يرى — و لا يضع — حضور غيرها
+  const myBranchIds = myBranchesOfSession(req, s.id);
+  const rosterList = myBranchIds.map(intOr).join(',') || -1;
   // A نشاط lists the whole فرقة to be marked; a زيارة الأهل concerns only the
   // عناصر actually visited, so the rest of the فرقة has no row here. A نشاط قادة
   // and a نشاط عام للفوج have no عناصر roster at all.
+  // النشاط المحصور بمجموعات لا يعرض إلا عناصرها: الفرقة كبيرة و الحصّة لا تسعها،
+  // فالقائد يضع حضور مجموعته وحدها بدل التنقيب عن أسمائها في قائمة الفرقة كلها.
+  const groupScope = memberInSessionGroupsSQL(s.id, 'm');
   const roster = ['leaders', 'group'].includes(s.kind) ? [] : db
     .prepare(
       s.kind === 'visit'
-        ? `SELECT m.id, m.first_name, m.last_name, m.photo, a.status
+        ? `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.branch_id, m.group_id,
+                  g.name AS group_name, a.status
            FROM attendance a JOIN members m ON m.id = a.member_id
-           WHERE a.session_id = ? AND m.branch_id = ?
-           ORDER BY m.last_name, m.first_name`
-        : `SELECT m.id, m.first_name, m.last_name, m.photo, a.status
+           LEFT JOIN branch_groups g ON g.id = m.group_id
+           WHERE a.session_id = ? AND m.branch_id IN (${rosterList})
+           ORDER BY m.branch_id, m.last_name, m.first_name`
+        : `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.branch_id, m.group_id,
+                  g.name AS group_name, a.status
            FROM members m
            LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = ?
-           WHERE m.branch_id = ? AND m.status = 'active'
-           ORDER BY m.last_name, m.first_name`
+           LEFT JOIN branch_groups g ON g.id = m.group_id
+           WHERE m.branch_id IN (${rosterList}) AND m.status = 'active' AND ${groupScope}
+           ORDER BY m.branch_id, m.last_name, m.first_name`
     )
-    .all(s.id, s.branch_id)
+    .all(s.id)
     .map((m) => ({ ...m, consecutive_absences: attendanceStats(m.id).consecutive_absences }));
   const animators = db
     .prepare(
@@ -1919,6 +2359,18 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       roster,
       animators,
       branch_counts: branchCountsOf(s.id),
+      branch_ids: branchIds,
+      // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
+      my_branch_ids: myBranchIds,
+      // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
+      groups: db
+        .prepare(
+          `SELECT g.id, g.branch_id, g.name FROM session_groups sg
+           JOIN branch_groups g ON g.id = sg.group_id
+           WHERE sg.session_id = ? ORDER BY g.branch_id, g.sort_order, g.id`
+        )
+        .all(s.id),
+      group_ids: groupIdsOfSession(s.id),
     })
   );
 });
@@ -1947,7 +2399,7 @@ app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, r
 app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req, res) => {
   const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   const { leader_id, status, remove } = req.body;
   if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(leader_id))
     return res.status(400).json({ error: 'invalid leader_id' });
@@ -1970,8 +2422,12 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
 app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (req, res) => {
   const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  if (!branchOk(req, s.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   const records = req.body.records || [req.body];
+  // الحضور يُكتب فرقةً فرقة: قائد الفرقة (أو مساعده) يضع حضور عناصره وحدهم، فلا
+  // يملأ شخص واحد حضور كل الفرق في نشاط مشترك. الأدمن غير مقيّد.
+  const writable = new Set(myBranchesOfSession(req, s.id));
+  const memberBranch = db.prepare('SELECT branch_id, group_id FROM members WHERE id = ?');
   const upsert = db.prepare(
     `INSERT INTO attendance (session_id, member_id, status) VALUES (?, ?, ?)
      ON CONFLICT(session_id, member_id) DO UPDATE SET status = excluded.status`
@@ -1980,13 +2436,22 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
     for (const r of records) {
       if (!r.member_id || !['present', 'absent', 'excused'].includes(r.status))
         throw new Error('invalid record');
+      const m = memberBranch.get(r.member_id);
+      if (!m) throw new Error('invalid record');
+      if (!writable.has(m.branch_id)) throw new Error('forbidden_branch');
+      // عنصر خارج مجموعات النشاط ليس في قائمته أصلًا — الزيارة مستثناة، فحضورها
+      // هو أسماء من زيرَ بعينهم، لا قائمة فرقة تُفلتر.
+      if (s.kind !== 'visit' && !memberInSessionGroups(s.id, m)) throw new Error('forbidden_group');
       upsert.run(s.id, r.member_id, r.status);
     }
   });
   try {
     run();
   } catch (e) {
-    return res.status(400).json({ error: e.message });
+    // فرقة أو مجموعة خارج نطاق النشاط: منعٌ لا خطأ في البيانات
+    return res
+      .status(['forbidden_branch', 'forbidden_group'].includes(e.message) ? 403 : 400)
+      .json({ error: e.message });
   }
   notifyAdmins(req, 'attendance', s);
   res.json({ ok: true });
@@ -2011,26 +2476,37 @@ app.get('/api/stats', (req, res) => {
             AND a.leader_id IS NOT NULL
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_id,
         (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count,
-        (SELECT COUNT(*) FROM sessions s WHERE s.branch_id = b.id AND s.kind = 'activity') AS activities_count,
+        -- النشاط المشترك يُحتسب لكل فرقة يشملها، و حضوره يُوزَّع حسب فرقة العنصر
+        (SELECT COUNT(*) FROM sessions s
+          WHERE s.kind = 'activity'
+            AND EXISTS (SELECT 1 FROM session_branches sb WHERE sb.session_id = s.id AND sb.branch_id = b.id)
+        ) AS activities_count,
         (SELECT COUNT(DISTINCT a.member_id) FROM attendance a
           JOIN sessions s ON s.id = a.session_id
-          WHERE s.branch_id = b.id AND a.status = 'present' AND s.kind = 'activity') AS participants_count
+          JOIN members m ON m.id = a.member_id
+          WHERE a.status = 'present' AND s.kind = 'activity'
+            AND EXISTS (SELECT 1 FROM session_branches sb WHERE sb.session_id = s.id AND sb.branch_id = b.id)
+            AND ((SELECT COUNT(*) FROM session_branches sb2 WHERE sb2.session_id = s.id) = 1
+                 OR m.branch_id = b.id)
+        ) AS participants_count
        FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY b.sort_order`
     )
     .all();
   const ym = todayISO().slice(0, 7);
   const row = db
     .prepare(
+      // في النشاط المشترك يهمّ القائدَ حضور عناصره هو، فالصف يُنسب لفرقة العنصر
       `SELECT COUNT(*) AS total, COALESCE(SUM(a.status = 'present'), 0) AS present
        FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${branchFilterSQL(req, 's.branch_id')}`
+       JOIN members m ON m.id = a.member_id
+       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${sessionScopeSQL(req)}${branchFilterSQL(req, 'm.branch_id')}`
     )
     .get(ym);
   // Activities held this month, whatever their attendance state
   const month_sessions = db
     .prepare(
       `SELECT COUNT(*) AS n FROM sessions s
-       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${branchFilterSQL(req, 's.branch_id')}`
+       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${sessionScopeSQL(req)}`
     )
     .get(ym).n;
   res.json({

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
-import { fmtDate, branchName } from '../utils';
+import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -107,13 +107,13 @@ export default function Promotions() {
             <ul className="divide-y divide-border">
               {pendingList.map((p) => (
                 <li key={p.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <Avatar photo={p.photo} name={`${p.first_name} ${p.last_name}`} />
+                  <Avatar photo={p.photo} name={avatarName(p)} />
                   <div className="min-w-32 flex-1">
                     <Link
                       to={`/members/${p.id}`}
                       className="focus-ring rounded font-medium hover:text-primary hover:underline"
                     >
-                      {p.first_name} {p.last_name}
+                      {memberName(p)}
                     </Link>
                     <div className="text-sm tabular-nums text-muted-foreground">
                       {p.age} {t('common.years')}
@@ -173,7 +173,7 @@ export default function Promotions() {
                         to={`/members/${h.member_id}`}
                         className="focus-ring rounded font-medium hover:text-primary hover:underline"
                       >
-                        {h.first_name} {h.last_name}
+                        {memberName(h)}
                       </Link>
                       <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                         {fmtDate(h.promoted_at)}
@@ -212,7 +212,7 @@ export default function Promotions() {
                           to={`/members/${h.member_id}`}
                           className="focus-ring rounded font-medium hover:text-primary hover:underline"
                         >
-                          {h.first_name} {h.last_name}
+                          {memberName(h)}
                         </Link>
                       </Td>
                       <Td>

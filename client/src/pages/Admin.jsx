@@ -53,6 +53,7 @@ const PERM_GROUPS = [
     items: [
       { key: 'branches.read', label: 'admin.permAccess' },
       { key: 'branches.plan', label: 'admin.permBranchesPlan' },
+      { key: 'branches.groups', label: 'admin.permBranchesGroups' },
     ],
   },
   {

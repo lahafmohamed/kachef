@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import { fmtDate, todayISO, branchName, fileToDataUrl, birthdayWhen } from '../utils';
+import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtDate, memberName, todayISO } from '../utils';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
@@ -56,8 +56,11 @@ const EMPTY_FORM = {
   blood_type: '',
   sex: 'M',
   branch_id: '',
+  // مجموعة العنصر داخل فرقته — '' = لم يُوزَّع بعد، و هو حال كل فرقة غير مقسَّمة
+  group_id: '',
   member_phone: '',
-  parent_phone: '',
+  father_phone: '',
+  mother_phone: '',
   join_date: todayISO(),
   photo: null,
   status: 'active',
@@ -71,6 +74,11 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
 
   const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
+  // مجموعات الفرقة المختارة. نقل العنصر إلى فرقة أخرى يُخرجه من مجموعته: المجموعة
+  // تخصّ فرقتها، و الخادم يرفض مجموعةً من غيرها.
+  const branchGroups = branches.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
+  const setBranch = (e) => setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '' }));
+
   async function handlePhoto(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -83,7 +91,12 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
     setSaving(true);
     setError(null);
     try {
-      await onSave({ ...form, branch_id: Number(form.branch_id) });
+      await onSave({
+        ...form,
+        branch_id: Number(form.branch_id),
+        // المجموعة تخصّ فرقتها: تغيير الفرقة يُلغي المجموعة بدل أن يرسل واحدة يرفضها الخادم
+        group_id: form.group_id === '' ? null : Number(form.group_id),
+      });
     } catch (err) {
       setError(err.message);
       setSaving(false);
@@ -194,7 +207,7 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="branch_id">{t('member.branch')}</Label>
-          <Select id="branch_id" required value={form.branch_id} onChange={set('branch_id')}>
+          <Select id="branch_id" required value={form.branch_id} onChange={setBranch}>
             {branches.map((b) => (
               <option key={b.id} value={b.id}>
                 {branchName(b, i18n.language)}
@@ -202,6 +215,21 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
             ))}
           </Select>
         </div>
+        {/* المجموعة تظهر للفرق المقسَّمة وحدها: توزيع الفرقة كلها يُدار من صفحة الفرق،
+            و هنا يُصحَّح توزيع عنصر واحد وهو يُسجَّل أو يُعدَّل. */}
+        {branchGroups.length > 0 && (
+          <div className="space-y-1.5">
+            <Label htmlFor="group_id">{t('member.group')}</Label>
+            <Select id="group_id" value={form.group_id ?? ''} onChange={set('group_id')}>
+              <option value="">{t('member.noGroup')}</option>
+              {branchGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
         <div className="space-y-1.5">
           <Label htmlFor="member_phone">{t('member.memberPhone')}</Label>
           <Input
@@ -214,14 +242,25 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="parent_phone">{t('member.parentPhone')}</Label>
+          <Label htmlFor="father_phone">{t('member.fatherPhone')}</Label>
           <Input
-            id="parent_phone"
+            id="father_phone"
             type="tel"
             inputMode="tel"
             dir="ltr"
-            value={form.parent_phone || ''}
-            onChange={set('parent_phone')}
+            value={form.father_phone || ''}
+            onChange={set('father_phone')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="mother_phone">{t('member.motherPhone')}</Label>
+          <Input
+            id="mother_phone"
+            type="tel"
+            inputMode="tel"
+            dir="ltr"
+            value={form.mother_phone || ''}
+            onChange={set('mother_phone')}
           />
         </div>
         <div className="space-y-1.5">
@@ -302,10 +341,10 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
   return (
     <li className="flex items-center gap-3 p-3">
       <Link to={`/members/${m.id}`} className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md">
-        <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-11 w-11" />
+        <Avatar photo={m.photo} name={avatarName(m)} className="h-11 w-11" />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">
-            {m.first_name} {m.last_name}
+            {memberName(m)}
           </div>
           {(m.school || m.address_abidjan) && (
             <div className="truncate text-xs text-muted-foreground">
@@ -314,6 +353,7 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
           )}
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <Badge>{branchName(m, lang)}</Badge>
+            {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
             <BirthdayBadge birthDate={m.birth_date} t={t} />
             <span className="text-xs text-muted-foreground">
               {m.age} {t('common.years')}
@@ -351,6 +391,8 @@ export default function Members() {
   const canDelete = has('members.delete');
 
   const [branch, setBranch] = useState('');
+  // '' = كل المجموعات، 'none' = من لم يُوزَّع بعد، أو رقم مجموعة. يظهر مع فرقة مقسَّمة فقط.
+  const [group, setGroup] = useState('');
   const [status, setStatus] = useState('');
   const [school, setSchool] = useState('');
   const [residence, setResidence] = useState('');
@@ -376,6 +418,7 @@ export default function Members() {
 
   const params = new URLSearchParams();
   if (branch) params.set('branch', branch);
+  if (group) params.set('group', group);
   if (status) params.set('status', status);
   if (school) params.set('school', school);
   if (residence) params.set('residence', residence);
@@ -392,6 +435,14 @@ export default function Members() {
 
   const list = members.data || [];
   const branchList = branches.data || [];
+  // مجموعات الفرقة المفلترة. بلا فرقة مختارة لا فلتر مجموعات: أسماء المجموعات
+  // تتكرر بين الفرق، فقائمة واحدة لها كلها لا تدلّ على شيء.
+  const filterGroups = branchList.find((b) => String(b.id) === String(branch))?.groups || [];
+  // تغيير الفرقة يُسقط فلتر المجموعة: مجموعة الفرقة السابقة لا تُرجع صفًا واحدًا
+  const pickBranch = (v) => {
+    setBranch(v);
+    setGroup('');
+  };
   const schools = filterValues.data?.schools || [];
   const residences = filterValues.data?.residences || [];
   const residencesLebanon = filterValues.data?.residencesLebanon || [];
@@ -435,11 +486,12 @@ export default function Members() {
     parentPhone.trim(),
     joined.from || joined.to ? 'joined' : '',
   ].filter(Boolean).length;
-  const filtering = !!(branch || status || q || advancedCount);
+  const filtering = !!(branch || group || status || q || advancedCount);
 
   function clearFilters() {
     setQ('');
     setBranch('');
+    setGroup('');
     setStatus('');
     setSchool('');
     setResidence('');
@@ -496,13 +548,29 @@ export default function Members() {
           <div className="flex gap-2">
             <FilterSelect
               value={branch}
-              onChange={setBranch}
+              onChange={pickBranch}
               allLabel={t('member.allBranches')}
               ariaLabel={t('member.branch')}
               className="sm:w-auto sm:min-w-40"
               icon={<IconShield className="opacity-60" />}
               options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
             />
+            {/* فلتر المجموعة يتبع الفرقة: بلا فرقة مختارة تختلط أسماء المجموعات
+                بين الفرق، و الفرقة غير المقسَّمة لا مجموعات لها أصلًا */}
+            {filterGroups.length > 0 && (
+              <FilterSelect
+                value={group}
+                onChange={setGroup}
+                allLabel={t('member.allGroups')}
+                ariaLabel={t('member.group')}
+                className="sm:w-auto sm:min-w-36"
+                icon={<IconUsers className="opacity-60" />}
+                options={[
+                  { value: 'none', label: t('member.noGroup') },
+                  ...filterGroups.map((g) => ({ value: g.id, label: g.name })),
+                ]}
+              />
+            )}
             <FilterSelect
               value={status}
               onChange={setStatus}
@@ -716,7 +784,8 @@ export default function Members() {
                   <Th>{t('member.name')}</Th>
                   <Th>{t('member.age')}</Th>
                   <Th>{t('member.branch')}</Th>
-                  <Th>{t('member.parentPhone')}</Th>
+                  <Th>{t('member.fatherPhone')}</Th>
+                  <Th>{t('member.motherPhone')}</Th>
                   <Th>{t('member.joinDate')}</Th>
                   <Th>{t('member.status')}</Th>
                   {(canModify || canDelete) && <Th className="text-end">{t('common.actions')}</Th>}
@@ -730,9 +799,9 @@ export default function Members() {
                         to={`/members/${m.id}`}
                         className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
                       >
-                        <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-9 w-9" />
+                        <Avatar photo={m.photo} name={avatarName(m)} className="h-9 w-9" />
                         <span>
-                          {m.first_name} {m.last_name}
+                          {memberName(m)}
                           {(m.school || m.address_abidjan) && (
                             <span className="block text-xs font-normal text-muted-foreground">
                               {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
@@ -748,10 +817,16 @@ export default function Members() {
                       </div>
                     </Td>
                     <Td>
-                      <Badge>{branchName(m, i18n.language)}</Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge>{branchName(m, i18n.language)}</Badge>
+                        {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
+                      </div>
                     </Td>
                     <Td dir="ltr" className="tabular-nums">
-                      {m.parent_phone || '—'}
+                      {m.father_phone || '—'}
+                    </Td>
+                    <Td dir="ltr" className="tabular-nums">
+                      {m.mother_phone || '—'}
                     </Td>
                     <Td className="tabular-nums">{fmtDate(m.join_date)}</Td>
                     <Td>
@@ -816,8 +891,10 @@ export default function Members() {
                     blood_type: editing.blood_type || '',
                     sex: editing.sex,
                     branch_id: editing.branch_id,
+                    group_id: editing.group_id ?? '',
                     member_phone: editing.member_phone || '',
-                    parent_phone: editing.parent_phone || '',
+                    father_phone: editing.father_phone || '',
+                    mother_phone: editing.mother_phone || '',
                     join_date: editing.join_date,
                     photo: editing.photo,
                     status: editing.status,

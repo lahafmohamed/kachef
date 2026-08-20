@@ -53,6 +53,21 @@ export const activityTypeKey = (value) =>
 // HH:MM — stored as typed, only trimmed of a stray seconds part
 export const fmtTime = (v) => (v ? String(v).slice(0, 5) : '');
 
+/**
+ * الاسم الثلاثي: الاسم، ثم اسم الأب، ثم اسم العائلة.
+ *
+ * في الفوج أكثر من «علي أحمد» واحد، و اسم الأب هو ما يفرّق بينهم — فبدونه يضع
+ * القائد حضور غير صاحبه. اسم الأب اختياري في التسجيل، و العناصر المسجَّلون قبل أن
+ * يوجد الحقل بلا اسم أب، فيُتخطّى حين يغيب و يعود الاسم ثنائيًا كما كان.
+ * يصلح للقادة أيضًا: لا اسم أب لهم، فيُعرضون ثنائيين.
+ */
+export const memberName = (m) =>
+  m ? [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ') : '';
+
+// الصورة الرمزية تأخذ حرفين: الاسم و العائلة. اسم الأب يُترك خارجها، و إلا صار
+// «ع م» بدل «ع أ» و ضاع الحرف الذي يدلّ على العائلة.
+export const avatarName = (m) => (m ? `${m.first_name || ''} ${m.last_name || ''}`.trim() : '');
+
 // Works for objects carrying either name_fr/name_ar or branch_name_fr/branch_name_ar
 export function branchName(obj, lng) {
   if (!obj) return '';

@@ -246,6 +246,19 @@ export const IconLock = (p) => (
     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
   </Icon>
 );
+export const IconLink = (p) => (
+  <Icon {...p}>
+    <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+    <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+  </Icon>
+);
+export const IconUnlink = (p) => (
+  <Icon {...p}>
+    <path d="M15 7l1.5-1.5a5 5 0 0 1 7 7L22 14" />
+    <path d="M9 17l-1.5 1.5a5 5 0 0 1-7-7L2 10" />
+    <path d="M3 3l18 18" />
+  </Icon>
+);
 export const IconLogout = (p) => (
   <Icon {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />

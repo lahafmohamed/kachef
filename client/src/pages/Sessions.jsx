@@ -4,7 +4,15 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import { fmtDate, fmtTime, todayISO, branchName, ACTIVITY_TYPES, activityTypeKey } from '../utils';
+import {
+  fmtDate,
+  fmtTime,
+  todayISO,
+  branchName,
+  memberName,
+  ACTIVITY_TYPES,
+  activityTypeKey,
+} from '../utils';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
@@ -48,7 +56,12 @@ const EMPTY = {
   start_time: '',
   place: '',
   activity_type: '',
-  branch_id: '',
+  // الفرق التي يشملها النشاط: نفس الحصّة قد تُعطى لفرقتين معًا. الأولى هي الرئيسية،
+  // و هي صاحبة الخطة و المطالب المعروضة.
+  branch_ids: [],
+  // مجموعات الفرق المشاركة. فارغة = كل فرقة تشارك كاملةً، و هو الحال حين لا مجموعات
+  // أصلًا. فرقةٌ اختيرت لها مجموعة أو أكثر لا يشارك منها إلا عناصرها.
+  group_ids: [],
   leader_id: '',
   helper_ids: [],
   member_ids: [],
@@ -59,9 +72,32 @@ const EMPTY = {
   leaders_count: '',
 };
 
-/** فرقة النشاط، أو نوعه حين يكون نشاطًا فوجيًا بلا فرقة */
-function ScopeBadge({ s, lang, t }) {
-  if (s.branch_id) return <Badge>{branchName(s, lang)}</Badge>;
+/** فرق النشاط — واحدة أو أكثر — أو نوعه حين يكون نشاطًا فوجيًا بلا فرقة */
+function ScopeBadge({ s, lang, t, branchList = [] }) {
+  if (s.branch_id) {
+    // النشاط المشترك يعرض كل فرقه: القائد يعرف من حضر الحصّة معه
+    const ids = s.branch_ids?.length ? s.branch_ids : [s.branch_id];
+    const named = ids.map((id) => branchList.find((b) => b.id === id)).filter(Boolean);
+    // النشاط المحصور بمجموعات: أسماؤها تُذكر بعد الفرقة، فحصّتان لفرقة واحدة في
+    // اليوم نفسه يُميَّز بينهما من القائمة مباشرة
+    const groups = (s.group_ids || [])
+      .map((gid) => branchList.flatMap((b) => b.groups || []).find((g) => g.id === gid))
+      .filter(Boolean);
+    return (
+      <>
+        {named.length <= 1 ? (
+          <Badge>{branchName(named[0] || s, lang)}</Badge>
+        ) : (
+          named.map((b) => <Badge key={b.id}>{branchName(b, lang)}</Badge>)
+        )}
+        {groups.map((g) => (
+          <Badge key={g.id} variant="outline">
+            {g.name}
+          </Badge>
+        ))}
+      </>
+    );
+  }
   return (
     <Badge variant="secondary">
       {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
@@ -158,7 +194,10 @@ export default function Sessions() {
 
   // بنود خطة الفرقة التي لم تُنفَّذ بعد — loaded only while the dialog is open on a
   // نشاط فرقة, so picking one is a one-tap way to fill the title and the date.
-  const planScope = creating && form.kind === 'activity' && form.branch_id ? form.branch_id : null;
+  // الفرقة الرئيسية: أولى الفرق المختارة. هي صاحبة الخطة و المطالب المعروضة —
+  // بندٌ واحد من خطة واحدة يكفي، فالحصّة المشتركة تُنجز خطة الفرقة التي بُرمجت فيها.
+  const primaryBranchId = form.branch_ids[0] ?? '';
+  const planScope = creating && form.kind === 'activity' && primaryBranchId ? primaryBranchId : null;
   const planOptions = useFetch(planScope ? `/branches/${planScope}/plan/options` : null, {
     skip: !planScope,
   });
@@ -167,13 +206,13 @@ export default function Sessions() {
   const branchList = branches.data || [];
   const leaderList = leaders.data || [];
   const list = sessions.data || [];
-  const selectedBranch = branchList.find((b) => b.id === Number(form.branch_id));
+  const selectedBranch = branchList.find((b) => b.id === Number(primaryBranchId));
 
   // Pre-select the first branch and its current تشكيلة leader once branches load
   useEffect(() => {
-    if (!branchList.length || form.branch_id) return;
-    setForm((f) => ({ ...f, branch_id: branchList[0].id, leader_id: branchList[0].leader_id || '' }));
-  }, [branchList, form.branch_id]);
+    if (!branchList.length || form.branch_ids.length) return;
+    setForm((f) => ({ ...f, branch_ids: [branchList[0].id], leader_id: branchList[0].leader_id || '' }));
+  }, [branchList, form.branch_ids.length]);
 
   function toggleMatalib(n) {
     setForm((f) => ({
@@ -182,19 +221,33 @@ export default function Sessions() {
     }));
   }
 
-  // Selecting a branch auto-picks its leader from the current تشكيلة (still changeable)
-  function pickBranch(branchId) {
-    const b = branchList.find((x) => x.id === Number(branchId));
-    setForm((f) => ({
-      ...f,
-      branch_id: branchId,
-      matalib: [],
-      // عناصر of the previous فرقة are no longer visitable
-      member_ids: [],
-      // The plan belongs to a فرقة: another فرقة means another plan
-      plan_item_id: '',
-      leader_id: b?.leader_id || f.leader_id,
-    }));
+  // إضافة فرقة أو إزالتها. النشاط بلا فرقة لا معنى له، فآخر فرقة لا تُنزع.
+  // تغيّر الفرقة الرئيسية يُسقط المطالب و بند الخطة: كلاهما يخصّ فرقة بعينها.
+  function toggleBranch(branchId) {
+    const id = Number(branchId);
+    setForm((f) => {
+      const has = f.branch_ids.includes(id);
+      if (has && f.branch_ids.length === 1) return f;
+      const next = has ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id];
+      const primaryChanged = next[0] !== f.branch_ids[0];
+      const b = branchList.find((x) => x.id === next[0]);
+      // مجموعات فرقة خرجت من النشاط لم تعد تشارك فيه
+      const liveGroups = new Set(
+        branchList.filter((x) => next.includes(x.id)).flatMap((x) => (x.groups || []).map((g) => g.id))
+      );
+      return {
+        ...f,
+        branch_ids: next,
+        group_ids: f.group_ids.filter((g) => liveGroups.has(g)),
+        // عناصر فرقة خرجت من النشاط لم يعد يمكن زيارتهم فيه
+        member_ids: f.member_ids.filter((m) =>
+          (members.data || []).some((x) => x.id === m && next.includes(x.branch_id))
+        ),
+        ...(primaryChanged
+          ? { matalib: [], plan_item_id: '', leader_id: b?.leader_id || f.leader_id }
+          : {}),
+      };
+    });
   }
 
   // Taking the بند announced by the plan: its name goes into the title and the نشاط
@@ -213,13 +266,25 @@ export default function Sessions() {
       ...f,
       kind,
       title: kind === 'visit' ? t('session.familyVisit') : f.title === t('session.familyVisit') ? '' : f.title,
-      // Only a نشاط فرقة executes a بند of the plan
+      // Only a نشاط فرقة executes a بند of the plan — و هو وحده الذي يُحصر بمجموعات
       plan_item_id: kind === 'activity' ? f.plan_item_id : '',
+      group_ids: kind === 'activity' ? f.group_ids : [],
       matalib: [],
       member_ids: [],
       fee: kind === 'visit' || kind === 'group' ? '' : f.fee,
       branch_counts: kind === 'group' ? f.branch_counts : {},
       leaders_count: kind === 'group' ? f.leaders_count : '',
+    }));
+  }
+
+  // إضافة مجموعة أو إزالتها. نزع آخر مجموعة من فرقة يعيدها إلى المشاركة كاملةً،
+  // و هو المعنى نفسه في الخادم: فرقة بلا مجموعة مختارة تشارك بكل عناصرها.
+  function toggleGroup(groupId) {
+    setForm((f) => ({
+      ...f,
+      group_ids: f.group_ids.includes(groupId)
+        ? f.group_ids.filter((x) => x !== groupId)
+        : [...f.group_ids, groupId],
     }));
   }
 
@@ -263,7 +328,8 @@ export default function Sessions() {
     try {
       const s = await api.post('/sessions', {
         ...form,
-        branch_id: ['leaders', 'group'].includes(form.kind) ? null : Number(form.branch_id),
+        branch_ids: ['leaders', 'group'].includes(form.kind) ? [] : form.branch_ids.map(Number),
+        group_ids: form.kind === 'activity' ? form.group_ids.map(Number) : [],
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
         member_ids: form.kind === 'visit' ? form.member_ids : [],
@@ -283,7 +349,7 @@ export default function Sessions() {
         leaders_count: form.kind === 'group' && form.leaders_count !== '' ? Number(form.leaders_count) : null,
       });
       setCreating(false);
-      setForm({ ...EMPTY, branch_id: form.branch_id, leader_id: form.leader_id });
+      setForm({ ...EMPTY, branch_ids: form.branch_ids, leader_id: form.leader_id });
       toast.success(t('session.created'));
       navigate(`/sessions/${s.id}`);
     } catch (err) {
@@ -293,6 +359,10 @@ export default function Sessions() {
     }
   }
 
+  // الفرق المختارة التي قُسِّمت إلى مجموعات — وحدها تعرض حقل المجموعات
+  const groupedBranches = branchList.filter(
+    (b) => form.branch_ids.includes(b.id) && (b.groups || []).length > 0
+  );
   const availableHelpers = leaderList.filter(
     (l) => l.status === 'active' && l.id !== Number(form.leader_id)
   );
@@ -321,13 +391,13 @@ export default function Sessions() {
   // Both pickers stay usable with 40+ names: filter on the full name, and never
   // hide an already-ticked row — otherwise a search makes selections look lost.
   const matches = (person, query) =>
-    `${person.first_name} ${person.last_name}`.toLowerCase().includes(query.trim().toLowerCase());
+    memberName(person).toLowerCase().includes(query.trim().toLowerCase());
 
   // A زيارة is recorded inside a فرقة, so only its active عناصر can be visited
   const visitableMembers = (members.data || []).filter(
     (m) =>
       m.status === 'active' &&
-      m.branch_id === Number(form.branch_id) &&
+      form.branch_ids.includes(m.branch_id) &&
       (!memberQuery || form.member_ids.includes(m.id) || matches(m, memberQuery))
   );
   const shownHelpers = availableHelpers.filter(
@@ -511,7 +581,7 @@ export default function Sessions() {
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <ScopeBadge s={s} lang={i18n.language} t={t} />
+                      <ScopeBadge s={s} lang={i18n.language} t={t} branchList={branchList} />
                       {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
                       {s.kind === 'visit' && <Badge variant="warning">{t('session.kindVisit')}</Badge>}
                       {activityTypeKey(s.activity_type) && (
@@ -587,7 +657,7 @@ export default function Sessions() {
                       )}
                     </Td>
                     <Td>
-                      <ScopeBadge s={s} lang={i18n.language} t={t} />
+                      <ScopeBadge s={s} lang={i18n.language} t={t} branchList={branchList} />
                     </Td>
                     <Td className="text-muted-foreground">{s.leader || '—'}</Td>
                     <Td>
@@ -751,15 +821,87 @@ export default function Sessions() {
               </div>
             )}
             {!isLeadersOnly && !isGroup && (
-              <div className="space-y-1.5">
-                <Label htmlFor="s_branch">{t('session.branch')}</Label>
-                <Select id="s_branch" required value={form.branch_id} onChange={(e) => pickBranch(e.target.value)}>
-                  {branchList.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {branchName(b, i18n.language)}
-                    </option>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label>{t('session.branches')}</Label>
+                {/* حصّة واحدة قد تجمع فرقتين: تُختار كل فرقة معنيّة، و تبقى واحدة
+                    على الأقل. الأولى المختارة هي الرئيسية (الخطة و المطالب). */}
+                <div className="flex flex-wrap gap-2" role="group" aria-label={t('session.branches')}>
+                  {branchList.map((b) => {
+                    const on = form.branch_ids.includes(b.id);
+                    const primary = form.branch_ids[0] === b.id;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggleBranch(b.id)}
+                        className={cn(
+                          'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                          on
+                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                        )}
+                      >
+                        {on && <IconCheck className="h-3.5 w-3.5" />}
+                        {branchName(b, i18n.language)}
+                        {primary && form.branch_ids.length > 1 && (
+                          <span className="text-[0.65rem] uppercase opacity-70">
+                            {t('session.branchPrimary')}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {form.branch_ids.length > 1 && (
+                  <p className="text-xs text-muted-foreground">{t('session.branchesHint')}</p>
+                )}
+              </div>
+            )}
+            {/* المجموعات: تظهر فقط للفرق المقسَّمة، و لنشاط الفرقة وحده. لا اختيار
+                = الفرقة كاملةً، فالفرقة غير المقسَّمة لا ترى هذا الحقل أصلًا. */}
+            {form.kind === 'activity' && groupedBranches.length > 0 && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label>{t('session.groups')}</Label>
+                <div className="space-y-2">
+                  {groupedBranches.map((b) => (
+                    <div key={b.id} className="flex flex-wrap items-center gap-2">
+                      {groupedBranches.length > 1 && (
+                        <span className="text-xs text-muted-foreground">
+                          {branchName(b, i18n.language)}
+                        </span>
+                      )}
+                      <div
+                        className="flex flex-wrap gap-2"
+                        role="group"
+                        aria-label={`${t('session.groups')} — ${branchName(b, i18n.language)}`}
+                      >
+                        {b.groups.map((g) => {
+                          const on = form.group_ids.includes(g.id);
+                          return (
+                            <button
+                              key={g.id}
+                              type="button"
+                              aria-pressed={on}
+                              onClick={() => toggleGroup(g.id)}
+                              className={cn(
+                                'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                                on
+                                  ? 'border-primary bg-primary/10 font-medium text-primary'
+                                  : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                              )}
+                            >
+                              {on && <IconCheck className="h-3.5 w-3.5" />}
+                              {g.name}
+                              <span className="text-[0.65rem] opacity-70">{g.member_count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   ))}
-                </Select>
+                </div>
+                <p className="text-xs text-muted-foreground">{t('session.groupsHint')}</p>
               </div>
             )}
             <div className="space-y-1.5">
@@ -837,7 +979,7 @@ export default function Sessions() {
                         checked={form.member_ids.includes(m.id)}
                         onChange={() => toggleVisited(m.id)}
                       />
-                      {m.first_name} {m.last_name}
+                      {memberName(m)}
                     </label>
                   ))}
                 </div>

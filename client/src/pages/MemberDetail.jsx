@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { fmtDate, branchName, birthdayWhen } from '../utils';
+import { avatarName, birthdayWhen, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
 import {
   Avatar,
@@ -108,15 +108,16 @@ export default function MemberDetail() {
             <div className="flex items-center gap-4">
               <Avatar
                 photo={member.photo}
-                name={`${member.first_name} ${member.last_name}`}
+                name={avatarName(member)}
                 className="h-16 w-16 border-2 border-card text-xl shadow-md sm:h-20 sm:w-20 sm:text-2xl"
               />
               <div className="min-w-0 flex-1 sm:hidden">
                 <h1 className="text-lg font-bold leading-tight">
-                  {member.first_name} {member.last_name}
+                  {memberName(member)}
                 </h1>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   <Badge>{branchName(member, i18n.language)}</Badge>
+                  {member.group_name && <Badge variant="outline">{member.group_name}</Badge>}
                   <Badge variant={member.status === 'active' ? 'success' : 'secondary'}>
                     {t(member.status === 'active' ? 'member.active' : 'member.inactive')}
                   </Badge>
@@ -127,10 +128,11 @@ export default function MemberDetail() {
             <div className="min-w-0 flex-1">
               <div className="hidden sm:block">
                 <h1 className="text-xl font-bold tracking-tight">
-                  {member.first_name} {member.last_name}
+                  {memberName(member)}
                 </h1>
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <Badge>{branchName(member, i18n.language)}</Badge>
+                  {member.group_name && <Badge variant="outline">{member.group_name}</Badge>}
                   <span className="tabular-nums">
                     {member.age} {t('common.years')}
                   </span>
@@ -199,15 +201,26 @@ export default function MemberDetail() {
                     </a>
                   </Row>
                 )}
-                {member.parent_phone && (
-                  <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.parentPhone')}>
+                {member.father_phone && (
+                  <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.fatherPhone')}>
                     {/* Tapping a number should place the call on a phone */}
                     <a
-                      href={`tel:${member.parent_phone}`}
+                      href={`tel:${member.father_phone}`}
                       dir="ltr"
                       className="focus-ring rounded tabular-nums text-primary hover:underline"
                     >
-                      {member.parent_phone}
+                      {member.father_phone}
+                    </a>
+                  </Row>
+                )}
+                {member.mother_phone && (
+                  <Row icon={<IconPhone className="h-3.5 w-3.5" />} label={t('member.motherPhone')}>
+                    <a
+                      href={`tel:${member.mother_phone}`}
+                      dir="ltr"
+                      className="focus-ring rounded tabular-nums text-primary hover:underline"
+                    >
+                      {member.mother_phone}
                     </a>
                   </Row>
                 )}

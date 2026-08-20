@@ -7,4 +7,5 @@ server/scout.db-shm
 
 # personal docs
 *.pdf
-server/scout.db.bak-*
+# every base copy: backups carry members' names, phones and addresses
+server/scout.db.*

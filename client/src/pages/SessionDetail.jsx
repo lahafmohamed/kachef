@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { fmtDate, fmtTime, branchName, activityTypeKey } from '../utils';
+import { activityTypeKey, avatarName, branchName, fmtDate, fmtTime, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -38,6 +38,10 @@ const MEMBER_STATUSES = [
   { value: 'excused', key: 'session.excused', tone: 'warning' },
 ];
 const ANIMATOR_STATUSES = MEMBER_STATUSES.filter((s) => s.value !== 'excused');
+
+// رفض السيرفر لفرقة ليست للمستخدم يُقرأ كرسالة، لا كرمز خام
+const attendanceError = (t, err) =>
+  err.message === 'forbidden_branch' ? t('session.forbiddenBranch') : err.message;
 
 /** Read-only rendering of a présence status for view-only accounts. */
 function StatusBadge({ status, t }) {
@@ -161,6 +165,8 @@ export default function SessionDetail() {
   const editable = has('sessions.attendance');
   const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
   const leaders = useFetch('/leaders');
+  // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
+  const branches = useFetch('/branches');
   const [bulkBusy, setBulkBusy] = useState(false);
 
   /**
@@ -178,12 +184,15 @@ export default function SessionDetail() {
       await api.post(`/sessions/${id}/attendance`, { member_id: memberId, status });
     } catch (err) {
       setSession(prev);
-      toast.error(err.message);
+      toast.error(attendanceError(t, err));
     }
   }
 
-  async function markAllPresent() {
-    const unmarked = session.roster.filter((m) => !m.status);
+  // فرقة واحدة حين تُمرَّر: كل قائد يُتمّ لائحة فرقته وحدها في النشاط المشترك
+  async function markAllPresent(branchId = null) {
+    const unmarked = session.roster.filter(
+      (m) => !m.status && (branchId === null || m.branch_id === branchId)
+    );
     if (unmarked.length === 0) return;
     if (
       !(await confirm({
@@ -197,9 +206,10 @@ export default function SessionDetail() {
 
     setBulkBusy(true);
     const prev = session;
+    const ids = new Set(unmarked.map((m) => m.id));
     setSession((s) => ({
       ...s,
-      roster: s.roster.map((m) => (m.status ? m : { ...m, status: 'present' })),
+      roster: s.roster.map((m) => (ids.has(m.id) ? { ...m, status: 'present' } : m)),
     }));
     try {
       for (const m of unmarked) {
@@ -209,7 +219,7 @@ export default function SessionDetail() {
       reload({ quiet: true });
     } catch (err) {
       setSession(prev);
-      toast.error(err.message);
+      toast.error(attendanceError(t, err));
     } finally {
       setBulkBusy(false);
     }
@@ -225,7 +235,7 @@ export default function SessionDetail() {
       await api.post(`/sessions/${id}/animators`, { leader_id: leaderId, status });
     } catch (err) {
       setSession(prev);
-      toast.error(err.message);
+      toast.error(attendanceError(t, err));
     }
   }
 
@@ -265,6 +275,14 @@ export default function SessionDetail() {
   const availableHelpers = (leaders.data || []).filter(
     (l) => l.status === 'active' && !session.animators?.some((a) => a.leader_id === l.id)
   );
+  // فرق النشاط بأسمائها، و الفرق التي تظهر فعلًا في اللائحة (فرق المستخدم منها)
+  const branchList = branches.data || [];
+  const sessionBranches = (session.branch_ids?.length ? session.branch_ids : [session.branch_id])
+    .map((bid) => branchList.find((b) => b.id === bid))
+    .filter(Boolean);
+  // اللائحة مقسّمة على الفرق حين يشمل النشاط أكثر من واحدة: كل قائد يملأ قسم فرقته
+  const rosterBranchIds = [...new Set(session.roster.map((m) => m.branch_id))];
+  const splitRoster = rosterBranchIds.length > 1;
 
   return (
     <div className="space-y-4">
@@ -290,12 +308,26 @@ export default function SessionDetail() {
             </span>
           )}
           {session.branch_id ? (
-            <Badge>{branchName(session, i18n.language)}</Badge>
+            // النشاط المشترك يحمل شارة لكل فرقة يشملها
+            sessionBranches.length > 1 ? (
+              sessionBranches.map((b) => <Badge key={b.id}>{branchName(b, i18n.language)}</Badge>)
+            ) : (
+              // فرقة واحدة مرئية: اسمها هو المعروض، لا اسم الفرقة الرئيسية التي قد
+              // تكون خارج نطاق المستخدم
+              <Badge>{branchName(sessionBranches[0] || session, i18n.language)}</Badge>
+            )
           ) : (
             <Badge variant="secondary">
               {t(session.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
             </Badge>
           )}
+          {/* النشاط المحصور بمجموعات: أسماؤها بعد الفرقة، فاللائحة أقصر من الفرقة
+              كاملةً و القائد يعرف لِمَ */}
+          {(session.groups || []).map((g) => (
+            <Badge key={g.id} variant="outline">
+              {g.name}
+            </Badge>
+          ))}
           {activityTypeKey(session.activity_type) && (
             <Badge variant="outline">{t(activityTypeKey(session.activity_type))}</Badge>
           )}
@@ -351,12 +383,13 @@ export default function SessionDetail() {
               </div>
             </div>
             <ProgressBar value={pct} label={t('session.attendance')} />
-            {editable && marked < totalRoster && (
+            {/* اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ الجامع هنا يصير تكرارًا */}
+            {editable && !splitRoster && marked < totalRoster && (
               <Button
                 variant="outline"
                 size="sm"
                 loading={bulkBusy}
-                onClick={markAllPresent}
+                onClick={() => markAllPresent()}
                 className="w-full sm:w-auto"
               >
                 <IconCheckAll />
@@ -452,43 +485,44 @@ export default function SessionDetail() {
         <CardContent className="p-0 pb-2">
           {totalRoster === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('session.emptyRoster')} />
+          ) : splitRoster ? (
+            // نشاط مشترك: قسم لكل فرقة، يملأه قائدها أو مساعده — لا شخص واحد للجميع
+            rosterBranchIds.map((bid) => {
+              const rows = session.roster.filter((m) => m.branch_id === bid);
+              const left = rows.filter((m) => !m.status).length;
+              const b = branchList.find((x) => x.id === bid);
+              return (
+                <section key={bid}>
+                  <div className="flex flex-wrap items-center gap-2 border-y border-border bg-muted/30 px-4 py-2 sm:px-5">
+                    <span className="text-sm font-semibold">{branchName(b, i18n.language)}</span>
+                    <Badge variant={left === 0 ? 'success' : 'outline'}>
+                      {t('session.marked', { marked: rows.length - left, total: rows.length })}
+                    </Badge>
+                    <span className="grow" />
+                    {editable && left > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        loading={bulkBusy}
+                        onClick={() => markAllPresent(bid)}
+                      >
+                        <IconCheckAll />
+                        {t('session.markRestPresent', { count: left })}
+                      </Button>
+                    )}
+                  </div>
+                  <ul className="divide-y divide-border">
+                    {rows.map((m) => (
+                      <RosterRow key={m.id} m={m} editable={editable} mark={mark} t={t} />
+                    ))}
+                  </ul>
+                </section>
+              );
+            })
           ) : (
             <ul className="divide-y divide-border">
               {session.roster.map((m) => (
-                <li
-                  key={m.id}
-                  className={cnRow(m.status)}
-                >
-                  <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} />
-                  <div className="min-w-32 flex-1">
-                    <Link
-                      to={`/members/${m.id}`}
-                      className="focus-ring rounded font-medium hover:text-primary hover:underline"
-                    >
-                      {m.first_name} {m.last_name}
-                    </Link>
-                    {m.consecutive_absences >= 3 && (
-                      <div className="mt-0.5">
-                        <Badge variant="destructive">
-                          <IconAlert className="h-3 w-3" />
-                          {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
-                        </Badge>
-                      </div>
-                    )}
-                  </div>
-                  <div className="w-full sm:w-auto">
-                    {editable ? (
-                      <SegmentedControl
-                        label={`${m.first_name} ${m.last_name}`}
-                        value={m.status}
-                        onChange={(v) => mark(m.id, v)}
-                        options={MEMBER_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
-                      />
-                    ) : (
-                      <StatusBadge status={m.status} t={t} />
-                    )}
-                  </div>
-                </li>
+                <RosterRow key={m.id} m={m} editable={editable} mark={mark} t={t} />
               ))}
             </ul>
           )}
@@ -496,6 +530,43 @@ export default function SessionDetail() {
       </Card>
       )}
     </div>
+  );
+}
+
+/** سطر عنصر في لائحة الحضور: الاسم، تنبيه الغيابات المتتالية، و أزرار الحالة. */
+function RosterRow({ m, editable, mark, t }) {
+  return (
+    <li className={cnRow(m.status)}>
+      <Avatar photo={m.photo} name={avatarName(m)} />
+      <div className="min-w-32 flex-1">
+        <Link
+          to={`/members/${m.id}`}
+          className="focus-ring rounded font-medium hover:text-primary hover:underline"
+        >
+          {memberName(m)}
+        </Link>
+        {m.consecutive_absences >= 3 && (
+          <div className="mt-0.5">
+            <Badge variant="destructive">
+              <IconAlert className="h-3 w-3" />
+              {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
+            </Badge>
+          </div>
+        )}
+      </div>
+      <div className="w-full sm:w-auto">
+        {editable ? (
+          <SegmentedControl
+            label={memberName(m)}
+            value={m.status}
+            onChange={(v) => mark(m.id, v)}
+            options={MEMBER_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
+          />
+        ) : (
+          <StatusBadge status={m.status} t={t} />
+        )}
+      </div>
+    </li>
   );
 }
 

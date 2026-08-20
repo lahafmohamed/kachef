@@ -5,7 +5,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
 import { toDate, toISO } from '../lib/date';
-import { branchName, fmtDate } from '../utils';
+import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
 import {
   Avatar,
@@ -15,14 +15,17 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Dialog,
   EmptyState,
   ErrorState,
   Input,
+  Label,
   PageHeader,
   ProgressBar,
   Select,
   Skeleton,
   SkeletonPage,
+  useConfirm,
   useToast,
   IconAward,
   IconCalendar,
@@ -30,10 +33,13 @@ import {
   IconChevronDown,
   IconClock,
   IconInbox,
+  IconLink,
+  IconPencil,
   IconPlus,
   IconShield,
   IconTrash,
   IconTrendingUp,
+  IconUnlink,
   IconUsers,
 } from '../components/ui';
 
@@ -106,8 +112,8 @@ function SessionRow({ s }) {
                     to={`/members/${m.id}`}
                     className="focus-ring flex items-center gap-2 rounded-full border border-border py-1 pe-3 ps-1 text-xs transition-colors hover:bg-accent/50"
                   >
-                    <Avatar photo={m.photo} name={`${m.first_name} ${m.last_name}`} className="h-6 w-6" />
-                    {m.first_name} {m.last_name}
+                    <Avatar photo={m.photo} name={avatarName(m)} className="h-6 w-6" />
+                    {memberName(m)}
                   </Link>
                 </li>
               ))}
@@ -116,7 +122,7 @@ function SessionRow({ s }) {
           {s.absent.length > 0 && (
             <p className="text-xs text-muted-foreground">
               <span className="font-medium">{t('session.absent')}:</span>{' '}
-              {s.absent.map((m) => `${m.first_name} ${m.last_name}`).join(' · ')}
+              {s.absent.map(memberName).join(' · ')}
             </p>
           )}
           <Link
@@ -170,7 +176,7 @@ function fmtDay(iso, lng) {
 }
 
 /** صف واحد من جدول الشهر: يوم + النشاط المبرمج فيه + حالته. */
-function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove }) {
+function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink }) {
   const { t, i18n } = useTranslation();
   const isSaturday = toDate(row.date)?.getDay() === 6;
 
@@ -229,6 +235,19 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove }) {
         ) : (
           <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
         )}
+        {/* الربط اليدوي: نشاط أُنشئ باسم آخر لا يلتقطه التطابق بالاسم، فيُربط من هنا.
+            يحتاج بندًا محفوظًا — صف لم يُحفظ بعد لا id له يُربط به. */}
+        {canEdit && row.id && (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onLink(row)}
+            aria-label={t('branch.planLink')}
+            title={t('branch.planLink')}
+          >
+            <IconLink />
+          </Button>
+        )}
         {canEdit && row.extra && (
           <Button size="icon-sm" variant="ghost" onClick={() => onRemove(index)} aria-label={t('common.delete')}>
             <IconTrash />
@@ -236,6 +255,118 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove }) {
         )}
       </div>
     </li>
+  );
+}
+
+// أخطاء الربط التي لها ترجمة خاصة؛ ما عداها يُعرض كما جاء من السيرفر
+const LINK_ERRORS = { session_outside_year: 'branch.planLinkOutsideYear' };
+
+/**
+ * اختيار نشاط موجود لربطه ببند من الخطة. القائد أحيانًا يُنشئ النشاط باسم مختلف عن
+ * اسم البند، فلا يلتقطه التطابق بالاسم و يبقى البند "لم يُنفَّذ بعد" رغم إنجازه؛ هنا
+ * يُربط الاثنان يدويًا بعد إنشائهما، دون تعديل الخطة و لا إعادة تسمية النشاط.
+ */
+function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(null);
+  const res = useFetch(`/branches/${branchId}/plan/sessions?year=${encodeURIComponent(year)}`);
+  // فكّ الربط لا معنى له إلا لبند رُبط عمدًا: المطابق بالاسم ليس مربوطًا أصلًا
+  const linked = item.session?.linked ? item.session : null;
+
+  const all = res.data?.sessions || [];
+  const needle = q.trim().toLowerCase();
+  const list = needle ? all.filter((s) => String(s.title).toLowerCase().includes(needle)) : all;
+
+  async function pick(sessionId) {
+    setBusy(sessionId ?? 'none');
+    try {
+      const fresh = await api.put(`/branches/${branchId}/plan/${item.id}/session`, {
+        session_id: sessionId,
+      });
+      onDone(fresh);
+      toast.success(t('common.saved'));
+      onClose();
+    } catch (err) {
+      toast.error(LINK_ERRORS[err.message] ? t(LINK_ERRORS[err.message]) : err.message);
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      size="lg"
+      title={t('branch.planLinkTitle')}
+      description={`${fmtDay(item.date, i18n.language)} — ${item.title}`}
+    >
+      <div className="space-y-3">
+        {linked && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-success/25 bg-success/8 px-3 py-2">
+            <div className="min-w-0 text-sm">
+              <span className="text-muted-foreground">{t('branch.planLinkCurrent')}</span>{' '}
+              <span className="font-medium">{linked.title}</span>{' '}
+              <span className="tabular text-muted-foreground">({fmtDate(linked.date)})</span>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => pick(null)} loading={busy === 'none'}>
+              <IconUnlink />
+              {t('branch.planUnlink')}
+            </Button>
+          </div>
+        )}
+
+        <SearchInput value={q} onChange={setQ} placeholder={t('branch.planLinkSearch')} autoFocusHotkey={false} />
+
+        {res.loading && <Skeleton className="h-40" />}
+        {res.error && (
+          <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
+        )}
+
+        {res.data &&
+          (list.length === 0 ? (
+            <EmptyState icon={<IconCalendar />} title={t('branch.planLinkEmpty')} />
+          ) : (
+            <ul className="max-h-[45dvh] divide-y divide-border overflow-y-auto rounded-xl border border-border">
+              {list.map((s) => {
+                const current = s.id === linked?.id;
+                // مربوط ببند آخر: الاختيار ينقله، فيُعرض بندُه الحالي قبل الضغط
+                const elsewhere = s.plan_item_id && s.plan_item_id !== item.id ? s.plan_title : null;
+                return (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      disabled={current || busy !== null}
+                      onClick={() => pick(s.id)}
+                      className="focus-ring flex w-full items-center gap-3 px-3 py-2.5 text-start hover:bg-accent disabled:opacity-60 disabled:hover:bg-transparent"
+                    >
+                      <span className="tabular w-24 shrink-0 text-xs text-muted-foreground">
+                        {fmtDate(s.date)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
+                      {current ? (
+                        <Badge variant="success">
+                          <IconCheck className="h-3 w-3" />
+                          {t('branch.planLinkCurrentShort')}
+                        </Badge>
+                      ) : elsewhere ? (
+                        <Badge variant="outline" className="max-w-[10rem] shrink-0">
+                          <span className="min-w-0 truncate">
+                            {t('branch.planLinkedTo', { title: elsewhere })}
+                          </span>
+                        </Badge>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ))}
+
+        <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planLinkHint')}</p>
+      </div>
+    </Dialog>
   );
 }
 
@@ -254,6 +385,8 @@ function AnnualPlan({ branchId }) {
   const [rows, setRows] = useState([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  // البند المفتوح في نافذة الربط — بالـ id لا بالصف، ليبقى مقروءًا من آخر خطة محمّلة
+  const [linkId, setLinkId] = useState(null);
   const res = useFetch(`/branches/${branchId}/plan${year ? `?year=${encodeURIComponent(year)}` : ''}`);
   const canEdit = can('branches.plan');
 
@@ -307,15 +440,25 @@ function AnnualPlan({ branchId }) {
       res.setData(fresh);
       setDirty(false);
       toast.success(t('common.saved'));
+      return true;
     } catch (err) {
       toast.error(err.message);
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
+  // الربط يعيد الخطة من السيرفر فتُبنى الصفوف من جديد و تضيع التعديلات غير المحفوظة،
+  // لذلك يُحفظ الشهر أولًا إن كان معدَّلًا — و لا تُفتح النافذة إن فشل الحفظ.
+  async function openLink(row) {
+    if (dirty && !(await save())) return;
+    setLinkId(row.id);
+  }
+
   const monthDone = rows.filter((r) => r.session).length;
   const monthPlanned = rows.filter((r) => r.title.trim()).length;
+  const linkItem = plan?.items.find((i) => i.id === linkId) || null;
   // Days still selectable for an extra row: the free ones, plus the row's own date
   const takenDates = new Set(rows.filter((r) => !r.extra).map((r) => r.date));
 
@@ -419,6 +562,7 @@ function AnnualPlan({ branchId }) {
                       onTitle={setTitle}
                       onDate={setDate}
                       onRemove={removeRow}
+                      onLink={openLink}
                     />
                   ))}
                 </ul>
@@ -426,6 +570,17 @@ function AnnualPlan({ branchId }) {
             </div>
 
             <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planHint')}</p>
+
+            {linkItem && (
+              <LinkSessionDialog
+                key={linkItem.id}
+                branchId={branchId}
+                year={plan.year}
+                item={linkItem}
+                onClose={() => setLinkId(null)}
+                onDone={res.setData}
+              />
+            )}
           </>
         )}
       </CardContent>
@@ -469,8 +624,8 @@ function BranchSessions({ branchId }) {
           s.title,
           s.date,
           s.leader,
-          ...s.present.map((m) => `${m.first_name} ${m.last_name}`),
-          ...s.absent.map((m) => `${m.first_name} ${m.last_name}`),
+          ...s.present.map(memberName),
+          ...s.absent.map(memberName),
           ...s.animators.map((a) => `${a.first_name} ${a.last_name}`),
         ]
           .filter(Boolean)
@@ -507,6 +662,382 @@ function BranchSessions({ branchId }) {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * مجموعات الفرقة و توزيع عناصرها.
+ *
+ * الفرقة الكبيرة لا تسعها الحصّة الواحدة، و قد يعطي كل مجموعةٍ قائدٌ آخر نشاطًا
+ * مختلفًا: فتُقسَّم إلى مجموعات يُوزَّع عليها العناصر بالاسم، ثم يختار النشاط
+ * مجموعاته عند إنشائه. التوزيع يُحفظ فور تغييره — صفّ واحد لكل عنصر، فلا زرّ حفظ
+ * ينتظر إلى آخر القائمة و لا خطر ضياع ما وُزِّع قبله.
+ */
+function BranchGroups({ branchId }) {
+  const { t, i18n } = useTranslation();
+  const { can } = usePerms();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const res = useFetch(`/branches/${branchId}/groups`);
+  const canEdit = can('branches.groups');
+  // null = مغلق، { id, name } = إعادة تسمية، { name } = مجموعة جديدة
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [dialogError, setDialogError] = useState(null);
+  const [query, setQuery] = useState('');
+  // '' = الكل، 'none' = بلا مجموعة، أو رقم مجموعة
+  const [filter, setFilter] = useState('');
+  // العناصر المؤشَّرة، و المجموعة التي سيُنقلون إليها. الاختيار يبقى عبر البحث و
+  // الفلترة: القائد يجمع أسماءه من عدّة بحثات ثم ينقلهم دفعة واحدة.
+  const [picked, setPicked] = useState(() => new Set());
+  const [target, setTarget] = useState('');
+  const [moving, setMoving] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+
+  // فتح نافذة التوزيع من الصفر: بحث فارغ و لا تأشير، فما بقي من جلسة سابقة لا يفاجئ
+  function openAssign(startFilter = '') {
+    setQuery('');
+    setFilter(startFilter);
+    setPicked(new Set());
+    setAssigning(true);
+  }
+
+  const groups = res.data?.groups || [];
+  const members = res.data?.members || [];
+  const unassigned = members.filter((m) => !m.group_id && m.status === 'active').length;
+
+  async function saveGroup(e) {
+    e.preventDefault();
+    setDialogError(null);
+    setSaving(true);
+    try {
+      const body = { name: editing.name };
+      if (editing.id) await api.put(`/branches/${branchId}/groups/${editing.id}`, body);
+      else await api.post(`/branches/${branchId}/groups`, body);
+      setEditing(null);
+      toast.success(t(editing.id ? 'branch.groupSaved' : 'branch.groupCreated'));
+      res.reload({ quiet: true });
+    } catch (err) {
+      setDialogError(err.message === 'group_exists' ? t('branch.groupExists') : err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeGroup(g) {
+    if (!(await confirm({ title: t('branch.groupDelete'), message: t('branch.groupDeleteConfirm', { name: g.name }) })))
+      return;
+    try {
+      await api.del(`/branches/${branchId}/groups/${g.id}`);
+      if (String(filter) === String(g.id)) setFilter('');
+      if (String(target) === String(g.id)) setTarget('');
+      toast.success(t('branch.groupDeleted'));
+      res.reload({ quiet: true });
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  function togglePick(id) {
+    setPicked((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // «تأشير الكل» لا يمسّ إلا الأسماء المعروضة الآن، فالبحث يضيّق ما يُؤشَّر بدل أن
+  // يؤشِّر بصمت أسماءً لا يراها أحد.
+  function toggleAllShown(ids, allPicked) {
+    setPicked((s) => {
+      const next = new Set(s);
+      for (const id of ids) {
+        if (allPicked) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }
+
+  // نقل المؤشَّرين دفعة واحدة. طلب واحد للجميع: توزيع فرقة من تسعين عنصرًا لا يحتمل
+  // طلبًا لكل اسم. الردّ يُعيد تحميل القائمة، فالأعداد تُصحَّح من الخادم لا من الظنّ.
+  async function moveSelected() {
+    // عنصر رُقّي أو حُذف بينما كان مؤشَّرًا يسقط من الدفعة: الخادم يرفض الطلب كلّه
+    // إن حوى اسمًا خرج من الفرقة، فلا يُرسَل ما لم يعد في القائمة.
+    const ids = [...picked].filter((id) => members.some((m) => m.id === id));
+    if (!ids.length) return;
+    setMoving(true);
+    try {
+      await api.post(`/branches/${branchId}/groups/assign`, {
+        member_ids: ids,
+        group_id: target === '' ? null : Number(target),
+      });
+      setPicked(new Set());
+      toast.success(t('branch.groupMoved', { count: ids.length }));
+      res.reload({ quiet: true });
+    } catch (err) {
+      toast.error(err.message);
+      res.reload({ quiet: true });
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  if (res.loading)
+    return (
+      <Card>
+        <CardContent className="space-y-3 py-5">
+          <Skeleton className="h-10" />
+          <Skeleton className="h-24" />
+        </CardContent>
+      </Card>
+    );
+  if (res.error)
+    return (
+      <Card>
+        <CardContent className="py-5">
+          <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
+        </CardContent>
+      </Card>
+    );
+
+  const q = query.trim().toLowerCase();
+  const shown = members.filter((m) => {
+    if (filter === 'none' ? m.group_id : filter && String(m.group_id) !== String(filter)) return false;
+    return !q || memberName(m).toLowerCase().includes(q);
+  });
+  const shownIds = shown.map((m) => m.id);
+  const allShownPicked = shownIds.length > 0 && shownIds.every((id) => picked.has(id));
+
+  return (
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+        <CardTitle>{t('branch.groupsTitle')}</CardTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{groups.length}</Badge>
+          {canEdit && (
+            <Button size="sm" variant="outline" onClick={() => { setDialogError(null); setEditing({ name: '' }); }}>
+              <IconPlus />
+              {t('branch.groupNew')}
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.groupsHint')}</p>
+
+        {groups.length === 0 ? (
+          <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('branch.groupsEmpty')}>
+            {t('branch.groupsEmptyHint')}
+          </EmptyState>
+        ) : (
+          <>
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {groups.map((g) => (
+                <li
+                  key={g.id}
+                  className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{g.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t('branch.groupMembers', { count: g.member_count })}
+                    </div>
+                  </div>
+                  {canEdit && (
+                    <>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={t('branch.groupRename')}
+                        onClick={() => { setDialogError(null); setEditing({ id: g.id, name: g.name }); }}
+                      >
+                        <IconPencil />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={t('branch.groupDelete')}
+                        onClick={() => removeGroup(g)}
+                      >
+                        <IconTrash />
+                      </Button>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+
+            {/* التوزيع نفسه في نافذة: قائمة الفرقة قد تبلغ تسعين اسمًا، و بسطها هنا
+                يدفن بقيّة الصفحة تحتها. البطاقة تبقى ملخّصًا، و القائمة تُفتح عند
+                الحاجة إليها. */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4">
+              <Button size="sm" variant="outline" onClick={() => openAssign()}>
+                <IconUsers />
+                {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
+              </Button>
+              {unassigned > 0 ? (
+                // اختصار: يفتح النافذة على غير الموزَّعين وحدهم، و هم أول ما يُبحث عنه
+                <button
+                  type="button"
+                  className="focus-ring rounded text-xs text-muted-foreground underline"
+                  onClick={() => openAssign('none')}
+                >
+                  {t('branch.groupUnassigned', { count: unassigned })}
+                </button>
+              ) : (
+                <span className="text-xs text-muted-foreground">{t('branch.groupAllAssigned')}</span>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+
+      <Dialog
+        open={assigning}
+        onClose={() => setAssigning(false)}
+        title={t('branch.groupAssignTitle')}
+        description={t('branch.groupAssignHint')}
+        size="lg"
+      >
+        {/* البحث و الفلترة يلتصقان بالأعلى، و شريط النقل بالأسفل: الاسم المؤشَّر في
+            وسط قائمة طويلة لا يفرض صعودًا و لا نزولًا. */}
+        <div className="sticky -top-4 z-10 -mx-4 flex flex-wrap gap-2 bg-card px-4 pb-2 pt-1 sm:-top-5 sm:-mx-5 sm:px-5">
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            autoFocusHotkey={false}
+            placeholder={t('branch.groupSearch')}
+          />
+          <Select
+            className="w-auto"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            aria-label={t('branch.groupsTitle')}
+          >
+            <option value="">{t('branch.groupAll')}</option>
+            <option value="none">{t('branch.groupNone')}</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {shown.length === 0 ? (
+          <p className="py-3 text-sm text-muted-foreground">{t('common.noResults')}</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {canEdit && (
+              <li>
+                <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-medium sm:min-h-10">
+                  <input
+                    type="checkbox"
+                    checked={allShownPicked}
+                    onChange={() => toggleAllShown(shownIds, allShownPicked)}
+                  />
+                  {t('branch.groupSelectAll', { count: shown.length })}
+                </label>
+              </li>
+            )}
+            {shown.map((m) => (
+              <li key={m.id} className="flex items-center gap-3 py-2">
+                {canEdit ? (
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={picked.has(m.id)}
+                      onChange={() => togglePick(m.id)}
+                    />
+                    <Avatar photo={m.photo} name={avatarName(m)} className="h-8 w-8" />
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      {memberName(m)}
+                      {m.status !== 'active' && (
+                        <span className="ms-1.5 text-xs text-muted-foreground">
+                          ({t('member.inactive')})
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ) : (
+                  <>
+                    <Avatar photo={m.photo} name={avatarName(m)} className="h-8 w-8" />
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      {memberName(m)}
+                    </span>
+                  </>
+                )}
+                <Badge variant="outline" className="shrink-0">
+                  {groups.find((g) => g.id === m.group_id)?.name || t('branch.groupNone')}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {canEdit && picked.size > 0 && (
+          <div className="sticky -bottom-4 z-10 -mx-4 mt-2 flex flex-wrap items-center gap-2 border-t border-border bg-card px-4 py-2.5 sm:-bottom-5 sm:-mx-5 sm:px-5">
+            <span className="text-sm font-medium">
+              {t('branch.groupSelected', { count: picked.size })}
+            </span>
+            <span className="grow" />
+            <Select
+              className="w-auto"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              aria-label={t('branch.groupMoveTo')}
+            >
+              <option value="">{t('branch.groupNone')}</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </Select>
+            <Button size="sm" variant="brand" loading={moving} onClick={moveSelected}>
+              {t('branch.groupMove')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())}>
+              {t('common.cancel')}
+            </Button>
+          </div>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={t(editing?.id ? 'branch.groupRename' : 'branch.groupNew')}
+        size="sm"
+      >
+        <form onSubmit={saveGroup} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="group_name">{t('branch.groupName')}</Label>
+            <Input
+              id="group_name"
+              required
+              autoFocus
+              maxLength={60}
+              placeholder={t('branch.groupNamePlaceholder')}
+              value={editing?.name || ''}
+              onChange={(e) => setEditing((g) => ({ ...g, name: e.target.value }))}
+            />
+          </div>
+          {dialogError && <p className="text-sm text-destructive">{dialogError}</p>}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" onClick={() => setEditing(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" variant="brand" disabled={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+    </Card>
   );
 }
 
@@ -666,6 +1197,9 @@ export default function Branches() {
           </div>
         </CardContent>
       </Card>
+
+      {/* key: switching فرقة must refetch its own مجموعات, not show the previous one */}
+      <BranchGroups key={`groups-${b.id}`} branchId={b.id} />
 
       {/* key: switching فرقة must refetch its own plan, not show the previous one */}
       <AnnualPlan key={`plan-${b.id}`} branchId={b.id} />

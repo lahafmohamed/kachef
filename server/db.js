@@ -24,6 +24,18 @@ CREATE TABLE IF NOT EXISTS branches (
   total_requirements INTEGER NOT NULL DEFAULT 0
 );
 
+-- مجموعات الفرقة: الفرقة الكبيرة تُقسَّم إلى مجموعات، لأن الحصّة الواحدة لا تسع
+-- عناصرها كلهم، و لأن المجموعة قد يعطيها قائد آخر نشاطًا مختلفًا. التوزيع يدوي
+-- (members.group_id)، و المجموعة اختيارية: فرقة بلا مجموعات تبقى تعمل كما كانت.
+CREATE TABLE IF NOT EXISTS branch_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  -- NOCASE so "Groupe A" and "groupe a" collide instead of becoming two groups
+  name TEXT NOT NULL COLLATE NOCASE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(branch_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS members (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   first_name TEXT NOT NULL,
@@ -38,7 +50,8 @@ CREATE TABLE IF NOT EXISTS members (
   sex TEXT NOT NULL CHECK (sex IN ('M', 'F')),
   branch_id INTEGER NOT NULL REFERENCES branches(id),
   member_phone TEXT,
-  parent_phone TEXT,
+  father_phone TEXT,
+  mother_phone TEXT,
   join_date TEXT NOT NULL,
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
@@ -99,6 +112,34 @@ CREATE TABLE IF NOT EXISTS session_branch_counts (
   branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   count INTEGER NOT NULL DEFAULT 0,
   UNIQUE(session_id, branch_id)
+);
+
+-- الفرق التي يشملها نشاط واحد: نفس الحصّة تُعطى أحيانًا لفرقتين أو أكثر معًا، فتُسجَّل
+-- مرّة واحدة و تُحتسب لكل فرقة. sessions.branch_id يبقى الفرقة الرئيسية (الأولى): هي التي
+-- تحمل اسم الفرقة في القوائم، و كل صفوف الجدول هنا تشملها.
+-- الثابت: كل نشاط له branch_id غير NULL له صف هنا على الأقل.
+CREATE TABLE IF NOT EXISTS session_branches (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  PRIMARY KEY (session_id, branch_id)
+);
+
+-- مجموعات الفرقة التي تشارك في نشاط. الفرقة التي لها صف هنا لا يشارك منها إلا
+-- عناصر تلك المجموعات؛ و الفرقة التي لا صف لها تشارك كاملةً — و هي الحالة الوحيدة
+-- قبل وجود المجموعات، فكل نشاط قديم يبقى نشاط فرقة كاملة بلا تعديل.
+CREATE TABLE IF NOT EXISTS session_groups (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES branch_groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (session_id, group_id)
+);
+
+-- بنود الخطة التي ينفّذها نشاط. البند يخصّ فرقة واحدة، و النشاط المشترك يشمل عدّة
+-- فرق، فقد ينفّذ بندًا من خطة كل فرقة يشملها — بند واحد لكل فرقة على الأكثر.
+-- sessions.plan_item_id يبقى بند الفرقة الرئيسية، مرآةً لصف من هنا.
+CREATE TABLE IF NOT EXISTS session_plan_items (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  plan_item_id INTEGER NOT NULL REFERENCES annual_plan(id) ON DELETE CASCADE,
+  PRIMARY KEY (session_id, plan_item_id)
 );
 
 CREATE TABLE IF NOT EXISTS leaders (
@@ -417,6 +458,16 @@ function migrateAnnualPlan() {
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
+  // هاتف ولي الأمر split into father's and mother's numbers; the old single value
+  // was the father's in practice, so it lands there
+  ensureColumn('members', 'father_phone', 'father_phone TEXT');
+  ensureColumn('members', 'mother_phone', 'mother_phone TEXT');
+  if (db.prepare('PRAGMA table_info(members)').all().some((c) => c.name === 'parent_phone')) {
+    db.exec(`
+      UPDATE members SET father_phone = COALESCE(father_phone, parent_phone);
+      ALTER TABLE members DROP COLUMN parent_phone;
+    `);
+  }
   ensureColumn('sessions', 'leader', 'leader TEXT');
   ensureColumn('sessions', 'fee', 'fee REAL');
   ensureColumn('sessions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
@@ -438,6 +489,14 @@ function migrate() {
     'plan_item_id INTEGER REFERENCES annual_plan(id) ON DELETE SET NULL'
   );
   migrateAnnualPlan();
+  // الأنشطة القديمة كانت لفرقة واحدة و ببند خطة واحد: تُنسخ إلى الجدولين ليصيرا هما
+  // المرجع لسؤالَي «أي فرق يخصّ؟» و «أي بنود ينفّذ؟». يُعاد التنفيذ بلا ضرر بفضل OR IGNORE.
+  db.exec(`
+    INSERT OR IGNORE INTO session_branches (session_id, branch_id)
+      SELECT id, branch_id FROM sessions WHERE branch_id IS NOT NULL;
+    INSERT OR IGNORE INTO session_plan_items (session_id, plan_item_id)
+      SELECT id, plan_item_id FROM sessions WHERE plan_item_id IS NOT NULL;
+  `);
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   migrateAssignments();
   // Registration form fields added after the first release — all nullable so old rows stay valid
@@ -452,6 +511,10 @@ function migrate() {
   // فصيلة الدم: required on the form from now on, but nullable in SQL — the rows
   // registered before it existed stay valid until someone next edits them
   ensureColumn('members', 'blood_type', 'blood_type TEXT');
+  // مجموعة العنصر داخل فرقته. NULL = لم يُوزَّع بعد، و هو حال كل العناصر قبل هذه
+  // الميزة. الحذف يُفرَّغ يدويًا قبل DELETE: عمود مُضاف بـ ALTER لا يُعتمد عليه في
+  // تنفيذ ON DELETE SET NULL.
+  ensureColumn('members', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
   seedLookupsFromMembers();
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
@@ -491,14 +554,6 @@ function migrate() {
   }
 }
 
-// Birth date such that the member is exactly `age` years old (birthday 10 days ago)
-function birthDateForAge(age) {
-  const d = new Date();
-  d.setFullYear(d.getFullYear() - age);
-  d.setDate(d.getDate() - 10);
-  return d.toISOString().slice(0, 10);
-}
-
 function seed() {
   const count = db.prepare('SELECT COUNT(*) AS n FROM branches').get().n;
   if (count > 0) return;
@@ -507,43 +562,18 @@ function seed() {
     'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements) VALUES (?, ?, ?, ?, ?, ?)'
   );
   insertBranch.run('Baraem', 'البراعم', 6, 7, 0, 99);
-  const louveteaux = insertBranch.run('Louveteaux', 'الأشبال', 8, 11, 1, 144).lastInsertRowid;
-  const scouts = insertBranch.run('Scouts', 'الكشافة', 12, 16, 2, 166).lastInsertRowid;
-  const routiers = insertBranch.run('Routiers', 'الجوالة', 17, null, 3, 174).lastInsertRowid;
-
-  const insertMember = db.prepare(`
-    INSERT INTO members (first_name, last_name, birth_date, sex, branch_id, parent_phone, join_date, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-  `);
-  insertMember.run('Yassine', 'Ben Ali', birthDateForAge(9), 'M', louveteaux, '+216 20 111 222', '2023-09-15');
-  insertMember.run('Amina', 'Trabelsi', birthDateForAge(10), 'F', louveteaux, '+216 22 333 444', '2024-01-10');
-  // Deliberately overdue: 12 years old, still in Louveteaux -> shows up in pending promotions
-  insertMember.run('Omar', 'Gharbi', birthDateForAge(12), 'M', louveteaux, '+216 55 555 666', '2022-10-01');
-  insertMember.run('Salma', 'Haddad', birthDateForAge(14), 'F', scouts, '+216 98 777 888', '2021-09-20');
-  insertMember.run('Karim', 'Bouzid', birthDateForAge(18), 'M', routiers, '+216 29 999 000', '2019-09-05');
+  insertBranch.run('Louveteaux', 'الأشبال', 8, 11, 1, 144);
+  insertBranch.run('Scouts', 'الكشافة', 12, 16, 2, 166);
+  insertBranch.run('Routiers', 'الجوالة', 17, null, 3, 174);
 }
 
-// Demo leaders + تشكيلة assignments; separate guard so it also fills databases seeded before this feature
+// The empty تشكيلة organigram for the current year. Every slot starts unassigned — the
+// leaders themselves are entered by hand, so no names are seeded here.
 function seedLeaders() {
-  const count = db.prepare('SELECT COUNT(*) AS n FROM leaders').get().n;
+  const year = '2025-2026';
+  const count = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE year = ?').get(year).n;
   if (count > 0) return;
 
-  const insertLeader = db.prepare(
-    "INSERT INTO leaders (first_name, last_name, phone, status) VALUES (?, ?, ?, ?)"
-  );
-  const leaders = [
-    ['Mohamed', 'Lahaf', '+216 21 100 200', 'active'],
-    ['Fatma', 'Jendoubi', '+216 22 210 320', 'active'],
-    ['Ahmed', 'Mansouri', '+216 50 430 540', 'active'],
-    ['Nour', 'Khelifi', '+216 97 650 760', 'active'],
-    ['Sami', 'Ayari', '+216 23 870 980', 'active'],
-    ['Rania', 'Belhadj', '+216 58 090 100', 'active'],
-    ['Hedi', 'Chaabane', '+216 24 111 213', 'inactive'],
-  ];
-  const ids = leaders.map((l) => insertLeader.run(...l).lastInsertRowid);
-
-  // The full organigram is created, then a few slots are filled — the rest stay empty on purpose
-  const year = '2025-2026';
   const insertAssignment = db.prepare(
     'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, NULL, ?, ?, ?, ?)'
   );
@@ -551,17 +581,6 @@ function seedLeaders() {
     for (const r of tachkilaTemplate()) insertAssignment.run(year, r.title, r.branch_id, r.role_type, r.sort_order);
   });
   run();
-
-  const assign = db.prepare('UPDATE assignments SET leader_id = ? WHERE year = ? AND title = ?');
-  const demo = [
-    [ids[0], 'عميد الفوج'],
-    [ids[1], 'أمين المال'],
-    [ids[2], 'قائد البراعم الأساسي'],
-    [ids[3], 'قائد الأشبال الأساسي'],
-    [ids[4], 'قائد الكشافة الأساسي'],
-    [ids[5], 'قائد الجوالة الأساسي'],
-  ];
-  for (const [leaderId, title] of demo) assign.run(leaderId, year, title);
 }
 
 module.exports = { db, seed, seedLeaders, migrate, tachkilaTemplate };

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { fmtDate, branchName } from '../utils';
+import { branchName, fmtDate, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -285,7 +285,7 @@ export default function LeaderDetail() {
                     </Badge>
                     {v.members?.length > 0 && (
                       <span className="text-xs text-muted-foreground">
-                        {v.members.map((m) => `${m.first_name} ${m.last_name}`).join(' · ')}
+                        {v.members.map(memberName).join(' · ')}
                       </span>
                     )}
                   </div>
