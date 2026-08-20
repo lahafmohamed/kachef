@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, seed, seedLeaders, migrate, tachkilaTemplate } = require('./db');
+const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate } = require('./db');
 
 migrate();
 seed();
@@ -88,6 +88,8 @@ const publicUser = (u) => ({
   branches: u.branches ? JSON.parse(u.branches) : null,
   // null = full access; otherwise the granular permission keys granted
   perms: u.perms ? normalizePerms(JSON.parse(u.perms)) : null,
+  // القائد صاحب الحساب إن وُلّد من صفحة القادة
+  leader_id: u.leader_id ?? null,
 });
 
 const hasPerm = (req, key) =>
@@ -1021,6 +1023,8 @@ app.delete('/api/branches/:id/groups/:gid', requirePerm('branches.groups'), (req
   db.transaction(() => {
     db.prepare('UPDATE members SET group_id = NULL WHERE group_id = ?').run(g.id);
     db.prepare('DELETE FROM session_groups WHERE group_id = ?').run(g.id);
+    // توصيف كان للمجموعة يعود توصيفًا للفرقة كلها — يبقى في التشكيلة و لا يضيع
+    db.prepare('UPDATE assignments SET group_id = NULL WHERE group_id = ?').run(g.id);
     db.prepare('DELETE FROM branch_groups WHERE id = ?').run(g.id);
   })();
   res.status(204).end();
@@ -1528,10 +1532,11 @@ function assignmentsForYear(year) {
   return db
     .prepare(
       `SELECT a.*, l.first_name, l.father_name, l.last_name, l.photo,
-        b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+        b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar, g.name AS group_name
        FROM assignments a
        LEFT JOIN leaders l ON l.id = a.leader_id
        LEFT JOIN branches b ON b.id = a.branch_id
+       LEFT JOIN branch_groups g ON g.id = a.group_id
        WHERE a.year = ?
        ORDER BY a.role_type = 'amana', COALESCE(b.sort_order, 999), a.sort_order, a.id`
     )
@@ -1632,6 +1637,87 @@ app.delete('/api/leader-matalib/:id', requireAdmin, (req, res) => {
 });
 
 // تحقيق أو إلغاء مطلب لقائد في سنة معيّنة
+// ---------- حساب دخول لقائد ----------
+// «من له حقّ الدخول؟» يُدار من صفحة القادة نفسها: زرّ واحد يولّد حسابًا مربوطًا
+// بالقائد، بكلمة سرّ تُعرض مرّة واحدة، و بصلاحيات من قالب جاهز — فليس كل قائد
+// يرى كل شيء. الضبط الدقيق بعد ذلك من صفحة الأدمن كما كان.
+const ACCOUNT_PRESETS = {
+  // قائد فرقة: يدير عناصره و أنشطته و خطة فرقته و مجموعاتها، و يقرأ ما حوله.
+  // بلا حذف عناصر، بلا تثبيت ترقيات، بلا أرقام مالية — هذه للأدمن.
+  branch: [
+    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.matalib',
+    'sessions.read', 'sessions.create', 'sessions.attendance',
+    'branches.read', 'branches.plan', 'branches.groups',
+    'promotions.read',
+    'leaders.read', 'leaders.progress',
+  ],
+  // أمين: يرى الفوج كله و يسجّل أنشطة و حضورًا، بلا لمس ملفات العناصر
+  amana: [
+    'members.read',
+    'sessions.read', 'sessions.create', 'sessions.attendance',
+    'branches.read',
+    'promotions.read',
+    'leaders.read', 'leaders.progress',
+  ],
+  // قراءة فقط — اطّلاع بلا أي كتابة
+  readonly: ['members.read', 'sessions.read', 'branches.read', 'promotions.read', 'leaders.read'],
+  // كل الصلاحيات و كل الفرق، من غير إدارة الحسابات (ليس أدمن)
+  full: null,
+};
+
+// كلمة سرّ تُولَّد و تُعرض مرّة واحدة. أحرف لا تلتبس ببعضها (لا 0/O و لا 1/l):
+// ستُملى شفهيًا أو تُنسخ على هاتف.
+function generatePassword() {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(12);
+  let out = '';
+  for (let i = 0; i < 12; i++) {
+    out += alphabet[bytes[i] % alphabet.length];
+    if (i === 3 || i === 7) out += '-';
+  }
+  return out;
+}
+
+app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
+  const leader = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
+  if (!leader) return res.status(404).json({ error: 'leader not found' });
+  // حساب واحد لكل قائد: الثاني التباسٌ لا فائدة
+  if (db.prepare('SELECT id FROM users WHERE leader_id = ?').get(leader.id))
+    return res.status(409).json({ error: 'account_exists' });
+  const username = String(req.body?.username || '').trim();
+  if (!username) return res.status(400).json({ error: 'username required' });
+  const preset = req.body?.preset;
+  if (!Object.prototype.hasOwnProperty.call(ACCOUNT_PRESETS, preset))
+    return res.status(400).json({ error: 'invalid preset' });
+  const branches = parseBranchList(req.body?.branches);
+  if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
+  const password = generatePassword();
+  const perms = ACCOUNT_PRESETS[preset];
+  let info;
+  try {
+    info = db
+      .prepare(
+        "INSERT INTO users (username, password_hash, display_name, role, branches, perms, leader_id) VALUES (?, ?, ?, 'user', ?, ?, ?)"
+      )
+      .run(
+        username,
+        hashPassword(password),
+        [leader.first_name, leader.father_name, leader.last_name].filter(Boolean).join(' '),
+        branches,
+        perms ? JSON.stringify(perms) : null,
+        leader.id
+      );
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'username_taken' });
+    throw e;
+  }
+  // كلمة السرّ تُعاد هنا وحدها و لا تُخزَّن إلا مجزّأة: من أضاعها يولّد غيرها من صفحة الأدمن
+  res.status(201).json({
+    user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)),
+    password,
+  });
+});
+
 app.post('/api/leaders/:id/progress', requirePerm('leaders.progress'), (req, res) => {
   const l = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'leader not found' });
@@ -1657,6 +1743,8 @@ app.get('/api/leaders', (req, res) => {
   const rows = db
     .prepare(
       `SELECT l.*,
+        (SELECT u.id FROM users u WHERE u.leader_id = l.id LIMIT 1) AS account_user_id,
+        (SELECT u.username FROM users u WHERE u.leader_id = l.id LIMIT 1) AS account_username,
         (SELECT COUNT(*) FROM sessions s WHERE s.leader_id = l.id AND s.kind != 'visit') AS sessions_count,
         (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
           WHERE sl.leader_id = l.id AND sl.status = 'present' AND s.kind != 'visit') AS present_count,
@@ -1883,6 +1971,8 @@ app.delete('/api/leaders/:id', requireAdmin, (req, res) => {
     // Sessions keep the leader name as plain text, only the link is removed.
     // His توصيفات survive too (FK ON DELETE SET NULL): the slots stay in the تشكيلة, unassigned.
     db.prepare('UPDATE sessions SET leader_id = NULL WHERE leader_id = ?').run(req.params.id);
+    // حسابه يبقى مفكوك الربط: سحب الدخول قرار أدمن صريح لا أثر جانبي لحذف ملف
+    db.prepare('UPDATE users SET leader_id = NULL WHERE leader_id = ?').run(req.params.id);
     db.prepare('DELETE FROM leaders WHERE id = ?').run(req.params.id);
   });
   run();
@@ -1952,7 +2042,7 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
 // '' from an unselected <select> means "no one assigned yet", not an invalid id
 const optionalId = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
-function validateAssignment(body) {
+function validateAssignment(body, selfId = null) {
   if (!body.year || !String(body.year).trim()) return 'year required';
   if (!body.title || !String(body.title).trim()) return 'title required';
   const leaderId = optionalId(body.leader_id);
@@ -1961,6 +2051,25 @@ function validateAssignment(body) {
   const branchId = optionalId(body.branch_id);
   if (branchId !== null && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
     return 'invalid branch_id';
+  // المجموعة من مجموعات فرقة التوصيف نفسها، و توصيفٌ بلا فرقة لا مجموعة له
+  if (resolveGroupId(body.group_id, branchId) === undefined) return 'invalid group_id';
+  // التبعية للأمانات وحدها: الأب أمانةٌ من السنة نفسها، جذرٌ لا تابعٌ (مستوى واحد)،
+  // و ليس التوصيف نفسه
+  const parentId = optionalId(body.parent_id);
+  if (parentId !== null) {
+    if (branchId !== null) return 'invalid parent_id';
+    if (selfId !== null && Number(selfId) === parentId) return 'invalid parent_id';
+    const parent = db
+      .prepare('SELECT year, role_type, parent_id FROM assignments WHERE id = ?')
+      .get(parentId);
+    if (
+      !parent ||
+      parent.role_type !== 'amana' ||
+      parent.parent_id !== null ||
+      parent.year !== String(body.year).trim()
+    )
+      return 'invalid parent_id';
+  }
   return null;
 }
 
@@ -1971,13 +2080,15 @@ app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (
   const branchId = optionalId(b.branch_id);
   const info = db
     .prepare(
-      'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .run(
       String(b.year).trim(),
       optionalId(b.leader_id),
       String(b.title).trim(),
       branchId,
+      resolveGroupId(b.group_id, branchId) ?? null,
+      branchId ? null : optionalId(b.parent_id),
       branchId ? 'branch' : 'amana',
       Number.isInteger(b.sort_order) ? b.sort_order : 0
     );
@@ -1992,17 +2103,26 @@ app.put(
     const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'assignment not found' });
     const body = { ...existing, ...req.body };
-    const err = validateAssignment(body);
+    const err = validateAssignment(body, req.params.id);
     if (err) return res.status(400).json({ error: err });
     const branchId = optionalId(body.branch_id);
+    const parentId = branchId ? null : optionalId(body.parent_id);
+    // أمينٌ له تابعون لا يصير تابعًا: مستوى واحد، فالسلسلة تُرفض من طرفيها
+    if (
+      parentId !== null &&
+      db.prepare('SELECT 1 FROM assignments WHERE parent_id = ?').get(req.params.id)
+    )
+      return res.status(400).json({ error: 'invalid parent_id' });
     db.prepare(
-      `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, role_type = ?, sort_order = ?
+      `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, group_id = ?, parent_id = ?, role_type = ?, sort_order = ?
        WHERE id = ?`
     ).run(
       String(body.year).trim(),
       optionalId(body.leader_id),
       String(body.title).trim(),
       branchId,
+      resolveGroupId(body.group_id, branchId) ?? null,
+      parentId,
       branchId ? 'branch' : 'amana',
       Number.isInteger(body.sort_order) ? body.sort_order : existing.sort_order,
       req.params.id
@@ -2012,14 +2132,19 @@ app.put(
 );
 
 app.delete('/api/tachkila/:id', requireAdmin, rejectLocked(assignmentYear), (req, res) => {
-  const info = db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'assignment not found' });
+  let changes = 0;
+  db.transaction(() => {
+    // حذف الأمين لا يُسقط مساعديه من التشكيلة: يعودون توصيفات مستقلة
+    db.prepare('UPDATE assignments SET parent_id = NULL WHERE parent_id = ?').run(req.params.id);
+    changes = db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id).changes;
+  })();
+  if (changes === 0) return res.status(404).json({ error: 'assignment not found' });
   res.status(204).end();
 });
 
 const insertAssignmentRow = () =>
   db.prepare(
-    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   );
 
 // New تشكيلة year. `mode` decides what it starts with:
@@ -2039,7 +2164,7 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
     if (!from_year) return res.status(400).json({ error: 'from_year required' });
     rows = db
       .prepare(
-        'SELECT leader_id, title, branch_id, role_type, sort_order FROM assignments WHERE year = ? ORDER BY sort_order, id'
+        'SELECT id, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order FROM assignments WHERE year = ? ORDER BY sort_order, id'
       )
       .all(from_year);
   } else if (mode === 'template') {
@@ -2048,10 +2173,24 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
 
   const insert = insertAssignmentRow();
   const run = db.transaction(() => {
+    // التبعية تُنسخ على مرحلتين: الصفوف كلها أولًا، ثم parent_id يُعاد ربطه بأرقام
+    // السنة الجديدة — الأرقام القديمة تخصّ سنة المصدر و لا معنى لها هنا.
+    const idMap = new Map();
+    for (const r of rows) {
+      const info = insert.run(
+        target, r.leader_id ?? null, r.title, r.branch_id, r.group_id ?? null, null,
+        r.role_type, r.sort_order ?? 0
+      );
+      if (r.id !== undefined) idMap.set(r.id, info.lastInsertRowid);
+    }
     for (const r of rows)
-      insert.run(target, r.leader_id ?? null, r.title, r.branch_id, r.role_type, r.sort_order ?? 0);
+      if (r.parent_id && idMap.has(r.parent_id) && idMap.has(r.id))
+        db.prepare('UPDATE assignments SET parent_id = ? WHERE id = ?')
+          .run(idMap.get(r.parent_id), idMap.get(r.id));
   });
   run();
+  // نموذج القالب يولد صفوفًا مسطّحة: تُربط بأمينها فورًا لا في الإقلاع القادم
+  migrateAmanaHelpers();
   res.status(201).json({ year: target, created: rows.length });
 });
 
@@ -2066,9 +2205,10 @@ app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.yea
   const missing = tachkilaTemplate().filter((r) => !titles.has(r.title));
   const insert = insertAssignmentRow();
   const run = db.transaction(() => {
-    for (const r of missing) insert.run(year, null, r.title, r.branch_id, r.role_type, r.sort_order);
+    for (const r of missing) insert.run(year, null, r.title, r.branch_id, null, null, r.role_type, r.sort_order);
   });
   run();
+  migrateAmanaHelpers();
   res.status(201).json({ year, added: missing.length });
 });
 

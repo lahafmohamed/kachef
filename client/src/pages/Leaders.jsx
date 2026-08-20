@@ -29,6 +29,7 @@ import {
   useConfirm,
   useToast,
   IconCheck,
+  IconKey,
   IconLock,
   IconPencil,
   IconPlus,
@@ -55,7 +56,7 @@ const EMPTY_LEADER = {
   photo: null,
   status: 'active',
 };
-const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '', sort_order: 0 };
+const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '', group_id: '', parent_id: '', sort_order: 0 };
 
 function FormActions({ onCancel, saving }) {
   const { t } = useTranslation();
@@ -305,9 +306,13 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
   );
 }
 
-function AssignmentForm({ initial, year, leaders, branches, template, onSaved, onCancel }) {
+function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots = [], onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
+  // مجموعات الفرقة المختارة — /branches يرسلها مع كل فرقة
+  const formGroups = branches.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
+  // الأمانات الجذور التي يمكن أن يتبعها هذا التوصيف — لا نفسه، و لا تابعٌ لغيره
+  const parentOptions = amanaRoots.filter((a) => a.id !== initial.id);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -321,6 +326,8 @@ function AssignmentForm({ initial, year, leaders, branches, template, onSaved, o
       leader_id: form.leader_id === '' ? null : Number(form.leader_id),
       title: form.title,
       branch_id: form.branch_id === '' ? null : Number(form.branch_id),
+      group_id: form.group_id === '' || form.group_id == null ? null : Number(form.group_id),
+      parent_id: form.parent_id === '' || form.parent_id == null ? null : Number(form.parent_id),
       sort_order: Number(form.sort_order) || 0,
     };
     try {
@@ -368,7 +375,10 @@ function AssignmentForm({ initial, year, leaders, branches, template, onSaved, o
         <Select
           id="a_branch"
           value={form.branch_id ?? ''}
-          onChange={(e) => setForm((f) => ({ ...f, branch_id: e.target.value }))}
+          onChange={(e) =>
+            // المجموعة تخصّ فرقتها و التبعية تخصّ الأمانات: تغيير الفرقة يُسقط الاثنين
+            setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '', parent_id: e.target.value ? '' : f.parent_id }))
+          }
         >
           <option value="">{t('leader.noBranch')}</option>
           {branches.map((b) => (
@@ -379,6 +389,46 @@ function AssignmentForm({ initial, year, leaders, branches, template, onSaved, o
         </Select>
         <p className="text-xs text-muted-foreground">{t('leader.amanaHint')}</p>
       </div>
+      {/* الأمانة فريق: الأمين و معه قادة يساعدونه. توصيفُ مساعدةٍ «يتبع» أمانته
+          فيتعلّق تحتها في الهيكلية. للأمانات وحدها، و مستوى واحد فقط. */}
+      {form.branch_id === '' && parentOptions.length > 0 && (
+        <div className="space-y-1.5">
+          <Label htmlFor="a_parent">{t('leader.linkedParent')}</Label>
+          <Select
+            id="a_parent"
+            value={form.parent_id ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, parent_id: e.target.value }))}
+          >
+            <option value="">{t('leader.noParent')}</option>
+            {parentOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.title}
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-muted-foreground">{t('leader.parentHint')}</p>
+        </div>
+      )}
+      {/* المجموعة: تظهر للفرق المقسَّمة وحدها. توصيفٌ بلا مجموعة يخصّ الفرقة كلها،
+          و توصيف المجموعة (قائد مجموعة بحارة) يُعلَّق تحتها في الهيكلية. */}
+      {formGroups.length > 0 && (
+        <div className="space-y-1.5">
+          <Label htmlFor="a_group">{t('leader.linkedGroup')}</Label>
+          <Select
+            id="a_group"
+            value={form.group_id ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, group_id: e.target.value }))}
+          >
+            <option value="">{t('leader.wholeBranch')}</option>
+            {formGroups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-muted-foreground">{t('leader.groupFunctionHint')}</p>
+        </div>
+      )}
       {error && (
         <p role="alert" className="text-sm font-medium text-destructive">
           {error}
@@ -444,6 +494,334 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
   );
 }
 
+/** مفاتيح القوالب — تطابق ACCOUNT_PRESETS في الخادم، و الشرح في ملفات الترجمة. */
+const ACCOUNT_PRESET_KEYS = ['branch', 'amana', 'readonly', 'full'];
+
+/**
+ * إنشاء حساب دخول لقائد. مرحلتان: استمارة (اسم دخول، قالب صلاحيات، فرق مرئية)،
+ * ثم شاشة كلمة السرّ — تُعرض مرّة واحدة، فالإغلاق بعدها لا رجعة فيه.
+ */
+function AccountDialog({ leader, branches, onClose, onCreated }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  // كلمة السرّ بعد الإنشاء — وجودها يقلب الحوار إلى شاشة العرض الوحيد
+  const [result, setResult] = useState(null);
+  const [form, setForm] = useState(() => ({
+    username: [leader.first_name, leader.last_name].filter(Boolean).join('.').replace(/\s+/g, ''),
+    preset: 'branch',
+    // فرق توصيفاته الحالية مؤشَّرة سلفًا؛ لا تأشير = كل الفرق
+    branch_ids: [...new Set((leader.roles || []).filter((r) => r.branch_id).map((r) => r.branch_id))],
+  }));
+
+  function toggleBranch(id) {
+    setForm((f) => ({
+      ...f,
+      branch_ids: f.branch_ids.includes(id)
+        ? f.branch_ids.filter((x) => x !== id)
+        : [...f.branch_ids, id],
+    }));
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const r = await api.post(`/leaders/${leader.id}/account`, {
+        username: form.username,
+        preset: form.preset,
+        branches: form.branch_ids.length ? form.branch_ids.map(Number) : null,
+      });
+      setResult(r);
+      onCreated();
+    } catch (err) {
+      setError(
+        err.message === 'username_taken'
+          ? t('leader.accountTaken')
+          : err.message === 'account_exists'
+            ? t('leader.accountExists')
+            : err.message
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyAll() {
+    try {
+      await navigator.clipboard.writeText(`${result.user.username}\n${result.password}`);
+      toast.success(t('leader.accountCopied'));
+    } catch {
+      toast.error(t('error.loadFailed'));
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={t('leader.accountCreate')}
+      description={memberName(leader)}
+      size="sm"
+    >
+      {result ? (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">{t('leader.accountPasswordOnce')}</p>
+          <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-4" dir="ltr">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-xs text-muted-foreground">{t('leader.accountUsername')}</span>
+              <span className="font-medium">{result.user.username}</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-xs text-muted-foreground">{t('leader.accountPassword')}</span>
+              <span className="select-all font-mono text-lg font-semibold tracking-wide">
+                {result.password}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={copyAll}>
+              {t('leader.accountCopy')}
+            </Button>
+            <Button variant="brand" onClick={onClose}>
+              {t('common.close')}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="acc_username">{t('leader.accountUsername')}</Label>
+            <Input
+              id="acc_username"
+              required
+              autoComplete="off"
+              dir="ltr"
+              value={form.username}
+              onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="acc_preset">{t('leader.accountPreset')}</Label>
+            <Select
+              id="acc_preset"
+              value={form.preset}
+              onChange={(e) => setForm((f) => ({ ...f, preset: e.target.value }))}
+            >
+              {ACCOUNT_PRESET_KEYS.map((k) => (
+                <option key={k} value={k}>
+                  {t(`leader.preset_${k}`)}
+                </option>
+              ))}
+            </Select>
+            <p className="text-xs text-muted-foreground">{t(`leader.presetHint_${form.preset}`)}</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="block">{t('leader.accountBranches')}</Label>
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t('leader.accountBranches')}>
+              {branches.map((b) => {
+                const on = form.branch_ids.includes(b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleBranch(b.id)}
+                    className={cn(
+                      'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                      on
+                        ? 'border-primary bg-primary/10 font-medium text-primary'
+                        : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                    )}
+                  >
+                    {on && <IconCheck className="h-3.5 w-3.5" />}
+                    {branchName(b, i18n.language)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">{t('leader.accountBranchesHint')}</p>
+          </div>
+          <p className="text-xs text-muted-foreground">{t('leader.accountHint')}</p>
+          {error && (
+            <p role="alert" className="text-sm font-medium text-destructive">
+              {error}
+            </p>
+          )}
+          <FormActions onCancel={onClose} saving={saving} />
+        </form>
+      )}
+    </Dialog>
+  );
+}
+
+/** بطاقة توصيف في الهيكلية: القائد إن عُيّن، و إطار متقطّع إن كان المركز شاغرًا. */
+function OrgCard({ a, className }) {
+  const filled = !!a.leader_id;
+  const inner = (
+    <>
+      {filled ? (
+        <Avatar photo={a.photo} name={avatarName(a)} className="h-9 w-9" />
+      ) : (
+        <span
+          aria-hidden="true"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground"
+        >
+          <IconShield className="h-4 w-4" />
+        </span>
+      )}
+      <span className="min-w-0">
+        <span className={cn('block truncate text-sm font-medium', !filled && 'text-muted-foreground')}>
+          {filled ? memberName(a) : '—'}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">{a.title}</span>
+      </span>
+    </>
+  );
+  const base = cn(
+    'flex w-44 items-center gap-2.5 rounded-xl border bg-card px-3 py-2 text-start shadow-xs sm:w-56',
+    filled ? 'border-border' : 'border-dashed border-border',
+    className
+  );
+  // البطاقة المعيَّنة تفتح ملفّ القائد؛ الشاغرة ليست رابطًا
+  return filled ? (
+    <Link to={`/leaders/${a.leader_id}`} className={cn(base, 'focus-ring transition-colors hover:border-primary/40 hover:bg-accent/40')}>
+      {inner}
+    </Link>
+  ) : (
+    <div className={base}>{inner}</div>
+  );
+}
+
+/** بطاقة أمانة و تحتها تابعوها — الأمين و فريقه كتلة واحدة في الهيكلية. */
+function OrgTeam({ a, helpers, className }) {
+  return (
+    <div>
+      <OrgCard a={a} className={className} />
+      {helpers.length > 0 && (
+        <div className="ms-6 mt-2 space-y-2 border-s border-border ps-3">
+          {helpers.map((h) => (
+            <div key={h.id} className="flex items-center">
+              <span aria-hidden="true" className="-ms-3 h-px w-3 shrink-0 bg-border" />
+              <OrgCard a={h} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** خيط عمودي قصير بين طبقتين من الهيكلية. */
+const OrgLine = () => <div aria-hidden="true" className="mx-auto h-4 w-px bg-border" />;
+
+/**
+ * التشكيلة شجرةً: عميد الفوج فنائبه فالأمانات، ثم عمود لكل فرقة يبدأ بقائدها و
+ * تتدلّى تحته بقية توصيفاتها. الرتبة تُستنتج من ترتيب الصفوف (sort_order) لا من نص
+ * التوصيف — النصوص قابلة للتعديل. عرضٌ للقراءة: التعيين يبقى في عرض اللائحة.
+ */
+function OrgChart({ assignments, branches, lang, t }) {
+  const amanat = assignments.filter((a) => a.role_type === 'amana');
+  // الجذور تصنع الطبقات؛ التابعون يتعلّقون تحت أمينهم أيًّا كانت طبقته
+  const roots = amanat.filter((a) => !a.parent_id);
+  const helpersOf = (id) => amanat.filter((a) => a.parent_id === id);
+  const [head, deputy, ...secretariats] = roots;
+  const columns = branches
+    .map((b) => ({
+      branch: b,
+      list: assignments.filter((a) => a.role_type === 'branch' && a.branch_id === b.id),
+    }))
+    .filter((c) => c.list.length > 0);
+
+  return (
+    <div className="overflow-x-auto p-4 sm:p-5">
+      <div className="min-w-max">
+        {/* رأس الفوج — في الوسط فوق الجميع */}
+        {head && (
+          <div className="flex flex-col items-center">
+            <OrgTeam a={head} helpers={helpersOf(head.id)} className="border-primary/50" />
+            {deputy && (
+              <>
+                <OrgLine />
+                <OrgTeam a={deputy} helpers={helpersOf(deputy.id)} />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* الأمانات — صفّ ملتفّ في الوسط */}
+        {secretariats.length > 0 && (
+          <>
+            <OrgLine />
+            <div className="mx-auto flex max-w-3xl flex-wrap items-start justify-center gap-x-2 gap-y-3">
+              {secretariats.map((a) => (
+                <OrgTeam key={a.id} a={a} helpers={helpersOf(a.id)} />
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* الفرق — عمود لكل واحدة، يتفرّع من خط أفقي مشترك */}
+        {columns.length > 0 && (
+          <>
+            <OrgLine />
+            <div aria-hidden="true" className="mx-16 border-t border-border sm:mx-28" />
+            <div className="flex items-start justify-center gap-4 sm:gap-6">
+              {columns.map(({ branch, list }) => {
+                // توصيفات الفرقة كلها أولًا، ثم توصيفات كل مجموعة عنقودًا باسمها
+                const main = list.filter((a) => !a.group_id);
+                const subs = [];
+                for (const a of list.filter((x) => x.group_id)) {
+                  let e = subs.find((x) => x.id === a.group_id);
+                  if (!e) subs.push((e = { id: a.group_id, name: a.group_name, list: [] }));
+                  e.list.push(a);
+                }
+                const [chief, ...assistants] = main;
+                return (
+                  <div key={branch.id} className="shrink-0">
+                    <OrgLine />
+                    <div className="mb-1.5 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {branchName(branch, lang)}
+                    </div>
+                    {chief && <OrgCard a={chief} />}
+                    {(assistants.length > 0 || subs.length > 0) && (
+                      <div className="ms-6 mt-2 space-y-2 border-s border-border ps-3">
+                        {assistants.map((a) => (
+                          <div key={a.id} className="flex items-center">
+                            <span aria-hidden="true" className="-ms-3 h-px w-3 shrink-0 bg-border" />
+                            <OrgCard a={a} />
+                          </div>
+                        ))}
+                        {subs.map((g) => (
+                          <div key={g.id} className="space-y-1.5 pt-1">
+                            <div className="flex items-center">
+                              <span aria-hidden="true" className="-ms-3 h-px w-3 shrink-0 bg-border" />
+                              <span className="text-xs font-semibold text-muted-foreground">{g.name}</span>
+                            </div>
+                            {g.list.map((a) => (
+                              <div key={a.id} className="ms-4 flex items-center">
+                                <span aria-hidden="true" className="-ms-3 h-px w-3 shrink-0 bg-border" />
+                                <OrgCard a={a} />
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+      <p className="mt-3 text-center text-xs text-muted-foreground">{t('leader.treeHint')}</p>
+    </div>
+  );
+}
+
 export default function Leaders() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -454,8 +832,12 @@ export default function Leaders() {
   const [year, setYear] = useState(null);
   // '' = all, 'amana' = الأمانة only, otherwise a branch id (string)
   const [branchFilter, setBranchFilter] = useLocalStorage('leaders.branchFilter', '');
+  // 'list' = الأسطر القابلة للتعيين، 'tree' = الهيكلية. تفضيل يبقى من زيارة لأخرى.
+  const [view, setView] = useLocalStorage('leaders.tachkilaView', 'list');
   const [editingLeader, setEditingLeader] = useState(null);
   const [editingAssignment, setEditingAssignment] = useState(null);
+  // القائد الذي يُنشأ له حساب دخول
+  const [accountFor, setAccountFor] = useState(null);
   const [creatingYear, setCreatingYear] = useState(false);
 
   const leadersRes = useFetch('/leaders');
@@ -513,6 +895,24 @@ export default function Leaders() {
     tachkilaRes.reload({ quiet: true });
   }
 
+  // سحب الدخول: حذف الحساب المربوط. الجلسات المفتوحة تسقط مع الحساب.
+  async function revokeAccount(l) {
+    if (
+      !(await confirm({
+        title: t('leader.accountRevoke'),
+        message: t('leader.accountRevokeConfirm', { username: l.account_username }),
+      }))
+    )
+      return;
+    try {
+      await api.del(`/users/${l.account_user_id}`);
+      leadersRes.reload({ quiet: true });
+      toast.success(t('leader.accountRevoked'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function removeLeader(l) {
     if (!(await confirm({ title: t('common.delete'), message: t('leader.confirmDelete') }))) return;
     try {
@@ -568,6 +968,9 @@ export default function Leaders() {
       leader_id: '',
       title: `${t('leader.assistantPrefix')} ${a.title}`,
       branch_id: a.branch_id ?? '',
+      group_id: a.group_id ?? '',
+      // مساعد أمانةٍ يتبعها؛ و إن كان التوصيف نفسه تابعًا فالمساعد الجديد يتبع أمينه هو
+      parent_id: a.branch_id ? '' : (a.parent_id ?? a.id ?? ''),
       sort_order: a.sort_order ?? 0,
     });
   }
@@ -608,9 +1011,14 @@ export default function Leaders() {
   }
 
   // One row = one توصيف. It exists even with no قائد yet; the inline select fills or frees it.
-  function AssignmentRow({ a }) {
+  function AssignmentRow({ a, child = false }) {
     return (
-      <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+      <li
+        className={cn(
+          'flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5',
+          child && 'border-s-2 border-border ms-6 sm:ms-8'
+        )}
+      >
         {a.leader_id ? (
           <Link to={`/leaders/${a.leader_id}`} className="focus-ring rounded-full">
             <Avatar photo={a.photo} name={avatarName(a)} />
@@ -625,22 +1033,33 @@ export default function Leaders() {
         )}
         <div className="min-w-40 flex-1 space-y-1.5">
           <div className={cn('font-medium', !a.leader_id && 'text-muted-foreground')}>{a.title}</div>
-          <Select
-            value={a.leader_id || ''}
-            onChange={(e) => quickAssign(a, e.target.value)}
-            aria-label={`${a.title} — ${t('leader.selectLeader')}`}
-            className="max-w-64"
-            disabled={!canEdit}
-          >
-            <option value="">{t('leader.unassigned')}</option>
-            {leaders.map((l) => (
-              <option key={l.id} value={l.id}>
-                {memberName(l)}
-              </option>
-            ))}
-          </Select>
+          {canEdit ? (
+            <Select
+              value={a.leader_id || ''}
+              onChange={(e) => quickAssign(a, e.target.value)}
+              aria-label={`${a.title} — ${t('leader.selectLeader')}`}
+              className="max-w-64"
+            >
+              <option value="">{t('leader.unassigned')}</option>
+              {leaders.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {memberName(l)}
+                </option>
+              ))}
+            </Select>
+          ) : a.leader_id ? (
+            <Link
+              to={`/leaders/${a.leader_id}`}
+              className="focus-ring inline-block rounded text-sm hover:text-primary hover:underline"
+            >
+              {memberName(a)}
+            </Link>
+          ) : (
+            <span className="text-sm text-muted-foreground">{t('leader.unassigned')}</span>
+          )}
         </div>
         {a.branch_id && <Badge>{branchName(a, i18n.language)}</Badge>}
+        {a.group_name && <Badge variant="outline">{a.group_name}</Badge>}
         {/* Frozen year (or non-admin account): the row is read-only */}
         {locked && (
           <span className="text-muted-foreground" title={t('leader.lockedBadge')} aria-hidden="true">
@@ -648,7 +1067,7 @@ export default function Leaders() {
           </span>
         )}
         {canEdit && (
-          <div className="flex gap-0.5">
+          <div className="flex gap-1.5">
             <Button
               variant="ghost"
               size="icon"
@@ -715,12 +1134,22 @@ export default function Leaders() {
                   : t('leader.readOnlyHint')}
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              label={t('leader.viewLabel')}
+              value={view}
+              onChange={setView}
+              size="sm"
+              options={[
+                { value: 'list', label: t('leader.viewList') },
+                { value: 'tree', label: t('leader.viewTree') },
+              ]}
+            />
             <Select
               value={branchFilter}
               onChange={(e) => setBranchFilter(e.target.value)}
               aria-label={t('member.branch')}
-              className="sm:w-auto"
+              className="min-w-36 flex-1 sm:w-auto sm:flex-initial"
             >
               <option value="">{t('member.allBranches')}</option>
               {branches.map((b) => (
@@ -735,7 +1164,7 @@ export default function Leaders() {
                 value={tachkila.year || ''}
                 onChange={(e) => setYear(e.target.value)}
                 aria-label={t('leader.year')}
-                className="sm:w-auto"
+                className="min-w-28 flex-1 sm:w-auto sm:flex-initial"
               >
                 {tachkila.years.map((y) => (
                   <option key={y} value={y}>
@@ -785,6 +1214,16 @@ export default function Leaders() {
                 retryLabel={t('error.retry')}
               />
             </div>
+          ) : tachkila.assignments.length === 0 ? (
+            <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
+          ) : view === 'tree' ? (
+            /* الهيكلية تعرض الفوج كله: فلتر الفرقة يخصّ اللائحة وحدها */
+            <OrgChart
+              assignments={tachkila.assignments}
+              branches={branches}
+              lang={i18n.language}
+              t={t}
+            />
           ) : branchGroups.length === 0 && !(showAmanat && amanat.length > 0) ? (
             <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
           ) : (
@@ -794,9 +1233,21 @@ export default function Leaders() {
                 <div>
                   <GroupHeading count={amanat.length}>{t('leader.amanat')}</GroupHeading>
                   <ul className="divide-y divide-border">
-                    {amanat.map((a) => (
-                      <AssignmentRow key={a.id} a={a} />
-                    ))}
+                    {/* الأمين ثم تابعوه في إثره بإزاحة، فالفريق يُقرأ كتلةً واحدة */}
+                    {amanat
+                      .filter((a) => !a.parent_id)
+                      .flatMap((root) => [
+                        <AssignmentRow key={root.id} a={root} />,
+                        ...amanat
+                          .filter((c) => c.parent_id === root.id)
+                          .map((c) => <AssignmentRow key={c.id} a={c} child />),
+                      ])}
+                    {/* تابعٌ فقد أمينه في عرضٍ قديم لا يختفي */}
+                    {amanat
+                      .filter((a) => a.parent_id && !amanat.some((r) => r.id === a.parent_id))
+                      .map((a) => (
+                        <AssignmentRow key={a.id} a={a} />
+                      ))}
                   </ul>
                 </div>
               )}
@@ -877,6 +1328,13 @@ export default function Leaders() {
                     </div>
                   </Link>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    {/* من له حساب يظهر اسمه هنا — جواب «من يدخل الموقع؟» من القائمة نفسها */}
+                    {isAdmin && l.account_username && (
+                      <Badge variant="outline" dir="ltr">
+                        <IconKey className="h-3 w-3" />
+                        {l.account_username}
+                      </Badge>
+                    )}
                     <span className="tabular-nums">
                       {l.sessions_count} {t('leader.sessionsLed')}
                     </span>
@@ -896,7 +1354,16 @@ export default function Leaders() {
                     )}
                   </div>
                   {isAdmin && (
-                    <div className="flex gap-0.5">
+                    <div className="flex gap-1.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => (l.account_user_id ? revokeAccount(l) : setAccountFor(l))}
+                        aria-label={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
+                        title={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
+                      >
+                        <IconKey className={l.account_user_id ? 'text-primary' : undefined} />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -943,6 +1410,15 @@ export default function Leaders() {
         )}
       </Dialog>
 
+      {accountFor && (
+        <AccountDialog
+          leader={accountFor}
+          branches={branches}
+          onClose={() => setAccountFor(null)}
+          onCreated={() => leadersRes.reload({ quiet: true })}
+        />
+      )}
+
       <Dialog
         open={!!editingAssignment}
         onClose={() => setEditingAssignment(null)}
@@ -955,6 +1431,7 @@ export default function Leaders() {
             leaders={leaders}
             branches={branches}
             template={tachkila.template}
+            amanaRoots={amanat.filter((a) => !a.parent_id)}
             onSaved={() => {
               setEditingAssignment(null);
               reloadAll();

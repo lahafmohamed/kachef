@@ -201,6 +201,14 @@ CREATE TABLE IF NOT EXISTS assignments (
   leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  -- توصيفٌ قد يخصّ مجموعةً من مجموعات الفرقة لا الفرقة كلها (قائد مجموعة بحارة).
+  -- NULL = توصيف الفرقة كلها. حذف المجموعة يُفرِّغه يدويًا في نقطة الحذف، فيعود
+  -- توصيفًا عاديًا للفرقة بدل أن يضيع.
+  group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL,
+  -- الأمانة فريقٌ لا منصبَ فرد: الأمين و معه قادة يساعدونه، بلا عناصر. توصيفُ
+  -- مساعدةٍ يتبع توصيف أمينه عبر هذا العمود — مستوى واحد فقط، و للأمانات وحدها.
+  -- حذف الأمين يُفرِّغه يدويًا في نقطة الحذف، فيعود المساعد توصيفًا مستقلًّا.
+  parent_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
   role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -234,7 +242,10 @@ CREATE TABLE IF NOT EXISTS users (
   branches TEXT,
   -- JSON array of page keys the account may open (members, sessions, branches,
   -- promotions); NULL = every page. Admins ignore it.
-  perms TEXT
+  perms TEXT,
+  -- القائد صاحب الحساب، إن وُلّد الحساب من صفحة القادة. حذف القائد يفكّ الربط
+  -- يدويًا في نقطة الحذف و يُبقي الحساب — قرار حذفه للأدمن.
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL
 );
 
 -- One row per active login; deleting it logs the device out
@@ -323,13 +334,12 @@ const AMANAT_TEMPLATE = [
   'تجهيزات',
 ];
 
-// Applied to every فرقة, using its Arabic name: قائد الجوالة الأساسي، قائد الجوالة المتقدم...
+// Applied to every فرقة, using its Arabic name: قائد الجوالة، مساعد قائد الجوالة.
+// توصيفا الفرقة هما هذان لا غير — قالب الأساسي/المتقدم/الأول القديم كان نقلًا عن
+// نموذج لا يعمل به الفوج، و migrateBranchRoles يصحّح ما وُلّد منه.
 const BRANCH_ROLES_TEMPLATE = [
-  (b) => `قائد ${b} الأساسي`,
-  (b) => `قائد ${b} المتقدم`,
-  (b) => `مساعد قائد ${b} المتقدم`,
-  (b) => `قائد ${b} الأول`,
-  (b) => `مساعد قائد ${b} الأول`,
+  (b) => `قائد ${b}`,
+  (b) => `مساعد قائد ${b}`,
 ];
 
 // [{ title, branch_id, role_type, sort_order }] — الأمانات first, then فرقة by فرقة in age order.
@@ -476,6 +486,73 @@ function migrateAnnualPlan() {
   db.pragma('foreign_keys = ON');
 }
 
+// القالب القديم ولّد خمسة توصيفات لكل فرقة (أساسي، متقدم و مساعده، أول و مساعده)
+// و الفوج لا يعرف إلا قائد الفرقة و مساعده. التصحيح: «الأساسي» يُعاد تسميته
+// «قائد الفرقة» (هو رأسها، و يحتفظ بمن عُيّن فيه)، و الفارغ من البقية يُحذف،
+// و «مساعد قائد الفرقة» يُستكمل حيث ينقص. صفٌّ قديم عُيّن فيه قائد لا يُمسّ:
+// نقله قرار أدمن لا قرار كود. آمنة التكرار، فتُنفَّذ عند كل إقلاع.
+function migrateBranchRoles() {
+  const branches = db.prepare('SELECT id, name_ar FROM branches').all();
+  const rename = db.prepare('UPDATE assignments SET title = ? WHERE branch_id = ? AND title = ?');
+  const removeEmpty = db.prepare(
+    'DELETE FROM assignments WHERE branch_id = ? AND title = ? AND leader_id IS NULL'
+  );
+  const years = db.prepare('SELECT DISTINCT year FROM assignments').all().map((r) => r.year);
+  db.transaction(() => {
+    for (const b of branches) {
+      rename.run(`قائد ${b.name_ar}`, b.id, `قائد ${b.name_ar} الأساسي`);
+      for (const t of [
+        `قائد ${b.name_ar} المتقدم`,
+        `مساعد قائد ${b.name_ar} المتقدم`,
+        `قائد ${b.name_ar} الأول`,
+        `مساعد قائد ${b.name_ar} الأول`,
+      ])
+        removeEmpty.run(b.id, t);
+      for (const y of years) {
+        // المساعد يُستكمل فقط في سنة للفرقة فيها صفوف أصلًا: سنةٌ بلا هذه الفرقة تبقى بلا
+        const head = db
+          .prepare('SELECT sort_order FROM assignments WHERE year = ? AND branch_id = ? AND title = ?')
+          .get(y, b.id, `قائد ${b.name_ar}`);
+        if (!head) continue;
+        const helper = db
+          .prepare('SELECT id FROM assignments WHERE year = ? AND branch_id = ? AND title = ?')
+          .get(y, b.id, `مساعد قائد ${b.name_ar}`);
+        if (!helper)
+          db.prepare(
+            "INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, NULL, ?, ?, 'branch', ?)"
+          ).run(y, `مساعد قائد ${b.name_ar}`, b.id, head.sort_order + 1);
+      }
+    }
+  })();
+}
+
+// توصيفات المساعدة في القالب (إعلامي، أنشطة، تدريب، تجهيزات) وُلدت صفوفًا مستقلة
+// قبل أن يوجد parent_id، و التعليق فوقها كان يقول أصلًا «يعملون مع الأمانة المعنية».
+// تُربط بأمينها متى وُجد الاثنان في السنة نفسها. آمنة التكرار: صفٌّ رُبط لا يُربط ثانية،
+// و رابطٌ فكّه الأدمن عمدًا لا يُعاد (الشرط parent_id IS NULL يمسّ غير المربوط فقط...
+// فكُّ الربط يعيده NULL و قد يُعاد ربطه عند الإقلاع — مقبول: هذه صفوف القالب بعينها).
+function migrateAmanaHelpers() {
+  const PAIRS = [
+    ['إعلامي', 'أمين الإعلام'],
+    ['أنشطة', 'أمين الأنشطة'],
+    ['تدريب', 'أمين التدريب'],
+    ['تجهيزات', 'أمين التجهيزات'],
+  ];
+  const years = db.prepare('SELECT DISTINCT year FROM assignments').all().map((r) => r.year);
+  const find = db.prepare(
+    "SELECT id, parent_id FROM assignments WHERE year = ? AND title = ? AND role_type = 'amana'"
+  );
+  db.transaction(() => {
+    for (const y of years)
+      for (const [child, parent] of PAIRS) {
+        const c = find.get(y, child);
+        const a = find.get(y, parent);
+        if (c && a && c.parent_id === null)
+          db.prepare('UPDATE assignments SET parent_id = ? WHERE id = ?').run(a.id, c.id);
+      }
+  })();
+}
+
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
@@ -520,6 +597,10 @@ function migrate() {
   `);
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   migrateAssignments();
+  // Added after migrateAssignments on purpose: its rebuild only knows the older column set
+  ensureColumn('assignments', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
+  ensureColumn('assignments', 'parent_id', 'parent_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL');
+  migrateAmanaHelpers();
   // Registration form fields added after the first release — all nullable so old rows stay valid
   ensureColumn('members', 'father_name', 'father_name TEXT');
   ensureColumn('members', 'mother_name', 'mother_name TEXT');
@@ -569,6 +650,7 @@ function migrate() {
     ensureColumn('leaders', col, ddl);
 
   ensureColumn('users', 'perms', 'perms TEXT');
+  ensureColumn('users', 'leader_id', 'leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL');
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -588,6 +670,8 @@ function migrate() {
       'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements) VALUES (?, ?, ?, ?, ?, ?)'
     ).run('Baraem', 'البراعم', 6, 7, 0, 99);
   }
+
+  migrateBranchRoles();
 }
 
 function seed() {
@@ -617,6 +701,8 @@ function seedLeaders() {
     for (const r of tachkilaTemplate()) insertAssignment.run(year, r.title, r.branch_id, r.role_type, r.sort_order);
   });
   run();
+  // الصفوف وُلدت للتوّ مسطّحة: الربط بالأمين يجري الآن لا في الإقلاع القادم
+  migrateAmanaHelpers();
 }
 
-module.exports = { db, seed, seedLeaders, migrate, tachkilaTemplate };
+module.exports = { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate };

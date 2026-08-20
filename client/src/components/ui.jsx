@@ -259,6 +259,13 @@ export const IconUnlink = (p) => (
     <path d="M3 3l18 18" />
   </Icon>
 );
+export const IconKey = (p) => (
+  <Icon {...p}>
+    <circle cx="7.5" cy="15.5" r="5.5" />
+    <path d="m21 2-9.6 9.6" />
+    <path d="m15.5 7.5 3 3" />
+  </Icon>
+);
 export const IconLogout = (p) => (
   <Icon {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
