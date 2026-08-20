@@ -4,15 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import {
-  fmtDate,
-  fmtTime,
-  todayISO,
-  branchName,
-  memberName,
-  ACTIVITY_TYPES,
-  activityTypeKey,
-} from '../utils';
+import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
@@ -476,7 +468,7 @@ export default function Sessions() {
           <SearchSelect
             value={leaderFilter}
             onChange={(e) => setLeaderFilter(e.target.value)}
-            options={leaderList.map((l) => ({ value: l.id, label: `${l.first_name} ${l.last_name}` }))}
+            options={leaderList.map((l) => ({ value: l.id, label: memberName(l) }))}
             clearLabel={t('session.allAnimators')}
             placeholder={t('session.allAnimators')}
             searchPlaceholder={t('session.searchLeader')}
@@ -921,7 +913,7 @@ export default function Sessions() {
                   .filter((l) => l.status === 'active' || l.id === Number(form.leader_id))
                   .map((l) => (
                     <option key={l.id} value={l.id}>
-                      {l.first_name} {l.last_name}
+                      {memberName(l)}
                     </option>
                   ))}
               </Select>
@@ -1079,7 +1071,7 @@ export default function Sessions() {
                       checked={form.helper_ids.includes(l.id)}
                       onChange={() => toggleHelper(l.id)}
                     />
-                    {l.first_name} {l.last_name}
+                    {memberName(l)}
                   </label>
                 ))}
               </div>

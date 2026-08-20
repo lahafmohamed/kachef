@@ -171,6 +171,11 @@ function branchFilterSQL(req, col) {
 // الذي صار يعني الفرقة الرئيسية فقط. أرقام الفرق مُتحقَّق منها قبل أن تصل إلى هنا،
 // فدمجها في نص الاستعلام آمن و يترك المعاملات الموضعية القائمة على حالها.
 
+// اسم القائد الثلاثي في SQL. اسم الأب اختياري: COALESCE يجعل الاسم ثنائيًا حين يغيب
+// بدل أن يصير NULL و يمحو الاسم كلّه.
+const fullNameSQL = (alias) =>
+  `${alias}.first_name || ' ' || COALESCE(${alias}.father_name || ' ', '') || ${alias}.last_name`;
+
 // -1 لأي مُدخل ليس رقمًا صحيحًا: الاستعلام يبقى صالحًا و لا يطابق شيئًا
 const intOr = (v) => (Number.isInteger(Number(v)) ? Number(v) : -1);
 
@@ -481,7 +486,7 @@ function familyVisits(memberId) {
   return db
     .prepare(
       `SELECT s.id AS session_id, s.title, s.date,
-        (SELECT GROUP_CONCAT(l.first_name || ' ' || l.last_name, ' · ')
+        (SELECT GROUP_CONCAT(${fullNameSQL('l')}, ' · ')
          FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
          WHERE sl.session_id = s.id) AS leaders
        FROM attendance a JOIN sessions s ON s.id = a.session_id
@@ -529,7 +534,7 @@ app.get('/api/branches', (req, res) => {
     .prepare(
       `SELECT b.*,
         (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count,
-        (SELECT l.first_name || ' ' || l.last_name FROM assignments a JOIN leaders l ON l.id = a.leader_id
+        (SELECT ${fullNameSQL('l')} FROM assignments a JOIN leaders l ON l.id = a.leader_id
           WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_name,
         (SELECT a.leader_id FROM assignments a
@@ -585,7 +590,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
       )
       .get();
   const leadersStmt = db.prepare(
-    `SELECT a.id, a.title, a.leader_id, l.first_name, l.last_name, l.photo
+    `SELECT a.id, a.title, a.leader_id, l.first_name, l.father_name, l.last_name, l.photo
      FROM assignments a LEFT JOIN leaders l ON l.id = a.leader_id
      WHERE a.branch_id = ? AND a.year = ?
      ORDER BY a.sort_order, a.id`
@@ -649,7 +654,7 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
      WHERE a.session_id = ? ORDER BY m.last_name, m.first_name`
   );
   const animatorsStmt = db.prepare(
-    `SELECT l.id, l.first_name, l.last_name, sl.role, sl.status
+    `SELECT l.id, l.first_name, l.father_name, l.last_name, sl.role, sl.status
      FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
      WHERE sl.session_id = ? ORDER BY sl.role = 'helper', l.last_name`
   );
@@ -1522,7 +1527,7 @@ function assignmentsForYear(year) {
   if (!year) return [];
   return db
     .prepare(
-      `SELECT a.*, l.first_name, l.last_name, l.photo,
+      `SELECT a.*, l.first_name, l.father_name, l.last_name, l.photo,
         b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
        FROM assignments a
        LEFT JOIN leaders l ON l.id = a.leader_id
@@ -1684,7 +1689,7 @@ app.get('/api/leaders', (req, res) => {
     doneByLeader[r.leader_id] = r.n;
   res.json(
     rows.map((l) => ({
-      ...l,
+      ...publicLeader(l),
       roles: roles[l.id] || [],
       year,
       card: { year: cardYear, total: cardTotal, done_count: doneByLeader[l.id] || 0 },
@@ -1734,7 +1739,7 @@ app.get('/api/leaders/:id', (req, res) => {
   const years = cardYears();
   const selectedYear = years.includes(normYear(req.query.year)) ? normYear(req.query.year) : years[0];
   res.json({
-    ...l,
+    ...publicLeader(l),
     year,
     current_roles: assignments.filter((a) => a.year === year),
     assignments,
@@ -1746,20 +1751,105 @@ app.get('/api/leaders/:id', (req, res) => {
   });
 });
 
+// الحالة الاجتماعية — قائمة مغلقة: نصّ حرّ يمتلئ بـ«متزوج» و«متزوّج» و«marié»
+const MARITAL_STATUSES = ['single', 'married'];
+
+// حقول ملفّ القائد التي تُخزَّن نصًّا كما تُكتب. كلها اختيارية.
+const LEADER_TEXT_FIELDS = [
+  'father_name',
+  'birth_date',
+  'phone',
+  'address_abidjan',
+  'address_lebanon',
+  'education',
+];
+
+// الدورات التدريبية — قائمة مغلقة بترتيب تدرّجها. القائد قد يكون خضع لأكثر من
+// واحدة، فالحقل مصفوفة لا قيمة واحدة.
+const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
+
+// مصفوفة الدورات كما تُخزَّن: مرتَّبة بترتيب القائمة و بلا تكرار، فترتيب التأشير
+// لا يغيّر ما يُحفظ. تُعيد undefined إذا كان المُدخل غير صالح.
+function parseTrainingCourses(v) {
+  if (v === undefined || v === null || v === '') return [];
+  if (!Array.isArray(v) || !v.every((c) => TRAINING_COURSES.includes(c))) return undefined;
+  return TRAINING_COURSES.filter((c) => v.includes(c));
+}
+
+// صفّ قائد كما يخرج إلى العميل: الدورات مصفوفةً لا نصًّا. الصفوف القديمة (نصّ حرّ
+// كُتب قبل أن تصير القائمة مغلقة) تُقرأ كمصفوفة فارغة بدل أن تُسقط الطلب.
+function publicLeader(l) {
+  if (!l) return l;
+  let courses = [];
+  try {
+    const parsed = JSON.parse(l.training_level || '[]');
+    if (Array.isArray(parsed)) courses = parsed.filter((c) => TRAINING_COURSES.includes(c));
+  } catch {
+    courses = [];
+  }
+  return { ...l, training_level: courses };
+}
+
+// سنوات الخدمة: عدد صحيح موجب أو لا شيء. صفر مقبول — قائد في سنته الأولى.
+function leaderYearCount(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= 99 ? n : undefined;
+}
+
 function validateLeader(body) {
   if (!body.first_name || !body.last_name) return 'first_name and last_name required';
   if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
+  if (body.marital_status && !MARITAL_STATUSES.includes(body.marital_status))
+    return 'invalid marital_status';
+  // سنة الانتساب: أربعة أرقام. الحدّ الأعلى مفتوح عمدًا — لا يُرفض إدخال سنة قادمة
+  // بسبب ساعة خاطئة على الجهاز.
+  if (body.join_year && !/^[0-9]{4}$/.test(String(body.join_year).trim()))
+    return 'invalid join_year';
+  if (leaderYearCount(body.years_ghadir) === undefined) return 'invalid years_ghadir';
+  if (leaderYearCount(body.years_total) === undefined) return 'invalid years_total';
+  if (parseTrainingCourses(body.training_level) === undefined) return 'invalid training_level';
   return null;
 }
+
+// القيم التي تدخل في INSERT/UPDATE، بالترتيب نفسه في الاثنين
+const leaderValues = (b) => [
+  b.first_name,
+  b.last_name,
+  ...LEADER_TEXT_FIELDS.map((f) => (b[f] === undefined || b[f] === '' ? null : b[f])),
+  b.marital_status || null,
+  b.join_year ? String(b.join_year).trim() : null,
+  leaderYearCount(b.years_ghadir),
+  leaderYearCount(b.years_total),
+  JSON.stringify(parseTrainingCourses(b.training_level)),
+  b.photo || null,
+  b.status || 'active',
+];
+
+const LEADER_COLUMNS = [
+  'first_name',
+  'last_name',
+  ...LEADER_TEXT_FIELDS,
+  'marital_status',
+  'join_year',
+  'years_ghadir',
+  'years_total',
+  'training_level',
+  'photo',
+  'status',
+];
 
 app.post('/api/leaders', requireAdmin, (req, res) => {
   const err = validateLeader(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
   const info = db
-    .prepare('INSERT INTO leaders (first_name, last_name, phone, photo, status) VALUES (?, ?, ?, ?, ?)')
-    .run(b.first_name, b.last_name, b.phone || null, b.photo || null, b.status || 'active');
-  res.status(201).json(db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid));
+    .prepare(
+      `INSERT INTO leaders (${LEADER_COLUMNS.join(', ')})
+       VALUES (${LEADER_COLUMNS.map(() => '?').join(', ')})`
+    )
+    .run(...leaderValues(b));
+  res.status(201).json(publicLeader(db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid)));
 });
 
 app.put('/api/leaders/:id', requireAdmin, (req, res) => {
@@ -1769,13 +1859,14 @@ app.put('/api/leaders/:id', requireAdmin, (req, res) => {
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
   db.prepare(
-    'UPDATE leaders SET first_name = ?, last_name = ?, phone = ?, photo = ?, status = ? WHERE id = ?'
-  ).run(b.first_name, b.last_name, b.phone || null, b.photo || null, b.status || 'active', req.params.id);
-  // Refresh the name snapshot on sessions this leader animated
+    `UPDATE leaders SET ${LEADER_COLUMNS.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`
+  ).run(...leaderValues(b), req.params.id);
+  // Refresh the name snapshot on sessions this leader animated — الاسم الثلاثي حين
+  // يوجد اسم الأب، كما يُعرض القائد في كل مكان آخر
   db.prepare('UPDATE sessions SET leader = ? WHERE leader_id = ?').run(
-    `${b.first_name} ${b.last_name}`, req.params.id
+    [b.first_name, b.father_name, b.last_name].filter(Boolean).join(' '), req.params.id
   );
-  res.json(db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id));
+  res.json(publicLeader(db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id)));
 });
 
 app.delete('/api/leaders/:id', requireAdmin, (req, res) => {
@@ -2097,7 +2188,7 @@ const SESSION_SORTS = {
 app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   const { q, branch, from, to, leader, activity_type: activityType, kind } = req.query;
   let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
-        COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader,
+        COALESCE(${fullNameSQL('l')}, s.leader) AS leader,
         (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS branch_ids,
         (SELECT GROUP_CONCAT(sg.group_id) FROM session_groups sg WHERE sg.session_id = s.id) AS group_ids,
         (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
@@ -2125,10 +2216,10 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
     params.push(leader, leader);
   }
   if (q) {
-    sql += ` AND (s.title LIKE ? OR COALESCE(l.first_name || ' ' || l.last_name, s.leader) LIKE ?
+    sql += ` AND (s.title LIKE ? OR COALESCE(${fullNameSQL('l')}, s.leader) LIKE ?
                   OR s.place LIKE ?
                   OR EXISTS (SELECT 1 FROM session_leaders sl JOIN leaders l2 ON l2.id = sl.leader_id
-                             WHERE sl.session_id = s.id AND (l2.first_name || ' ' || l2.last_name) LIKE ?))`;
+                             WHERE sl.session_id = s.id AND (${fullNameSQL('l2')}) LIKE ?))`;
     params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
   }
   sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
@@ -2307,7 +2398,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   const s = db
     .prepare(
       `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
-        COALESCE(l.first_name || ' ' || l.last_name, s.leader) AS leader
+        COALESCE(${fullNameSQL('l')}, s.leader) AS leader
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
        WHERE s.id = ?`
@@ -2346,7 +2437,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     .map((m) => ({ ...m, consecutive_absences: attendanceStats(m.id).consecutive_absences }));
   const animators = db
     .prepare(
-      `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.last_name, l.photo
+      `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
        FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
        WHERE sl.session_id = ?
        ORDER BY sl.role = 'helper', l.last_name, l.first_name`
@@ -2468,7 +2559,7 @@ app.get('/api/stats', (req, res) => {
   const branches = db
     .prepare(
       `SELECT b.id, b.name_fr, b.name_ar,
-        (SELECT l.first_name || ' ' || l.last_name FROM assignments a JOIN leaders l ON l.id = a.leader_id
+        (SELECT ${fullNameSQL('l')} FROM assignments a JOIN leaders l ON l.id = a.leader_id
           WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_name,
         (SELECT a.leader_id FROM assignments a

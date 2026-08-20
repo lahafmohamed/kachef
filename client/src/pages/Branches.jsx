@@ -99,7 +99,7 @@ function SessionRow({ s }) {
           {s.animators.length > 0 && (
             <div className="text-xs text-muted-foreground">
               <span className="font-medium">{t('branch.animators')}:</span>{' '}
-              {s.animators.map((a) => `${a.first_name} ${a.last_name}`).join(' · ')}
+              {s.animators.map(memberName).join(' · ')}
             </div>
           )}
           {s.present.length === 0 ? (
@@ -626,7 +626,7 @@ function BranchSessions({ branchId }) {
           s.leader,
           ...s.present.map(memberName),
           ...s.absent.map(memberName),
-          ...s.animators.map((a) => `${a.first_name} ${a.last_name}`),
+          ...s.animators.map(memberName),
         ]
           .filter(Boolean)
           .some((v) => String(v).toLowerCase().includes(q))
@@ -1182,10 +1182,10 @@ export default function Branches() {
                       to={`/leaders/${l.leader_id}`}
                       className="focus-ring flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50"
                     >
-                      <Avatar photo={l.photo} name={`${l.first_name} ${l.last_name}`} className="h-9 w-9" />
+                      <Avatar photo={l.photo} name={avatarName(l)} className="h-9 w-9" />
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium">
-                          {l.first_name} {l.last_name}
+                          {memberName(l)}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">{l.title}</div>
                       </div>

@@ -4,8 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
-import { branchName, fileToDataUrl } from '../utils';
+import { avatarName, branchName, fileToDataUrl, memberName } from '../utils';
 import Combobox from '../components/Combobox';
+import DatePicker from '../components/DatePicker';
+import SearchSelect from '../components/SearchSelect';
 import {
   Avatar,
   Badge,
@@ -36,7 +38,23 @@ import {
   IconX,
 } from '../components/ui';
 
-const EMPTY_LEADER = { first_name: '', last_name: '', phone: '', photo: null, status: 'active' };
+const EMPTY_LEADER = {
+  first_name: '',
+  father_name: '',
+  last_name: '',
+  birth_date: '',
+  phone: '',
+  address_abidjan: '',
+  address_lebanon: '',
+  marital_status: '',
+  join_year: '',
+  years_ghadir: '',
+  years_total: '',
+  education: '',
+  training_level: [],
+  photo: null,
+  status: 'active',
+};
 const EMPTY_ASSIGNMENT = { leader_id: '', title: '', branch_id: '', sort_order: 0 };
 
 function FormActions({ onCancel, saving }) {
@@ -53,12 +71,22 @@ function FormActions({ onCancel, saving }) {
   );
 }
 
-function LeaderForm({ initial, onSaved, onCancel }) {
+// الدورات التدريبية، بترتيب تدرّجها — مطابقة لـ TRAINING_COURSES في الخادم
+const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
+
+function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  function toggleCourse(c) {
+    setForm((f) => {
+      const have = f.training_level || [];
+      return { ...f, training_level: have.includes(c) ? have.filter((x) => x !== c) : [...have, c] };
+    });
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -82,13 +110,159 @@ function LeaderForm({ initial, onSaved, onCancel }) {
           <Input id="l_first" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
         </div>
         <div className="space-y-1.5">
+          <Label htmlFor="l_father">{t('member.fatherName')}</Label>
+          <Input id="l_father" autoComplete="off" value={form.father_name || ''} onChange={set('father_name')} />
+        </div>
+        <div className="space-y-1.5">
           <Label htmlFor="l_last">{t('member.lastName')}</Label>
           <Input id="l_last" required autoComplete="off" value={form.last_name} onChange={set('last_name')} />
         </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_birth">{t('member.birthDate')}</Label>
+          <DatePicker
+            id="l_birth"
+            toYear={new Date().getFullYear()}
+            value={form.birth_date || ''}
+            onChange={set('birth_date')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_phone">{t('leader.phone')}</Label>
+          <Input id="l_phone" type="tel" inputMode="tel" dir="ltr" value={form.phone || ''} onChange={set('phone')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_marital">{t('leader.maritalStatus')}</Label>
+          <Select id="l_marital" value={form.marital_status || ''} onChange={set('marital_status')}>
+            <option value="">{t('member.noValue')}</option>
+            <option value="single">{t('leader.single')}</option>
+            <option value="married">{t('leader.married')}</option>
+          </Select>
+        </div>
+      </div>
+
+      {/* نفس القوائم المنسَّقة التي يُسجَّل بها العناصر: حيّ واحد يُكتب بطريقتين
+          يفرّق أهله على فلترين */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="l_abidjan">{t('member.addressAbidjan')}</Label>
+          <SearchSelect
+            id="l_abidjan"
+            value={form.address_abidjan || ''}
+            onChange={set('address_abidjan')}
+            options={lookups.residence_abidjan}
+            placeholder={t('member.pickValue')}
+            searchPlaceholder={t('member.searchOrAdd')}
+            emptyLabel={t('member.noListValue')}
+            clearLabel={t('member.noValue')}
+            onCreate={(label) => onCreateLookup('residence_abidjan', label)}
+            createLabel={(v) => t('member.addListValue', { value: v })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_lebanon">{t('member.addressLebanon')}</Label>
+          <SearchSelect
+            id="l_lebanon"
+            value={form.address_lebanon || ''}
+            onChange={set('address_lebanon')}
+            options={lookups.residence_lebanon}
+            placeholder={t('member.pickValue')}
+            searchPlaceholder={t('member.searchOrAdd')}
+            emptyLabel={t('member.noListValue')}
+            clearLabel={t('member.noValue')}
+            onCreate={(label) => onCreateLookup('residence_lebanon', label)}
+            createLabel={(v) => t('member.addListValue', { value: v })}
+          />
+        </div>
+      </div>
+
+      {/* التوصيف الحالي ليس حقلًا يُكتب: التشكيلة تحمله سنةً سنة، و نسخه هنا يجعل
+          الملفّ يناقضها أول ما تتغيّر. يُعرض هنا للقراءة فقط. */}
+      <div className="space-y-1.5">
+        <Label>{t('leader.currentRole')}</Label>
+        <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2">
+          {initial.roles?.length ? (
+            initial.roles.map((r, i) => (
+              <Badge key={i} variant={r.role_type === 'branch' ? 'default' : 'warning'}>
+                {r.title}
+              </Badge>
+            ))
+          ) : (
+            <span className="text-sm text-muted-foreground">{t('leader.noRole')}</span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">{t('leader.currentRoleHint')}</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="l_join_year">{t('leader.joinYear')}</Label>
+          <Input
+            id="l_join_year"
+            inputMode="numeric"
+            dir="ltr"
+            maxLength={4}
+            placeholder="2015"
+            value={form.join_year || ''}
+            onChange={set('join_year')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_years_ghadir">{t('leader.yearsGhadir')}</Label>
+          <Input
+            id="l_years_ghadir"
+            type="number"
+            inputMode="numeric"
+            min="0"
+            max="99"
+            dir="ltr"
+            value={form.years_ghadir ?? ''}
+            onChange={set('years_ghadir')}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_years_total">{t('leader.yearsTotal')}</Label>
+          <Input
+            id="l_years_total"
+            type="number"
+            inputMode="numeric"
+            min="0"
+            max="99"
+            dir="ltr"
+            value={form.years_total ?? ''}
+            onChange={set('years_total')}
+          />
+          <p className="text-xs text-muted-foreground">{t('leader.yearsTotalHint')}</p>
+        </div>
+      </div>
+
+      {/* الدورات التدريبية: قائد قد يكون خضع لأكثر من دورة، فهي تأشير لا اختيار واحد */}
+      <div className="space-y-1.5">
+        <Label className="block">{t('leader.trainingLevel')}</Label>
+        <div className="grid gap-1 rounded-lg border border-border p-2 sm:grid-cols-2">
+          {TRAINING_COURSES.map((c) => (
+            <label
+              key={c}
+              className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2 text-sm hover:bg-accent/60 sm:min-h-9"
+            >
+              <input
+                type="checkbox"
+                checked={(form.training_level || []).includes(c)}
+                onChange={() => toggleCourse(c)}
+              />
+              {t(`leader.course_${c}`)}
+            </label>
+          ))}
+        </div>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="l_phone">{t('leader.phone')}</Label>
-        <Input id="l_phone" type="tel" inputMode="tel" dir="ltr" value={form.phone || ''} onChange={set('phone')} />
+        <Label htmlFor="l_education">{t('leader.education')}</Label>
+        <Input
+          id="l_education"
+          autoComplete="off"
+          placeholder={t('leader.educationHint')}
+          value={form.education || ''}
+          onChange={set('education')}
+        />
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="l_photo">{t('member.photo')}</Label>
@@ -171,7 +345,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, onSaved, o
           <option value="">{t('leader.unassigned')}</option>
           {leaders.map((l) => (
             <option key={l.id} value={l.id}>
-              {l.first_name} {l.last_name}
+              {memberName(l)}
             </option>
           ))}
         </Select>
@@ -286,10 +460,38 @@ export default function Leaders() {
 
   const leadersRes = useFetch('/leaders');
   const branchesRes = useFetch('/branches');
+  // Les listes de quartiers / regions ne servent qu'au formulaire, reserve aux admins
+  const lookupsRes = useFetch('/lookups', { skip: !isAdmin });
   const tachkilaRes = useFetch(year ? `/tachkila?year=${encodeURIComponent(year)}` : '/tachkila');
 
   const leaders = leadersRes.data || [];
   const branches = branchesRes.data || [];
+  // SearchSelect prend des libelles nus ; une valeur retiree de la liste reste
+  // affichee sur le chef qui la porte, elle n'est simplement plus proposable.
+  const lookupLists = {
+    residence_abidjan: (lookupsRes.data?.residence_abidjan || []).map((v) => v.label),
+    residence_lebanon: (lookupsRes.data?.residence_lebanon || []).map((v) => v.label),
+  };
+
+  // Un quartier ajoute en pleine saisie rejoint la liste : le prochain formulaire
+  // le trouve pret. Un doublon n'est pas un echec, l'entree existe deja.
+  async function createLookup(kind, label) {
+    const wanted = String(label).trim();
+    try {
+      const row = await api.post('/lookups', { kind, label: wanted });
+      lookupsRes.reload({ quiet: true });
+      return row.label;
+    } catch (err) {
+      if (err.message === 'duplicate label') {
+        const existing = (lookupsRes.data?.[kind] || []).find(
+          (v) => v.label.toLowerCase() === wanted.toLowerCase()
+        );
+        return existing?.label || wanted;
+      }
+      toast.error(err.message);
+      return null;
+    }
+  }
   const tachkila = tachkilaRes.data || {
     years: [],
     year: null,
@@ -411,7 +613,7 @@ export default function Leaders() {
       <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
         {a.leader_id ? (
           <Link to={`/leaders/${a.leader_id}`} className="focus-ring rounded-full">
-            <Avatar photo={a.photo} name={`${a.first_name} ${a.last_name}`} />
+            <Avatar photo={a.photo} name={avatarName(a)} />
           </Link>
         ) : (
           <span
@@ -433,7 +635,7 @@ export default function Leaders() {
             <option value="">{t('leader.unassigned')}</option>
             {leaders.map((l) => (
               <option key={l.id} value={l.id}>
-                {l.first_name} {l.last_name}
+                {memberName(l)}
               </option>
             ))}
           </Select>
@@ -651,7 +853,7 @@ export default function Leaders() {
                     to={`/leaders/${l.id}`}
                     className="focus-ring flex min-w-40 flex-1 items-center gap-3 rounded-md"
                   >
-                    <Avatar photo={l.photo} name={`${l.first_name} ${l.last_name}`} />
+                    <Avatar photo={l.photo} name={avatarName(l)} />
                     <div className="min-w-0 flex-1">
                       <span
                         className={cn(
@@ -659,7 +861,7 @@ export default function Leaders() {
                           l.status === 'inactive' && 'text-muted-foreground line-through decoration-1'
                         )}
                       >
-                        {l.first_name} {l.last_name}
+                        {memberName(l)}
                       </span>
                       <div className="mt-0.5 flex flex-wrap gap-1.5">
                         {l.roles.length === 0 ? (
@@ -728,6 +930,8 @@ export default function Leaders() {
         {editingLeader && (
           <LeaderForm
             initial={editingLeader}
+            lookups={lookupLists}
+            onCreateLookup={createLookup}
             onSaved={() => {
               const wasNew = !editingLeader.id;
               setEditingLeader(null);

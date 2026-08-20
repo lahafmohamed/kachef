@@ -250,7 +250,7 @@ export default function SessionDetail() {
   }
 
   async function removeHelper(a) {
-    if (!(await confirm(t('session.confirmRemoveHelper', { name: `${a.first_name} ${a.last_name}` }))))
+    if (!(await confirm(t('session.confirmRemoveHelper', { name: memberName(a) }))))
       return;
     try {
       await api.post(`/sessions/${id}/animators`, { leader_id: a.leader_id, remove: true });
@@ -414,7 +414,7 @@ export default function SessionDetail() {
               <option value="">{t('session.addHelper')}</option>
               {availableHelpers.map((l) => (
                 <option key={l.id} value={l.id}>
-                  {l.first_name} {l.last_name}
+                  {memberName(l)}
                 </option>
               ))}
             </Select>
@@ -427,13 +427,13 @@ export default function SessionDetail() {
             <ul className="divide-y divide-border">
               {session.animators.map((a) => (
                 <li key={a.leader_id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <Avatar photo={a.photo} name={`${a.first_name} ${a.last_name}`} />
+                  <Avatar photo={a.photo} name={avatarName(a)} />
                   <div className="min-w-32 flex-1">
                     <Link
                       to={`/leaders/${a.leader_id}`}
                       className="focus-ring rounded font-medium hover:text-primary hover:underline"
                     >
-                      {a.first_name} {a.last_name}
+                      {memberName(a)}
                     </Link>
                     <div className="mt-0.5">
                       <Badge variant={a.role === 'main' ? 'default' : 'secondary'}>
@@ -445,7 +445,7 @@ export default function SessionDetail() {
                     {editable ? (
                       <>
                         <SegmentedControl
-                          label={`${a.first_name} ${a.last_name}`}
+                          label={memberName(a)}
                           value={a.status}
                           onChange={(v) => markAnimator(a.leader_id, v)}
                           options={ANIMATOR_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}

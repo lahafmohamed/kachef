@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { branchName, fmtDate, memberName } from '../utils';
+import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -29,6 +29,26 @@ import {
   IconPhone,
   IconShield,
 } from '../components/ui';
+
+/**
+ * ملفّ القائد كما تجمعه الاستمارة. حقلٌ فارغ لا يُعرض سطرًا فارغًا: القادة
+ * المسجَّلون قبل توسيع الاستمارة لا يملؤون إلا ما يعرفونه.
+ * «التوصيف الحالي» ليس هنا: هو في الترويسة أعلاه، مقروءًا من التشكيلة.
+ */
+// Un tableau vide compte comme non renseigne, au meme titre qu'une chaine vide
+const filled = (v) => (Array.isArray(v) ? v.length > 0 : !!v);
+
+const IDENTITY_FIELDS = [
+  ['birth_date', 'member.birthDate', (v) => fmtDate(v)],
+  ['marital_status', 'leader.maritalStatus', (v, t) => t(v === 'married' ? 'leader.married' : 'leader.single')],
+  ['address_abidjan', 'member.addressAbidjan'],
+  ['address_lebanon', 'member.addressLebanon'],
+  ['join_year', 'leader.joinYear'],
+  ['years_ghadir', 'leader.yearsGhadir'],
+  ['years_total', 'leader.yearsTotal'],
+  ['training_level', 'leader.trainingLevel', (v, t) => v.map((c) => t(`leader.course_${c}`)).join(' · ')],
+  ['education', 'leader.education'],
+];
 
 export default function LeaderDetail() {
   const { id } = useParams();
@@ -96,12 +116,12 @@ export default function LeaderDetail() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <Avatar
               photo={leader.photo}
-              name={`${leader.first_name} ${leader.last_name}`}
+              name={avatarName(leader)}
               className="h-16 w-16 border-2 border-card text-xl shadow-md sm:h-20 sm:w-20 sm:text-2xl"
             />
             <div className="min-w-0 flex-1">
               <h1 className="text-lg font-bold tracking-tight sm:text-xl">
-                {leader.first_name} {leader.last_name}
+                {memberName(leader)}
               </h1>
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
                 <Badge variant={leader.status === 'active' ? 'success' : 'secondary'}>
@@ -147,6 +167,25 @@ export default function LeaderDetail() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ---------- ملفّ القائد: ما تجمعه استمارة التسجيل ---------- */}
+      {IDENTITY_FIELDS.some(([key]) => filled(leader[key])) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('leader.profile')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+              {IDENTITY_FIELDS.filter(([key]) => filled(leader[key])).map(([key, labelKey, render]) => (
+                <div key={key} className="min-w-0">
+                  <dt className="text-xs text-muted-foreground">{t(labelKey)}</dt>
+                  <dd className="truncate text-sm">{render ? render(leader[key], t) : leader[key]}</dd>
+                </div>
+              ))}
+            </dl>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ---------- فرقة القادة: بطاقة تقدم القائد ---------- */}
       <Card>

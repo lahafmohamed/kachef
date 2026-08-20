@@ -142,11 +142,32 @@ CREATE TABLE IF NOT EXISTS session_plan_items (
   PRIMARY KEY (session_id, plan_item_id)
 );
 
+-- ملفّ القائد. كل ما بعد الاسم و الهاتف اختياري: القادة المسجَّلون قبل توسيع
+-- الاستمارة يبقون صالحين، و تُملأ حقولهم حين يُعدَّل ملفّهم.
+-- «التوصيف الحالي» ليس عمودًا هنا عن قصد: هو في assignments (التشكيلة)، سنةً سنة،
+-- و نسخه هنا يخلق مرجعين يتناقضان أول ما تتغيّر التشكيلة.
 CREATE TABLE IF NOT EXISTS leaders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   first_name TEXT NOT NULL,
+  father_name TEXT,
   last_name TEXT NOT NULL,
+  birth_date TEXT,
   phone TEXT,
+  address_abidjan TEXT,
+  address_lebanon TEXT,
+  -- 'single' | 'married'
+  marital_status TEXT,
+  -- سنة الانتساب إلى كشافة الغدير، أربعة أرقام
+  join_year TEXT,
+  -- سنوات الخدمة كقائد: في فوج الغدير، ثم في الأفواج كلها. الثانية ليست محسوبة من
+  -- الأولى: قائد قد يكون خدم في فوج آخر قبل أن ينتسب إلى الغدير.
+  years_ghadir INTEGER,
+  years_total INTEGER,
+  -- المستوى العلمي و الاختصاص الجامعي، نصًّا حرًّا
+  education TEXT,
+  -- الدورات التدريبية التي خضع لها، مصفوفة JSON من رموز قائمة مغلقة. قائمةٌ لأن
+  -- القائد قد يكون خضع لأكثر من دورة، و مغلقةٌ لأن الدورات معروفة بأسمائها.
+  training_level TEXT NOT NULL DEFAULT '[]',
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
 );
@@ -531,6 +552,21 @@ function migrate() {
     SELECT s.id, s.leader_id, 'main' FROM sessions s
     WHERE s.leader_id IS NOT NULL AND EXISTS (SELECT 1 FROM leaders l WHERE l.id = s.leader_id)
   `);
+
+  // استمارة القائد وُسّعت بعد الإصدار الأول — كلها اختيارية، فالملفّات القائمة تبقى صالحة
+  for (const [col, ddl] of [
+    ['father_name', 'father_name TEXT'],
+    ['birth_date', 'birth_date TEXT'],
+    ['address_abidjan', 'address_abidjan TEXT'],
+    ['address_lebanon', 'address_lebanon TEXT'],
+    ['marital_status', 'marital_status TEXT'],
+    ['join_year', 'join_year TEXT'],
+    ['years_ghadir', 'years_ghadir INTEGER'],
+    ['years_total', 'years_total INTEGER'],
+    ['education', 'education TEXT'],
+    ['training_level', "training_level TEXT NOT NULL DEFAULT '[]'"],
+  ])
+    ensureColumn('leaders', col, ddl);
 
   ensureColumn('users', 'perms', 'perms TEXT');
   // First run: an admin must exist or nobody can log in. Default credentials
