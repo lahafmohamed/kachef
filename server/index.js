@@ -115,26 +115,62 @@ function stripContact(req, m) {
 // Money is its own permission, like contact info
 const stripFee = (req, s) => (hasPerm(req, 'sessions.read.fees') ? s : { ...s, fee: null });
 
+// A session dies after 15 minutes without a request, so an unattended machine
+// stops being a way in. Absolute cap on top: even an actively used session is
+// re-authenticated once a day.
+const IDLE_MS = 15 * 60 * 1000;
+const MAX_SESSION_MS = 24 * 60 * 60 * 1000;
+// Every request would otherwise write a row; a coarse touch is enough to measure idleness
+const TOUCH_MS = 30 * 1000;
+
+// SQLite stores UTC without a zone marker — Date.parse needs the Z spelled out
+const sqlTime = (v) => (v ? Date.parse(v.replace(' ', 'T') + 'Z') : 0);
+
+const dropExpiredTokens = db.prepare(
+  `DELETE FROM auth_tokens
+    WHERE COALESCE(last_seen_at, created_at) < datetime('now', ?) OR created_at < datetime('now', ?)`
+);
+const purgeExpired = () =>
+  dropExpiredTokens.run(`-${IDLE_MS / 1000} seconds`, `-${MAX_SESSION_MS / 1000} seconds`);
+
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
   const u = username && db.prepare('SELECT * FROM users WHERE username = ?').get(String(username).trim());
   if (!u || !verifyPassword(String(password || ''), u.password_hash))
     return res.status(401).json({ error: 'invalid_credentials' });
+  purgeExpired();
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO auth_tokens (token, user_id) VALUES (?, ?)').run(token, u.id);
-  res.json({ token, user: publicUser(u) });
+  // last_seen_at is spelled out: on databases where the column arrived by
+  // ALTER TABLE it has no default and would land NULL
+  db.prepare(
+    "INSERT INTO auth_tokens (token, user_id, last_seen_at) VALUES (?, ?, datetime('now'))"
+  ).run(token, u.id);
+  res.json({ token, user: publicUser(u), idleTimeoutMs: IDLE_MS });
 });
 
-// Every other /api route requires a valid token
+// Every other /api route requires a valid, still-fresh token
 app.use('/api', (req, res, next) => {
   const token = (req.headers.authorization || '').replace(/^Bearer /, '');
-  const u =
+  const row =
     token &&
     db
-      .prepare('SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?')
+      .prepare(
+        `SELECT u.*, t.last_seen_at AS token_last_seen, t.created_at AS token_created
+           FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?`
+      )
       .get(token);
-  if (!u) return res.status(401).json({ error: 'unauthorized' });
-  req.user = publicUser(u);
+  if (!row) return res.status(401).json({ error: 'unauthorized' });
+
+  const idleFor = Date.now() - sqlTime(row.token_last_seen || row.token_created);
+  const age = Date.now() - sqlTime(row.token_created);
+  if (idleFor > IDLE_MS || age > MAX_SESSION_MS) {
+    db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(token);
+    return res.status(401).json({ error: 'session_expired' });
+  }
+  if (idleFor > TOUCH_MS)
+    db.prepare("UPDATE auth_tokens SET last_seen_at = datetime('now') WHERE token = ?").run(token);
+
+  req.user = publicUser(row);
   req.token = token;
   next();
 });

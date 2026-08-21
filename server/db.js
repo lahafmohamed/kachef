@@ -252,7 +252,9 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS auth_tokens (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Touched on every authenticated request: the idle timeout is measured from here
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -556,6 +558,10 @@ function migrateAmanaHelpers() {
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
+  // Idle-timeout bookkeeping. ALTER TABLE cannot take datetime('now') as a default,
+  // so the column lands nullable and old rows inherit their creation time.
+  ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
+  db.exec("UPDATE auth_tokens SET last_seen_at = created_at WHERE last_seen_at IS NULL");
   // هاتف ولي الأمر split into father's and mother's numbers; the old single value
   // was the father's in practice, so it lands there
   ensureColumn('members', 'father_phone', 'father_phone TEXT');

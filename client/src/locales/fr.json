@@ -539,7 +539,12 @@
     "password": "Mot de passe",
     "signIn": "Connexion",
     "signOut": "Déconnexion",
-    "badCredentials": "Nom d'utilisateur ou mot de passe incorrect"
+    "badCredentials": "Nom d'utilisateur ou mot de passe incorrect",
+    "idleTitle": "Toujours là ?",
+    "idleBody": "Par sécurité, vous serez déconnecté dans moins d'une minute si vous ne faites rien.",
+    "idleStay": "Rester connecté",
+    "endedIdle": "Vous avez été déconnecté après 15 minutes d'inactivité.",
+    "endedExpired": "Votre session a expiré. Reconnectez-vous."
   },
   "admin": {
     "title": "Administration",

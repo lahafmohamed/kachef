@@ -1,15 +1,16 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../auth';
 import { Button, Card, CardContent, Input, Label } from '../components/ui';
 
 export default function Login() {
   const { t, i18n } = useTranslation();
-  const { login } = useAuth();
+  const { login, endedReason } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const userRef = useRef(null);
 
   async function submit(e) {
     e.preventDefault();
@@ -20,11 +21,13 @@ export default function Login() {
     } catch (err) {
       setError(err.message === 'invalid_credentials' ? t('auth.badCredentials') : err.message);
       setBusy(false);
+      // Land the caret back where the correction starts instead of on a dead submit
+      userRef.current?.focus();
     }
   }
 
   return (
-    <div className="relative flex min-h-dvh items-center justify-center p-4">
+    <main className="relative flex min-h-dvh items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardContent className="space-y-5 p-6 sm:p-8">
           <div className="flex flex-col items-center gap-2 text-center">
@@ -39,16 +42,31 @@ export default function Login() {
             <p className="text-sm text-muted-foreground">{t('auth.subtitle')}</p>
           </div>
 
+          {/* Says why the login screen came back — an idle timeout is not a bug */}
+          {endedReason && !error && (
+            <p
+              role="status"
+              className="rounded-lg bg-muted px-3 py-2 text-center text-sm text-muted-foreground"
+            >
+              {t(endedReason === 'idle' ? 'auth.endedIdle' : 'auth.endedExpired')}
+            </p>
+          )}
+
           <form onSubmit={submit} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="login_user">{t('auth.username')}</Label>
               <Input
                 id="login_user"
+                ref={userRef}
                 required
                 autoFocus
                 autoComplete="username"
                 autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
                 dir="ltr"
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? 'login_error' : undefined}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
@@ -61,12 +79,14 @@ export default function Login() {
                 required
                 autoComplete="current-password"
                 dir="ltr"
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? 'login_error' : undefined}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
             {error && (
-              <p role="alert" className="text-sm font-medium text-destructive">
+              <p id="login_error" role="alert" className="text-sm font-medium text-destructive">
                 {error}
               </p>
             )}
@@ -84,6 +104,6 @@ export default function Login() {
           </button>
         </CardContent>
       </Card>
-    </div>
+    </main>
   );
 }
