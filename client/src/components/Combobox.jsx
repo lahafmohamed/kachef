@@ -99,7 +99,7 @@ export default function Combobox({
           >
             <span className="min-w-0 flex-1 truncate">{o.label}</span>
             {o.badge && (
-              <span className="shrink-0 rounded-full bg-primary/12 px-2 py-0.5 text-[0.6875rem] font-medium text-primary">
+              <span className="shrink-0 rounded-full bg-primary/12 px-2 py-0.5 text-xs font-medium text-primary">
                 {o.badge}
               </span>
             )}

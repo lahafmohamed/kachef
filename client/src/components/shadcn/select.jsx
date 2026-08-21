@@ -74,7 +74,9 @@ export function SelectContent({ className, children, position = 'popper', ...pro
         sideOffset={6}
         collisionPadding={12}
         className={cn(
-          'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg',
+          // max-w caps long option labels on narrow phones — Radix only shifts on
+          // collision, it never shrinks the panel by itself
+          'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] max-w-[min(24rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg',
           'data-[state=open]:animate-dialog-in',
           className
         )}
@@ -101,6 +103,7 @@ export function SelectItem({ className, children, ...props }) {
       className={cn(
         // 44px tall on touch so the list is comfortable to tap
         'relative flex min-h-11 w-full cursor-pointer select-none items-center gap-2 rounded-md py-2 pe-8 ps-2.5 text-sm outline-none sm:min-h-9',
+        '[&>span:first-child]:min-w-0 [&>span:first-child]:truncate',
         'data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
         'data-[state=checked]:font-medium data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className

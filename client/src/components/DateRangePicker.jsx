@@ -122,7 +122,7 @@ export default function DateRangePicker({ value, onChange, className }) {
                 </Button>
               </div>
             </div>
-            <div className="grid grid-cols-4 gap-1">
+            <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
               {Array.from({ length: 12 }, (_, m) => {
                 const from = toISO(monthStart(year, m));
                 const to = toISO(monthEnd(year, m));
@@ -141,8 +141,8 @@ export default function DateRangePicker({ value, onChange, className }) {
               })}
             </div>
           </div>
-          <div className="p-3">
-            <Suspense fallback={<Skeleton className="h-72 w-72" />}>
+          <div className="p-2 sm:p-3">
+            <Suspense fallback={<Skeleton className="h-72 w-full min-w-60" />}>
               <CalendarPanel
                 mode="range"
                 isAr={isAr}

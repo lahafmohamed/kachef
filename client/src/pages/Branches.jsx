@@ -49,7 +49,7 @@ function Metric({ icon, label, value, hint }) {
     <div className="rounded-xl border border-border bg-muted/20 p-3">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {icon}
-        <span className="truncate">{label}</span>
+        <span className="line-clamp-2 leading-tight">{label}</span>
       </div>
       <div className="tabular mt-1 text-2xl font-bold leading-none">{value}</div>
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
@@ -110,7 +110,7 @@ function SessionRow({ s }) {
                 <li key={m.id}>
                   <Link
                     to={`/members/${m.id}`}
-                    className="focus-ring flex items-center gap-2 rounded-full border border-border py-1 pe-3 ps-1 text-xs transition-colors hover:bg-accent/50"
+                    className="focus-ring flex min-h-10 items-center gap-2 rounded-full border border-border py-1 pe-3 ps-1 text-xs transition-colors hover:bg-accent/50 sm:min-h-8"
                   >
                     <Avatar photo={m.photo} name={avatarName(m)} className="h-6 w-6" />
                     {memberName(m)}
@@ -181,14 +181,14 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink 
   const isSaturday = toDate(row.date)?.getDay() === 6;
 
   return (
-    <li className="grid grid-cols-[7.5rem_1fr] items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:grid-cols-[9rem_1fr_auto]">
+    <li className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:grid-cols-[9rem_1fr_auto]">
       {/* An extra day stays changeable; the Saturdays of the month are fixed rows */}
       {row.extra && canEdit ? (
         <Select
           value={row.date}
           onChange={(e) => onDate(index, e.target.value)}
           aria-label={t('common.date')}
-          className="h-9 sm:h-9"
+          className="h-11 sm:h-9"
         >
           {days.map((d) => (
             <option key={d} value={d}>
@@ -211,7 +211,7 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink 
           onChange={(e) => onTitle(index, e.target.value)}
           placeholder={t('branch.planActivityHint')}
           autoComplete="off"
-          className="h-9 sm:h-9"
+          className="h-11 sm:h-9"
           aria-label={t('branch.planActivity')}
         />
       ) : (
@@ -341,7 +341,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
                       onClick={() => pick(s.id)}
                       className="focus-ring flex w-full items-center gap-3 px-3 py-2.5 text-start hover:bg-accent disabled:opacity-60 disabled:hover:bg-transparent"
                     >
-                      <span className="tabular w-24 shrink-0 text-xs text-muted-foreground">
+                      <span className="tabular w-16 shrink-0 text-xs text-muted-foreground sm:w-24 sm:text-sm">
                         {fmtDate(s.date)}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
@@ -351,7 +351,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
                           {t('branch.planLinkCurrentShort')}
                         </Badge>
                       ) : elsewhere ? (
-                        <Badge variant="outline" className="max-w-[10rem] shrink-0">
+                        <Badge variant="outline" className="hidden max-w-[10rem] shrink-0 sm:inline-flex">
                           <span className="min-w-0 truncate">
                             {t('branch.planLinkedTo', { title: elsewhere })}
                           </span>
@@ -526,7 +526,7 @@ function AnnualPlan({ branchId }) {
               <Badge variant={monthDone === monthPlanned && monthPlanned > 0 ? 'success' : 'outline'}>
                 {t('branch.planProgress', { done: monthDone, total: monthPlanned })}
               </Badge>
-              <span className="grow" />
+              <span className="hidden grow sm:block" />
               {canEdit && (
                 <>
                   <Button size="sm" variant="outline" onClick={addDay}>
@@ -882,7 +882,7 @@ function BranchGroups({ branchId }) {
                 // اختصار: يفتح النافذة على غير الموزَّعين وحدهم، و هم أول ما يُبحث عنه
                 <button
                   type="button"
-                  className="focus-ring rounded text-xs text-muted-foreground underline"
+                  className="focus-ring inline-flex min-h-11 items-center rounded px-2 text-xs text-muted-foreground underline sm:min-h-9"
                   onClick={() => openAssign('none')}
                 >
                   {t('branch.groupUnassigned', { count: unassigned })}
@@ -970,8 +970,10 @@ function BranchGroups({ branchId }) {
                     </span>
                   </>
                 )}
-                <Badge variant="outline" className="shrink-0">
-                  {groups.find((g) => g.id === m.group_id)?.name || t('branch.groupNone')}
+                <Badge variant="outline" className="max-w-24 shrink">
+                  <span className="truncate">
+                    {groups.find((g) => g.id === m.group_id)?.name || t('branch.groupNone')}
+                  </span>
                 </Badge>
               </li>
             ))}
@@ -983,7 +985,7 @@ function BranchGroups({ branchId }) {
             <span className="text-sm font-medium">
               {t('branch.groupSelected', { count: picked.size })}
             </span>
-            <span className="grow" />
+            <span className="hidden grow sm:block" />
             <Select
               className="w-auto"
               value={target}

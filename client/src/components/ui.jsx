@@ -266,6 +266,13 @@ export const IconKey = (p) => (
     <path d="m15.5 7.5 3 3" />
   </Icon>
 );
+export const IconMore = (p) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="19" cy="12" r="1" />
+    <circle cx="5" cy="12" r="1" />
+  </Icon>
+);
 export const IconLogout = (p) => (
   <Icon {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -349,10 +356,10 @@ const buttonVariants = {
 /* Touch targets are ≥44px on phones and tighten up on pointer devices. */
 const buttonSizes = {
   default: 'h-11 px-4 text-sm sm:h-10',
-  sm: 'h-10 px-3 text-xs sm:h-8',
+  sm: 'h-11 px-3 text-xs sm:h-8',
   lg: 'h-12 px-6 text-base sm:h-11',
-  icon: 'h-10 w-10 sm:h-9 sm:w-9',
-  'icon-sm': 'h-9 w-9 sm:h-8 sm:w-8',
+  icon: 'h-11 w-11 sm:h-9 sm:w-9',
+  'icon-sm': 'h-11 w-11 sm:h-8 sm:w-8',
 };
 
 export function Button({
@@ -874,7 +881,9 @@ export function ToastProvider({ children }) {
         <div
           role="region"
           aria-label="notifications"
-          className="pointer-events-none fixed inset-x-0 bottom-[calc(var(--bottomnav-h)+0.75rem)] z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-5 lg:items-end lg:px-5"
+          // Top of the screen on phones — the bottom is owned by the tab bar and
+          // sticky save bars, so toasts there covered the very buttons just tapped.
+          className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex flex-col items-center gap-2 px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
         >
           {toasts.map(({ id, message, type }) => {
             const { cls, Icon: I } = toastStyles[type] || toastStyles.info;
@@ -1009,7 +1018,11 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
     warning: 'bg-warning text-warning-foreground border-warning',
     default: 'bg-primary text-primary-foreground border-primary',
   };
-  const pad = size === 'sm' ? 'h-9 px-2.5 text-xs sm:h-8' : 'h-10 px-3 text-xs sm:h-9 sm:text-sm';
+  /* min-h instead of h so long labels (Arabic/French) wrap instead of clipping */
+  const pad =
+    size === 'sm'
+      ? 'min-h-11 px-2.5 py-1 text-xs sm:min-h-8'
+      : 'min-h-11 px-3 py-1.5 text-xs sm:min-h-9 sm:text-sm';
   return (
     <div
       role="group"
@@ -1025,7 +1038,7 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
             aria-pressed={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center font-medium transition-colors',
+              'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center text-center leading-tight font-medium transition-colors',
               pad,
               i > 0 && 'border-s border-border',
               active

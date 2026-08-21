@@ -630,7 +630,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
                     aria-pressed={on}
                     onClick={() => toggleBranch(b.id)}
                     className={cn(
-                      'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                      'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
                       on
                         ? 'border-primary bg-primary/10 font-medium text-primary'
                         : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -673,15 +673,18 @@ function OrgCard({ a, className }) {
         </span>
       )}
       <span className="min-w-0">
-        <span className={cn('block truncate text-sm font-medium', !filled && 'text-muted-foreground')}>
+        <span
+          className={cn('block truncate text-sm font-medium', !filled && 'text-muted-foreground')}
+          title={filled ? memberName(a) : '—'}
+        >
           {filled ? memberName(a) : '—'}
         </span>
-        <span className="block truncate text-xs text-muted-foreground">{a.title}</span>
+        <span className="block truncate text-xs text-muted-foreground" title={a.title}>{a.title}</span>
       </span>
     </>
   );
   const base = cn(
-    'flex w-44 items-center gap-2.5 rounded-xl border bg-card px-3 py-2 text-start shadow-xs sm:w-56',
+    'flex w-36 items-center gap-2.5 rounded-xl border bg-card px-3 py-2 text-start shadow-xs sm:w-56',
     filled ? 'border-border' : 'border-dashed border-border',
     className
   );
@@ -737,7 +740,7 @@ function OrgChart({ assignments, branches, lang, t }) {
 
   return (
     <div className="overflow-x-auto p-4 sm:p-5">
-      <div className="min-w-max">
+      <div className="w-max min-w-full">
         {/* رأس الفوج — في الوسط فوق الجميع */}
         {head && (
           <div className="flex flex-col items-center">
@@ -767,7 +770,7 @@ function OrgChart({ assignments, branches, lang, t }) {
         {columns.length > 0 && (
           <>
             <OrgLine />
-            <div aria-hidden="true" className="mx-16 border-t border-border sm:mx-28" />
+            <div aria-hidden="true" className="mx-8 border-t border-border sm:mx-28" />
             <div className="flex items-start justify-center gap-4 sm:gap-6">
               {columns.map(({ branch, list }) => {
                 // توصيفات الفرقة كلها أولًا، ثم توصيفات كل مجموعة عنقودًا باسمها
@@ -1067,7 +1070,7 @@ export default function Leaders() {
           </span>
         )}
         {canEdit && (
-          <div className="flex gap-1.5">
+          <div className="flex gap-2">
             <Button
               variant="ghost"
               size="icon"
@@ -1134,12 +1137,13 @@ export default function Leaders() {
                   : t('leader.readOnlyHint')}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
             <SegmentedControl
               label={t('leader.viewLabel')}
               value={view}
               onChange={setView}
               size="sm"
+              className="col-span-2 sm:col-span-1"
               options={[
                 { value: 'list', label: t('leader.viewList') },
                 { value: 'tree', label: t('leader.viewTree') },
@@ -1174,26 +1178,26 @@ export default function Leaders() {
               </Select>
             )}
             {isAdmin && (
-              <Button variant="outline" size="sm" onClick={() => setCreatingYear(true)}>
+              <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => setCreatingYear(true)}>
                 <IconPlus />
                 {t('leader.newYear')}
               </Button>
             )}
             {/* Only an admin may freeze a تشكيلة or lift the freeze */}
             {isAdmin && tachkila.year && (
-              <Button variant={locked ? 'brand' : 'outline'} size="sm" onClick={toggleLock}>
+              <Button variant={locked ? 'brand' : 'outline'} size="sm" className="w-full sm:w-auto" onClick={toggleLock}>
                 <IconLock />
                 {t(locked ? 'leader.unlock' : 'leader.lock')}
               </Button>
             )}
             {canEdit && tachkila.year && tachkila.missing_count > 0 && (
-              <Button variant="outline" size="sm" onClick={fillTemplate}>
+              <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={fillTemplate}>
                 <IconShield />
                 {t('leader.fillTemplate', { count: tachkila.missing_count })}
               </Button>
             )}
             {tachkila.year && canEdit && (
-              <Button size="sm" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
+              <Button size="sm" className="w-full sm:w-auto" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
                 <IconPlus />
                 {t('leader.addAssignment')}
               </Button>
@@ -1330,9 +1334,9 @@ export default function Leaders() {
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {/* من له حساب يظهر اسمه هنا — جواب «من يدخل الموقع؟» من القائمة نفسها */}
                     {isAdmin && l.account_username && (
-                      <Badge variant="outline" dir="ltr">
+                      <Badge variant="outline" dir="ltr" className="max-w-40">
                         <IconKey className="h-3 w-3" />
-                        {l.account_username}
+                        <span className="truncate">{l.account_username}</span>
                       </Badge>
                     )}
                     <span className="tabular-nums">
@@ -1354,7 +1358,7 @@ export default function Leaders() {
                     )}
                   </div>
                   {isAdmin && (
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-2">
                       <Button
                         variant="ghost"
                         size="icon"

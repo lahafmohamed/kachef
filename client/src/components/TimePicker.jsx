@@ -88,7 +88,7 @@ export default function TimePicker({
                 role="button"
                 tabIndex={-1}
                 aria-label={t('common.clear')}
-                className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
+                className="-me-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:h-8 sm:w-8"
                 onPointerDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();

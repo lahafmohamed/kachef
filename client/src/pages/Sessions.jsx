@@ -424,7 +424,7 @@ export default function Sessions() {
           <Button
             variant="outline"
             size="icon"
-            className="relative sm:hidden"
+            className="relative shrink-0 sm:hidden"
             aria-expanded={showFilters}
             aria-label={t('session.filters')}
             onClick={() => setShowFilters((v) => !v)}
@@ -585,12 +585,17 @@ export default function Sessions() {
                         </Badge>
                       )}
                       {(s.start_time || s.place) && (
-                        <span className="truncate text-xs text-muted-foreground">
+                        <span
+                          className="truncate text-xs text-muted-foreground"
+                          title={[fmtTime(s.start_time), s.place].filter(Boolean).join(' · ')}
+                        >
                           {[fmtTime(s.start_time), s.place].filter(Boolean).join(' · ')}
                         </span>
                       )}
                       {s.leader && (
-                        <span className="truncate text-xs text-muted-foreground">{s.leader}</span>
+                        <span className="truncate text-xs text-muted-foreground" title={s.leader}>
+                          {s.leader}
+                        </span>
                       )}
                     </div>
                     <div className="mt-2">
@@ -828,7 +833,7 @@ export default function Sessions() {
                         aria-pressed={on}
                         onClick={() => toggleBranch(b.id)}
                         className={cn(
-                          'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
                           on
                             ? 'border-primary bg-primary/10 font-medium text-primary'
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -837,7 +842,7 @@ export default function Sessions() {
                         {on && <IconCheck className="h-3.5 w-3.5" />}
                         {branchName(b, i18n.language)}
                         {primary && form.branch_ids.length > 1 && (
-                          <span className="text-[0.65rem] uppercase opacity-70">
+                          <span className="text-xs uppercase opacity-70">
                             {t('session.branchPrimary')}
                           </span>
                         )}
@@ -877,7 +882,7 @@ export default function Sessions() {
                               aria-pressed={on}
                               onClick={() => toggleGroup(g.id)}
                               className={cn(
-                                'focus-ring inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                                'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
                                 on
                                   ? 'border-primary bg-primary/10 font-medium text-primary'
                                   : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -885,7 +890,7 @@ export default function Sessions() {
                             >
                               {on && <IconCheck className="h-3.5 w-3.5" />}
                               {g.name}
-                              <span className="text-[0.65rem] opacity-70">{g.member_count}</span>
+                              <span className="text-xs opacity-70">{g.member_count}</span>
                             </button>
                           );
                         })}

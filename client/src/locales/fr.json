@@ -16,7 +16,8 @@
     "lightMode": "Clair",
     "skipToContent": "Aller au contenu",
     "branches": "Branches",
-    "admin": "Admin"
+    "admin": "Admin",
+    "more": "Plus"
   },
   "common": {
     "edit": "Modifier",

@@ -37,7 +37,7 @@ export default function SearchInput({ value, onChange, placeholder, className, a
         // Escape clears without leaving the keyboard
         onKeyDown={(e) => e.key === 'Escape' && value && (e.preventDefault(), onChange(''))}
         className={cn(
-          'focus-ring h-11 w-full rounded-md border border-input bg-card ps-9 pe-20 text-sm shadow-xs',
+          'focus-ring h-11 w-full rounded-md border border-input bg-card ps-9 pe-12 text-sm shadow-xs sm:pe-20',
           'transition-colors placeholder:text-muted-foreground focus-visible:border-ring sm:h-10',
           '[&::-webkit-search-cancel-button]:hidden'
         )}
@@ -48,7 +48,7 @@ export default function SearchInput({ value, onChange, placeholder, className, a
             type="button"
             onClick={() => onChange('')}
             aria-label={t('common.clear')}
-            className="focus-ring flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="focus-ring flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:w-8"
           >
             <IconX />
           </button>

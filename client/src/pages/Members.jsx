@@ -347,7 +347,7 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
             {memberName(m)}
           </div>
           {(m.school || m.address_abidjan) && (
-            <div className="truncate text-xs text-muted-foreground">
+            <div className="line-clamp-2 text-xs text-muted-foreground">
               {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
             </div>
           )}
@@ -363,7 +363,7 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
         </div>
       </Link>
       {(onEdit || onDelete) && (
-        <div className="flex shrink-0 gap-0.5">
+        <div className="flex shrink-0 gap-2">
           {onEdit && (
             <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')}>
               <IconPencil />
@@ -545,7 +545,7 @@ export default function Members() {
             placeholder={t('member.searchAny')}
             className="sm:min-w-64"
           />
-          <div className="flex gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex">
             <FilterSelect
               value={branch}
               onChange={pickBranch}

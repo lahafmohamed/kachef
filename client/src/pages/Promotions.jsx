@@ -119,9 +119,9 @@ export default function Promotions() {
                       {p.age} {t('common.years')}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <Badge variant="secondary">{branchName(p.current_branch, i18n.language)}</Badge>
-                    <IconArrow className="text-muted-foreground rtl:rotate-180" />
+                    <IconArrow className="shrink-0 text-muted-foreground rtl:rotate-180" />
                     <Badge variant="solid">{branchName(p.target_branch, i18n.language)}</Badge>
                   </div>
                   {editable && (

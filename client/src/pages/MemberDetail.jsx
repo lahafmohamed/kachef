@@ -315,9 +315,9 @@ export default function MemberDetail() {
                             onClick={() => setMatlab(m.number, 'auto')}
                             aria-label={t('member.matalibReset')}
                             title={t('member.matalibReset')}
-                            className="focus-ring -me-1 cursor-pointer rounded-full p-0.5 hover:bg-black/10"
+                            className="focus-ring -me-2 -my-1.5 flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full hover:bg-black/10"
                           >
-                            <IconX className="h-3 w-3" />
+                            <IconX className="h-3.5 w-3.5" />
                           </button>
                         )}
                       </Badge>
@@ -412,7 +412,32 @@ export default function MemberDetail() {
               {history.length === 0 ? (
                 <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('common.noResults')} />
               ) : (
-                <Table>
+                <>
+                  {/* Mobile: stacked rows — a horizontal-scroll table fights the
+                      click-to-open rows, so phones get a plain tappable list */}
+                  <ul className="divide-y divide-border md:hidden">
+                    {history.map((h) => {
+                      const [variant, key] = STATUS_BADGE[h.status];
+                      return (
+                        <li key={h.session_id}>
+                          <Link
+                            to={`/sessions/${h.session_id}`}
+                            className="focus-ring flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 transition-colors hover:bg-accent/50"
+                          >
+                            <span className="w-full text-sm font-medium">{h.title}</span>
+                            <span className="tabular-nums text-xs text-muted-foreground">
+                              {fmtDate(h.date)}
+                            </span>
+                            <Badge variant={variant} className="ms-auto">
+                              {t(key)}
+                            </Badge>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <Table className="hidden md:block">
                   <thead className="border-b border-border">
                     <tr>
                       <Th>{t('common.date')}</Th>
@@ -446,8 +471,9 @@ export default function MemberDetail() {
                         </tr>
                       );
                     })}
-                  </tbody>
-                </Table>
+                    </tbody>
+                  </Table>
+                </>
               )}
             </>
           )}

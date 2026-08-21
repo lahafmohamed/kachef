@@ -78,7 +78,7 @@ export default function Login() {
           <button
             type="button"
             onClick={() => i18n.changeLanguage(i18n.language === 'ar' ? 'fr' : 'ar')}
-            className="focus-ring mx-auto block rounded text-xs text-muted-foreground hover:text-foreground"
+            className="focus-ring mx-auto flex min-h-11 items-center rounded px-4 text-sm text-muted-foreground hover:text-foreground sm:min-h-9 sm:text-xs"
           >
             {i18n.language === 'ar' ? 'Français' : 'العربية'}
           </button>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, NavLink } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
@@ -22,6 +22,7 @@ import {
   IconLanguages,
   IconLock,
   IconLogout,
+  IconMore,
   IconShield,
   IconSun,
   IconMoon,
@@ -82,46 +83,105 @@ function SidebarNav() {
   ));
 }
 
-/* Thumb-reachable tab bar — the primary navigation on phones. */
+/* Shared look for one tab in the bottom bar. */
+function TabInner({ Icon, label, active }) {
+  return (
+    <>
+      {/* Active pill sits behind the icon so the tap target stays full-height */}
+      <span
+        className={cn(
+          'flex h-8 w-11 items-center justify-center rounded-full transition-all duration-200',
+          active ? 'bg-primary/14 scale-100 ring-1 ring-primary/20' : 'scale-90 bg-transparent'
+        )}
+      >
+        <Icon className="h-[1.2rem] w-[1.2rem]" />
+      </span>
+      <span className="max-w-full truncate">{label}</span>
+    </>
+  );
+}
+
+const tabClass = (active) =>
+  cn(
+    'focus-ring relative flex h-[4.25rem] w-full flex-col items-center justify-center gap-1 px-0.5 text-[0.6875rem] font-medium leading-tight transition-colors',
+    active ? 'text-primary' : 'text-muted-foreground'
+  );
+
+/**
+ * Thumb-reachable tab bar — the primary navigation on phones.
+ * Never more than five tabs: with six-plus destinations (admins see eight)
+ * the first four stay put and the rest move behind a «More» sheet, so every
+ * tab keeps a usable width on 320px-class phones.
+ */
 function BottomNav() {
   const { t } = useTranslation();
+  const location = useLocation();
   const items = useNavItems();
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  const hasOverflow = items.length > 5;
+  const visible = hasOverflow ? items.slice(0, 4) : items;
+  const overflow = hasOverflow ? items.slice(4) : [];
+  const isItemActive = ({ to, end }) =>
+    end ? location.pathname === to : location.pathname.startsWith(to);
+  const moreActive = overflow.some(isItemActive);
+
   return (
     <nav
       aria-label={t('nav.primary')}
       className="glass safe-b fixed inset-x-0 bottom-0 z-40 border-t border-border lg:hidden"
     >
       <ul className="flex items-stretch">
-        {items.map(({ to, short, Icon, end }) => (
+        {visible.map(({ to, short, Icon, end }) => (
           <li key={to} className="flex-1">
-            <NavLink
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'focus-ring relative flex h-[4.25rem] flex-col items-center justify-center gap-1 px-0.5 text-[0.6875rem] font-medium leading-tight transition-colors',
-                  isActive ? 'text-primary' : 'text-muted-foreground'
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {/* Active pill sits behind the icon so the tap target stays full-height */}
-                  <span
-                    className={cn(
-                      'flex h-8 w-11 items-center justify-center rounded-full transition-all duration-200',
-                      isActive ? 'bg-primary/14 scale-100 ring-1 ring-primary/20' : 'scale-90 bg-transparent'
-                    )}
-                  >
-                    <Icon className="h-[1.2rem] w-[1.2rem]" />
-                  </span>
-                  <span className="max-w-full truncate">{t(short)}</span>
-                </>
-              )}
+            <NavLink to={to} end={end} className={({ isActive }) => tabClass(isActive)}>
+              {({ isActive }) => <TabInner Icon={Icon} label={t(short)} active={isActive} />}
             </NavLink>
           </li>
         ))}
+        {hasOverflow && (
+          <li className="flex-1">
+            <button
+              type="button"
+              onClick={() => setMoreOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={moreOpen}
+              className={tabClass(moreActive)}
+            >
+              <TabInner Icon={IconMore} label={t('nav.more')} active={moreActive} />
+            </button>
+          </li>
+        )}
       </ul>
+
+      {hasOverflow && (
+        <Dialog open={moreOpen} onClose={() => setMoreOpen(false)} title={t('nav.more')} size="sm">
+          <ul className="space-y-1">
+            {overflow.map((item) => {
+              const { to, key, Icon } = item;
+              const active = isItemActive(item);
+              return (
+                <li key={to}>
+                  <Link
+                    to={to}
+                    onClick={() => setMoreOpen(false)}
+                    className={cn(
+                      'focus-ring flex min-h-12 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors',
+                      active
+                        ? 'bg-primary/12 text-primary'
+                        : 'text-foreground hover:bg-accent hover:text-accent-foreground'
+                    )}
+                    aria-current={active ? 'page' : undefined}
+                  >
+                    <Icon className="h-5 w-5" />
+                    {t(key)}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </Dialog>
+      )}
     </nav>
   );
 }
@@ -314,7 +374,7 @@ function Brand({ className }) {
         alt={t('app.name')}
         width={90}
         height={90}
-        className="h-20 w-20 shrink-0 object-cover object-[50%_18%] lg:h-[90px] lg:w-[90px]"
+        className="h-11 w-11 shrink-0 rounded-lg object-cover object-[50%_18%] lg:h-[90px] lg:w-[90px] lg:rounded-none"
       />
       <span className="truncate text-base font-bold tracking-tight text-primary">
         {t('app.name')}
@@ -384,10 +444,11 @@ export default function Layout({ children }) {
       </aside>
 
       {/* ---------- Mobile top bar ---------- */}
+      {/* Slim (64px) so content owns the screen; the brand crop reads fine at 44px */}
       <header className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
-        <div className="flex h-24 items-center justify-between gap-2 px-4">
-          <Brand />
-          <div className="flex items-center gap-1.5">
+        <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
+          <Brand className="min-w-0" />
+          <div className="flex shrink-0 items-center gap-1">
             <NotificationsBell compact />
             <ThemeToggle compact />
             <LangToggle compact />

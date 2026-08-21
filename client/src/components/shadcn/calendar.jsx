@@ -44,11 +44,13 @@ export function Calendar({ className, classNames, showOutsideDays = true, ...pro
         button_next: navButton,
         month_grid: 'w-full border-collapse',
         weekdays: 'flex',
-        weekday: 'w-10 text-[0.7rem] font-medium uppercase text-muted-foreground',
+        // 36px columns under 640px so 7 of them + chrome fit a 320px viewport;
+        // full 40px everywhere else
+        weekday: 'w-9 text-[0.7rem] font-medium uppercase text-muted-foreground sm:w-10',
         week: 'mt-1 flex w-full',
-        day: 'relative h-10 w-10 p-0 text-center text-sm',
+        day: 'relative h-10 w-9 p-0 text-center text-sm sm:w-10',
         day_button:
-          'focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md font-normal tabular-nums ' +
+          'focus-ring inline-flex h-10 w-9 items-center justify-center rounded-md font-normal tabular-nums sm:w-10 ' +
           'transition-colors hover:bg-accent hover:text-accent-foreground',
         today: 'font-bold text-primary',
         outside: 'text-muted-foreground/50',

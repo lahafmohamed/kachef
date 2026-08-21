@@ -249,7 +249,7 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
                         />
                         <span className="flex-1">
                           <span className="block">{t(i.label)}</span>
-                          <span className="block font-mono text-[0.65rem] text-muted-foreground" dir="ltr">
+                          <span className="block font-mono text-xs text-muted-foreground" dir="ltr">
                             {i.key}
                           </span>
                         </span>

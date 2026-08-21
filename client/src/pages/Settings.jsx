@@ -245,7 +245,7 @@ function LookupListsCard() {
         ) : (
           <ul className="divide-y divide-border rounded-lg border border-border">
             {list.map((v) => (
-              <li key={v.id} className="flex items-center gap-2 px-3 py-2">
+              <li key={v.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
                 {editing === v.id ? (
                   <>
                     <Input
@@ -256,7 +256,7 @@ function LookupListsCard() {
                         if (e.key === 'Enter') rename(v);
                         if (e.key === 'Escape') setEditing(null);
                       }}
-                      className="h-9 flex-1"
+                      className="h-9 min-w-40 flex-1"
                     />
                     <Button size="sm" onClick={() => rename(v)}>
                       {t('common.save')}
@@ -434,7 +434,7 @@ export default function Settings() {
                   type="button"
                   aria-pressed={theme === v}
                   onClick={() => setTheme(v)}
-                  className={`focus-ring inline-flex h-10 cursor-pointer items-center gap-2 px-3 text-sm font-medium transition-colors sm:h-9 ${
+                  className={`focus-ring inline-flex h-11 cursor-pointer items-center gap-2 px-3 text-sm font-medium transition-colors sm:h-9 ${
                     i > 0 ? 'border-s border-border' : ''
                   } ${
                     theme === v
@@ -464,7 +464,7 @@ export default function Settings() {
                   type="button"
                   aria-pressed={i18n.language === v}
                   onClick={() => i18n.changeLanguage(v)}
-                  className={`focus-ring inline-flex h-10 cursor-pointer items-center gap-2 px-3 text-sm font-medium transition-colors sm:h-9 ${
+                  className={`focus-ring inline-flex h-11 cursor-pointer items-center gap-2 px-3 text-sm font-medium transition-colors sm:h-9 ${
                     i > 0 ? 'border-s border-border' : ''
                   } ${
                     i18n.language === v
@@ -545,7 +545,7 @@ export default function Settings() {
                     />
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor={`min-${b.id}`}>{t('settings.minAge')}</Label>
                     <Input
@@ -621,7 +621,7 @@ export default function Settings() {
               <Input id="nb_ar" dir="rtl" required value={newBranch.name_ar} onChange={setNew('name_ar')} />
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 sm:gap-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="nb_min">{t('settings.minAge')}</Label>
               <Input

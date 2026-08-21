@@ -85,7 +85,7 @@ export default function DatePicker({
                 role="button"
                 tabIndex={-1}
                 aria-label={t('common.clear')}
-                className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
+                className="-me-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:h-8 sm:w-8"
                 onPointerDown={(e) => {
                   // Stop the popover from opening — this click only clears
                   e.preventDefault();
@@ -109,7 +109,7 @@ export default function DatePicker({
               value={String(month.getMonth())}
               onChange={(e) => setMonth(new Date(month.getFullYear(), Number(e.target.value), 1))}
               aria-label={t('common.month')}
-              className="h-9 flex-1 sm:h-9"
+              className="h-10 flex-1 sm:h-9"
             >
               {months.map((m, i) => (
                 <option key={m} value={i}>
@@ -121,7 +121,7 @@ export default function DatePicker({
               value={String(month.getFullYear())}
               onChange={(e) => setMonth(new Date(Number(e.target.value), month.getMonth(), 1))}
               aria-label={t('common.year')}
-              className="h-9 w-28 sm:h-9"
+              className="h-10 w-24 sm:h-9 sm:w-28"
             >
               {years.map((y) => (
                 <option key={y} value={y}>
@@ -130,8 +130,8 @@ export default function DatePicker({
               ))}
             </Select>
           </div>
-          <div className="p-3">
-            <Suspense fallback={<Skeleton className="h-72 w-72" />}>
+          <div className="p-2 sm:p-3">
+            <Suspense fallback={<Skeleton className="h-72 w-full min-w-60" />}>
               <CalendarPanel
                 mode="single"
                 isAr={isAr}

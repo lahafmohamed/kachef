@@ -445,6 +445,7 @@ export default function SessionDetail() {
                     {editable ? (
                       <>
                         <SegmentedControl
+                          className="w-full sm:w-auto"
                           label={memberName(a)}
                           value={a.status}
                           onChange={(v) => markAnimator(a.leader_id, v)}
@@ -557,6 +558,7 @@ function RosterRow({ m, editable, mark, t }) {
       <div className="w-full sm:w-auto">
         {editable ? (
           <SegmentedControl
+            className="w-full sm:w-auto"
             label={memberName(m)}
             value={m.status}
             onChange={(v) => mark(m.id, v)}

@@ -75,10 +75,12 @@
   --dur-base: 200ms;
   --dur-slow: 320ms;
 
-  /* Layout */
+  /* Layout — the bottom-nav var includes the home-indicator inset so every
+     offset computed from it (content padding, toasts, sticky bars) clears the
+     real rendered height of the bar on notched phones. */
   --sidebar-w: 16rem;
-  --bottomnav-h: 4.25rem;
-  --header-h: 6rem;
+  --bottomnav-h: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  --header-h: 4rem;
 
   color-scheme: light;
 }
@@ -199,6 +201,17 @@ body {
   /* Proportional figures read better in prose; tables opt back into tabular */
   font-feature-settings: "cv02", "cv03", "cv04", "ss01";
   text-rendering: optimizeLegibility;
+}
+
+/* Kill the double-tap-to-zoom delay on everything interactive */
+button,
+a,
+label,
+input,
+select,
+textarea,
+[role="button"] {
+  touch-action: manipulation;
 }
 
 /* Headings tighten as they grow — the standard optical correction */
