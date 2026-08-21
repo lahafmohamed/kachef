@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { usePerms } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { activityTypeKey, avatarName, branchName, fmtDate, fmtTime, memberName } from '../utils';
 import {
@@ -162,7 +162,9 @@ export default function SessionDetail() {
 
   // View-only: présence is displayed as badges, never as tappable controls
   const { has } = usePerms();
+  const { user } = useAuth();
   const editable = has('sessions.attendance');
+  const isAdmin = user?.role === 'admin';
   const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
   const leaders = useFetch('/leaders');
   // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
@@ -188,10 +190,13 @@ export default function SessionDetail() {
     }
   }
 
-  // فرقة واحدة حين تُمرَّر: كل قائد يُتمّ لائحة فرقته وحدها في النشاط المشترك
+  // فرقة واحدة حين تُمرَّر: كل قائد يُتمّ لائحة فرقته وحدها في النشاط المشترك.
+  // الغياب هو الافتراضي منذ الإنشاء، فالزرّ يقلب غير الحاضرين — عدا المعذورين،
+  // فعذرهم وُضع قصدًا و لا يُمسح جملةً.
   async function markAllPresent(branchId = null) {
     const unmarked = session.roster.filter(
-      (m) => !m.status && (branchId === null || m.branch_id === branchId)
+      (m) =>
+        (!m.status || m.status === 'absent') && (branchId === null || m.branch_id === branchId)
     );
     if (unmarked.length === 0) return;
     if (
@@ -249,6 +254,24 @@ export default function SessionDetail() {
     }
   }
 
+  async function removeSession() {
+    if (
+      !(await confirm({
+        title: t('session.deleteTitle'),
+        message: t('session.deleteConfirm', { title: session.title }),
+        confirmLabel: t('common.delete'),
+      }))
+    )
+      return;
+    try {
+      await api.del(`/sessions/${id}`);
+      toast.success(t('session.deleted'));
+      back();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function removeHelper(a) {
     if (!(await confirm(t('session.confirmRemoveHelper', { name: memberName(a) }))))
       return;
@@ -264,7 +287,8 @@ export default function SessionDetail() {
   if (error)
     return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
-  const marked = session.roster.filter((m) => m.status).length;
+  // الغياب هو الافتراضي: «المُنجَز» هو من قُلب حاضرًا أو عُذر، و الباقي بانتظار القائد
+  const marked = session.roster.filter((m) => m.status === 'present' || m.status === 'excused').length;
   const totalRoster = session.roster.length;
   const pct = totalRoster ? Math.round((marked / totalRoster) * 100) : 0;
   const counts = {
@@ -286,10 +310,18 @@ export default function SessionDetail() {
 
   return (
     <div className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
-        <IconBack className="rtl:rotate-180" />
-        {t('common.back')}
-      </Button>
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('common.back')}
+        </Button>
+        {isAdmin && (
+          <Button variant="destructive-ghost" size="sm" onClick={removeSession} className="gap-2">
+            <IconTrash />
+            {t('common.delete')}
+          </Button>
+        )}
+      </div>
 
       <div className="space-y-2">
         <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{session.title}</h1>
@@ -490,7 +522,7 @@ export default function SessionDetail() {
             // نشاط مشترك: قسم لكل فرقة، يملأه قائدها أو مساعده — لا شخص واحد للجميع
             rosterBranchIds.map((bid) => {
               const rows = session.roster.filter((m) => m.branch_id === bid);
-              const left = rows.filter((m) => !m.status).length;
+              const left = rows.filter((m) => !m.status || m.status === 'absent').length;
               const b = branchList.find((x) => x.id === bid);
               return (
                 <section key={bid}>

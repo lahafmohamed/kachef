@@ -2506,6 +2506,18 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     for (const g of groupIds)
       db.prepare('INSERT OR IGNORE INTO session_groups (session_id, group_id) VALUES (?, ?)')
         .run(sessionId, g);
+    // كل عناصر النشاط غائبون افتراضيًا: القائد يقلب الحاضرين فقط، فمن لم
+    // يُلمس يبقى غيابًا مسجّلًا لا فراغًا منسيًّا. (After the group inserts —
+    // the group-scope SQL reads session_groups for this very session.)
+    if (kind === 'activity') {
+      const rosterBranches = branchIds.map(intOr).join(',') || -1;
+      db.prepare(
+        `INSERT OR IGNORE INTO attendance (session_id, member_id, status)
+         SELECT ?, m.id, 'absent' FROM members m
+         WHERE m.branch_id IN (${rosterBranches}) AND m.status = 'active'
+           AND ${memberInSessionGroupsSQL(sessionId, 'm')}`
+      ).run(sessionId);
+    }
     if (planItemId !== null) {
       // البند يحقّقه نشاط واحد: إسناده لنشاط جديد يفكّ ربطه بسابقه
       const previous = db
@@ -2532,6 +2544,15 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     branch_ids: branchIdsOfSession(sessionId),
     group_ids: groupIdsOfSession(sessionId),
   });
+});
+
+// حذف نشاط — أدمن فقط. الحضور و المنشّطون و روابط الخطة تسقط معه (ON DELETE
+// CASCADE)، و إشعاراته تحتفظ بعنوانه المنسوخ (SET NULL) فلا تنكسر.
+app.delete('/api/sessions/:id', requireAdmin, (req, res) => {
+  const s = db.prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(s.id);
+  res.json({ ok: true });
 });
 
 app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
