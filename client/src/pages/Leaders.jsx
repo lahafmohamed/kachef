@@ -344,18 +344,17 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
     <form onSubmit={submit} className="space-y-4">
       <div className="space-y-1.5">
         <Label htmlFor="a_leader">{t('leader.selectLeader')}</Label>
-        <Select
+        {/* 39 قائدًا: une liste déroulante simple ne se parcourt plus, il faut chercher */}
+        <SearchSelect
           id="a_leader"
           value={form.leader_id ?? ''}
           onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
-        >
-          <option value="">{t('leader.unassigned')}</option>
-          {leaders.map((l) => (
-            <option key={l.id} value={l.id}>
-              {memberName(l)}
-            </option>
-          ))}
-        </Select>
+          options={leaders.map((l) => ({ value: l.id, label: memberName(l) }))}
+          clearLabel={t('leader.unassigned')}
+          placeholder={t('leader.unassigned')}
+          searchPlaceholder={t('common.search')}
+          emptyLabel={t('common.noResults')}
+        />
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="a_title">{t('leader.assignmentTitle')}</Label>
@@ -1037,19 +1036,17 @@ export default function Leaders() {
         <div className="min-w-40 flex-1 space-y-1.5">
           <div className={cn('font-medium', !a.leader_id && 'text-muted-foreground')}>{a.title}</div>
           {canEdit ? (
-            <Select
+            <SearchSelect
               value={a.leader_id || ''}
               onChange={(e) => quickAssign(a, e.target.value)}
-              aria-label={`${a.title} — ${t('leader.selectLeader')}`}
+              ariaLabel={`${a.title} — ${t('leader.selectLeader')}`}
               className="max-w-64"
-            >
-              <option value="">{t('leader.unassigned')}</option>
-              {leaders.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {memberName(l)}
-                </option>
-              ))}
-            </Select>
+              options={leaders.map((l) => ({ value: l.id, label: memberName(l) }))}
+              clearLabel={t('leader.unassigned')}
+              placeholder={t('leader.unassigned')}
+              searchPlaceholder={t('common.search')}
+              emptyLabel={t('common.noResults')}
+            />
           ) : a.leader_id ? (
             <Link
               to={`/leaders/${a.leader_id}`}
