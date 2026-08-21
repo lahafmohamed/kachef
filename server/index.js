@@ -404,15 +404,20 @@ function targetBranchFor(age, branches) {
 function pendingPromotions() {
   const branches = getBranches();
   const byId = Object.fromEntries(branches.map((b) => [b.id, b]));
+  // موقع كل فرقة في الفوج — الترقية تصعد فقط، و المقارنة بالموقع لا بالسنّ
+  const rank = new Map(branches.map((b, i) => [b.id, i]));
   const members = db.prepare("SELECT * FROM members WHERE status = 'active'").all();
   const out = [];
   for (const m of members) {
     const cur = byId[m.branch_id];
     if (!cur || cur.max_age === null) continue;
     const age = calcAge(m.birth_date);
-    if (age <= cur.max_age) continue;
+    // حدود الفرق متقاطعة قصدًا (الكشافة ١٢–١٤، الجوالة ١٤–١٨): ابن الأربعة عشر
+    // بلغ أدنى سنّ الجوالة و هو بعدُ في سنّ الكشافة. فالترقية تُقترح ببلوغ الفرقة
+    // الأعلى لا بتجاوز أقصى سنّ فرقته — و إلا ظلّ المتقاطعون بلا ترقية أبدًا.
     const target = targetBranchFor(age, branches);
-    if (!target || target.id === cur.id) continue;
+    // فرقة أدنى تعني عنصرًا وُضع فوق سنّه: ذاك تصحيح يدوي لا ترقية
+    if (!target || rank.get(target.id) <= rank.get(cur.id)) continue;
     out.push({
       id: m.id,
       first_name: m.first_name,
