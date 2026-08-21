@@ -178,8 +178,10 @@
   --ease-out-soft: var(--ease-out-soft);
   --ease-spring: var(--ease-spring);
 
-  --font-sans: "Inter var", Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
-    "Noto Sans Arabic", Tahoma, sans-serif;
+  /* Inter has no Arabic glyphs, so Arabic falls through to Noto Sans Arabic
+     per-glyph; both load as self-hosted variable woff2 (see main.jsx). */
+  --font-sans: "Inter Variable", "Noto Sans Arabic Variable", "Segoe UI Variable Text",
+    "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic", Tahoma, sans-serif;
 }
 
 /* ============================================================
@@ -220,6 +222,24 @@ h1, h2, h3, h4 {
   text-wrap: balance;
 }
 h1 { letter-spacing: -0.028em; }
+
+/* Descriptions and body copy: keep a short word off the last line alone */
+p {
+  text-wrap: pretty;
+}
+
+/* Arabic is a joined script — any letter-spacing (negative or positive) pulls
+   the connected letterforms apart. Kill it wherever the Latin design added
+   tracking, headings and Tailwind tracking-* utilities alike. These rules are
+   unlayered, so they win over @layer utilities without !important. */
+html[lang="ar"] :is(h1, h2, h3, h4, [class*="tracking-"]) {
+  letter-spacing: 0;
+}
+/* Arabic ascenders/diacritics need more vertical air than Latin; this only
+   reaches text whose size utility doesn't set its own line-height. */
+html[lang="ar"] {
+  line-height: 1.6;
+}
 
 /* Numbers in tables and stats must align column-to-column */
 table,
