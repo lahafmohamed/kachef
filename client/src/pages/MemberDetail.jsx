@@ -479,6 +479,50 @@ export default function MemberDetail() {
           )}
         </CardContent>
       </Card>
+
+      {/* ---------- Présence dans les anciennes branches ----------
+          La promotion remet le taux à zéro ; chaque période passée garde sa
+          carte : taux + liste des activités de la branche quittée. */}
+      {(member.former_attendance || []).filter((f) => f.total > 0).map((f) => (
+        <Card key={`${f.branch_id}-${f.until}`}>
+          <CardHeader>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              {t('member.formerAttendance', {
+                branch: branchName({ name_fr: f.branch_name_fr, name_ar: f.branch_name_ar }, i18n.language),
+              })}
+              <Badge variant="outline">{t('member.formerUntil', { date: fmtDate(f.until) })}</Badge>
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              {t('member.sessionsAttended', { present: f.present, total: f.total })}
+              {f.rate !== null && <> · {f.rate}%</>}
+            </p>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <details>
+              <summary className="focus-ring mx-4 mb-2 cursor-pointer select-none rounded px-1 py-2 text-sm font-medium text-muted-foreground hover:text-foreground sm:mx-5">
+                {t('member.formerShowHistory', { count: f.history.length })}
+              </summary>
+              <ul className="divide-y divide-border border-t border-border">
+                {f.history.map((h) => {
+                  const [variant, key] = STATUS_BADGE[h.status];
+                  return (
+                    <li key={h.session_id}>
+                      <Link
+                        to={`/sessions/${h.session_id}`}
+                        className="focus-ring flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 transition-colors hover:bg-accent/50 sm:px-5"
+                      >
+                        <span className="min-w-0 flex-1 text-sm font-medium">{h.title}</span>
+                        <span className="tabular-nums text-xs text-muted-foreground">{fmtDate(h.date)}</span>
+                        <Badge variant={variant}>{t(key)}</Badge>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }

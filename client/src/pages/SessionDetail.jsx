@@ -230,6 +230,40 @@ export default function SessionDetail() {
     }
   }
 
+  // نشاط قادة: زرّ يقلب غير المعلَّمين حاضرين — الغياب الموضوع قصدًا لا يُمسّ
+  async function markAllLeadersPresent() {
+    const unmarked = (session.animators || []).filter((a) => !a.status);
+    if (unmarked.length === 0) return;
+    if (
+      !(await confirm({
+        title: t('session.markAllPresent'),
+        message: t('session.markAllConfirm', { count: unmarked.length }),
+        destructive: false,
+        confirmLabel: t('session.markAllPresent'),
+      }))
+    )
+      return;
+    setBulkBusy(true);
+    const prev = session;
+    const ids = new Set(unmarked.map((a) => a.leader_id));
+    setSession((s) => ({
+      ...s,
+      animators: s.animators.map((a) => (ids.has(a.leader_id) ? { ...a, status: 'present' } : a)),
+    }));
+    try {
+      for (const a of unmarked) {
+        await api.post(`/sessions/${id}/animators`, { leader_id: a.leader_id, status: 'present' });
+      }
+      toast.success(t('session.markedCount', { count: unmarked.length }));
+      reload({ quiet: true });
+    } catch (err) {
+      setSession(prev);
+      toast.error(attendanceError(t, err));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function markAnimator(leaderId, status) {
     const prev = session;
     setSession((s) => ({
@@ -295,6 +329,14 @@ export default function SessionDetail() {
     present: session.roster.filter((m) => m.status === 'present').length,
     absent: session.roster.filter((m) => m.status === 'absent').length,
     excused: session.roster.filter((m) => m.status === 'excused').length,
+  };
+  // نشاط قادة: لائحته هي القادة أنفسهم — تقدّمه و أزراره تُبنى من animators
+  const isLeadersSession = session.kind === 'leaders';
+  const leaderRoster = session.animators || [];
+  const leaderMarked = leaderRoster.filter((a) => a.status).length;
+  const leaderCounts = {
+    present: leaderRoster.filter((a) => a.status === 'present').length,
+    absent: leaderRoster.filter((a) => a.status === 'absent').length,
   };
   const availableHelpers = (leaders.data || []).filter(
     (l) => l.status === 'active' && !session.animators?.some((a) => a.leader_id === l.id)
@@ -432,11 +474,44 @@ export default function SessionDetail() {
         </Card>
       )}
 
-      {/* ---------- Animateurs ---------- */}
+      {/* ---------- تقدّم حضور القادة في نشاط قادة ---------- */}
+      {isLeadersSession && leaderRoster.length > 0 && (
+        <Card>
+          <CardContent className="space-y-3 p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium tabular-nums">
+                {t('session.marked', { marked: leaderMarked, total: leaderRoster.length })}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <Badge variant="success">{leaderCounts.present}</Badge>
+                <Badge variant="destructive">{leaderCounts.absent}</Badge>
+              </div>
+            </div>
+            <ProgressBar
+              value={leaderRoster.length ? Math.round((leaderMarked / leaderRoster.length) * 100) : 0}
+              label={t('session.attendance')}
+            />
+            {editable && leaderMarked < leaderRoster.length && (
+              <Button
+                variant="outline"
+                size="sm"
+                loading={bulkBusy}
+                onClick={markAllLeadersPresent}
+                className="w-full sm:w-auto"
+              >
+                <IconCheckAll />
+                {t('session.markRestPresent', { count: leaderRoster.length - leaderMarked })}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ---------- Animateurs / حضور القادة ---------- */}
       <Card>
         <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t('session.animators')}</CardTitle>
-          {editable && availableHelpers.length > 0 && (
+          <CardTitle>{t(isLeadersSession ? 'session.leadersAttendance' : 'session.animators')}</CardTitle>
+          {!isLeadersSession && editable && availableHelpers.length > 0 && (
             <Select
               className="sm:w-auto"
               value=""
@@ -467,11 +542,14 @@ export default function SessionDetail() {
                     >
                       {memberName(a)}
                     </Link>
-                    <div className="mt-0.5">
-                      <Badge variant={a.role === 'main' ? 'default' : 'secondary'}>
-                        {t(a.role === 'main' ? 'session.mainAnimator' : 'session.helper')}
-                      </Badge>
-                    </div>
+                    {/* في نشاط القادة الكل حاضرون بصفتهم قادة: لا معنى لشارة «مساعد» */}
+                    {(!isLeadersSession || a.role === 'main') && (
+                      <div className="mt-0.5">
+                        <Badge variant={a.role === 'main' ? 'default' : 'secondary'}>
+                          {t(a.role === 'main' ? 'session.mainAnimator' : 'session.helper')}
+                        </Badge>
+                      </div>
+                    )}
                   </div>
                   <div className="flex w-full items-center gap-1.5 sm:w-auto">
                     {editable ? (
@@ -483,7 +561,7 @@ export default function SessionDetail() {
                           onChange={(v) => markAnimator(a.leader_id, v)}
                           options={ANIMATOR_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
                         />
-                        {a.role === 'helper' && (
+                        {!isLeadersSession && a.role === 'helper' && (
                           <Button
                             variant="destructive-ghost"
                             size="icon"

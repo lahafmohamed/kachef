@@ -145,7 +145,10 @@
     "matalibBy": "par {{name}}",
     "group": "Sous-groupe",
     "allGroups": "Tous les sous-groupes",
-    "noGroup": "Sans sous-groupe"
+    "noGroup": "Sans sous-groupe",
+    "formerAttendance": "Présence en {{branch}}",
+    "formerUntil": "jusqu'au {{date}}",
+    "formerShowHistory": "Voir les {{count}} activités"
   },
   "session": {
     "title": "Séances",
@@ -249,7 +252,8 @@
     "totalAttendance": "Total des présents",
     "countsSaved": "Effectifs enregistrés",
     "groups": "Sous-groupes concernés",
-    "groupsHint": "Sans sélection, toute la branche participe. Choisir un ou plusieurs sous-groupes limite la liste de présence à leurs membres."
+    "groupsHint": "Sans sélection, toute la branche participe. Choisir un ou plusieurs sous-groupes limite la liste de présence à leurs membres.",
+    "leadersAttendance": "Présence des chefs"
   },
   "promotion": {
     "title": "Promotions",

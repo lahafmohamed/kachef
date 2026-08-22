@@ -103,9 +103,10 @@ export default function Dashboard() {
           </div>
           <ul className="space-y-1.5">
             {s.birthdays.map((b) => (
-              <li key={b.id}>
+              // Un chef et un membre peuvent partager le même id numérique
+              <li key={`${b.kind || 'member'}-${b.id}`}>
                 <Link
-                  to={`/members/${b.id}`}
+                  to={b.kind === 'leader' ? `/leaders/${b.id}` : `/members/${b.id}`}
                   className="focus-ring flex items-center gap-3 rounded-lg bg-card/70 px-3 py-2 transition-colors hover:bg-card"
                 >
                   <Avatar photo={b.photo} name={avatarName(b)} className="h-9 w-9" />
@@ -115,7 +116,9 @@ export default function Dashboard() {
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {t('birthday.turning', { age: b.turning })} ·{' '}
-                      {branchName({ name_fr: b.branch_name_fr, name_ar: b.branch_name_ar }, i18n.language)}
+                      {b.kind === 'leader'
+                        ? t('branch.leaders')
+                        : branchName({ name_fr: b.branch_name_fr, name_ar: b.branch_name_ar }, i18n.language)}
                     </div>
                   </div>
                   <Badge variant={b.when === 'today' ? 'warning' : 'outline'}>

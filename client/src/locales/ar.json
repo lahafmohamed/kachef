@@ -145,7 +145,10 @@
     "matalibBy": "بواسطة {{name}}",
     "group": "المجموعة",
     "allGroups": "كل المجموعات",
-    "noGroup": "بلا مجموعة"
+    "noGroup": "بلا مجموعة",
+    "formerAttendance": "الحضور في {{branch}}",
+    "formerUntil": "حتى {{date}}",
+    "formerShowHistory": "عرض الأنشطة ({{count}})"
   },
   "session": {
     "title": "الأنشطة",
@@ -249,7 +252,8 @@
     "totalAttendance": "مجموع الحضور",
     "countsSaved": "تم حفظ أعداد الحضور",
     "groups": "المجموعات المعنيّة",
-    "groupsHint": "بلا اختيار تشارك الفرقة كاملةً. اختيار مجموعة أو أكثر يحصر لائحة الحضور في عناصرها."
+    "groupsHint": "بلا اختيار تشارك الفرقة كاملةً. اختيار مجموعة أو أكثر يحصر لائحة الحضور في عناصرها.",
+    "leadersAttendance": "حضور القادة"
   },
   "promotion": {
     "title": "الترقيات",

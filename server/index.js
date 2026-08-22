@@ -481,14 +481,26 @@ function upcomingBirthdays() {
     `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const wanted = { [md(now)]: 'today', [md(tomorrow)]: 'tomorrow' };
 
-  return db
+  const members = db
     .prepare(
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.birth_date, m.branch_id,
               b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
          FROM members m LEFT JOIN branches b ON b.id = m.branch_id
         WHERE m.status = 'active' AND substr(m.birth_date, 6, 5) IN (?, ?)`
     )
+    .all(md(now), md(tomorrow));
+  // القادة أعضاء أيضًا: عيد ميلادهم يُذكَر مثل أي عنصر. بلا فرقة، فيمرّون من
+  // فلترة الفرق لكل المستخدمين، و kind يُوجّه الرابط إلى ملف القائد.
+  const leaders = db
+    .prepare(
+      `SELECT l.id, l.first_name, l.father_name, l.last_name, l.photo, l.birth_date,
+              NULL AS branch_id, NULL AS branch_name_fr, NULL AS branch_name_ar
+         FROM leaders l
+        WHERE l.status = 'active' AND substr(l.birth_date, 6, 5) IN (?, ?)`
+    )
     .all(md(now), md(tomorrow))
+    .map((l) => ({ ...l, kind: 'leader' }));
+  return [...members, ...leaders]
     .map((m) => {
       const when = wanted[m.birth_date.slice(5)];
       const ref = when === 'today' ? now : tomorrow;
@@ -541,16 +553,8 @@ function familyVisits(memberId) {
 
 // Visits are deliberately excluded: a زيارة الأهل is not an activity the عنصر
 // attended, so counting it would inflate every présence rate.
-function attendanceStats(memberId, branchId) {
-  const rows = db
-    .prepare(
-      `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
-       FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE a.member_id = ? AND s.kind = 'activity'
-       ORDER BY s.date DESC, s.id DESC`
-    )
-    .all(memberId)
-    .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
+// totaux, taux et série d'absences à partir de lignes déjà triées (récentes d'abord)
+function statsFromRows(rows) {
   const total = rows.length;
   const present = rows.filter((r) => r.status === 'present').length;
   let streak = 0;
@@ -558,13 +562,31 @@ function attendanceStats(memberId, branchId) {
     if (r.status === 'absent') streak++;
     else break;
   }
-  const earned = branchId ? earnedNumbersInBranch(memberId, branchId) : [];
   return {
     history: rows,
     total,
     present,
     rate: total ? Math.round((present / total) * 100) : null,
     consecutive_absences: streak,
+  };
+}
+
+function attendanceStats(memberId, branchId, { from = null, to = null } = {}) {
+  // نافذة زمنية اختيارية: الترقية تعيد عدّاد الحضور من الصفر، فتاريخ الترقية
+  // يحدّ الإحصاء — و ما قبله يُعرض بطاقةً تاريخية للفرقة السابقة.
+  const rows = db
+    .prepare(
+      `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
+       FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE a.member_id = ? AND s.kind = 'activity'
+         AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?)
+       ORDER BY s.date DESC, s.id DESC`
+    )
+    .all(memberId, from, from, to, to)
+    .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
+  const earned = branchId ? earnedNumbersInBranch(memberId, branchId) : [];
+  return {
+    ...statsFromRows(rows),
     requirements_earned: earned.length,
     earned_numbers: earned,
   };
@@ -1400,11 +1422,64 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
     )
     .all(m.id)
     .map((p) => ({ ...p, matalib: JSON.parse(p.matalib || '[]') }));
+  // كل صفّ حضور يُنسب إلى فرقة نشاطه: نشاط فرقة واحدة يتبعها، و المشترك يتبع
+  // فرقة العنصر يوم النشاط (من سجلّ الترقيات). فالترقية تعيد نسبته من الصفر —
+  // حتى لو وقع نشاط الفرقتين في اليوم نفسه — و حضوره القديم بطاقة لفرقته السابقة.
+  const periodsAsc = db
+    .prepare(
+      `SELECT p.promoted_at, p.old_branch_id, b.name_fr, b.name_ar
+       FROM promotions p JOIN branches b ON b.id = p.old_branch_id
+       WHERE p.member_id = ? ORDER BY p.promoted_at ASC, p.id ASC`
+    )
+    .all(m.id);
+  const branchAt = (date) => {
+    for (const p of periodsAsc) if (date < p.promoted_at) return p.old_branch_id;
+    return m.branch_id;
+  };
+  // فرق العنصر عبر الزمن، الأحدث أولًا — للمشترك الواقع يوم الترقية نفسه:
+  // فرقته الجديدة قد لا تكون من فرق النشاط، فيُنسب لآخر فرقة له فيه.
+  const branchTimeline = [m.branch_id, ...periodsAsc.map((p) => p.old_branch_id).reverse()];
+  const allRows = db
+    .prepare(
+      `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id,
+        (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS sb_ids
+       FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE a.member_id = ? AND s.kind = 'activity'
+       ORDER BY s.date DESC, s.id DESC`
+    )
+    .all(m.id)
+    .map((r) => {
+      const ids = (r.sb_ids || '').split(',').filter(Boolean).map(Number);
+      const at = branchAt(r.date);
+      const branch =
+        ids.length <= 1
+          ? (ids[0] ?? m.branch_id)
+          : ids.includes(at)
+            ? at
+            : (branchTimeline.find((b) => ids.includes(b)) ?? ids[0]);
+      return { status: r.status, date: r.date, title: r.title, session_id: r.session_id, matalib: JSON.parse(r.matalib || '[]'), attributed_branch: branch };
+    });
+  const currentStats = statsFromRows(allRows.filter((r) => r.attributed_branch === m.branch_id));
+  const earned = earnedNumbersInBranch(m.id, m.branch_id);
+  const former_attendance = periodsAsc.map((p) => {
+    const st = statsFromRows(allRows.filter((r) => r.attributed_branch === p.old_branch_id));
+    return {
+      branch_id: p.old_branch_id,
+      branch_name_fr: p.name_fr,
+      branch_name_ar: p.name_ar,
+      until: p.promoted_at,
+      total: st.total,
+      present: st.present,
+      rate: st.rate,
+      history: st.history,
+    };
+  });
   res.json(
     stripContact(req, {
       ...m,
       age: calcAge(m.birth_date),
-      stats: attendanceStats(m.id, m.branch_id),
+      stats: { ...currentStats, requirements_earned: earned.length, earned_numbers: earned },
+      former_attendance,
       visits: familyVisits(m.id),
       // مطالب زيدت أو أُلغيت يدويًا — the UI marks them apart from the ones earned in أنشطة
       manual_matalib: manualMatalib(m.id, m.branch_id),
@@ -2373,11 +2448,19 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
         (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS branch_ids,
         (SELECT GROUP_CONCAT(sg.group_id) FROM session_groups sg WHERE sg.session_id = s.id) AS group_ids,
         (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
-        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count,
-        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') AS absent_count,
+        -- حضور نشاط القادة يسكن session_leaders لا attendance، فالأعداد تتبع النوع
+        (CASE WHEN s.kind = 'leaders'
+          THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'present')
+          ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') END) AS present_count,
+        (CASE WHEN s.kind = 'leaders'
+          THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
+          ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') END) AS absent_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count,
-        (SELECT ROUND(100.0 * SUM(a.status = 'present') / NULLIF(COUNT(*), 0))
-           FROM attendance a WHERE a.session_id = s.id) AS rate
+        (CASE WHEN s.kind = 'leaders'
+          THEN (SELECT ROUND(100.0 * SUM(sl.status = 'present') / NULLIF(COUNT(sl.status), 0))
+                  FROM session_leaders sl WHERE sl.session_id = s.id)
+          ELSE (SELECT ROUND(100.0 * SUM(a.status = 'present') / NULLIF(COUNT(*), 0))
+                  FROM attendance a WHERE a.session_id = s.id) END) AS rate
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
        WHERE 1=1${sessionScopeSQL(req)}`;
@@ -2636,13 +2719,29 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
            ORDER BY m.branch_id, m.last_name, m.first_name`
     )
     .all(s.id)
-    .map((m) => ({ ...m, consecutive_absences: attendanceStats(m.id).consecutive_absences }));
+    .map((m) => ({
+      ...m,
+      // الغيابات المتتالية تُحسب من آخر ترقية: سجلّ الفرقة السابقة لا يلاحق العنصر
+      consecutive_absences: attendanceStats(m.id, null, {
+        from:
+          db
+            .prepare('SELECT MAX(promoted_at) AS d FROM promotions WHERE member_id = ?')
+            .get(m.id).d || null,
+      }).consecutive_absences,
+    }));
+  // نشاط قادة: حضوره هو القادة أنفسهم، فاللائحة كل قائد نشيط — لا المنشّطون
+  // المضافون يدًا وحدهم. قائد غير نشيط سُجّل حضوره من قبل يبقى ظاهرًا.
   const animators = db
     .prepare(
-      `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
-       FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
-       WHERE sl.session_id = ?
-       ORDER BY sl.role = 'helper', l.last_name, l.first_name`
+      s.kind === 'leaders'
+        ? `SELECT l.id AS leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+           FROM leaders l LEFT JOIN session_leaders sl ON sl.leader_id = l.id AND sl.session_id = ?
+           WHERE l.status = 'active' OR sl.status IS NOT NULL
+           ORDER BY sl.role = 'main' DESC, l.last_name, l.first_name`
+        : `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+           FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
+           WHERE sl.session_id = ?
+           ORDER BY sl.role = 'helper', l.last_name, l.first_name`
     )
     .all(s.id);
   res.json(
