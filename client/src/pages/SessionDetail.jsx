@@ -26,6 +26,7 @@ import {
   IconAlert,
   IconBack,
   IconCheckAll,
+  IconClipboard,
   IconClock,
   IconPin,
   IconTrash,
@@ -432,6 +433,22 @@ export default function SessionDetail() {
           )}
         </div>
       </div>
+
+      {/* ---------- بطاقات التحضير المربوطة بهذا النشاط ---------- */}
+      {session.prep_cards?.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {session.prep_cards.map((c) => (
+            <Link
+              key={c.id}
+              to={`/prep-cards/${c.id}`}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+            >
+              <IconClipboard className="h-3.5 w-3.5" />
+              {t('prep.cardLabel')} : {c.title}
+            </Link>
+          ))}
+        </div>
+      )}
 
       {/* ---------- نشاط عام للفوج: عدد الحضور لكل فرقة ---------- */}
       {session.kind === 'group' && (

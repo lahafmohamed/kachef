@@ -9,7 +9,16 @@ seed();
 seedLeaders();
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb' }));
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  next();
+});
 
 // ---------- Auth ----------
 
@@ -46,9 +55,43 @@ const PERM_GROUPS = {
   promotions: ['promotions.read', 'promotions.apply'],
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
-  leaders: ['leaders.read', 'leaders.progress'],
+  leaders: ['leaders.read', 'leaders.progress.self', 'leaders.progress.manage'],
 };
 const ALL_PERMS = Object.values(PERM_GROUPS).flat();
+
+// Write permissions are never useful without their corresponding read surface.
+// Expanding them server-side prevents malformed combinations even if an old client
+// or a direct API request bypasses the admin form.
+const PERM_DEPENDENCIES = {
+  'members.create': ['members.read'],
+  'members.edit': ['members.read'],
+  'members.delete': ['members.read'],
+  'members.contact': ['members.read'],
+  'members.matalib': ['members.read'],
+  'sessions.create': ['sessions.read'],
+  'sessions.attendance': ['sessions.read'],
+  'sessions.read.fees': ['sessions.read'],
+  'branches.plan': ['branches.read'],
+  'branches.groups': ['branches.read'],
+  'promotions.apply': ['promotions.read', 'members.read'],
+  'leaders.progress.self': ['leaders.read'],
+  'leaders.progress.manage': ['leaders.read'],
+};
+
+function expandPerms(keys) {
+  const out = new Set(keys);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const key of [...out])
+      for (const dep of PERM_DEPENDENCIES[key] || [])
+        if (!out.has(dep)) {
+          out.add(dep);
+          changed = true;
+        }
+  }
+  return [...out];
+}
 
 // What the old "view" level of a page used to show (it displayed phones and fees)
 const LEGACY_VIEW = {
@@ -67,6 +110,7 @@ function normalizePerms(raw) {
   if (Array.isArray(raw)) {
     for (const k of raw) {
       if (PERM_GROUPS[k]) PERM_GROUPS[k].forEach((p) => out.add(p)); // legacy page name = full page
+      else if (k === 'leaders.progress') out.add('leaders.progress.self');
       else if (ALL_PERMS.includes(k)) out.add(k);
     }
   } else if (typeof raw === 'object') {
@@ -76,7 +120,7 @@ function normalizePerms(raw) {
       else if (level === 'view') LEGACY_VIEW[page].forEach((p) => out.add(p));
     }
   }
-  return [...out];
+  return expandPerms([...out]);
 }
 
 const publicUser = (u) => ({
@@ -90,6 +134,8 @@ const publicUser = (u) => ({
   perms: u.perms ? normalizePerms(JSON.parse(u.perms)) : null,
   // القائد صاحب الحساب إن وُلّد من صفحة القادة
   leader_id: u.leader_id ?? null,
+  active: u.active === undefined ? true : !!u.active,
+  must_change_password: !!u.must_change_password,
 });
 
 const hasPerm = (req, key) =>
@@ -102,6 +148,32 @@ const requirePerm = (key) => (req, res, next) =>
 // from more than one page (adding a quartier while registering or while editing).
 const requireAnyPerm = (...keys) => (req, res, next) =>
   keys.some((k) => hasPerm(req, k)) ? next() : res.status(403).json({ error: 'forbidden' });
+
+const auditInsert = db.prepare(
+  `INSERT INTO audit_events
+    (actor_user_id, actor, action, entity_type, entity_id, before_json, after_json)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`
+);
+
+function auditSnapshot(value) {
+  if (value === undefined || value === null) return null;
+  const clean = { ...value };
+  for (const key of ['password_hash', 'token', 'photo']) delete clean[key];
+  const json = JSON.stringify(clean);
+  return json.length > 20000 ? JSON.stringify({ truncated: true }) : json;
+}
+
+function auditEvent(req, action, entityType, entityId, before = null, after = null) {
+  auditInsert.run(
+    req.user?.id || null,
+    req.user?.display_name || req.user?.username || 'system',
+    action,
+    entityType,
+    entityId === undefined || entityId === null ? null : String(entityId),
+    auditSnapshot(before),
+    auditSnapshot(after)
+  );
+}
 
 // Coordinates are personal data: without members.contact they never leave the server
 const CONTACT_FIELDS = ['member_phone', 'father_phone', 'mother_phone', 'address_abidjan', 'address_lebanon'];
@@ -122,6 +194,39 @@ const IDLE_MS = 15 * 60 * 1000;
 const MAX_SESSION_MS = 24 * 60 * 60 * 1000;
 // Every request would otherwise write a row; a coarse touch is enough to measure idleness
 const TOUCH_MS = 30 * 1000;
+const MIN_PASSWORD_LENGTH = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+const loginAttempts = new Map();
+
+const passwordError = (password) => {
+  const value = String(password || '');
+  if (value.length < MIN_PASSWORD_LENGTH) return 'password too short';
+  if (value.length > 256) return 'password too long';
+  return null;
+};
+
+function loginAttemptKey(req, username) {
+  return `${req.ip || req.socket.remoteAddress || 'unknown'}:${String(username || '').trim().toLowerCase()}`;
+}
+
+function loginBlocked(key) {
+  const now = Date.now();
+  const row = loginAttempts.get(key);
+  if (!row || now - row.startedAt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(key);
+    return false;
+  }
+  return row.count >= LOGIN_MAX_ATTEMPTS;
+}
+
+function registerLoginFailure(key) {
+  const now = Date.now();
+  const row = loginAttempts.get(key);
+  if (!row || now - row.startedAt > LOGIN_WINDOW_MS)
+    loginAttempts.set(key, { count: 1, startedAt: now });
+  else row.count += 1;
+}
 
 // SQLite stores UTC without a zone marker — Date.parse needs the Z spelled out
 const sqlTime = (v) => (v ? Date.parse(v.replace(' ', 'T') + 'Z') : 0);
@@ -135,9 +240,17 @@ const purgeExpired = () =>
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
+  const attemptKey = loginAttemptKey(req, username);
+  if (loginBlocked(attemptKey)) {
+    res.setHeader('Retry-After', String(Math.ceil(LOGIN_WINDOW_MS / 1000)));
+    return res.status(429).json({ error: 'too_many_attempts' });
+  }
   const u = username && db.prepare('SELECT * FROM users WHERE username = ?').get(String(username).trim());
-  if (!u || !verifyPassword(String(password || ''), u.password_hash))
+  if (!u || !u.active || !verifyPassword(String(password || ''), u.password_hash)) {
+    registerLoginFailure(attemptKey);
     return res.status(401).json({ error: 'invalid_credentials' });
+  }
+  loginAttempts.delete(attemptKey);
   purgeExpired();
   const token = crypto.randomBytes(32).toString('hex');
   // last_seen_at is spelled out: on databases where the column arrived by
@@ -159,7 +272,10 @@ app.use('/api', (req, res, next) => {
            FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?`
       )
       .get(token);
-  if (!row) return res.status(401).json({ error: 'unauthorized' });
+  if (!row || !row.active) {
+    if (token) db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(token);
+    return res.status(401).json({ error: 'unauthorized' });
+  }
 
   const idleFor = Date.now() - sqlTime(row.token_last_seen || row.token_created);
   const age = Date.now() - sqlTime(row.token_created);
@@ -181,6 +297,32 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => res.json(req.user));
+
+app.post('/api/auth/change-password', (req, res) => {
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!row || !verifyPassword(String(req.body?.current_password || ''), row.password_hash))
+    return res.status(400).json({ error: 'invalid_current_password' });
+  const err = passwordError(req.body?.new_password);
+  if (err) return res.status(400).json({ error: err });
+  db.transaction(() => {
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(
+      hashPassword(String(req.body.new_password)),
+      row.id
+    );
+    db.prepare('DELETE FROM auth_tokens WHERE user_id = ? AND token != ?').run(row.id, req.token);
+  })();
+  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(row.id)));
+});
+
+// A generated/default password is only a bootstrap credential. Until it is changed,
+// the account may inspect itself and change the password, but no product data leaves.
+app.use('/api', (req, res, next) => {
+  if (!req.user.must_change_password) return next();
+  const allowed = ['/api/auth/me', '/api/auth/change-password', '/api/auth/logout'];
+  return allowed.some((p) => req.originalUrl.startsWith(p))
+    ? next()
+    : res.status(403).json({ error: 'password_change_required' });
+});
 
 const requireAdmin = (req, res, next) =>
   req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin_only' });
@@ -236,7 +378,8 @@ const attendanceInBranchSQL = (branchId, sAlias = 's', aAlias = 'a') => {
   const id = intOr(branchId);
   return `(${sessionInBranchSQL(id, sAlias)} AND (
       (SELECT COUNT(*) FROM session_branches sb2 WHERE sb2.session_id = ${sAlias}.id) = 1
-      OR (SELECT m2.branch_id FROM members m2 WHERE m2.id = ${aAlias}.member_id) = ${id}))`;
+      OR COALESCE(${aAlias}.branch_id,
+          (SELECT m2.branch_id FROM members m2 WHERE m2.id = ${aAlias}.member_id)) = ${id}))`;
 };
 
 // SQL fragment limiting أنشطة to the caller's فرق — نشاط بلا فرقة (قادة / فوج) يمرّ
@@ -330,7 +473,10 @@ function resolveGroupId(raw, branchId) {
 function parseBranchList(v) {
   if (v === null || v === undefined || v === '') return null;
   if (!Array.isArray(v) || !v.every((n) => Number.isInteger(n))) return undefined;
-  return v.length ? JSON.stringify(v) : null;
+  const ids = [...new Set(v)];
+  if (ids.some((id) => !db.prepare('SELECT id FROM branches WHERE id = ?').get(id))) return undefined;
+  // [] deliberately means no branch. Only an explicit null means unrestricted.
+  return JSON.stringify(ids);
 }
 
 // Same contract as parseBranchList: null = unrestricted, undefined = invalid input.
@@ -352,7 +498,8 @@ app.get('/api/users', requireAdmin, (req, res) => {
 app.post('/api/users', requireAdmin, (req, res) => {
   const { username, password, display_name, role } = req.body;
   if (!username || !String(username).trim()) return res.status(400).json({ error: 'username required' });
-  if (!password || String(password).length < 4) return res.status(400).json({ error: 'password too short' });
+  const passErr = passwordError(password);
+  if (passErr) return res.status(400).json({ error: passErr });
   if (!['admin', 'user'].includes(role || 'user')) return res.status(400).json({ error: 'invalid role' });
   const branches = parseBranchList(req.body.branches);
   if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
@@ -361,7 +508,9 @@ app.post('/api/users', requireAdmin, (req, res) => {
   try {
     const info = db
       .prepare(
-        'INSERT INTO users (username, password_hash, display_name, role, branches, perms) VALUES (?, ?, ?, ?, ?, ?)'
+        `INSERT INTO users
+          (username, password_hash, display_name, role, branches, perms, active, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 1)`
       )
       .run(
         String(username).trim(),
@@ -371,7 +520,9 @@ app.post('/api/users', requireAdmin, (req, res) => {
         branches,
         perms
       );
-    res.status(201).json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
+    const created = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    auditEvent(req, 'create', 'user', created.id, null, publicUser(created));
+    res.status(201).json(publicUser(created));
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(400).json({ error: 'username_taken' });
     throw e;
@@ -384,8 +535,9 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   const role = req.body.role ?? u.role;
   if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'invalid role' });
   // The last admin cannot be demoted, or the admin page becomes unreachable
-  if (u.role === 'admin' && role !== 'admin') {
-    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get().n;
+  const active = req.body.active === undefined ? !!u.active : !!req.body.active;
+  if (u.role === 'admin' && u.active && (role !== 'admin' || !active)) {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
     if (admins <= 1) return res.status(400).json({ error: 'last_admin' });
   }
   const branches =
@@ -396,22 +548,38 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   if (perms === undefined && req.body.perms !== undefined)
     return res.status(400).json({ error: 'invalid perms' });
   let password_hash = u.password_hash;
+  let mustChange = u.must_change_password || 0;
   if (req.body.password) {
-    if (String(req.body.password).length < 4) return res.status(400).json({ error: 'password too short' });
+    const passErr = passwordError(req.body.password);
+    if (passErr) return res.status(400).json({ error: passErr });
     password_hash = hashPassword(String(req.body.password));
+    mustChange = 1;
     // A password change kicks that user's devices out
     db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
   }
   db.prepare(
-    'UPDATE users SET display_name = ?, role = ?, branches = ?, perms = ?, password_hash = ? WHERE id = ?'
-  ).run(req.body.display_name ?? u.display_name, role, branches, perms, password_hash, u.id);
-  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)));
+    `UPDATE users SET display_name = ?, role = ?, branches = ?, perms = ?, password_hash = ?,
+       active = ?, must_change_password = ? WHERE id = ?`
+  ).run(req.body.display_name ?? u.display_name, role, branches, perms, password_hash, active ? 1 : 0, mustChange, u.id);
+  if (!active) db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+  auditEvent(req, 'update', 'user', u.id, publicUser(u), publicUser(updated));
+  res.json(publicUser(updated));
 });
 
 app.delete('/api/users/:id', requireAdmin, (req, res) => {
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'cannot_delete_self' });
-  const info = db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'user not found' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'user not found' });
+  if (user.role === 'admin' && user.active) {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
+    if (admins <= 1) return res.status(400).json({ error: 'last_admin' });
+  }
+  db.transaction(() => {
+    db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(user.id);
+    db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(user.id);
+  })();
+  auditEvent(req, 'deactivate', 'user', user.id, publicUser(user), { ...publicUser(user), active: false });
   res.status(204).end();
 });
 
@@ -579,10 +747,11 @@ function attendanceStats(memberId, branchId, { from = null, to = null } = {}) {
       `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
        FROM attendance a JOIN sessions s ON s.id = a.session_id
        WHERE a.member_id = ? AND s.kind = 'activity'
-         AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?)
+          AND a.status != 'unmarked' AND s.date <= ?
+          AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?)
        ORDER BY s.date DESC, s.id DESC`
     )
-    .all(memberId, from, from, to, to)
+    .all(memberId, todayISO(), from, from, to, to)
     .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
   const earned = branchId ? earnedNumbersInBranch(memberId, branchId) : [];
   return {
@@ -716,7 +885,9 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
   const attendeesStmt = db.prepare(
     `SELECT a.status, m.id, m.first_name, m.father_name, m.last_name, m.photo
      FROM attendance a JOIN members m ON m.id = a.member_id
-     WHERE a.session_id = ? ORDER BY m.last_name, m.first_name`
+     WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) = ?
+       AND a.status != 'unmarked'
+     ORDER BY m.last_name, m.first_name`
   );
   const animatorsStmt = db.prepare(
     `SELECT l.id, l.first_name, l.father_name, l.last_name, sl.role, sl.status
@@ -726,7 +897,7 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
 
   res.json(
     sessions.map((s) => {
-      const attendees = attendeesStmt.all(s.id);
+      const attendees = attendeesStmt.all(s.id, branch.id);
       return {
         ...s,
         animators: animatorsStmt.all(s.id),
@@ -816,11 +987,13 @@ function planFor(branchId, year) {
       if (!byPlan.has(linkedHere)) byPlan.set(linkedHere, s);
     } else {
       const k = planTitleKey(s.title);
-      if (!byTitle.has(k)) byTitle.set(k, s);
+      if (!byTitle.has(k)) byTitle.set(k, []);
+      byTitle.get(k).push(s);
     }
   }
   const rows = items.map((i) => {
-    const s = byPlan.get(i.id) || byTitle.get(planTitleKey(i.title)) || null;
+    const titleMatches = byTitle.get(planTitleKey(i.title));
+    const s = byPlan.get(i.id) || (titleMatches?.length ? titleMatches.shift() : null);
     return {
       ...i,
       session: s ? { id: s.id, title: s.title, date: s.date, linked: s.linked_item_id === i.id } : null,
@@ -963,7 +1136,7 @@ app.put('/api/branches/:id/plan/month', requirePerm('branches.plan'), (req, res)
     const title = String(r?.title || '').trim();
     if (!title) continue;
     const date = String(r?.date || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'invalid date' });
+    if (!validISODate(date)) return res.status(400).json({ error: 'invalid date' });
     if (!date.startsWith(month)) return res.status(400).json({ error: 'date_outside_month' });
     if (date < range.from || date > range.to)
       return res.status(400).json({ error: 'date_outside_year' });
@@ -973,6 +1146,11 @@ app.put('/api/branches/:id/plan/month', requirePerm('branches.plan'), (req, res)
   const existing = db
     .prepare('SELECT id FROM annual_plan WHERE branch_id = ? AND year = ? AND substr(date, 1, 7) = ?')
     .all(branch.id, year, month);
+  const existingIds = new Set(existing.map((e) => e.id));
+  if (items.some((i) => i.id !== null && !existingIds.has(i.id)))
+    return res.status(400).json({ error: 'invalid plan item id' });
+  if (new Set(items.map((i) => i.date)).size !== items.length)
+    return res.status(409).json({ error: 'duplicate plan date' });
   const kept = new Set(items.map((i) => i.id).filter(Boolean));
   const del = db.prepare('DELETE FROM annual_plan WHERE id = ? AND branch_id = ?');
   const upd = db.prepare('UPDATE annual_plan SET date = ?, title = ? WHERE id = ? AND branch_id = ?');
@@ -1001,6 +1179,26 @@ function validateBranchBody(body, { requireNames }) {
     if (typeof name_ar !== 'string' || !name_ar.trim()) return 'invalid name_ar';
   }
   return null;
+}
+
+function maxRequirementUsed(branchId) {
+  return (
+    db.prepare(
+      `SELECT COALESCE(MAX(n), 0) AS n FROM (
+         SELECT CAST(j.value AS INTEGER) AS n
+           FROM sessions s JOIN session_branches sb ON sb.session_id = s.id,
+                json_each(CASE WHEN json_valid(s.matalib) THEN s.matalib ELSE '[]' END) j
+          WHERE sb.branch_id = ?
+         UNION ALL
+         SELECT CAST(j.value AS INTEGER) AS n
+           FROM prep_cards p,
+                json_each(CASE WHEN json_valid(p.matalib) THEN p.matalib ELSE '[]' END) j
+          WHERE p.branch_id = ?
+         UNION ALL
+         SELECT number AS n FROM member_matalib WHERE branch_id = ?
+       )`
+    ).get(branchId, branchId, branchId).n || 0
+  );
 }
 
 // ---------- مجموعات الفرقة ----------
@@ -1133,6 +1331,9 @@ app.put('/api/branches/:id', requireAdmin, (req, res) => {
   const err = validateBranchBody(req.body, { requireNames: false });
   if (err) return res.status(400).json({ error: err });
   const { min_age, max_age, total_requirements, name_fr, name_ar } = req.body;
+  const usedMax = maxRequirementUsed(existing.id);
+  if (total_requirements < usedMax)
+    return res.status(409).json({ error: 'requirements_in_use', minimum: usedMax });
   db.prepare(
     `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?
      WHERE id = ?`
@@ -1156,7 +1357,10 @@ app.delete('/api/branches/:id', requireAdmin, (req, res) => {
     db.prepare('SELECT COUNT(*) AS n FROM members WHERE branch_id = ?').get(id).n +
     // فرقة شريكة في نشاط مشترك مستعملة أيضًا و لو لم تكن فرقته الرئيسية
     db.prepare('SELECT COUNT(*) AS n FROM session_branches WHERE branch_id = ?').get(id).n +
-    db.prepare('SELECT COUNT(*) AS n FROM promotions WHERE old_branch_id = ? OR new_branch_id = ?').get(id, id).n;
+    db.prepare('SELECT COUNT(*) AS n FROM promotions WHERE old_branch_id = ? OR new_branch_id = ?').get(id, id).n +
+    db.prepare('SELECT COUNT(*) AS n FROM annual_plan WHERE branch_id = ?').get(id).n +
+    db.prepare('SELECT COUNT(*) AS n FROM branch_groups WHERE branch_id = ?').get(id).n +
+    db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE branch_id = ?').get(id).n;
   if (inUse > 0) return res.status(400).json({ error: 'branch_in_use' });
   db.prepare('DELETE FROM branches WHERE id = ?').run(id);
   res.status(204).end();
@@ -1255,6 +1459,24 @@ const MEMBER_FIELDS = ['first_name', 'last_name', 'birth_date', 'sex', 'branch_i
 // free-text field would fill up with "O positif", "o+", "O +" for the same thing.
 const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
+function validISODate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const d = new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+function validPhone(value) {
+  if (value === undefined || value === null || value === '') return true;
+  const digits = String(value).replace(/\D/g, '');
+  return digits.length >= 6 && digits.length <= 18;
+}
+
+function validPhoto(value) {
+  if (value === undefined || value === null || value === '') return true;
+  const text = String(value);
+  return text.length <= 1500000 && (/^data:image\/(png|jpeg|webp);base64,/i.test(text) || /^https?:\/\//i.test(text));
+}
+
 function validateMember(body) {
   for (const f of MEMBER_FIELDS) {
     if (body[f] === undefined || body[f] === null || body[f] === '') return `missing field: ${f}`;
@@ -1262,6 +1484,11 @@ function validateMember(body) {
   if (!BLOOD_TYPES.includes(body.blood_type)) return 'invalid blood_type';
   if (!['M', 'F'].includes(body.sex)) return 'invalid sex';
   if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
+  if (!String(body.first_name).trim() || !String(body.last_name).trim()) return 'invalid name';
+  if (!validISODate(body.birth_date) || !validISODate(body.join_date)) return 'invalid date';
+  if (body.birth_date > todayISO()) return 'invalid birth_date';
+  if (![body.member_phone, body.father_phone, body.mother_phone].every(validPhone)) return 'invalid phone';
+  if (!validPhoto(body.photo)) return 'invalid photo';
   if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(body.branch_id)) return 'invalid branch_id';
   return null;
 }
@@ -1427,9 +1654,9 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   // حتى لو وقع نشاط الفرقتين في اليوم نفسه — و حضوره القديم بطاقة لفرقته السابقة.
   const periodsAsc = db
     .prepare(
-      `SELECT p.promoted_at, p.old_branch_id, b.name_fr, b.name_ar
-       FROM promotions p JOIN branches b ON b.id = p.old_branch_id
-       WHERE p.member_id = ? ORDER BY p.promoted_at ASC, p.id ASC`
+      `SELECT h.effective_date AS promoted_at, h.old_branch_id, b.name_fr, b.name_ar
+       FROM member_branch_history h JOIN branches b ON b.id = h.old_branch_id
+       WHERE h.member_id = ? ORDER BY h.effective_date ASC, h.id ASC`
     )
     .all(m.id);
   const branchAt = (date) => {
@@ -1444,10 +1671,10 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
       `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id,
         (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS sb_ids
        FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE a.member_id = ? AND s.kind = 'activity'
+       WHERE a.member_id = ? AND s.kind = 'activity' AND a.status != 'unmarked' AND s.date <= ?
        ORDER BY s.date DESC, s.id DESC`
     )
-    .all(m.id)
+    .all(m.id, todayISO())
     .map((r) => {
       const ids = (r.sb_ids || '').split(',').filter(Boolean).map(Number);
       const at = branchAt(r.date);
@@ -1493,6 +1720,15 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   if (err) return res.status(400).json({ error: err });
   if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
   const b = req.body;
+  const duplicate = db
+    .prepare(
+      `SELECT id FROM members
+       WHERE lower(trim(first_name)) = lower(trim(?))
+         AND lower(trim(last_name)) = lower(trim(?)) AND birth_date = ?
+       LIMIT 1`
+    )
+    .get(b.first_name, b.last_name, b.birth_date);
+  if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
   const info = db
@@ -1503,12 +1739,14 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
+      String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
       b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
       b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
       b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null, b.status || 'active'
     );
-  res.status(201).json(db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid));
+  const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
+  auditEvent(req, 'create', 'member', created.id, null, created);
+  res.status(201).json(created);
 });
 
 app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
@@ -1524,26 +1762,56 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   // القديمة، إلا أن يكون الطلب نفسه قد اختار له مجموعة من الفرقة الجديدة.
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
-  db.prepare(
-    `UPDATE members SET first_name = ?, last_name = ?, father_name = ?, mother_name = ?,
-     birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, blood_type = ?,
-     sex = ?, branch_id = ?, group_id = ?, member_phone = ?, father_phone = ?, mother_phone = ?,
-     join_date = ?, photo = ?, status = ? WHERE id = ?`
-  ).run(
-    b.first_name, b.last_name, b.father_name || null, b.mother_name || null,
-    b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-    b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
-    b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null,
-    b.status || 'active', req.params.id
-  );
-  res.json(db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id));
+  const branchChanged = Number(existing.branch_id) !== Number(b.branch_id);
+  const changeReason = req.body.branch_change_reason;
+  if (branchChanged && !['transfer', 'correction'].includes(changeReason))
+    return res.status(400).json({ error: 'branch_change_reason_required' });
+  const effectiveDate = req.body.branch_change_date || todayISO();
+  if (branchChanged && !validISODate(effectiveDate))
+    return res.status(400).json({ error: 'invalid branch_change_date' });
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE members SET first_name = ?, last_name = ?, father_name = ?, mother_name = ?,
+       birth_date = ?, birth_place = ?, address_abidjan = ?, address_lebanon = ?, school = ?, blood_type = ?,
+       sex = ?, branch_id = ?, group_id = ?, member_phone = ?, father_phone = ?, mother_phone = ?,
+       join_date = ?, photo = ?, status = ?,
+       archived_at = CASE WHEN ? = 'active' THEN NULL ELSE archived_at END,
+       archived_by = CASE WHEN ? = 'active' THEN NULL ELSE archived_by END
+       WHERE id = ?`
+    ).run(
+      String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
+      b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
+      b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
+      b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null,
+      b.status || 'active', b.status || 'active', b.status || 'active', req.params.id
+    );
+    if (branchChanged)
+      db.prepare(
+        `INSERT INTO member_branch_history
+          (member_id, old_branch_id, new_branch_id, effective_date, reason, changed_by)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        existing.id,
+        existing.branch_id,
+        b.branch_id,
+        effectiveDate,
+        changeReason,
+        req.user.display_name || req.user.username
+      );
+  })();
+  const updated = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
+  auditEvent(req, 'update', 'member', existing.id, existing, updated);
+  res.json(updated);
 });
 
 app.delete('/api/members/:id', requirePerm('members.delete'), (req, res) => {
-  const existing = db.prepare('SELECT branch_id FROM members WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'member not found' });
   if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
-  db.prepare('DELETE FROM members WHERE id = ?').run(req.params.id);
+  db.prepare(
+    "UPDATE members SET status = 'inactive', archived_at = datetime('now'), archived_by = ? WHERE id = ?"
+  ).run(req.user.display_name || req.user.username, existing.id);
+  auditEvent(req, 'archive', 'member', existing.id, existing, { ...existing, status: 'inactive' });
   res.status(204).end();
 });
 
@@ -1591,9 +1859,10 @@ app.get('/api/promotions/pending', requirePerm('promotions.read'), (req, res) =>
 });
 
 app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res) => {
-  const ids = req.body.member_ids;
-  if (!Array.isArray(ids) || ids.length === 0)
+  const rawIds = req.body?.member_ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0)
     return res.status(400).json({ error: 'member_ids required' });
+  const ids = [...new Set(rawIds)];
   const pending = pendingPromotions().filter((p) => branchOk(req, p.current_branch.id));
   const byId = Object.fromEntries(pending.map((p) => [p.id, p]));
   const insert = db.prepare(
@@ -1602,14 +1871,33 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   // الترقية تنقل العنصر إلى فرقة أخرى، و المجموعة تخصّ فرقتها: يخرج منها ليُوزَّع
   // من جديد في فرقته الجديدة.
   const update = db.prepare('UPDATE members SET branch_id = ?, group_id = NULL WHERE id = ?');
+  const movement = db.prepare(
+    `INSERT INTO member_branch_history
+      (member_id, old_branch_id, new_branch_id, effective_date, reason, changed_by, source_promotion_id)
+     VALUES (?, ?, ?, ?, 'promotion', ?, ?)`
+  );
+  const invalid = ids.filter((id) => !byId[id]);
+  if (invalid.length) return res.status(409).json({ error: 'promotion_not_eligible', member_ids: invalid });
   let promoted = 0;
   const run = db.transaction(() => {
     for (const id of ids) {
       const p = byId[id];
-      if (!p) continue;
       const acquired = earnedNumbersInBranch(p.id, p.current_branch.id);
-      insert.run(p.id, p.current_branch.id, p.target_branch.id, todayISO(), JSON.stringify(acquired));
+      const info = insert.run(p.id, p.current_branch.id, p.target_branch.id, todayISO(), JSON.stringify(acquired));
       update.run(p.target_branch.id, p.id);
+      movement.run(
+        p.id,
+        p.current_branch.id,
+        p.target_branch.id,
+        todayISO(),
+        req.user.display_name || req.user.username,
+        info.lastInsertRowid
+      );
+      auditEvent(req, 'apply', 'promotion', info.lastInsertRowid, null, {
+        member_id: p.id,
+        old_branch_id: p.current_branch.id,
+        new_branch_id: p.target_branch.id,
+      });
       promoted++;
     }
   });
@@ -1620,7 +1908,8 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
 app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) => {
   const rows = db
     .prepare(
-      `SELECT p.id, p.promoted_at, p.member_id, p.matalib,
+       `SELECT p.id, p.promoted_at, p.member_id, p.matalib,
+        p.reversed_at, p.reversed_by, p.reversal_reason,
         m.first_name, m.father_name, m.last_name,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
@@ -1636,10 +1925,53 @@ app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) =>
   res.json(rows);
 });
 
+app.post('/api/promotions/:id/reverse', requirePerm('promotions.apply'), (req, res) => {
+  const promotion = db.prepare('SELECT * FROM promotions WHERE id = ?').get(req.params.id);
+  if (!promotion) return res.status(404).json({ error: 'promotion not found' });
+  if (promotion.reversed_at) return res.status(409).json({ error: 'promotion_already_reversed' });
+  if (!branchOk(req, promotion.old_branch_id) || !branchOk(req, promotion.new_branch_id))
+    return res.status(403).json({ error: 'forbidden' });
+  const member = db.prepare('SELECT * FROM members WHERE id = ?').get(promotion.member_id);
+  if (!member) return res.status(404).json({ error: 'member not found' });
+  const latest = db
+    .prepare(
+      `SELECT id FROM promotions
+       WHERE member_id = ? AND reversed_at IS NULL
+       ORDER BY promoted_at DESC, id DESC LIMIT 1`
+    )
+    .get(member.id);
+  if (!latest || latest.id !== promotion.id || member.branch_id !== promotion.new_branch_id)
+    return res.status(409).json({ error: 'promotion_not_latest' });
+  const actor = req.user.display_name || req.user.username;
+  const reason = String(req.body?.reason || '').trim() || null;
+  db.transaction(() => {
+    db.prepare('UPDATE members SET branch_id = ?, group_id = NULL WHERE id = ?').run(
+      promotion.old_branch_id,
+      member.id
+    );
+    db.prepare(
+      `UPDATE promotions SET reversed_at = datetime('now'), reversed_by = ?, reversal_reason = ? WHERE id = ?`
+    ).run(actor, reason, promotion.id);
+    db.prepare(
+      `INSERT INTO member_branch_history
+        (member_id, old_branch_id, new_branch_id, effective_date, reason, changed_by, source_promotion_id)
+       VALUES (?, ?, ?, ?, 'reversal', ?, ?)`
+    ).run(member.id, promotion.new_branch_id, promotion.old_branch_id, todayISO(), actor, promotion.id);
+  })();
+  auditEvent(req, 'reverse', 'promotion', promotion.id, promotion, {
+    ...promotion,
+    reversed_by: actor,
+    reversal_reason: reason,
+  });
+  res.json({ ok: true, member_id: member.id, branch_id: promotion.old_branch_id });
+});
+
 // ---------- Leaders & التشكيلة ----------
 
 const latestYear = () =>
-  db.prepare('SELECT MAX(year) AS y FROM assignments').get().y || null;
+  db.prepare('SELECT MAX(year) AS y FROM tachkila_years').get().y ||
+  db.prepare('SELECT MAX(year) AS y FROM assignments').get().y ||
+  null;
 
 // Assignments (with leader + branch names) for a given تشكيلة year.
 // LEFT JOIN on leaders: a توصيف with no قائد yet is a real row, it just shows up unassigned.
@@ -1679,6 +2011,7 @@ function defaultCardYear() {
 // كل السنوات التي لها تشكيلة أو بطاقات مملوءة، الأحدث أولًا
 function cardYears() {
   const years = new Set([defaultCardYear()]);
+  for (const r of db.prepare('SELECT year FROM tachkila_years').all()) years.add(r.year);
   for (const r of db.prepare('SELECT DISTINCT year FROM assignments').all()) years.add(r.year);
   for (const r of db.prepare('SELECT DISTINCT year FROM leader_progress').all()) years.add(r.year);
   return [...years].sort().reverse();
@@ -1765,7 +2098,7 @@ const ACCOUNT_PRESETS = {
     'sessions.read', 'sessions.create', 'sessions.attendance',
     'branches.read', 'branches.plan', 'branches.groups',
     'promotions.read',
-    'leaders.read', 'leaders.progress',
+    'leaders.read', 'leaders.progress.self',
   ],
   // أمين: يرى الفوج كله و يسجّل أنشطة و حضورًا، بلا لمس ملفات العناصر
   amana: [
@@ -1773,7 +2106,7 @@ const ACCOUNT_PRESETS = {
     'sessions.read', 'sessions.create', 'sessions.attendance',
     'branches.read',
     'promotions.read',
-    'leaders.read', 'leaders.progress',
+    'leaders.read', 'leaders.progress.self',
   ],
   // قراءة فقط — اطّلاع بلا أي كتابة
   readonly: ['members.read', 'sessions.read', 'branches.read', 'promotions.read', 'leaders.read'],
@@ -1813,7 +2146,9 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
   try {
     info = db
       .prepare(
-        "INSERT INTO users (username, password_hash, display_name, role, branches, perms, leader_id) VALUES (?, ?, ?, 'user', ?, ?, ?)"
+        `INSERT INTO users
+          (username, password_hash, display_name, role, branches, perms, leader_id, active, must_change_password)
+         VALUES (?, ?, ?, 'user', ?, ?, ?, 1, 1)`
       )
       .run(
         username,
@@ -1834,10 +2169,14 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
   });
 });
 
-app.post('/api/leaders/:id/progress', requirePerm('leaders.progress'), (req, res) => {
+app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) => {
   const l = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'leader not found' });
+  const self = Number(req.user.leader_id) === Number(l.id) && hasPerm(req, 'leaders.progress.self');
+  if (req.user.role !== 'admin' && !self && !hasPerm(req, 'leaders.progress.manage'))
+    return res.status(403).json({ error: 'forbidden' });
   const year = normYear(req.body?.year) || defaultCardYear();
+  if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
   const matlabId = Number(req.body?.matlab_id);
   if (!db.prepare('SELECT id FROM leader_matalib WHERE id = ?').get(matlabId))
     return res.status(400).json({ error: 'invalid matlab_id' });
@@ -1855,7 +2194,22 @@ app.post('/api/leaders/:id/progress', requirePerm('leaders.progress'), (req, res
   res.json(progressCard(l.id, year));
 });
 
-app.get('/api/leaders', (req, res) => {
+// Minimal names for session/preparation forms. This intentionally excludes addresses,
+// phones, account usernames, training and attendance history.
+app.get(
+  '/api/leader-options',
+  requireAnyPerm('sessions.read', 'sessions.create', 'sessions.attendance'),
+  (req, res) => {
+    res.json(
+      db.prepare(
+        `SELECT id, first_name, father_name, last_name, photo, status
+         FROM leaders ORDER BY status != 'active', last_name, first_name`
+      ).all()
+    );
+  }
+);
+
+app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
   const rows = db
     .prepare(
       `SELECT l.*,
@@ -1893,7 +2247,11 @@ app.get('/api/leaders', (req, res) => {
     doneByLeader[r.leader_id] = r.n;
   res.json(
     rows.map((l) => ({
-      ...publicLeader(l),
+      ...publicLeader(
+        req.user.role === 'admin'
+          ? l
+          : { ...l, account_user_id: undefined, account_username: undefined }
+      ),
       roles: roles[l.id] || [],
       year,
       card: { year: cardYear, total: cardTotal, done_count: doneByLeader[l.id] || 0 },
@@ -1901,7 +2259,7 @@ app.get('/api/leaders', (req, res) => {
   );
 });
 
-app.get('/api/leaders/:id', (req, res) => {
+app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
   const l = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'leader not found' });
   const assignments = db
@@ -1920,7 +2278,7 @@ app.get('/api/leaders/:id', (req, res) => {
        FROM session_leaders sl
        JOIN sessions s ON s.id = sl.session_id
        LEFT JOIN branches b ON b.id = s.branch_id
-       WHERE sl.leader_id = ? ORDER BY s.date DESC, s.id DESC`
+       WHERE sl.leader_id = ?${sessionScopeSQL(req)} ORDER BY s.date DESC, s.id DESC`
     )
     .all(l.id)
     .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
@@ -1929,7 +2287,8 @@ app.get('/api/leaders/:id', (req, res) => {
   const activities = sessions.filter((s) => s.kind !== 'visit');
   const visitedNames = db.prepare(
     `SELECT m.id, m.first_name, m.father_name, m.last_name FROM attendance a JOIN members m ON m.id = a.member_id
-     WHERE a.session_id = ? AND a.status = 'present' ORDER BY m.last_name, m.first_name`
+     WHERE a.session_id = ? AND a.status = 'present'${branchFilterSQL(req, 'm.branch_id')}
+     ORDER BY m.last_name, m.first_name`
   );
   const visits = sessions
     .filter((s) => s.kind === 'visit')
@@ -1939,6 +2298,14 @@ app.get('/api/leaders/:id', (req, res) => {
     absent: activities.filter((s) => s.my_status === 'absent').length,
     unmarked: activities.filter((s) => !s.my_status).length,
   };
+  // بطاقات التحضير التي أعدّها — تنزل في سجلّه أنه حضّر لأنشطته
+  const prepCards = db
+    .prepare(
+      `SELECT p.id, p.title, p.date, p.branch_id, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM prep_cards p JOIN branches b ON b.id = p.branch_id
+       WHERE p.leader_id = ?${branchFilterSQL(req, 'p.branch_id')} ORDER BY p.date DESC, p.id DESC`
+    )
+    .all(l.id);
   // بطاقة تقدم القائد — one سنة at a time, picked with ?year=
   const years = cardYears();
   const selectedYear = years.includes(normYear(req.query.year)) ? normYear(req.query.year) : years[0];
@@ -1949,6 +2316,7 @@ app.get('/api/leaders/:id', (req, res) => {
     assignments,
     sessions: activities,
     visits,
+    prep_cards: prepCards,
     attendance,
     card_years: years,
     card: progressCard(l.id, selectedYear),
@@ -2002,7 +2370,8 @@ function leaderYearCount(v) {
 }
 
 function validateLeader(body) {
-  if (!body.first_name || !body.last_name) return 'first_name and last_name required';
+  if (!body.first_name || !String(body.first_name).trim() || !body.last_name || !String(body.last_name).trim())
+    return 'first_name and last_name required';
   if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
   if (body.marital_status && !MARITAL_STATUSES.includes(body.marital_status))
     return 'invalid marital_status';
@@ -2012,14 +2381,18 @@ function validateLeader(body) {
     return 'invalid join_year';
   if (leaderYearCount(body.years_ghadir) === undefined) return 'invalid years_ghadir';
   if (leaderYearCount(body.years_total) === undefined) return 'invalid years_total';
+  if (body.birth_date && (!validISODate(body.birth_date) || body.birth_date > todayISO()))
+    return 'invalid birth_date';
+  if (!validPhone(body.phone)) return 'invalid phone';
+  if (!validPhoto(body.photo)) return 'invalid photo';
   if (parseTrainingCourses(body.training_level) === undefined) return 'invalid training_level';
   return null;
 }
 
 // القيم التي تدخل في INSERT/UPDATE، بالترتيب نفسه في الاثنين
 const leaderValues = (b) => [
-  b.first_name,
-  b.last_name,
+  String(b.first_name).trim(),
+  String(b.last_name).trim(),
   ...LEADER_TEXT_FIELDS.map((f) => (b[f] === undefined || b[f] === '' ? null : b[f])),
   b.marital_status || null,
   b.join_year ? String(b.join_year).trim() : null,
@@ -2053,7 +2426,9 @@ app.post('/api/leaders', requireAdmin, (req, res) => {
        VALUES (${LEADER_COLUMNS.map(() => '?').join(', ')})`
     )
     .run(...leaderValues(b));
-  res.status(201).json(publicLeader(db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid)));
+  const created = db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid);
+  auditEvent(req, 'create', 'leader', created.id, null, publicLeader(created));
+  res.status(201).json(publicLeader(created));
 });
 
 app.put('/api/leaders/:id', requireAdmin, (req, res) => {
@@ -2065,33 +2440,36 @@ app.put('/api/leaders/:id', requireAdmin, (req, res) => {
   db.prepare(
     `UPDATE leaders SET ${LEADER_COLUMNS.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`
   ).run(...leaderValues(b), req.params.id);
+  if ((b.status || 'active') === 'active')
+    db.prepare('UPDATE leaders SET archived_at = NULL, archived_by = NULL WHERE id = ?').run(req.params.id);
   // Refresh the name snapshot on sessions this leader animated — الاسم الثلاثي حين
   // يوجد اسم الأب، كما يُعرض القائد في كل مكان آخر
   db.prepare('UPDATE sessions SET leader = ? WHERE leader_id = ?').run(
     [b.first_name, b.father_name, b.last_name].filter(Boolean).join(' '), req.params.id
   );
-  res.json(publicLeader(db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id)));
+  const updated = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
+  auditEvent(req, 'update', 'leader', existing.id, publicLeader(existing), publicLeader(updated));
+  res.json(publicLeader(updated));
 });
 
 app.delete('/api/leaders/:id', requireAdmin, (req, res) => {
-  const existing = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'leader not found' });
-  // Deleting him would empty his توصيفات — refuse while one of them sits in a frozen year
-  const held = db
-    .prepare(
-      'SELECT 1 FROM assignments a JOIN tachkila_locks k ON k.year = a.year WHERE a.leader_id = ? LIMIT 1'
-    )
-    .get(req.params.id);
-  if (held) return res.status(423).json({ error: 'year_locked' });
-  const run = db.transaction(() => {
-    // Sessions keep the leader name as plain text, only the link is removed.
-    // His توصيفات survive too (FK ON DELETE SET NULL): the slots stay in the تشكيلة, unassigned.
-    db.prepare('UPDATE sessions SET leader_id = NULL WHERE leader_id = ?').run(req.params.id);
-    // حسابه يبقى مفكوك الربط: سحب الدخول قرار أدمن صريح لا أثر جانبي لحذف ملف
-    db.prepare('UPDATE users SET leader_id = NULL WHERE leader_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM leaders WHERE id = ?').run(req.params.id);
+  const actor = req.user.display_name || req.user.username;
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE leaders SET status = 'inactive', archived_at = datetime('now'), archived_by = ? WHERE id = ?"
+    ).run(actor, existing.id);
+    const accounts = db.prepare('SELECT id FROM users WHERE leader_id = ?').all(existing.id);
+    for (const account of accounts) {
+      db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(account.id);
+      db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(account.id);
+    }
+  })();
+  auditEvent(req, 'archive', 'leader', existing.id, publicLeader(existing), {
+    ...publicLeader(existing),
+    status: 'inactive',
   });
-  run();
   res.status(204).end();
 });
 
@@ -2118,7 +2496,7 @@ const assignmentYear = (req) =>
 
 app.post('/api/tachkila/lock', requireAdmin, (req, res) => {
   const year = normYear(req.body?.year);
-  if (!year) return res.status(400).json({ error: 'year required' });
+  if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
   const locked = req.body?.locked !== false;
   if (locked)
     db.prepare(
@@ -2131,7 +2509,11 @@ app.post('/api/tachkila/lock', requireAdmin, (req, res) => {
 
 app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
   const years = db
-    .prepare('SELECT DISTINCT year FROM assignments ORDER BY year DESC')
+    .prepare(
+      `SELECT year FROM tachkila_years
+       UNION SELECT DISTINCT year FROM assignments
+       ORDER BY year DESC`
+    )
     .all()
     .map((r) => r.year);
   const year = req.query.year || years[0] || null;
@@ -2159,11 +2541,17 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
 const optionalId = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
 function validateAssignment(body, selfId = null) {
-  if (!body.year || !String(body.year).trim()) return 'year required';
+  if (!scoutYearRange(String(body.year || '').trim())) return 'invalid year';
   if (!body.title || !String(body.title).trim()) return 'title required';
   const leaderId = optionalId(body.leader_id);
-  if (leaderId !== null && !db.prepare('SELECT id FROM leaders WHERE id = ?').get(leaderId))
-    return 'invalid leader_id';
+  if (leaderId !== null) {
+    const leader = db.prepare('SELECT id, status FROM leaders WHERE id = ?').get(leaderId);
+    const currentLeaderId = selfId
+      ? db.prepare('SELECT leader_id FROM assignments WHERE id = ?').get(selfId)?.leader_id
+      : null;
+    if (!leader || (leader.status !== 'active' && Number(currentLeaderId) !== Number(leaderId)))
+      return 'invalid leader_id';
+  }
   const branchId = optionalId(body.branch_id);
   if (branchId !== null && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
     return 'invalid branch_id';
@@ -2193,6 +2581,10 @@ app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (
   const err = validateAssignment(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
+  db.prepare('INSERT OR IGNORE INTO tachkila_years (year, created_by) VALUES (?, ?)').run(
+    String(b.year).trim(),
+    req.user.display_name || req.user.username
+  );
   const branchId = optionalId(b.branch_id);
   const info = db
     .prepare(
@@ -2269,11 +2661,11 @@ const insertAssignmentRow = () =>
 //   empty              — nothing, build it by hand
 app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_year), (req, res) => {
   const { from_year, to_year, mode = 'template' } = req.body;
-  if (!to_year || !String(to_year).trim()) return res.status(400).json({ error: 'to_year required' });
+  if (!scoutYearRange(String(to_year || '').trim())) return res.status(400).json({ error: 'invalid year' });
   if (!['template', 'copy', 'empty'].includes(mode)) return res.status(400).json({ error: 'invalid mode' });
   const target = String(to_year).trim();
-  const exists = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE year = ?').get(target).n;
-  if (exists > 0) return res.status(400).json({ error: 'year_exists' });
+  const exists = db.prepare('SELECT 1 FROM tachkila_years WHERE year = ?').get(target);
+  if (exists) return res.status(400).json({ error: 'year_exists' });
 
   let rows = [];
   if (mode === 'copy') {
@@ -2283,12 +2675,17 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
         'SELECT id, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order FROM assignments WHERE year = ? ORDER BY sort_order, id'
       )
       .all(from_year);
+    if (rows.length === 0) return res.status(404).json({ error: 'source_year_empty' });
   } else if (mode === 'template') {
     rows = tachkilaTemplate().map((r) => ({ ...r, leader_id: null }));
   }
 
   const insert = insertAssignmentRow();
   const run = db.transaction(() => {
+    db.prepare('INSERT INTO tachkila_years (year, created_by) VALUES (?, ?)').run(
+      target,
+      req.user.display_name || req.user.username
+    );
     // التبعية تُنسخ على مرحلتين: الصفوف كلها أولًا، ثم parent_id يُعاد ربطه بأرقام
     // السنة الجديدة — الأرقام القديمة تخصّ سنة المصدر و لا معنى لها هنا.
     const idMap = new Map();
@@ -2314,7 +2711,11 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
 // or after a new فرقة was created. Existing rows are matched by title and left untouched.
 app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
   const year = String(req.body.year || '').trim();
-  if (!year) return res.status(400).json({ error: 'year required' });
+  if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
+  db.prepare('INSERT OR IGNORE INTO tachkila_years (year, created_by) VALUES (?, ?)').run(
+    year,
+    req.user.display_name || req.user.username
+  );
   const titles = new Set(
     db.prepare('SELECT title FROM assignments WHERE year = ?').all(year).map((r) => r.title.trim())
   );
@@ -2459,7 +2860,8 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
         (CASE WHEN s.kind = 'leaders'
           THEN (SELECT ROUND(100.0 * SUM(sl.status = 'present') / NULLIF(COUNT(sl.status), 0))
                   FROM session_leaders sl WHERE sl.session_id = s.id)
-          ELSE (SELECT ROUND(100.0 * SUM(a.status = 'present') / NULLIF(COUNT(*), 0))
+          ELSE (SELECT ROUND(100.0 * SUM(a.status = 'present') /
+                    NULLIF(SUM(a.status IN ('present', 'absent', 'excused')), 0))
                   FROM attendance a WHERE a.session_id = s.id) END) AS rate
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
@@ -2513,7 +2915,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     : [branch_id].filter((v) => v !== undefined && v !== null && v !== '');
   const branchIds = branchless ? [] : [...new Set(rawBranchIds.map(Number))];
   const branchId = branchless ? null : (branchIds[0] ?? null);
-  if (!title || !date) return res.status(400).json({ error: 'title, date required' });
+  if (!title || !String(title).trim() || !validISODate(date))
+    return res.status(400).json({ error: 'invalid title or date' });
   if (!branchless && !branchId) return res.status(400).json({ error: 'branch_id required' });
   if (!branchIds.every((b) => Number.isInteger(b) && b > 0))
     return res.status(400).json({ error: 'invalid branch_ids' });
@@ -2552,18 +2955,22 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   if (!Array.isArray(nums) || !nums.every((n) => Number.isInteger(n) && n >= 1))
     return res.status(400).json({ error: 'invalid matalib' });
   const unique = [...new Set(nums)].sort((a, b) => a - b);
+  for (const b of branchIds) {
+    const total = db.prepare('SELECT total_requirements FROM branches WHERE id = ?').get(b)?.total_requirements;
+    if (unique.some((n) => n > total)) return res.status(400).json({ error: 'invalid matalib' });
+  }
   if (fee !== undefined && fee !== null && (typeof fee !== 'number' || fee < 0))
     return res.status(400).json({ error: 'invalid fee' });
   let leaderRow = null;
   if (leader_id !== undefined && leader_id !== null) {
-    leaderRow = db.prepare('SELECT * FROM leaders WHERE id = ?').get(leader_id);
+    leaderRow = db.prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active'").get(leader_id);
     if (!leaderRow) return res.status(400).json({ error: 'invalid leader_id' });
   }
   const helpers = helper_ids === undefined || helper_ids === null ? [] : helper_ids;
   if (!Array.isArray(helpers) || !helpers.every((h) => Number.isInteger(h)))
     return res.status(400).json({ error: 'invalid helper_ids' });
   for (const h of helpers) {
-    if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(h))
+    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active'").get(h))
       return res.status(400).json({ error: 'invalid helper_ids' });
   }
   // زيارة الأهل: the visited عناصر are marked present straight away, so the visit
@@ -2571,9 +2978,12 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   const visited = member_ids === undefined || member_ids === null ? [] : member_ids;
   if (!Array.isArray(visited) || !visited.every((m) => Number.isInteger(m)))
     return res.status(400).json({ error: 'invalid member_ids' });
+  const visitedRows = [];
   for (const m of visited) {
-    if (!db.prepare('SELECT id FROM members WHERE id = ?').get(m))
+    const row = db.prepare("SELECT id, branch_id, group_id, status FROM members WHERE id = ?").get(m);
+    if (!row || row.status !== 'active' || !branchIds.includes(Number(row.branch_id)) || !branchOk(req, row.branch_id))
       return res.status(400).json({ error: 'invalid member_ids' });
+    visitedRows.push(row);
   }
   if (kind === 'visit' && visited.length === 0)
     return res.status(400).json({ error: 'member_ids required for a visit' });
@@ -2590,8 +3000,10 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     'INSERT OR IGNORE INTO session_leaders (session_id, leader_id, role) VALUES (?, ?, ?)'
   );
   const insertVisited = db.prepare(
-    `INSERT INTO attendance (session_id, member_id, status) VALUES (?, ?, 'present')
-     ON CONFLICT(session_id, member_id) DO UPDATE SET status = 'present'`
+    `INSERT INTO attendance (session_id, member_id, status, branch_id, group_id)
+     VALUES (?, ?, 'present', ?, ?)
+     ON CONFLICT(session_id, member_id) DO UPDATE SET
+       status = 'present', branch_id = excluded.branch_id, group_id = excluded.group_id`
   );
   let sessionId;
   db.transaction(() => {
@@ -2602,7 +3014,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
-        title,
+        String(title).trim(),
         date,
         branchId,
         leaderName,
@@ -2622,7 +3034,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       if (leaderRow && h === leaderRow.id) continue;
       insertAnimator.run(sessionId, h, 'helper');
     }
-    for (const m of visited) insertVisited.run(sessionId, m);
+    for (const m of visitedRows) insertVisited.run(sessionId, m.id, m.branch_id, m.group_id);
     // فرق النشاط — الرئيسية منها مكرّرة في sessions.branch_id، و الجدول هو المرجع
     for (const b of branchIds)
       db.prepare('INSERT OR IGNORE INTO session_branches (session_id, branch_id) VALUES (?, ?)')
@@ -2636,8 +3048,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     if (kind === 'activity') {
       const rosterBranches = branchIds.map(intOr).join(',') || -1;
       db.prepare(
-        `INSERT OR IGNORE INTO attendance (session_id, member_id, status)
-         SELECT ?, m.id, 'absent' FROM members m
+        `INSERT OR IGNORE INTO attendance (session_id, member_id, status, branch_id, group_id)
+         SELECT ?, m.id, 'unmarked', m.branch_id, m.group_id FROM members m
          WHERE m.branch_id IN (${rosterBranches}) AND m.status = 'active'
            AND ${memberInSessionGroupsSQL(sessionId, 'm')}`
       ).run(sessionId);
@@ -2675,7 +3087,12 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
 app.delete('/api/sessions/:id', requireAdmin, (req, res) => {
   const s = db.prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(s.id);
+  db.transaction(() => {
+    // بطاقة التحضير تبقى بعد نشاطها، مفكوكة الربط فقط. يدويًا كي لا يُعتمد على
+    // ON DELETE SET NULL في عمود قد يكون أُضيف بـ ALTER.
+    db.prepare('UPDATE prep_cards SET session_id = NULL WHERE session_id = ?').run(s.id);
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(s.id);
+  })();
   res.json({ ok: true });
 });
 
@@ -2700,23 +3117,15 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   // and a نشاط عام للفوج have no عناصر roster at all.
   // النشاط المحصور بمجموعات لا يعرض إلا عناصرها: الفرقة كبيرة و الحصّة لا تسعها،
   // فالقائد يضع حضور مجموعته وحدها بدل التنقيب عن أسمائها في قائمة الفرقة كلها.
-  const groupScope = memberInSessionGroupsSQL(s.id, 'm');
   const roster = ['leaders', 'group'].includes(s.kind) ? [] : db
     .prepare(
-      s.kind === 'visit'
-        ? `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.branch_id, m.group_id,
-                  g.name AS group_name, a.status
-           FROM attendance a JOIN members m ON m.id = a.member_id
-           LEFT JOIN branch_groups g ON g.id = m.group_id
-           WHERE a.session_id = ? AND m.branch_id IN (${rosterList})
-           ORDER BY m.branch_id, m.last_name, m.first_name`
-        : `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.branch_id, m.group_id,
-                  g.name AS group_name, a.status
-           FROM members m
-           LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = ?
-           LEFT JOIN branch_groups g ON g.id = m.group_id
-           WHERE m.branch_id IN (${rosterList}) AND m.status = 'active' AND ${groupScope}
-           ORDER BY m.branch_id, m.last_name, m.first_name`
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
+              COALESCE(a.branch_id, m.branch_id) AS branch_id,
+              a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status
+       FROM attendance a JOIN members m ON m.id = a.member_id
+       LEFT JOIN branch_groups g ON g.id = a.group_id
+       WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) IN (${rosterList})
+       ORDER BY COALESCE(a.branch_id, m.branch_id), m.last_name, m.first_name`
     )
     .all(s.id)
     .map((m) => ({
@@ -2725,7 +3134,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       consecutive_absences: attendanceStats(m.id, null, {
         from:
           db
-            .prepare('SELECT MAX(promoted_at) AS d FROM promotions WHERE member_id = ?')
+            .prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?')
             .get(m.id).d || null,
       }).consecutive_absences,
     }));
@@ -2752,6 +3161,10 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       animators,
       branch_counts: branchCountsOf(s.id),
       branch_ids: branchIds,
+      // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها
+      prep_cards: db
+        .prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id')
+        .all(s.id),
       // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
       my_branch_ids: myBranchIds,
       // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
@@ -2849,6 +3262,138 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   res.json({ ok: true });
 });
 
+// ---------- بطاقات التحضير ----------
+// بطاقة يعدّها القائد قبل نشاط السبت: تفاصيل مسبقة عن النشاط. تُؤرشف بلا حذف،
+// تبقى قابلة للتعديل في أي وقت، و تُحسب في سجلّ القائد الذي أعدّها. صلاحياتها
+// صلاحيات الأنشطة نفسها: من يُنشئ نشاطًا يُعدّ بطاقته.
+
+// الحقول النصية الحرة (الأهداف، الفقرات و الطرق التدريبية، الوسائل، الملاحظات) —
+// تُخزَّن كما تُكتب، و الفارغ منها NULL
+const PREP_TEXT_FIELDS = ['goals', 'segments', 'tools', 'notes'];
+
+const publicPrepCard = (r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') });
+
+// Validates the body and returns the column values shared by INSERT and UPDATE,
+// or { error, status } when something is wrong.
+function parsePrepCard(req) {
+  const b = req.body;
+  if (!b.title || !String(b.title).trim() || !validISODate(b.date))
+    return { error: 'invalid title or date' };
+  const branchId = Number(b.branch_id);
+  if (!Number.isInteger(branchId) || !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
+    return { error: 'invalid branch_id' };
+  // لا يُعدّ قائد بطاقة لفرقة ليست له
+  if (!branchOk(req, branchId)) return { error: 'forbidden', status: 403 };
+  const nums = b.matalib === undefined || b.matalib === null ? [] : b.matalib;
+  if (!Array.isArray(nums) || !nums.every((n) => Number.isInteger(n) && n >= 1))
+    return { error: 'invalid matalib' };
+  const total = db.prepare('SELECT total_requirements FROM branches WHERE id = ?').get(branchId).total_requirements;
+  if (nums.some((n) => n > total)) return { error: 'invalid matalib' };
+  let leaderRow = null;
+  if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
+    leaderRow = db.prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active'").get(b.leader_id);
+    if (!leaderRow) return { error: 'invalid leader_id' };
+  }
+  // النشاط الذي حُضِّرت له — اختياري: البطاقة تُكتب قبل أن يوجد النشاط غالبًا،
+  // فتُربط لاحقًا عبر التعديل. لا يُربط نشاط خارج نطاق فرق المستخدم.
+  let sessionId = null;
+  if (b.session_id !== undefined && b.session_id !== null && b.session_id !== '') {
+    sessionId = Number(b.session_id);
+    const session = Number.isInteger(sessionId)
+      ? db.prepare('SELECT id, branch_id FROM sessions WHERE id = ?').get(sessionId)
+      : null;
+    if (!session) return { error: 'invalid session_id' };
+    if (!sessionOk(req, session)) return { error: 'forbidden', status: 403 };
+  }
+  return {
+    // Column order shared by INSERT and UPDATE:
+    // branch_id, leader_id, leader, title, date, start_time, place, matalib, goals, segments, tools, notes, session_id
+    values: [
+      branchId,
+      leaderRow ? leaderRow.id : null,
+      // Same snapshot rule as sessions: the name survives the قائد's deletion
+      leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : null,
+      String(b.title).trim(),
+      b.date,
+      b.start_time || null,
+      b.place || null,
+      JSON.stringify([...new Set(nums)].sort((a, z) => a - z)),
+      ...PREP_TEXT_FIELDS.map((f) => b[f] || null),
+      sessionId,
+    ],
+  };
+}
+
+const PREP_CARD_SELECT = `SELECT p.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+    COALESCE(${fullNameSQL('l')}, p.leader) AS leader,
+    s.title AS session_title, s.date AS session_date
+  FROM prep_cards p JOIN branches b ON b.id = p.branch_id
+  LEFT JOIN leaders l ON l.id = p.leader_id
+  LEFT JOIN sessions s ON s.id = p.session_id`;
+
+app.get('/api/prep-cards', requirePerm('sessions.read'), (req, res) => {
+  const { q, branch, leader, from, to } = req.query;
+  let sql = `${PREP_CARD_SELECT} WHERE 1=1${branchFilterSQL(req, 'p.branch_id')}`;
+  const params = [];
+  if (branch) sql += ` AND p.branch_id = ${intOr(branch)}`;
+  if (leader) sql += ` AND p.leader_id = ${intOr(leader)}`;
+  // Dates are stored as YYYY-MM-DD, so plain string comparison sorts correctly
+  if (from) { sql += ' AND p.date >= ?'; params.push(from); }
+  if (to) { sql += ' AND p.date <= ?'; params.push(to); }
+  if (q) {
+    sql += ` AND (p.title LIKE ? OR p.place LIKE ? OR COALESCE(${fullNameSQL('l')}, p.leader) LIKE ?)`;
+    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  sql += ' ORDER BY p.date DESC, p.id DESC';
+  res.json(db.prepare(sql).all(...params).map(publicPrepCard));
+});
+
+app.get('/api/prep-cards/:id', requirePerm('sessions.read'), (req, res) => {
+  const row = db.prepare(`${PREP_CARD_SELECT} WHERE p.id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'prep card not found' });
+  if (!branchOk(req, row.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  res.json(publicPrepCard(row));
+});
+
+app.post('/api/prep-cards', requirePerm('sessions.create'), (req, res) => {
+  const parsed = parsePrepCard(req);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  const id = db
+    .prepare(
+      `INSERT INTO prep_cards
+        (branch_id, leader_id, leader, title, date, start_time, place, matalib, goals, segments, tools, notes, session_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(...parsed.values, req.user.display_name || req.user.username).lastInsertRowid;
+  const row = db.prepare(`${PREP_CARD_SELECT} WHERE p.id = ?`).get(id);
+  res.status(201).json(publicPrepCard(row));
+});
+
+// قابلة للتعديل في أي وقت — نفس صلاحية الإنشاء، ضمن فرق القائد وحدها
+app.put('/api/prep-cards/:id', requirePerm('sessions.create'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM prep_cards WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'prep card not found' });
+  if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  const parsed = parsePrepCard(req);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  db.prepare(
+    `UPDATE prep_cards SET branch_id = ?, leader_id = ?, leader = ?, title = ?, date = ?,
+       start_time = ?, place = ?, matalib = ?, goals = ?, segments = ?, tools = ?, notes = ?,
+       session_id = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(...parsed.values, existing.id);
+  const row = db.prepare(`${PREP_CARD_SELECT} WHERE p.id = ?`).get(existing.id);
+  res.json(publicPrepCard(row));
+});
+
+// الحذف للأدمن وحده، كالأنشطة: البطاقة أرشيف لا يمحوه صاحبه
+app.delete('/api/prep-cards/:id', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM prep_cards WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'prep card not found' });
+  db.prepare('DELETE FROM prep_cards WHERE id = ?').run(existing.id);
+  res.status(204).end();
+});
+
 // ---------- Dashboard stats ----------
 
 // Every figure honours the caller's فرقة scope, so a restricted قائد's dashboard
@@ -2888,26 +3433,32 @@ app.get('/api/stats', (req, res) => {
   const row = db
     .prepare(
       // في النشاط المشترك يهمّ القائدَ حضور عناصره هو، فالصف يُنسب لفرقة العنصر
-      `SELECT COUNT(*) AS total, COALESCE(SUM(a.status = 'present'), 0) AS present
+      `SELECT COALESCE(SUM(a.status IN ('present', 'absent', 'excused')), 0) AS total,
+              COALESCE(SUM(a.status = 'present'), 0) AS present
        FROM attendance a JOIN sessions s ON s.id = a.session_id
        JOIN members m ON m.id = a.member_id
-       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${sessionScopeSQL(req)}${branchFilterSQL(req, 'm.branch_id')}`
+       WHERE substr(s.date, 1, 7) = ? AND s.date <= ? AND s.kind = 'activity'
+         ${sessionScopeSQL(req)}${branchFilterSQL(req, 'm.branch_id')}`
     )
-    .get(ym);
+    .get(ym, todayISO());
   // Activities held this month, whatever their attendance state
   const month_sessions = db
     .prepare(
       `SELECT COUNT(*) AS n FROM sessions s
-       WHERE substr(s.date, 1, 7) = ? AND s.kind = 'activity'${sessionScopeSQL(req)}`
+       WHERE substr(s.date, 1, 7) = ? AND s.date <= ? AND s.kind = 'activity'${sessionScopeSQL(req)}`
     )
-    .get(ym).n;
+    .get(ym, todayISO()).n;
   res.json({
     total_active,
     branches,
     month_sessions,
     pending_promotions: pendingPromotions().filter((p) => branchOk(req, p.current_branch.id)).length,
     month_rate: row.total ? Math.round((row.present / row.total) * 100) : null,
-    birthdays: upcomingBirthdays().filter((b) => branchOk(req, b.branch_id)),
+    birthdays: upcomingBirthdays().filter(
+      (b) =>
+        branchOk(req, b.branch_id) &&
+        (b.kind === 'leader' ? hasPerm(req, 'leaders.read') : hasPerm(req, 'members.read'))
+    ),
   });
 });
 

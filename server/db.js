@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS members (
   mother_phone TEXT,
   join_date TEXT NOT NULL,
   photo TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  archived_at TEXT,
+  archived_by TEXT
 );
 
 -- مطالب added or cancelled by hand for one عنصر. Attendance stays the normal way a
@@ -76,7 +78,10 @@ CREATE TABLE IF NOT EXISTS promotions (
   old_branch_id INTEGER NOT NULL REFERENCES branches(id),
   new_branch_id INTEGER NOT NULL REFERENCES branches(id),
   promoted_at TEXT NOT NULL,
-  matalib TEXT NOT NULL DEFAULT '[]'
+  matalib TEXT NOT NULL DEFAULT '[]',
+  reversed_at TEXT,
+  reversed_by TEXT,
+  reversal_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -102,7 +107,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- 'activity' = نشاط فرقة, 'visit' = زيارة الأهل (présence = who was visited),
   -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves),
   -- 'group' = نشاط عام للفوج (حضور مسجّل بالعدد لكل فرقة, لا بالأسماء)
-  kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders', 'group'))
+  kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders', 'group')),
+  attendance_finalized_at TEXT,
+  attendance_finalized_by TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل
@@ -169,7 +177,9 @@ CREATE TABLE IF NOT EXISTS leaders (
   -- القائد قد يكون خضع لأكثر من دورة، و مغلقةٌ لأن الدورات معروفة بأسمائها.
   training_level TEXT NOT NULL DEFAULT '[]',
   photo TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive'))
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  archived_at TEXT,
+  archived_by TEXT
 );
 
 -- فرقة القادة: the مطالب list a قائد is followed on. Its content is agreed with
@@ -221,6 +231,14 @@ CREATE TABLE IF NOT EXISTS tachkila_locks (
   locked_by TEXT
 );
 
+-- A year exists independently from its assignments, including an intentionally
+-- empty composition that must survive a refresh.
+CREATE TABLE IF NOT EXISTS tachkila_years (
+  year TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by TEXT
+);
+
 -- Animators of a session: one main (animateur principal) + helpers, with their own présence
 CREATE TABLE IF NOT EXISTS session_leaders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,7 +263,9 @@ CREATE TABLE IF NOT EXISTS users (
   perms TEXT,
   -- القائد صاحب الحساب، إن وُلّد الحساب من صفحة القادة. حذف القائد يفكّ الربط
   -- يدويًا في نقطة الحذف و يُبقي الحساب — قرار حذفه للأدمن.
-  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))
 );
 
 -- One row per active login; deleting it logs the device out
@@ -261,8 +281,36 @@ CREATE TABLE IF NOT EXISTS attendance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'excused')),
+  -- A roster row exists before pointage. This must not count as an absence.
+  status TEXT NOT NULL DEFAULT 'unmarked' CHECK (status IN ('unmarked', 'present', 'absent', 'excused')),
+  -- Snapshot the organisational position at the time of the session.
+  branch_id INTEGER REFERENCES branches(id),
+  group_id INTEGER,
   UNIQUE(session_id, member_id)
+);
+
+CREATE TABLE IF NOT EXISTS member_branch_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  old_branch_id INTEGER NOT NULL REFERENCES branches(id),
+  new_branch_id INTEGER NOT NULL REFERENCES branches(id),
+  effective_date TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('promotion', 'transfer', 'correction', 'reversal')),
+  changed_by TEXT,
+  source_promotion_id INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  actor TEXT,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT,
+  before_json TEXT,
+  after_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- إشعارات للأدمن: قائد أضاف نشاطًا أو عدّل حضوره/منشّطيه/أعداده. Rows are written only
@@ -302,6 +350,37 @@ CREATE TABLE IF NOT EXISTS annual_plan (
 -- spelled the same way and filtering on it actually returns everybody.
 -- The members columns stay plain TEXT: the list constrains new input, it does not
 -- own the data, so deleting an entry never rewrites a member's file.
+-- بطاقة التحضير: يعدّها القائد قبل نشاط السبت — تفاصيل مسبقة عن النشاط (زمان، مكان،
+-- أهداف، فقرات و طرق تدريبية، وسائل، ملاحظات). مستقلة عن جدول الأنشطة عمدًا: تُكتب قبل
+-- أن يوجد النشاط نفسه. تُؤرشف بلا حذف و تبقى قابلة للتعديل في أي وقت، و تُحسب في سجلّ
+-- القائد الذي أعدّها.
+CREATE TABLE IF NOT EXISTS prep_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  -- النشاط الذي حُضِّرت له، إن سُجِّل: البطاقة تُكتب قبل السبت و النشاط قد يُنشأ
+  -- بعدها، فالربط اختياري و يُضاف في أي وقت. حذف النشاط يفكّ الربط و يُبقي البطاقة.
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  -- Name snapshot, like sessions.leader: the card still reads after the قائد is deleted
+  leader TEXT,
+  title TEXT NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  place TEXT,
+  -- أرقام المطالب التي سيعمل عليها النشاط، مصفوفة JSON كما في sessions.matalib
+  matalib TEXT NOT NULL DEFAULT '[]',
+  -- الأهداف، الفقرات والطرق التدريبية بالتفصيل، وسائل تدريبية، ملاحظات — نص حر
+  goals TEXT,
+  segments TEXT,
+  tools TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- من أنشأها (اسم الحساب) — للأرشيف، لا للصلاحيات
+  created_by TEXT,
+  updated_by TEXT
+);
+
 CREATE TABLE IF NOT EXISTS lookup_values (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('residence_abidjan', 'residence_lebanon', 'school')),
@@ -459,6 +538,37 @@ function migrateSessions() {
   db.pragma('foreign_keys = ON');
 }
 
+// Attendance doubles as the immutable session roster. Older databases only allowed
+// three final states and did not remember the member's branch/group at the session.
+// Rebuild once so future sessions can start as genuinely unmarked.
+function migrateAttendanceRoster() {
+  const cols = db.prepare('PRAGMA table_info(attendance)').all().map((c) => c.name);
+  const ddl =
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'attendance'").get()?.sql || '';
+  if (cols.includes('branch_id') && cols.includes('group_id') && ddl.includes("'unmarked'")) return;
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE attendance_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'unmarked'
+          CHECK (status IN ('unmarked', 'present', 'absent', 'excused')),
+        branch_id INTEGER REFERENCES branches(id),
+        group_id INTEGER,
+        UNIQUE(session_id, member_id)
+      );
+      INSERT INTO attendance_new (id, session_id, member_id, status, branch_id, group_id)
+        SELECT a.id, a.session_id, a.member_id, a.status, m.branch_id, m.group_id
+        FROM attendance a JOIN members m ON m.id = a.member_id;
+      DROP TABLE attendance;
+      ALTER TABLE attendance_new RENAME TO attendance;
+    `);
+  })();
+  db.pragma('foreign_keys = ON');
+}
+
 // الخطة كانت بالشهر، صارت باليوم: كل سبت (أو أي يوم) صف مستقل. الصفوف القديمة تُنقل
 // إلى أول يوم من شهرها — the month is the only thing that version ever knew.
 function migrateAnnualPlan() {
@@ -586,6 +696,11 @@ function migrate() {
   // نشاط عام للفوج: عدد حضور القادة
   ensureColumn('sessions', 'leaders_count', 'leaders_count INTEGER');
   migrateSessions();
+  ensureColumn('sessions', 'attendance_finalized_at', 'attendance_finalized_at TEXT');
+  ensureColumn('sessions', 'attendance_finalized_by', 'attendance_finalized_by TEXT');
+  ensureColumn('sessions', 'updated_at', 'updated_at TEXT');
+  db.exec("UPDATE sessions SET updated_at = datetime('now') WHERE updated_at IS NULL");
+  migrateAttendanceRoster();
   // Added after migrateSessions on purpose: its rebuild only knows the older column set
   ensureColumn(
     'sessions',
@@ -602,6 +717,9 @@ function migrate() {
       SELECT id, plan_item_id FROM sessions WHERE plan_item_id IS NOT NULL;
   `);
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('promotions', 'reversed_at', 'reversed_at TEXT');
+  ensureColumn('promotions', 'reversed_by', 'reversed_by TEXT');
+  ensureColumn('promotions', 'reversal_reason', 'reversal_reason TEXT');
   migrateAssignments();
   // Added after migrateAssignments on purpose: its rebuild only knows the older column set
   ensureColumn('assignments', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
@@ -623,6 +741,15 @@ function migrate() {
   // الميزة. الحذف يُفرَّغ يدويًا قبل DELETE: عمود مُضاف بـ ALTER لا يُعتمد عليه في
   // تنفيذ ON DELETE SET NULL.
   ensureColumn('members', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
+  ensureColumn('members', 'archived_at', 'archived_at TEXT');
+  ensureColumn('members', 'archived_by', 'archived_by TEXT');
+  // ربط بطاقة التحضير بنشاطها — added after the table's first release
+  ensureColumn(
+    'prep_cards',
+    'session_id',
+    'session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL'
+  );
+  ensureColumn('prep_cards', 'updated_by', 'updated_by TEXT');
   seedLookupsFromMembers();
   // Old count-based column: counts cannot be mapped to specific numbers, drop it
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
@@ -654,9 +781,13 @@ function migrate() {
     ['training_level', "training_level TEXT NOT NULL DEFAULT '[]'"],
   ])
     ensureColumn('leaders', col, ddl);
+  ensureColumn('leaders', 'archived_at', 'archived_at TEXT');
+  ensureColumn('leaders', 'archived_by', 'archived_by TEXT');
 
   ensureColumn('users', 'perms', 'perms TEXT');
   ensureColumn('users', 'leader_id', 'leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL');
+  ensureColumn('users', 'active', 'active INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('users', 'must_change_password', 'must_change_password INTEGER NOT NULL DEFAULT 0');
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -664,7 +795,7 @@ function migrate() {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = crypto.scryptSync('admin123', salt, 64).toString('hex');
     db.prepare(
-      "INSERT INTO users (username, password_hash, display_name, role, branches) VALUES ('admin', ?, 'Admin', 'admin', NULL)"
+      "INSERT INTO users (username, password_hash, display_name, role, branches, must_change_password) VALUES ('admin', ?, 'Admin', 'admin', NULL, 1)"
     ).run(`${salt}:${hash}`);
     console.log('Created default admin account: admin / admin123 — change the password!');
   }
@@ -676,6 +807,33 @@ function migrate() {
       'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements) VALUES (?, ?, ?, ?, ?, ?)'
     ).run('Baraem', 'البراعم', 6, 7, 0, 99);
   }
+
+  // Existing compositions become explicit years. Promotion history is mirrored into
+  // the generic movement log without changing the original rows.
+  db.exec(`
+    INSERT OR IGNORE INTO tachkila_years (year)
+      SELECT DISTINCT year FROM assignments WHERE year IS NOT NULL AND TRIM(year) != '';
+    INSERT INTO member_branch_history
+      (member_id, old_branch_id, new_branch_id, effective_date, reason, source_promotion_id)
+      SELECT p.member_id, p.old_branch_id, p.new_branch_id, p.promoted_at, 'promotion', p.id
+      FROM promotions p
+      WHERE p.reversed_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM member_branch_history h WHERE h.source_promotion_id = p.id);
+
+    CREATE INDEX IF NOT EXISTS idx_members_branch_status_name
+      ON members(branch_id, status, last_name, first_name);
+    CREATE INDEX IF NOT EXISTS idx_members_birth_date ON members(birth_date);
+    CREATE INDEX IF NOT EXISTS idx_sessions_date_kind ON sessions(date, kind);
+    CREATE INDEX IF NOT EXISTS idx_sessions_branch_date ON sessions(branch_id, date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_member_session ON attendance(member_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_attendance_session_status ON attendance(session_id, status);
+    CREATE INDEX IF NOT EXISTS idx_attendance_branch_session ON attendance(branch_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_promotions_member_date ON promotions(member_id, promoted_at);
+    CREATE INDEX IF NOT EXISTS idx_assignments_year_branch ON assignments(year, branch_id);
+    CREATE INDEX IF NOT EXISTS idx_assignments_leader_year ON assignments(leader_id, year);
+    CREATE INDEX IF NOT EXISTS idx_prep_cards_branch_date ON prep_cards(branch_id, date);
+    CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at, id);
+  `);
 
   migrateBranchRoles();
 }
@@ -697,6 +855,7 @@ function seed() {
 // leaders themselves are entered by hand, so no names are seeded here.
 function seedLeaders() {
   const year = '2025-2026';
+  db.prepare('INSERT OR IGNORE INTO tachkila_years (year, created_by) VALUES (?, ?)').run(year, 'seed');
   const count = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE year = ?').get(year).n;
   if (count > 0) return;
 

@@ -295,6 +295,38 @@ export default function LeaderDetail() {
         </Card>
       )}
 
+      {/* بطاقات التحضير التي أعدّها — تشهد في سجلّه أنه حضّر لأنشطته قبل السبت */}
+      {leader.prep_cards?.length > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle>{t('prep.leaderSection')}</CardTitle>
+            <Badge variant="outline">{leader.prep_cards.length}</Badge>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <ul className="divide-y divide-border">
+              {leader.prep_cards.map((c) => (
+                <li key={c.id} className="px-4 py-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <Link
+                      to={`/prep-cards/${c.id}`}
+                      className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                    >
+                      {c.title}
+                    </Link>
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {fmtDate(c.date)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5">
+                    <Badge>{branchName(c, i18n.language)}</Badge>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       {/* زيارات الأهل this قائد took part in — listed apart from the أنشطة he animated */}
       {leader.visits?.length > 0 && (
         <Card>

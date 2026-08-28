@@ -9,3 +9,5 @@ server/scout.db-shm
 *.pdf
 # every base copy: backups carry members' names, phones and addresses
 server/scout.db.*
+# WAL/manual db backups also carry personal data
+server/scout.db-*

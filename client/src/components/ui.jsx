@@ -234,6 +234,14 @@ export const IconCake = (p) => (
     <path d="M7 4.5c0 .8-.6 1.5-1 1.5M12 4.5c0 .8-.6 1.5-1 1.5M17 4.5c0 .8-.6 1.5-1 1.5" />
   </Icon>
 );
+export const IconClipboard = (p) => (
+  <Icon {...p}>
+    <rect x="8" y="2" width="8" height="4" rx="1" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <path d="M9 11h6" />
+    <path d="M9 15h4" />
+  </Icon>
+);
 export const IconAward = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="8" r="6" />

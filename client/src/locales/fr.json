@@ -17,7 +17,9 @@
     "skipToContent": "Aller au contenu",
     "branches": "Branches",
     "admin": "Admin",
-    "more": "Plus"
+    "more": "Plus",
+    "prepCards": "Fiches de préparation",
+    "prepCardsShort": "Préparation"
   },
   "common": {
     "edit": "Modifier",
@@ -254,6 +256,37 @@
     "groups": "Sous-groupes concernés",
     "groupsHint": "Sans sélection, toute la branche participe. Choisir un ou plusieurs sous-groupes limite la liste de présence à leurs membres.",
     "leadersAttendance": "Présence des chefs"
+  },
+  "prep": {
+    "title": "Fiches de préparation",
+    "subtitle": "Détails de l'activité préparés avant le samedi, puis archivés",
+    "cardLabel": "Fiche de préparation",
+    "newCard": "Nouvelle fiche de préparation",
+    "editCard": "Modifier la fiche de préparation",
+    "searchPlaceholder": "Rechercher par titre, lieu ou animateur...",
+    "resultCount": "{{count}} fiche(s) trouvée(s)",
+    "noCards": "Aucune fiche de préparation",
+    "noCardsHint": "Préparez la fiche avant l'activité du samedi : objectifs, séquences et moyens. Elle reste archivée ici et modifiable à tout moment.",
+    "author": "Préparée par",
+    "allAuthors": "Tous les animateurs",
+    "matalib": "Numéros des exigences",
+    "goals": "Objectifs",
+    "segments": "Séquences et méthodes de formation en détail",
+    "segmentsHint": "Séquence par séquence : quoi faire et avec quelle méthode",
+    "tools": "Moyens pédagogiques",
+    "notes": "Remarques",
+    "created": "Fiche de préparation créée",
+    "updated": "Modifications enregistrées",
+    "delete": "Supprimer la fiche",
+    "deleteConfirm": "Supprimer définitivement cette fiche de préparation ?",
+    "deleted": "Fiche supprimée",
+    "createdBy": "Créée par {{name}} le {{date}}",
+    "updatedAt": "Dernière modification le {{date}}",
+    "leaderSection": "Fiches de préparation rédigées",
+    "session": "Séance liée",
+    "noSession": "Aucune séance liée",
+    "sessionHint": "Optionnel : liez la fiche à la séance qu'elle prépare — le lien peut aussi être ajouté après la création de la séance.",
+    "linked": "Liée à une séance"
   },
   "promotion": {
     "title": "Promotions",
