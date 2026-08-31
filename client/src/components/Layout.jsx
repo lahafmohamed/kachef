@@ -369,14 +369,12 @@ function Brand({ className }) {
   const { t } = useTranslation();
   return (
     <div className={cn('flex items-center gap-2.5', className)}>
-      {/* The source logo is portrait, with the wordmark under the emblem — this
-          crop centres on the emblem alone, which is all that reads at 36px. */}
       <img
-        src="/logo.png"
+        src="/logo-mark.png"
         alt={t('app.name')}
         width={90}
         height={90}
-        className="h-11 w-11 shrink-0 rounded-lg object-cover object-[50%_18%] lg:h-[90px] lg:w-[90px] lg:rounded-none"
+        className="h-11 w-11 shrink-0 lg:h-[90px] lg:w-[90px]"
       />
       <span className="truncate text-base font-bold tracking-tight text-primary">
         {t('app.name')}

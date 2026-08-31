@@ -37,7 +37,7 @@ export default function SearchInput({ value, onChange, placeholder, className, a
         // Escape clears without leaving the keyboard
         onKeyDown={(e) => e.key === 'Escape' && value && (e.preventDefault(), onChange(''))}
         className={cn(
-          'focus-ring h-11 w-full rounded-md border border-input bg-card ps-9 pe-12 text-sm shadow-xs sm:pe-20',
+          'focus-ring h-11 w-full rounded-lg border border-input bg-card ps-9 pe-12 text-sm shadow-xs sm:pe-20',
           'transition-colors placeholder:text-muted-foreground focus-visible:border-ring sm:h-10',
           '[&::-webkit-search-cancel-button]:hidden'
         )}
@@ -52,11 +52,11 @@ export default function SearchInput({ value, onChange, placeholder, className, a
           >
             <IconX />
           </button>
-        ) : (
+        ) : autoFocusHotkey ? (
           <kbd className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[0.65rem] font-medium text-muted-foreground sm:flex">
             <span>{/Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl'}</span>K
           </kbd>
-        )}
+        ) : null}
       </div>
     </div>
   );

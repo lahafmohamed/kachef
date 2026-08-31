@@ -36,6 +36,8 @@
     "clearFilters": "Réinitialiser les filtres",
     "actions": "Actions",
     "back": "Retour",
+    "next": "Suivant",
+    "fillRequired": "Complétez les champs requis pour continuer.",
     "noResults": "Aucun résultat",
     "noResultsHint": "Essayez un autre nom ou réinitialisez les filtres.",
     "years": "ans",
@@ -175,6 +177,9 @@
     "sortRateAsc": "Taux de présence le plus faible",
     "sortRateDesc": "Taux de présence le plus élevé",
     "newSession": "Nouvelle séance",
+    "stepEssentials": "L'essentiel",
+    "stepDetails": "Détails",
+    "stepParticipants": "Participants",
     "sessionTitle": "Titre de l'activité",
     "leader": "Animateur de l'activité",
     "fee": "Frais d'inscription",
@@ -183,6 +188,8 @@
     "selectedCount": "{{count}} sélectionné(s)",
     "branch": "Branche concernée",
     "branches": "Branches concernées",
+    "branchRequired": "Choisissez au moins une branche",
+    "prepCardHint": "Optionnel : la fiche de préparation choisie sera liée à cette séance.",
     "forbiddenBranch": "Vous ne pointez que les membres de vos branches",
     "branchPrimary": "principale",
     "branchesHint": "La même séance est enregistrée une seule fois et comptée pour chaque branche choisie. Le plan annuel et les matalib suivent la branche principale (la première choisie). Chaque chef de branche pointe ensuite ses propres membres.",
@@ -286,7 +293,9 @@
     "session": "Séance liée",
     "noSession": "Aucune séance liée",
     "sessionHint": "Optionnel : liez la fiche à la séance qu'elle prépare — le lien peut aussi être ajouté après la création de la séance.",
-    "linked": "Liée à une séance"
+    "linked": "Liée à une séance",
+    "noCard": "Aucune fiche",
+    "createSession": "Créer la séance"
   },
   "promotion": {
     "title": "Promotions",

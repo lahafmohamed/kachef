@@ -338,9 +338,14 @@ function BirthdayBadge({ birthDate, t }) {
 
 /** One member as a tappable card — the mobile equivalent of a table row. */
 function MemberCard({ m, lang, t, onEdit, onDelete }) {
+  // Un chef dans la liste : même carte, mais elle mène à sa fiche de chef
+  const isChef = m.kind === 'leader';
   return (
     <li className="flex items-center gap-3 p-3">
-      <Link to={`/members/${m.id}`} className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md">
+      <Link
+        to={isChef ? `/leaders/${m.id}` : `/members/${m.id}`}
+        className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md"
+      >
         <Avatar photo={m.photo} name={avatarName(m)} className="h-11 w-11" />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">
@@ -352,12 +357,14 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
             </div>
           )}
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge>{branchName(m, lang)}</Badge>
+            <Badge>{isChef ? t('branch.leaders') : branchName(m, lang)}</Badge>
             {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
-            <BirthdayBadge birthDate={m.birth_date} t={t} />
-            <span className="text-xs text-muted-foreground">
-              {m.age} {t('common.years')}
-            </span>
+            {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
+            {m.age != null && (
+              <span className="text-xs text-muted-foreground">
+                {m.age} {t('common.years')}
+              </span>
+            )}
             {m.status !== 'active' && <Badge variant="secondary">{t('member.inactive')}</Badge>}
           </div>
         </div>
@@ -389,6 +396,8 @@ export default function Members() {
   const canCreate = has('members.create');
   const canModify = has('members.edit');
   const canDelete = has('members.delete');
+  // Les chefs s'affichent dans la liste comme une branche à part entière
+  const canSeeLeaders = has('leaders.read');
 
   const [branch, setBranch] = useState('');
   // '' = كل المجموعات، 'none' = من لم يُوزَّع بعد، أو رقم مجموعة. يظهر مع فرقة مقسَّمة فقط.
@@ -417,7 +426,8 @@ export default function Members() {
   const lookups = useFetch('/lookups');
 
   const params = new URLSearchParams();
-  if (branch) params.set('branch', branch);
+  // 'leaders' est une pseudo-branche côté client : le serveur ne la connaît pas
+  if (branch && branch !== 'leaders') params.set('branch', branch);
   if (group) params.set('group', group);
   if (status) params.set('status', status);
   if (school) params.set('school', school);
@@ -432,8 +442,8 @@ export default function Members() {
   if (sort && sort !== 'name') params.set('sort', sort);
   if (dq) params.set('q', dq);
   const members = useFetch(`/members?${params}`);
+  const leadersFetch = useFetch('/leaders', { skip: !canSeeLeaders });
 
-  const list = members.data || [];
   const branchList = branches.data || [];
   // مجموعات الفرقة المفلترة. بلا فرقة مختارة لا فلتر مجموعات: أسماء المجموعات
   // تتكرر بين الفرق، فقائمة واحدة لها كلها لا تدلّ على شيء.
@@ -487,6 +497,33 @@ export default function Members() {
     joined.from || joined.to ? 'joined' : '',
   ].filter(Boolean).length;
   const filtering = !!(branch || group || status || q || advancedCount);
+
+  // Les chefs rejoignent la liste comme une branche à part : même recherche,
+  // même filtre de statut, même tri. Les filtres avancés et les groupes décrivent
+  // des champs de membre — dès qu'un de ces filtres est actif, les chefs sortent.
+  const leaderAge = (d) =>
+    d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null;
+  const chefsVisible = canSeeLeaders && !advancedCount && !group && (!branch || branch === 'leaders');
+  const needle = dq.trim().toLowerCase();
+  const chefRows = chefsVisible
+    ? (leadersFetch.data || [])
+        .filter((l) => !status || l.status === status)
+        .filter(
+          (l) =>
+            !needle ||
+            [l.first_name, l.father_name, l.last_name].filter(Boolean).join(' ').toLowerCase().includes(needle) ||
+            (l.phone || '').includes(needle)
+        )
+        .map((l) => ({ ...l, kind: 'leader', age: leaderAge(l.birth_date) }))
+    : [];
+  const memberRows = branch === 'leaders' ? [] : members.data || [];
+  const list = [...memberRows, ...chefRows];
+  // Le serveur trie les membres, mais la fusion ré-trie tout pour intercaler les chefs
+  if (chefRows.length && memberRows.length) {
+    if (sort === 'age_desc') list.sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
+    else if (sort === 'age_asc') list.sort((a, b) => (a.age ?? 999) - (b.age ?? 999));
+    else if (sort === 'name' || !sort) list.sort((a, b) => memberName(a).localeCompare(memberName(b)));
+  }
 
   function clearFilters() {
     setQ('');
@@ -553,7 +590,11 @@ export default function Members() {
               ariaLabel={t('member.branch')}
               className="sm:w-auto sm:min-w-40"
               icon={<IconShield className="opacity-60" />}
-              options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
+              options={[
+                ...branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) })),
+                // Pseudo-branche : filtre client, jamais envoyée au serveur
+                ...(canSeeLeaders ? [{ value: 'leaders', label: t('branch.leaders') }] : []),
+              ]}
             />
             {/* فلتر المجموعة يتبع الفرقة: بلا فرقة مختارة تختلط أسماء المجموعات
                 بين الفرق، و الفرقة غير المقسَّمة لا مجموعات لها أصلًا */}
@@ -764,13 +805,14 @@ export default function Members() {
           <Card className="md:hidden">
             <ul className="divide-y divide-border">
               {list.map((m) => (
+                // Un chef et un membre peuvent partager le même id numérique
                 <MemberCard
-                  key={m.id}
+                  key={`${m.kind || 'member'}-${m.id}`}
                   m={m}
                   lang={i18n.language}
                   t={t}
-                  onEdit={canModify ? () => setEditing(m) : null}
-                  onDelete={canDelete ? () => remove(m) : null}
+                  onEdit={canModify && m.kind !== 'leader' ? () => setEditing(m) : null}
+                  onDelete={canDelete && m.kind !== 'leader' ? () => remove(m) : null}
                 />
               ))}
             </ul>
@@ -793,10 +835,14 @@ export default function Members() {
               </thead>
               <tbody className="divide-y divide-border">
                 {list.map((m) => (
-                  <tr key={m.id} className="group transition-colors hover:bg-accent/40">
+                  // Un chef et un membre peuvent partager le même id numérique
+                  <tr
+                    key={`${m.kind || 'member'}-${m.id}`}
+                    className="group transition-colors hover:bg-accent/40"
+                  >
                     <Td>
                       <Link
-                        to={`/members/${m.id}`}
+                        to={m.kind === 'leader' ? `/leaders/${m.id}` : `/members/${m.id}`}
                         className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
                       >
                         <Avatar photo={m.photo} name={avatarName(m)} className="h-9 w-9" />
@@ -812,23 +858,27 @@ export default function Members() {
                     </Td>
                     <Td className="tabular-nums">
                       <div className="flex items-center gap-2">
-                        {m.age} {t('common.years')}
-                        <BirthdayBadge birthDate={m.birth_date} t={t} />
+                        {m.age != null ? `${m.age} ${t('common.years')}` : '—'}
+                        {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
                       </div>
                     </Td>
                     <Td>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge>{branchName(m, i18n.language)}</Badge>
+                        <Badge>
+                          {m.kind === 'leader' ? t('branch.leaders') : branchName(m, i18n.language)}
+                        </Badge>
                         {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
                       </div>
                     </Td>
                     <Td dir="ltr" className="tabular-nums">
-                      {m.father_phone || '—'}
+                      {(m.kind === 'leader' ? m.phone : m.father_phone) || '—'}
                     </Td>
                     <Td dir="ltr" className="tabular-nums">
-                      {m.mother_phone || '—'}
+                      {m.kind === 'leader' ? '—' : m.mother_phone || '—'}
                     </Td>
-                    <Td className="tabular-nums">{fmtDate(m.join_date)}</Td>
+                    <Td className="tabular-nums">
+                      {m.kind === 'leader' ? m.join_year || '—' : fmtDate(m.join_date)}
+                    </Td>
                     <Td>
                       <Badge variant={m.status === 'active' ? 'success' : 'secondary'}>
                         {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
@@ -837,7 +887,7 @@ export default function Members() {
                     {(canModify || canDelete) && (
                       <Td className="text-end">
                         <div className="flex justify-end gap-0.5">
-                          {canModify && (
+                          {canModify && m.kind !== 'leader' && (
                             <Button
                               variant="ghost"
                               size="icon-sm"
@@ -847,7 +897,7 @@ export default function Members() {
                               <IconPencil />
                             </Button>
                           )}
-                          {canDelete && (
+                          {canDelete && m.kind !== 'leader' && (
                             <Button
                               variant="destructive-ghost"
                               size="icon-sm"

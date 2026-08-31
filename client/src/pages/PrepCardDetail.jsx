@@ -82,6 +82,17 @@ export default function PrepCardDetail() {
           {t('common.back')}
         </Button>
         <div className="flex gap-2">
+          {/* البطاقة كُتبت قبل النشاط: من هنا يُنشأ النشاط مملوءًا منها و مربوطًا بها */}
+          {editable && !card.session_id && (
+            <Button
+              variant="brand"
+              size="sm"
+              onClick={() => navigate('/sessions', { state: { prepCard: card } })}
+            >
+              <IconCalendar />
+              {t('prep.createSession')}
+            </Button>
+          )}
           {editable && (
             <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
               <IconPencil />

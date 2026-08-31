@@ -2994,6 +2994,15 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     if (!item || !branchIds.includes(Number(item.branch_id)))
       return res.status(400).json({ error: 'invalid plan_item_id' });
   }
+  // بطاقة التحضير التي كُتبت لهذا النشاط: تُربط مع الإنشاء في المعاملة نفسها،
+  // فلا نشاط بلا بطاقته حين يُنشأ من صفحتها. البطاقة من فرق النشاط وحدها.
+  const prepCardId = kind === 'activity' ? optionalId(req.body.prep_card_id) : null;
+  if (prepCardId !== null) {
+    const card = db.prepare('SELECT id, branch_id FROM prep_cards WHERE id = ?').get(prepCardId);
+    if (!card || !branchIds.includes(Number(card.branch_id)))
+      return res.status(400).json({ error: 'invalid prep_card_id' });
+    if (!branchOk(req, card.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  }
   // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
   const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leader || null;
   const insertAnimator = db.prepare(
@@ -3071,6 +3080,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     for (const c of branchCounts)
       db.prepare('INSERT INTO session_branch_counts (session_id, branch_id, count) VALUES (?, ?, ?)')
         .run(sessionId, c.branch_id, c.count);
+    if (prepCardId !== null)
+      db.prepare("UPDATE prep_cards SET session_id = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(sessionId, prepCardId);
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   notifyAdmins(req, 'session_create', row);
@@ -3399,7 +3411,7 @@ app.delete('/api/prep-cards/:id', requireAdmin, (req, res) => {
 // Every figure honours the caller's فرقة scope, so a restricted قائد's dashboard
 // only talks about his own فرق.
 app.get('/api/stats', (req, res) => {
-  const total_active = db
+  let total_active = db
     .prepare(`SELECT COUNT(*) AS n FROM members m WHERE m.status = 'active'${branchFilterSQL(req, 'm.branch_id')}`)
     .get().n;
   const branches = db
@@ -3429,6 +3441,30 @@ app.get('/api/stats', (req, res) => {
        FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY b.sort_order`
     )
     .all();
+  // القادة فرقة كاملة في الإحصاءات: صف في التوزيع و عدّهم ضمن مجموع العناصر.
+  // لا يخضعون لقيد الفرق (لا فرقة لهم)، فيُحجَبون فقط عمّن لا يملك leaders.read.
+  if (hasPerm(req, 'leaders.read')) {
+    const leaders_count = db
+      .prepare("SELECT COUNT(*) AS n FROM leaders WHERE status = 'active'")
+      .get().n;
+    branches.push({
+      id: 'leaders',
+      name_fr: 'Chefs',
+      name_ar: 'القادة',
+      leader_name: null,
+      leader_id: null,
+      member_count: leaders_count,
+      activities_count: db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE kind = 'leaders'").get().n,
+      participants_count: db
+        .prepare(
+          `SELECT COUNT(DISTINCT sl.leader_id) AS n FROM session_leaders sl
+           JOIN sessions s ON s.id = sl.session_id
+           WHERE s.kind = 'leaders' AND sl.status = 'present'`
+        )
+        .get().n,
+    });
+    total_active += leaders_count;
+  }
   const ym = todayISO().slice(0, 7);
   const row = db
     .prepare(

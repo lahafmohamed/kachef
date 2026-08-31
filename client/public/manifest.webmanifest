@@ -9,8 +9,14 @@
   "theme_color": "#f8f7f4",
   "icons": [
     {
-      "src": "/logo.png",
-      "sizes": "3241x4321",
+      "src": "/logo-mark-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo-mark.png",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
@@ -55,6 +55,8 @@ const EMPTY = {
   // أصلًا. فرقةٌ اختيرت لها مجموعة أو أكثر لا يشارك منها إلا عناصرها.
   group_ids: [],
   leader_id: '',
+  // بطاقة التحضير التي كُتبت لهذا النشاط — تُربط به عند الحفظ
+  prep_card_id: '',
   helper_ids: [],
   member_ids: [],
   fee: '',
@@ -179,10 +181,38 @@ export default function Sessions() {
 
   const [creating, setCreating] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
+  // النموذج على ثلاث خطوات: الأساسي ثم التفاصيل ثم المشاركون
+  const [step, setStep] = useState(0);
   const [helperQuery, setHelperQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState(null);
+
+  // القادم من صفحة بطاقة تحضير: النموذج يُملأ منها و يُفتح فورًا، و تُربط عند الحفظ.
+  // The state is cleared straight away so a refresh doesn't reopen the dialog.
+  const location = useLocation();
+  // Every open starts back at step one, whatever step a cancelled run died on
+  useEffect(() => {
+    if (creating) setStep(0);
+  }, [creating]);
+  useEffect(() => {
+    const card = location.state?.prepCard;
+    if (!card) return;
+    navigate(location.pathname, { replace: true, state: null });
+    setForm({
+      ...EMPTY,
+      kind: 'activity',
+      title: card.title,
+      date: card.date,
+      start_time: card.start_time || '',
+      place: card.place || '',
+      branch_ids: [Number(card.branch_id)],
+      leader_id: card.leader_id ? String(card.leader_id) : '',
+      matalib: card.matalib || [],
+      prep_card_id: String(card.id),
+    });
+    setCreating(true);
+  }, [location, navigate]);
 
   // بنود خطة الفرقة التي لم تُنفَّذ بعد — loaded only while the dialog is open on a
   // نشاط فرقة, so picking one is a one-tap way to fill the title and the date.
@@ -195,16 +225,18 @@ export default function Sessions() {
   });
   const planItems = planOptions.data?.items || [];
 
+  // بطاقات تحضير الفرقة الرئيسية غير المربوطة بعد — للربط الاختياري عند الإنشاء
+  const prepCards = useFetch(planScope ? `/prep-cards?branch=${planScope}` : null, {
+    skip: !planScope,
+  });
+  const prepCardOptions = (prepCards.data || [])
+    .filter((c) => !c.session_id || String(c.id) === String(form.prep_card_id))
+    .map((c) => ({ value: c.id, label: `${c.title} — ${fmtDate(c.date)}` }));
+
   const branchList = branches.data || [];
   const leaderList = leaders.data || [];
   const list = sessions.data || [];
   const selectedBranch = branchList.find((b) => b.id === Number(primaryBranchId));
-
-  // Pre-select the first branch and its current تشكيلة leader once branches load
-  useEffect(() => {
-    if (!branchList.length || form.branch_ids.length) return;
-    setForm((f) => ({ ...f, branch_ids: [branchList[0].id], leader_id: branchList[0].leader_id || '' }));
-  }, [branchList, form.branch_ids.length]);
 
   function toggleMatalib(n) {
     setForm((f) => ({
@@ -213,13 +245,12 @@ export default function Sessions() {
     }));
   }
 
-  // إضافة فرقة أو إزالتها. النشاط بلا فرقة لا معنى له، فآخر فرقة لا تُنزع.
+  // إضافة فرقة أو إزالتها — الحفظ وحده يشترط فرقة واحدة على الأقل.
   // تغيّر الفرقة الرئيسية يُسقط المطالب و بند الخطة: كلاهما يخصّ فرقة بعينها.
   function toggleBranch(branchId) {
     const id = Number(branchId);
     setForm((f) => {
       const has = f.branch_ids.includes(id);
-      if (has && f.branch_ids.length === 1) return f;
       const next = has ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id];
       const primaryChanged = next[0] !== f.branch_ids[0];
       const b = branchList.find((x) => x.id === next[0]);
@@ -236,7 +267,7 @@ export default function Sessions() {
           (members.data || []).some((x) => x.id === m && next.includes(x.branch_id))
         ),
         ...(primaryChanged
-          ? { matalib: [], plan_item_id: '', leader_id: b?.leader_id || f.leader_id }
+          ? { matalib: [], plan_item_id: '', prep_card_id: '', leader_id: b?.leader_id || f.leader_id }
           : {}),
       };
     });
@@ -260,6 +291,7 @@ export default function Sessions() {
       title: kind === 'visit' ? t('session.familyVisit') : f.title === t('session.familyVisit') ? '' : f.title,
       // Only a نشاط فرقة executes a بند of the plan — و هو وحده الذي يُحصر بمجموعات
       plan_item_id: kind === 'activity' ? f.plan_item_id : '',
+      prep_card_id: kind === 'activity' ? f.prep_card_id : '',
       group_ids: kind === 'activity' ? f.group_ids : [],
       matalib: [],
       member_ids: [],
@@ -315,7 +347,17 @@ export default function Sessions() {
 
   async function create(e) {
     e.preventDefault();
+    // Enter on an early step advances instead of submitting
+    if (step < 2) {
+      nextStep();
+      return;
+    }
     setError(null);
+    // لا فرقة مختارة: نشاط الفرقة و الزيارة بلا فرقة لا معنى لهما
+    if (!['leaders', 'group'].includes(form.kind) && form.branch_ids.length === 0) {
+      setError(t('session.branchRequired'));
+      return;
+    }
     setSaving(true);
     try {
       const s = await api.post('/sessions', {
@@ -328,6 +370,7 @@ export default function Sessions() {
         fee: form.fee === '' ? null : Number(form.fee),
         matalib: form.kind === 'visit' ? [] : form.matalib,
         plan_item_id: form.kind === 'activity' && form.plan_item_id ? Number(form.plan_item_id) : null,
+        prep_card_id: form.kind === 'activity' && form.prep_card_id ? Number(form.prep_card_id) : null,
         activity_type: form.activity_type || null,
         start_time: form.start_time || null,
         place: form.place || null,
@@ -341,7 +384,7 @@ export default function Sessions() {
         leaders_count: form.kind === 'group' && form.leaders_count !== '' ? Number(form.leaders_count) : null,
       });
       setCreating(false);
-      setForm({ ...EMPTY, branch_ids: form.branch_ids, leader_id: form.leader_id });
+      setForm({ ...EMPTY, date: todayISO() });
       toast.success(t('session.created'));
       navigate(`/sessions/${s.id}`);
     } catch (err) {
@@ -359,6 +402,25 @@ export default function Sessions() {
     (l) => l.status === 'active' && l.id !== Number(form.leader_id)
   );
   const isVisit = form.kind === 'visit';
+  // كل خطوة تتحقق من حقولها الإلزامية قبل التقدّم — فالخطأ يظهر حيث يُصلح
+  function nextStep() {
+    setError(null);
+    if (step === 0 && (!form.title.trim() || !form.date)) {
+      setError(t('common.fillRequired'));
+      return;
+    }
+    if (step === 1) {
+      if (!form.leader_id || (form.kind === 'group' && !form.activity_type)) {
+        setError(t('common.fillRequired'));
+        return;
+      }
+      if (!['leaders', 'group'].includes(form.kind) && form.branch_ids.length === 0) {
+        setError(t('session.branchRequired'));
+        return;
+      }
+    }
+    setStep((s) => Math.min(2, s + 1));
+  }
   // نشاط قادة: no فرقة, no عناصر, no مطالب — only the قادة who take part
   const isLeadersOnly = form.kind === 'leaders';
   // نشاط عام للفوج: no فرقة either, présence recorded as a count per فرقة
@@ -695,6 +757,8 @@ export default function Sessions() {
           />
         ) : (
         <form onSubmit={create} className="space-y-4">
+          {(() => {
+          const kindField = (
           <div className="space-y-1.5">
             <Label htmlFor="s_kind">{t('session.kind')}</Label>
             {/* A select, not segments: four kinds no longer fit side by side on a phone */}
@@ -706,7 +770,9 @@ export default function Sessions() {
             </Select>
             {isGroup && <p className="text-xs text-muted-foreground">{t('session.groupHint')}</p>}
           </div>
+          );
 
+          const titleField = (
           <div className="space-y-1.5">
             <Label htmlFor="s_title">{t(isGroup ? 'session.occasion' : 'session.sessionTitle')}</Label>
             {/* عنوان النشاط يقترح بنود الخطة السنوية غير المنجزة، و المبرمج في نفس اليوم
@@ -722,11 +788,11 @@ export default function Sessions() {
               // survives while the title is the one that was picked.
               onChange={(e) => setForm((f) => ({ ...f, title: e.target.value, plan_item_id: '' }))}
             />
-            {!isVisit && <p className="text-xs text-muted-foreground">{t('session.sessionTitleHint')}</p>}
           </div>
+          );
 
-          {/* ما تقوله الخطة عن هذا اليوم: يُعرض بمجرد اختيار التاريخ، و ينتقل إلى العنوان بنقرة */}
-          {usesPlan && linkedItem && (
+          // ما تقوله الخطة عن هذا اليوم: يُعرض بمجرد اختيار التاريخ، و ينتقل إلى العنوان بنقرة
+          const planLinked = usesPlan && linkedItem && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-xs">
               <IconCheck className="h-3.5 w-3.5 shrink-0 text-success" />
               <span className="min-w-0 flex-1">
@@ -740,10 +806,10 @@ export default function Sessions() {
                 {t('session.unlinkPlan')}
               </Button>
             </div>
-          )}
-          {/* Still shown next to the green chip when the قائد moved the date onto a day
-              carrying another بند — switching to it stays one tap away. */}
-          {usesPlan && plannedThisDay && plannedThisDay.id !== linkedItem?.id && (
+          );
+          // Still shown next to the green chip when the قائد moved the date onto a day
+          // carrying another بند — switching to it stays one tap away.
+          const planDay = usesPlan && plannedThisDay && plannedThisDay.id !== linkedItem?.id && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/8 px-3 py-2 text-xs">
               <IconCalendar className="h-3.5 w-3.5 shrink-0 text-primary" />
               <span className="min-w-0 flex-1">
@@ -754,9 +820,9 @@ export default function Sessions() {
                 {t('session.usePlanned')}
               </Button>
             </div>
-          )}
+          );
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          const dateField = (
             <div className="space-y-1.5">
               <Label htmlFor="s_date">{t('common.date')}</Label>
               <DatePicker
@@ -767,6 +833,8 @@ export default function Sessions() {
                 onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
               />
             </div>
+          );
+          const timeField = (
             <div className="space-y-1.5">
               <Label htmlFor="s_time">{t('session.time')}</Label>
               <TimePicker
@@ -775,6 +843,8 @@ export default function Sessions() {
                 onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
               />
             </div>
+          );
+          const placeField = (
             <div className="space-y-1.5">
               <Label htmlFor="s_place">{t('session.place')}</Label>
               <Input
@@ -784,7 +854,8 @@ export default function Sessions() {
                 onChange={(e) => setForm((f) => ({ ...f, place: e.target.value }))}
               />
             </div>
-            {!isVisit && (
+          );
+          const natureField = !isVisit && (
               <div className="space-y-1.5">
                 <Label htmlFor="s_nature">{t('session.nature')}</Label>
                 <Select
@@ -801,8 +872,8 @@ export default function Sessions() {
                   ))}
                 </Select>
               </div>
-            )}
-            {!isVisit && !isGroup && (
+          );
+          const feeField = !isVisit && !isGroup && (
               <div className="space-y-1.5">
                 <Label htmlFor="s_fee">{t('session.fee')}</Label>
                 <Input
@@ -816,8 +887,8 @@ export default function Sessions() {
                   onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
                 />
               </div>
-            )}
-            {!isLeadersOnly && !isGroup && (
+          );
+          const branchesField = !isLeadersOnly && !isGroup && (
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>{t('session.branches')}</Label>
                 {/* حصّة واحدة قد تجمع فرقتين: تُختار كل فرقة معنيّة، و تبقى واحدة
@@ -833,7 +904,7 @@ export default function Sessions() {
                         aria-pressed={on}
                         onClick={() => toggleBranch(b.id)}
                         className={cn(
-                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
+                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
                           on
                             ? 'border-primary bg-primary/10 font-medium text-primary'
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -854,10 +925,10 @@ export default function Sessions() {
                   <p className="text-xs text-muted-foreground">{t('session.branchesHint')}</p>
                 )}
               </div>
-            )}
-            {/* المجموعات: تظهر فقط للفرق المقسَّمة، و لنشاط الفرقة وحده. لا اختيار
-                = الفرقة كاملةً، فالفرقة غير المقسَّمة لا ترى هذا الحقل أصلًا. */}
-            {form.kind === 'activity' && groupedBranches.length > 0 && (
+          );
+          // المجموعات: تظهر فقط للفرق المقسَّمة، و لنشاط الفرقة وحده. لا اختيار
+          // = الفرقة كاملةً، فالفرقة غير المقسَّمة لا ترى هذا الحقل أصلًا.
+          const groupsField = form.kind === 'activity' && groupedBranches.length > 0 && (
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>{t('session.groups')}</Label>
                 <div className="space-y-2">
@@ -882,7 +953,7 @@ export default function Sessions() {
                               aria-pressed={on}
                               onClick={() => toggleGroup(g.id)}
                               className={cn(
-                                'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
+                                'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
                                 on
                                   ? 'border-primary bg-primary/10 font-medium text-primary'
                                   : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -900,39 +971,54 @@ export default function Sessions() {
                 </div>
                 <p className="text-xs text-muted-foreground">{t('session.groupsHint')}</p>
               </div>
-            )}
+          );
+          const leaderField = (
             <div className="space-y-1.5">
               <Label htmlFor="s_leader">
                 {t(isVisit || isLeadersOnly ? 'session.visitMainLeader' : 'session.leader')}
               </Label>
-              <Select
+              <SearchSelect
                 id="s_leader"
                 required
                 value={form.leader_id}
                 onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
-              >
-                <option value="" disabled>
-                  {t('leader.selectLeader')}
-                </option>
-                {leaderList
+                options={leaderList
                   .filter((l) => l.status === 'active' || l.id === Number(form.leader_id))
-                  .map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {memberName(l)}
-                    </option>
-                  ))}
-              </Select>
+                  .map((l) => ({ value: l.id, label: memberName(l) }))}
+                placeholder={t('leader.selectLeader')}
+                searchPlaceholder={t('session.searchLeader')}
+                emptyLabel={t('member.noListValue')}
+                ariaLabel={t(isVisit || isLeadersOnly ? 'session.visitMainLeader' : 'session.leader')}
+              />
             </div>
-          </div>
+          );
+          // بطاقة التحضير: تُعرض بطاقات الفرقة الرئيسية غير المربوطة، و الربط اختياري
+          const prepField = form.kind === 'activity' && prepCardOptions.length > 0 && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="s_prep">{t('prep.cardLabel')}</Label>
+                <SearchSelect
+                  id="s_prep"
+                  value={form.prep_card_id}
+                  onChange={(e) => setForm((f) => ({ ...f, prep_card_id: e.target.value }))}
+                  options={prepCardOptions}
+                  clearLabel={t('prep.noCard')}
+                  placeholder={t('prep.noCard')}
+                  searchPlaceholder={t('prep.searchPlaceholder')}
+                  emptyLabel={t('common.noResults')}
+                  ariaLabel={t('prep.cardLabel')}
+                />
+                <p className="text-xs text-muted-foreground">{t('session.prepCardHint')}</p>
+              </div>
+          );
 
-          {/* زيارة الأهل: pick the عناصر whose families were visited — each one gets the
-              visit recorded in their file the moment the نشاط is saved */}
-          {isVisit && (
+          // زيارة الأهل: pick the عناصر whose families were visited — each one gets the
+          // visit recorded in their file the moment the نشاط is saved
+          const visitPicker = isVisit && (
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-x-2">
                 <Label>
                   {t('session.visitedMembers')}
-                  <span className="ms-2 font-normal text-muted-foreground">
+                  <span className="ms-2 font-normal tabular-nums text-muted-foreground">
                     {t('session.selectedCount', { count: form.member_ids.length })}
                   </span>
                 </Label>
@@ -965,7 +1051,7 @@ export default function Sessions() {
                   {t(memberQuery ? 'common.noResults' : 'member.noMembers')}
                 </p>
               ) : (
-                <div className="max-h-52 overflow-y-auto rounded-md border border-border p-1.5">
+                <div className="max-h-52 overflow-y-auto rounded-lg border border-border p-1.5">
                   {visitableMembers.map((m) => (
                     <label
                       key={m.id}
@@ -982,13 +1068,13 @@ export default function Sessions() {
                 </div>
               )}
             </div>
-          )}
+          );
 
-          {/* نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل + عدد حضور القادة */}
-          {isGroup && (
+          // نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل + عدد حضور القادة
+          const groupCounts = isGroup && (
             <div className="space-y-1.5">
               <Label className="block">{t('session.branchCounts')}</Label>
-              <div className="space-y-2 rounded-md border border-border p-3">
+              <div className="space-y-2 rounded-xl border border-border p-3">
                 {branchList.map((b) => (
                   <div key={b.id} className="flex items-center justify-between gap-3">
                     <Label htmlFor={`s_count_${b.id}`} className="flex-1">
@@ -1023,14 +1109,14 @@ export default function Sessions() {
                 </div>
               </div>
             </div>
-          )}
+          );
 
-          {!isGroup && (
+          const helpersPicker = !isGroup && (
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-x-2">
               <Label>
                 {t(isVisit || isLeadersOnly ? 'session.visitParticipants' : 'session.helpers')}
-                <span className="ms-2 font-normal text-muted-foreground">
+                <span className="ms-2 font-normal tabular-nums text-muted-foreground">
                   {t('session.selectedCount', { count: form.helper_ids.length })}
                 </span>
               </Label>
@@ -1065,7 +1151,7 @@ export default function Sessions() {
                 {t(availableHelpers.length === 0 ? 'session.noHelpersAvailable' : 'common.noResults')}
               </p>
             ) : (
-              <div className="max-h-52 overflow-y-auto rounded-md border border-border p-1.5">
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-border p-1.5">
                 {shownHelpers.map((l) => (
                   <label
                     key={l.id}
@@ -1082,17 +1168,17 @@ export default function Sessions() {
               </div>
             )}
           </div>
-          )}
+          );
 
-          {!isVisit && !isLeadersOnly && !isGroup && selectedBranch?.total_requirements > 0 && (
+          const matalibField = !isVisit && !isLeadersOnly && !isGroup && selectedBranch?.total_requirements > 0 && (
             <div className="space-y-1.5">
               <Label>
                 {t('session.requirements')}
-                <span className="ms-2 font-normal text-muted-foreground">
+                <span className="ms-2 font-normal tabular-nums text-muted-foreground">
                   {t('session.selectedCount', { count: form.matalib.length })}
                 </span>
               </Label>
-              <div className="max-h-56 overflow-y-auto rounded-md border border-border p-2">
+              <div className="max-h-56 overflow-y-auto rounded-lg border border-border p-2">
                 <RequirementGrid
                   total={selectedBranch.total_requirements}
                   selected={form.matalib}
@@ -1101,22 +1187,105 @@ export default function Sessions() {
                 />
               </div>
             </div>
-          )}
+          );
 
-          {error && (
+          const errorEl = error && (
             <p role="alert" className="text-sm font-medium text-destructive">
               {error}
             </p>
-          )}
+          );
 
-          <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" onClick={() => setCreating(false)}>
-              {t('common.cancel')}
-            </Button>
-            <Button type="submit" loading={saving}>
-              {t('common.save')}
-            </Button>
-          </div>
+          const steps = [
+              t('session.stepEssentials'),
+              t('session.stepDetails'),
+              t('session.stepParticipants'),
+            ];
+            return (
+              <>
+                <ol className="flex items-center gap-2 text-xs">
+                  {steps.map((s, i) => (
+                    <li
+                      key={s}
+                      aria-current={i === step ? 'step' : undefined}
+                      className={cn('flex items-center gap-1.5', i < steps.length - 1 && 'flex-1')}
+                    >
+                      <span
+                        className={cn(
+                          'flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-semibold tabular-nums',
+                          i <= step
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted text-muted-foreground'
+                        )}
+                      >
+                        {i + 1}
+                      </span>
+                      <span className={i === step ? 'font-medium' : 'text-muted-foreground'}>
+                        {s}
+                      </span>
+                      {i < steps.length - 1 && <span className="h-px min-w-3 flex-1 bg-border" />}
+                    </li>
+                  ))}
+                </ol>
+                {step === 0 && (
+                  <div className="space-y-4">
+                    {kindField}
+                    {titleField}
+                    {planLinked}
+                    {planDay}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {dateField}
+                      {timeField}
+                    </div>
+                  </div>
+                )}
+                {step === 1 && (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {placeField}
+                      {natureField}
+                      {feeField}
+                      {leaderField}
+                    </div>
+                    {branchesField}
+                    {groupsField}
+                    {prepField}
+                  </div>
+                )}
+                {step === 2 && (
+                  <div className="space-y-4">
+                    {visitPicker}
+                    {groupCounts}
+                    {helpersPicker}
+                    {matalibField}
+                  </div>
+                )}
+                {errorEl}
+                <div className="flex items-center justify-between gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      if (step === 0) setCreating(false);
+                      else {
+                        setError(null);
+                        setStep(step - 1);
+                      }
+                    }}
+                  >
+                    {t(step === 0 ? 'common.cancel' : 'common.back')}
+                  </Button>
+                  {step < 2 ? (
+                    <Button type="button" onClick={nextStep}>
+                      {t('common.next')}
+                    </Button>
+                  ) : (
+                    <Button type="submit" loading={saving}>
+                      {t('common.save')}
+                    </Button>
+                  )}
+                </div>
+              </>
+            );
+          })()}
         </form>
         )}
       </Dialog>

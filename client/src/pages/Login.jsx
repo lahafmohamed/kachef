@@ -32,11 +32,11 @@ export default function Login() {
         <CardContent className="space-y-5 p-6 sm:p-8">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
-              src="/logo.png"
+              src="/logo-mark.png"
               alt={t('app.name')}
               width={96}
               height={96}
-              className="h-24 w-24 object-cover object-[50%_18%]"
+              className="h-24 w-24"
             />
             <h1 className="text-xl font-bold tracking-tight text-primary">{t('app.name')}</h1>
             <p className="text-sm text-muted-foreground">{t('auth.subtitle')}</p>

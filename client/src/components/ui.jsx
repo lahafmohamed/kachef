@@ -349,16 +349,16 @@ export function Spinner({ className }) {
    rather than flat swatches, and a color-matched glow instead of grey shadow. */
 const buttonVariants = {
   default:
-    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.98]',
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.96]',
   brand:
-    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.98]',
-  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.98]',
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.96]',
+  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.96]',
   outline:
-    'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
-  ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.98]',
+    'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.96]',
+  ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.96]',
   destructive:
-    'ring-inset-light bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.98]',
-  'destructive-ghost': 'text-destructive hover:bg-destructive/10 active:scale-[0.98]',
+    'ring-inset-light bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.96]',
+  'destructive-ghost': 'text-destructive hover:bg-destructive/10 active:scale-[0.96]',
 };
 
 /* Touch targets are ≥44px on phones and tighten up on pointer devices. */
@@ -386,7 +386,7 @@ export function Button({
       aria-busy={loading || undefined}
       className={cn(
         'focus-ring inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg',
-        'font-medium tracking-[-0.005em] transition-all duration-150 cursor-pointer',
+        'font-medium tracking-[-0.005em] transition-[color,background-color,border-color,box-shadow,scale] duration-150 cursor-pointer',
         'disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none',
         buttonVariants[variant],
         buttonSizes[size],
@@ -406,7 +406,7 @@ export function Card({ className, interactive = false, ...props }) {
       className={cn(
         'rounded-2xl border border-border bg-card text-card-foreground shadow-sm',
         interactive &&
-          'transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg',
+          'transition-[translate,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg',
         className
       )}
       {...props}
@@ -1078,7 +1078,7 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
         const n = i + 1;
         const on = set.has(n);
         const cls = cn(
-          'flex h-11 items-center justify-center rounded-md border text-xs font-semibold transition-all sm:h-9',
+          'flex h-11 items-center justify-center rounded-md border text-xs font-semibold transition-[color,background-color,border-color,box-shadow] sm:h-9',
           on
             ? 'border-primary bg-primary text-primary-foreground shadow-xs'
             : 'border-border bg-muted text-muted-foreground'
