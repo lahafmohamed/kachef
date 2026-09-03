@@ -3051,8 +3051,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     for (const g of groupIds)
       db.prepare('INSERT OR IGNORE INTO session_groups (session_id, group_id) VALUES (?, ?)')
         .run(sessionId, g);
-    // كل عناصر النشاط غائبون افتراضيًا: القائد يقلب الحاضرين فقط، فمن لم
-    // يُلمس يبقى غيابًا مسجّلًا لا فراغًا منسيًّا. (After the group inserts —
+    // كل عناصر النشاط غير معلَّمين افتراضيًا (unmarked): لا يُحسبون في المعدّل حتى
+    // يُلمسوا — لئلّا يضرّ نشاطٌ لم يُؤخذ حضوره بعد بمعدّلات العناصر. القائد يقلب
+    // الحاضرين، و زرّ «الباقون غياب» يعلّم من بقي. (After the group inserts —
     // the group-scope SQL reads session_groups for this very session.)
     if (kind === 'activity') {
       const rosterBranches = branchIds.map(intOr).join(',') || -1;

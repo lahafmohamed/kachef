@@ -253,7 +253,6 @@ export default function Sessions() {
       const has = f.branch_ids.includes(id);
       const next = has ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id];
       const primaryChanged = next[0] !== f.branch_ids[0];
-      const b = branchList.find((x) => x.id === next[0]);
       // مجموعات فرقة خرجت من النشاط لم تعد تشارك فيه
       const liveGroups = new Set(
         branchList.filter((x) => next.includes(x.id)).flatMap((x) => (x.groups || []).map((g) => g.id))
@@ -266,9 +265,9 @@ export default function Sessions() {
         member_ids: f.member_ids.filter((m) =>
           (members.data || []).some((x) => x.id === m && next.includes(x.branch_id))
         ),
-        ...(primaryChanged
-          ? { matalib: [], plan_item_id: '', prep_card_id: '', leader_id: b?.leader_id || f.leader_id }
-          : {}),
+        // القائد لا يُملأ تلقائيًا من الفرقة: من يغيّر الفرقة الرئيسية لا يفقد اختياره
+        // للمنشّط، و من لم يختر بعد يبقى الحقل فارغًا حتى يختار هو — لا افتراض مفروض
+        ...(primaryChanged ? { matalib: [], plan_item_id: '', prep_card_id: '' } : {}),
       };
     });
   }

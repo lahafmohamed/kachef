@@ -171,6 +171,9 @@ export default function SessionDetail() {
   // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
   const branches = useFetch('/branches');
   const [bulkBusy, setBulkBusy] = useState(false);
+  // فلترة عرض اللائحة (لا تمسّ الحضور المسجّل، عرضٌ فقط)
+  const [filterBranch, setFilterBranch] = useState('');
+  const [filterGroup, setFilterGroup] = useState('');
 
   /**
    * Attendance is the hot path — a leader taps through 20+ children in a row.
@@ -194,10 +197,12 @@ export default function SessionDetail() {
   // فرقة واحدة حين تُمرَّر: كل قائد يُتمّ لائحة فرقته وحدها في النشاط المشترك.
   // الغياب هو الافتراضي منذ الإنشاء، فالزرّ يقلب غير الحاضرين — عدا المعذورين،
   // فعذرهم وُضع قصدًا و لا يُمسح جملةً.
-  async function markAllPresent(branchId = null) {
+  async function markAllPresent(branchId = null, groupId = null) {
     const unmarked = session.roster.filter(
       (m) =>
-        (!m.status || m.status === 'absent') && (branchId === null || m.branch_id === branchId)
+        (!m.status || m.status === 'absent') &&
+        (branchId === null || m.branch_id === branchId) &&
+        (groupId === null || m.group_id === groupId)
     );
     if (unmarked.length === 0) return;
     if (
@@ -222,6 +227,46 @@ export default function SessionDetail() {
         await api.post(`/sessions/${id}/attendance`, { member_id: m.id, status: 'present' });
       }
       toast.success(t('session.markedCount', { count: unmarked.length }));
+      reload({ quiet: true });
+    } catch (err) {
+      setSession(prev);
+      toast.error(attendanceError(t, err));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  // العناصر غير المعلَّمين (unmarked) لا يُحسبون في المعدّل. حين يُنهي القائد التنقيط
+  // يعلّم الباقين غيابًا بضغطة: من لم يُلمس فقط يصير غائبًا — الحاضر و المعذور لا يُمسّان.
+  async function markAllAbsent(branchId = null, groupId = null) {
+    const untouched = session.roster.filter(
+      (m) =>
+        !m.status &&
+        (branchId === null || m.branch_id === branchId) &&
+        (groupId === null || m.group_id === groupId)
+    );
+    if (untouched.length === 0) return;
+    if (
+      !(await confirm({
+        title: t('session.markRestAbsentTitle'),
+        message: t('session.markAllAbsentConfirm', { count: untouched.length }),
+        destructive: false,
+        confirmLabel: t('session.markRestAbsentTitle'),
+      }))
+    )
+      return;
+    setBulkBusy(true);
+    const prev = session;
+    const ids = new Set(untouched.map((m) => m.id));
+    setSession((s) => ({
+      ...s,
+      roster: s.roster.map((m) => (ids.has(m.id) ? { ...m, status: 'absent' } : m)),
+    }));
+    try {
+      for (const m of untouched) {
+        await api.post(`/sessions/${id}/attendance`, { member_id: m.id, status: 'absent' });
+      }
+      toast.success(t('session.markedAbsentCount', { count: untouched.length }));
       reload({ quiet: true });
     } catch (err) {
       setSession(prev);
@@ -325,6 +370,8 @@ export default function SessionDetail() {
   // الغياب هو الافتراضي: «المُنجَز» هو من قُلب حاضرًا أو عُذر، و الباقي بانتظار القائد
   const marked = session.roster.filter((m) => m.status === 'present' || m.status === 'excused').length;
   const totalRoster = session.roster.length;
+  // غير المعلَّمين (unmarked): لا حاضر و لا غائب و لا معذور — هم «الباقون» الذين يعلّمهم الزرّ
+  const untouched = session.roster.filter((m) => !m.status).length;
   const pct = totalRoster ? Math.round((marked / totalRoster) * 100) : 0;
   const counts = {
     present: session.roster.filter((m) => m.status === 'present').length,
@@ -350,6 +397,20 @@ export default function SessionDetail() {
   // اللائحة مقسّمة على الفرق حين يشمل النشاط أكثر من واحدة: كل قائد يملأ قسم فرقته
   const rosterBranchIds = [...new Set(session.roster.map((m) => m.branch_id))];
   const splitRoster = rosterBranchIds.length > 1;
+  // فلاتر اللائحة: بالفرقة (إن تعدّدت) و بالمجموعة الفرعية. تُبنى المجموعات من اللائحة
+  // نفسها، و تُقصر على الفرقة المختارة إن وُجدت، فلا تظهر مجموعة لا عنصر منها معروض.
+  const rosterGroups = [
+    ...new Map(
+      session.roster
+        .filter((m) => m.group_id && (!filterBranch || m.branch_id === Number(filterBranch)))
+        .map((m) => [m.group_id, { id: m.group_id, name: m.group_name }])
+    ).values(),
+  ];
+  const matchFilters = (m) =>
+    (!filterBranch || m.branch_id === Number(filterBranch)) &&
+    (!filterGroup || m.group_id === Number(filterGroup));
+  const groupFilterId = filterGroup ? Number(filterGroup) : null;
+  const branchIdsToShow = filterBranch ? [Number(filterBranch)] : rosterBranchIds;
 
   return (
     <div className="space-y-4">
@@ -476,16 +537,29 @@ export default function SessionDetail() {
             <ProgressBar value={pct} label={t('session.attendance')} />
             {/* اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ الجامع هنا يصير تكرارًا */}
             {editable && !splitRoster && marked < totalRoster && (
-              <Button
-                variant="outline"
-                size="sm"
-                loading={bulkBusy}
-                onClick={() => markAllPresent()}
-                className="w-full sm:w-auto"
-              >
-                <IconCheckAll />
-                {t('session.markRestPresent', { count: totalRoster - marked })}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={bulkBusy}
+                  onClick={() => markAllPresent()}
+                  className="w-full sm:w-auto"
+                >
+                  <IconCheckAll />
+                  {t('session.markRestPresent', { count: totalRoster - marked })}
+                </Button>
+                {untouched > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    loading={bulkBusy}
+                    onClick={() => markAllAbsent()}
+                    className="w-full sm:w-auto"
+                  >
+                    {t('session.markRestAbsent', { count: untouched })}
+                  </Button>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
@@ -605,19 +679,61 @@ export default function SessionDetail() {
           and a نشاط عام للفوج counts its حضور instead of listing names */}
       {!['leaders', 'group'].includes(session.kind) && (
       <Card>
-        <CardHeader>
+        <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>
             {t(session.kind === 'visit' ? 'session.visitedMembers' : 'session.roster')}
           </CardTitle>
+          {/* فلاتر العرض: بالفرقة إن تعدّدت، و بالمجموعة الفرعية إن وُجدت */}
+          {(rosterBranchIds.length > 1 || rosterGroups.length > 0) && (
+            <div className="flex flex-wrap gap-2">
+              {rosterBranchIds.length > 1 && (
+                <Select
+                  className="sm:w-auto"
+                  value={filterBranch}
+                  onChange={(e) => {
+                    setFilterBranch(e.target.value);
+                    setFilterGroup('');
+                  }}
+                  aria-label={t('session.filterByBranch')}
+                >
+                  <option value="">{t('session.allBranches')}</option>
+                  {rosterBranchIds.map((bid) => (
+                    <option key={bid} value={bid}>
+                      {branchName(branchList.find((x) => x.id === bid), i18n.language)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              {rosterGroups.length > 0 && (
+                <Select
+                  className="sm:w-auto"
+                  value={filterGroup}
+                  onChange={(e) => setFilterGroup(e.target.value)}
+                  aria-label={t('session.filterByGroup')}
+                >
+                  <option value="">{t('session.allGroups')}</option>
+                  {rosterGroups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="p-0 pb-2">
           {totalRoster === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('session.emptyRoster')} />
           ) : splitRoster ? (
-            // نشاط مشترك: قسم لكل فرقة، يملأه قائدها أو مساعده — لا شخص واحد للجميع
-            rosterBranchIds.map((bid) => {
-              const rows = session.roster.filter((m) => m.branch_id === bid);
+            // نشاط مشترك: قسم لكل فرقة، يملأه قائدها أو مساعده — لا شخص واحد للجميع.
+            // الفلاتر تقصر الفرق المعروضة و العناصر داخل كل قسم على المطابق وحده.
+            branchIdsToShow
+              .map((bid) => {
+              const rows = session.roster.filter((m) => m.branch_id === bid && matchFilters(m));
+              if (rows.length === 0) return null;
               const left = rows.filter((m) => !m.status || m.status === 'absent').length;
+              const rowsUntouched = rows.filter((m) => !m.status).length;
               const b = branchList.find((x) => x.id === bid);
               return (
                 <section key={bid}>
@@ -632,10 +748,20 @@ export default function SessionDetail() {
                         variant="outline"
                         size="sm"
                         loading={bulkBusy}
-                        onClick={() => markAllPresent(bid)}
+                        onClick={() => markAllPresent(bid, groupFilterId)}
                       >
                         <IconCheckAll />
                         {t('session.markRestPresent', { count: left })}
+                      </Button>
+                    )}
+                    {editable && rowsUntouched > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        loading={bulkBusy}
+                        onClick={() => markAllAbsent(bid, groupFilterId)}
+                      >
+                        {t('session.markRestAbsent', { count: rowsUntouched })}
                       </Button>
                     )}
                   </div>
@@ -649,7 +775,7 @@ export default function SessionDetail() {
             })
           ) : (
             <ul className="divide-y divide-border">
-              {session.roster.map((m) => (
+              {session.roster.filter(matchFilters).map((m) => (
                 <RosterRow key={m.id} m={m} editable={editable} mark={mark} t={t} />
               ))}
             </ul>
