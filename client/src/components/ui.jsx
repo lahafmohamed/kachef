@@ -406,7 +406,7 @@ export function Card({ className, interactive = false, ...props }) {
       className={cn(
         'rounded-2xl border border-border bg-card text-card-foreground shadow-sm',
         interactive &&
-          'transition-[translate,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg',
+          'transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/30 hover:shadow-md active:shadow-xs',
         className
       )}
       {...props}
@@ -587,7 +587,7 @@ export function Badge({ variant = 'default', className, ...props }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap',
+        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap tabular-nums',
         badgeVariants[variant],
         className
       )}
@@ -604,7 +604,7 @@ export function Avatar({ photo, name, className }) {
         src={photo}
         alt=""
         loading="lazy"
-        className={cn(base, 'border border-border object-cover', className)}
+        className={cn(base, 'img-outline object-cover', className)}
       />
     );
   }
@@ -756,7 +756,7 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <div
-        className="animate-overlay-in absolute inset-0 bg-black/50 backdrop-blur-md"
+        className="animate-overlay-in absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={onClose}
       />
       <div
@@ -857,19 +857,33 @@ const toastStyles = {
 };
 
 export function ToastProvider({ children }) {
+  const { t } = useTranslation();
   const [toasts, setToasts] = useState([]);
   const seq = useRef(0);
+  const timers = useRef(new Map());
 
-  const dismiss = useCallback((id) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
+  const dismiss = useCallback((id) => {
+    clearTimeout(timers.current.get(id));
+    timers.current.delete(id);
+    setToasts((ts) => ts.filter((t) => t.id !== id));
+  }, []);
+
+  const arm = useCallback(
+    (id, ms) => {
+      clearTimeout(timers.current.get(id));
+      timers.current.set(id, setTimeout(() => dismiss(id), ms));
+    },
+    [dismiss]
+  );
 
   const push = useCallback(
     (message, type = 'success', ms = 3200) => {
       const id = ++seq.current;
-      setToasts((ts) => [...ts.slice(-2), { id, message, type }]);
-      setTimeout(() => dismiss(id), ms);
+      setToasts((ts) => [...ts.slice(-2), { id, message, type, ms }]);
+      arm(id, ms);
       return id;
     },
-    [dismiss]
+    [arm]
   );
 
   const value = useMemo(
@@ -888,27 +902,41 @@ export function ToastProvider({ children }) {
       {createPortal(
         <div
           role="region"
-          aria-label="notifications"
+          aria-label={t('notif.title')}
           // Top of the screen on phones — the bottom is owned by the tab bar and
           // sticky save bars, so toasts there covered the very buttons just tapped.
           className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex flex-col items-center gap-2 px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
         >
-          {toasts.map(({ id, message, type }) => {
+          {toasts.map(({ id, message, type, ms }) => {
             const { cls, Icon: I } = toastStyles[type] || toastStyles.info;
+            // Hovering or focusing holds the toast; leaving restarts the full timer
+            const hold = () => clearTimeout(timers.current.get(id));
+            const release = () => arm(id, ms);
             return (
               <div
                 key={id}
                 role="status"
                 aria-live="polite"
-                onClick={() => dismiss(id)}
+                onMouseEnter={hold}
+                onMouseLeave={release}
+                onFocus={hold}
+                onBlur={release}
                 className={cn(
-                  'animate-toast-in pointer-events-auto flex w-full max-w-sm cursor-pointer items-start gap-2.5',
-                  'glass rounded-xl border px-4 py-3 text-sm font-medium shadow-lg',
+                  'animate-toast-in pointer-events-auto flex w-full max-w-sm items-start gap-2.5',
+                  'glass rounded-xl border ps-4 pe-2 py-2.5 text-sm font-medium shadow-lg',
                   cls
                 )}
               >
-                <I className="mt-0.5" />
-                <span className="flex-1">{message}</span>
+                <I className="mt-1" />
+                <span className="flex-1 py-0.5">{message}</span>
+                <button
+                  type="button"
+                  onClick={() => dismiss(id)}
+                  aria-label={t('common.close')}
+                  className="focus-ring -me-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md opacity-70 transition-opacity hover:opacity-100"
+                >
+                  <IconX className="h-4 w-4" />
+                </button>
               </div>
             );
           })}
@@ -925,7 +953,7 @@ export const useToast = () => useContext(ToastContext);
    Data display
    ============================================================ */
 
-/** Horizontally scrollable table with a fade hint at the trailing edge. */
+/** Horizontally scrollable table; the wrapper owns the scroll so the page never does. */
 export function Table({ children, className }) {
   return (
     <div className={cn('w-full overflow-x-auto', className)}>
@@ -970,7 +998,7 @@ export function EmptyState({ icon, title, children, action, className }) {
       )}
     >
       {icon && (
-        <div className="bg-brand-soft flex h-14 w-14 items-center justify-center rounded-2xl text-primary ring-1 ring-primary/15">
+        <div className="bg-brand-soft flex h-14 w-14 items-center justify-center rounded-xl text-primary ring-1 ring-primary/15">
           {icon}
         </div>
       )}
@@ -1119,7 +1147,7 @@ export function StatTile({ icon, label, value, hint, tone = 'brand', className }
   return (
     <div className={cn('flex items-center gap-4', className)}>
       {icon && (
-        <div className="bg-brand-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-primary ring-1 ring-primary/15">
+        <div className="bg-brand-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-primary ring-1 ring-primary/15">
           {icon}
         </div>
       )}

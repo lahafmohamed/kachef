@@ -325,11 +325,23 @@ input[type="radio"] {
   background-color: color-mix(in oklab, var(--primary) 10%, transparent);
 }
 
-/* Frosted surface for sticky bars — real blur, tinted by the card token */
+/* Sticky-bar surface: near-solid card tint with a light blur. Kept light on
+   purpose — a heavy blur is a real GPU cost on the phones leaders carry, and
+   the bar must stay legible over any content that scrolls under it. */
 @utility glass {
-  background-color: color-mix(in oklab, var(--card) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  background-color: color-mix(in oklab, var(--card) 90%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Hairline edge on photos so a light image never floats on a light surface.
+   Pure black/white at low alpha — a tinted neutral reads as dirt on the edge. */
+@utility img-outline {
+  outline: 1px solid oklch(0 0 0 / 0.1);
+  outline-offset: -1px;
+  .dark & {
+    outline-color: oklch(1 0 0 / 0.1);
+  }
 }
 
 /* Hairline inner highlight that keeps solid brand surfaces from looking flat */

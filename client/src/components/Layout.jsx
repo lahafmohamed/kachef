@@ -61,7 +61,7 @@ function SidebarNav() {
       end={end}
       className={({ isActive }) =>
         cn(
-          'focus-ring group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all',
+          'focus-ring group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-[color,background-color,box-shadow] duration-150',
           isActive
             ? 'ring-inset-light bg-primary text-primary-foreground shadow-brand'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
@@ -73,11 +73,11 @@ function SidebarNav() {
           {/* Rail marker on the inline-start edge — reads in RTL too */}
           <span
             className={cn(
-              'absolute -start-3 h-5 w-1 rounded-e-full bg-primary transition-all duration-200',
+              'absolute -start-3 h-5 w-1 rounded-e-full bg-primary transition-[opacity,scale] duration-200',
               isActive ? 'opacity-0' : 'scale-y-0 opacity-0 group-hover:scale-y-100 group-hover:opacity-100'
             )}
           />
-          <Icon className={cn('h-[1.15rem] w-[1.15rem] transition-transform', !isActive && 'group-hover:scale-110')} />
+          <Icon className="h-[1.15rem] w-[1.15rem]" />
           <span className="truncate">{t(key)}</span>
         </>
       )}
@@ -92,7 +92,7 @@ function TabInner({ Icon, label, active }) {
       {/* Active pill sits behind the icon so the tap target stays full-height */}
       <span
         className={cn(
-          'flex h-8 w-11 items-center justify-center rounded-full transition-all duration-200',
+          'flex h-8 w-11 items-center justify-center rounded-full transition-[background-color,scale,box-shadow] duration-200',
           active ? 'bg-primary/14 scale-100 ring-1 ring-primary/20' : 'scale-90 bg-transparent'
         )}
       >
@@ -285,7 +285,7 @@ function NotificationsBell({ compact }) {
     unread > 0 ? (
       <span
         aria-hidden="true"
-        className="absolute -end-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[0.625rem] font-bold leading-none text-destructive-foreground"
+        className="absolute -end-1 -top-1 flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.6875rem] font-bold leading-none tabular-nums text-destructive-foreground ring-2 ring-card"
       >
         {unread > 9 ? '9+' : unread}
       </span>
