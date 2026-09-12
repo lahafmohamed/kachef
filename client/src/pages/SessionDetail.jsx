@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
+import ExportPdfButton from '../components/ExportPdfButton';
 import { activityTypeKey, avatarName, branchName, fmtDate, fmtTime, memberName } from '../utils';
 import {
   Avatar,
@@ -419,12 +420,15 @@ export default function SessionDetail() {
           <IconBack className="rtl:rotate-180" />
           {t('common.back')}
         </Button>
-        {isAdmin && (
-          <Button variant="destructive-ghost" size="sm" onClick={removeSession} className="gap-2">
-            <IconTrash />
-            {t('common.delete')}
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          <ExportPdfButton kind="sessions" id={session.id} />
+          {isAdmin && (
+            <Button variant="destructive-ghost" size="sm" onClick={removeSession} className="gap-2">
+              <IconTrash />
+              {t('common.delete')}
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">

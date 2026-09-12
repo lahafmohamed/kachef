@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { avatarName, branchName, fmtDate, memberName } from '../utils';
+import ExportPdfButton from '../components/ExportPdfButton';
+import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import {
   Avatar,
   Badge,
@@ -105,10 +106,13 @@ export default function LeaderDetail() {
 
   return (
     <div className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
-        <IconBack className="rtl:rotate-180" />
-        {t('common.back')}
-      </Button>
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('common.back')}
+        </Button>
+        <ExportPdfButton kind="leaders" id={leader.id} />
+      </div>
 
       <Card className="overflow-hidden">
         <div className="bg-primary h-1.5" />
@@ -134,7 +138,7 @@ export default function LeaderDetail() {
                     className="focus-ring flex items-center gap-1.5 rounded tabular-nums text-primary hover:underline"
                   >
                     <IconPhone className="h-3.5 w-3.5" />
-                    {leader.phone}
+                    {fmtPhone(leader.phone)}
                   </a>
                 )}
               </div>

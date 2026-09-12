@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { branchName } from '../utils';
+import { ChangePasswordDialog } from '../pages/ChangePassword';
 import {
   cn,
   Button,
@@ -22,6 +23,7 @@ import {
   IconSettings,
   IconLanguages,
   IconLock,
+  IconKey,
   IconLogout,
   IconMore,
   IconShield,
@@ -387,15 +389,29 @@ function Brand({ className }) {
 function UserMenu({ compact }) {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
+  const [changing, setChanging] = useState(false);
   if (!user) return null;
   if (compact)
     return (
-      <Button variant="outline" size="icon" onClick={logout} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
-        <IconLogout />
-      </Button>
+      <>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => setChanging(true)}
+          aria-label={t('auth.changePassword')}
+          title={t('auth.changePassword')}
+        >
+          <IconKey />
+        </Button>
+        <Button variant="outline" size="icon" onClick={logout} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
+          <IconLogout />
+        </Button>
+        <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
+      </>
     );
   return (
     <div className="space-y-2">
+      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
       <div className="flex items-center gap-2 px-1 text-sm">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground">
           {(user.display_name || user.username).slice(0, 2).toUpperCase()}
@@ -407,6 +423,10 @@ function UserMenu({ compact }) {
           </span>
         </span>
       </div>
+      <Button variant="outline" size="sm" onClick={() => setChanging(true)} className="w-full gap-2">
+        <IconKey />
+        {t('auth.changePassword')}
+      </Button>
       <Button variant="outline" size="sm" onClick={logout} className="w-full gap-2">
         <IconLogout />
         {t('auth.signOut')}

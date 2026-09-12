@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtDate, memberName, todayISO } from '../utils';
+import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtDate, fmtPhone, memberName, todayISO } from '../utils';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
@@ -336,6 +336,45 @@ function BirthdayBadge({ birthDate, t }) {
   );
 }
 
+/** An empty cell reads as a quiet dash, not as data. */
+const dash = <span className="text-muted-foreground">—</span>;
+
+/**
+ * Second line under a name — what a قائد uses to tell two homonyms apart.
+ * Members: école and quartier; chefs: their roles this year. Long values wrap
+ * rather than truncate, so nothing a filter matched on gets hidden.
+ */
+function MemberSubline({ m }) {
+  const items =
+    m.kind === 'leader'
+      ? (m.roles || []).map((r) => ({ Icon: IconShield, text: r.title }))
+      : [
+          m.school && { Icon: IconSchool, text: m.school },
+          m.address_abidjan && { Icon: IconPin, text: m.address_abidjan },
+        ].filter(Boolean);
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-0.5 flex max-w-72 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs font-normal leading-4 text-muted-foreground">
+      {items.map(({ Icon, text }, i) => (
+        <span key={i} className="inline-flex min-w-0 max-w-full items-center gap-1">
+          <Icon className="h-3.5 w-3.5 opacity-70" strokeWidth={1.5} />
+          <span className="truncate">{text}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Number in an LTR island so it never reverses inside an Arabic row. */
+function Phone({ value }) {
+  if (!value) return dash;
+  return <span dir="ltr">{fmtPhone(value)}</span>;
+}
+
+/* 36px visible, 40px hit area: the pseudo-element pads 2px a side and the
+   4px gap between neighbours keeps their hit areas from overlapping. */
+const ROW_ACTION = 'relative before:absolute before:-inset-0.5';
+
 /** One member as a tappable card — the mobile equivalent of a table row. */
 function MemberCard({ m, lang, t, onEdit, onDelete }) {
   // Un chef dans la liste : même carte, mais elle mène à sa fiche de chef
@@ -351,11 +390,7 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
           <div className="truncate font-medium">
             {memberName(m)}
           </div>
-          {(m.school || m.address_abidjan) && (
-            <div className="line-clamp-2 text-xs text-muted-foreground">
-              {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
-            </div>
-          )}
+          <MemberSubline m={m} />
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <Badge>{isChef ? t('branch.leaders') : branchName(m, lang)}</Badge>
             {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
@@ -770,7 +805,7 @@ export default function Members() {
         <Card className="divide-y divide-border">
           {Array.from({ length: 6 }, (_, i) => (
             <div key={i} className="flex items-center gap-3 p-3">
-              <Skeleton className="h-11 w-11 rounded-full" />
+              <Skeleton className="h-11 w-11 rounded-full md:h-9 md:w-9" />
               <div className="flex-1 space-y-2">
                 <Skeleton className="h-3.5 w-2/5" />
                 <Skeleton className="h-3 w-24" />
@@ -846,19 +881,15 @@ export default function Members() {
                         className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
                       >
                         <Avatar photo={m.photo} name={avatarName(m)} className="h-9 w-9" />
-                        <span>
-                          {memberName(m)}
-                          {(m.school || m.address_abidjan) && (
-                            <span className="block text-xs font-normal text-muted-foreground">
-                              {[m.school, m.address_abidjan].filter(Boolean).join(' · ')}
-                            </span>
-                          )}
-                        </span>
+                        <div className="min-w-0">
+                          <div className="leading-snug">{memberName(m)}</div>
+                          <MemberSubline m={m} />
+                        </div>
                       </Link>
                     </Td>
                     <Td className="tabular-nums">
                       <div className="flex items-center gap-2">
-                        {m.age != null ? `${m.age} ${t('common.years')}` : '—'}
+                        {m.age != null ? `${m.age} ${t('common.years')}` : dash}
                         {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
                       </div>
                     </Td>
@@ -870,15 +901,13 @@ export default function Members() {
                         {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
                       </div>
                     </Td>
-                    <Td dir="ltr" className="tabular-nums">
-                      {(m.kind === 'leader' ? m.phone : m.father_phone) || '—'}
+                    <Td>
+                      <Phone value={m.kind === 'leader' ? m.phone : m.father_phone} />
                     </Td>
-                    <Td dir="ltr" className="tabular-nums">
-                      {m.kind === 'leader' ? '—' : m.mother_phone || '—'}
+                    <Td>
+                      <Phone value={m.kind === 'leader' ? null : m.mother_phone} />
                     </Td>
-                    <Td className="tabular-nums">
-                      {m.kind === 'leader' ? m.join_year || '—' : fmtDate(m.join_date)}
-                    </Td>
+                    <Td>{(m.kind === 'leader' ? m.join_year : fmtDate(m.join_date)) || dash}</Td>
                     <Td>
                       <Badge variant={m.status === 'active' ? 'success' : 'secondary'}>
                         {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
@@ -886,11 +915,12 @@ export default function Members() {
                     </Td>
                     {(canModify || canDelete) && (
                       <Td className="text-end">
-                        <div className="flex justify-end gap-0.5">
+                        <div className="flex justify-end gap-1">
                           {canModify && m.kind !== 'leader' && (
                             <Button
                               variant="ghost"
-                              size="icon-sm"
+                              size="icon"
+                              className={ROW_ACTION}
                               onClick={() => setEditing(m)}
                               aria-label={t('common.edit')}
                             >
@@ -900,7 +930,8 @@ export default function Members() {
                           {canDelete && m.kind !== 'leader' && (
                             <Button
                               variant="destructive-ghost"
-                              size="icon-sm"
+                              size="icon"
+                              className={ROW_ACTION}
                               onClick={() => remove(m)}
                               aria-label={t('common.delete')}
                             >

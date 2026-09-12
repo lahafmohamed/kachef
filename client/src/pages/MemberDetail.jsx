@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fmtDate, memberName } from '../utils';
+import { avatarName, birthdayWhen, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
+import ExportPdfButton from '../components/ExportPdfButton';
 import {
   Avatar,
   Badge,
@@ -95,10 +96,13 @@ export default function MemberDetail() {
 
   return (
     <div className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
-        <IconBack className="rtl:rotate-180" />
-        {t('common.back')}
-      </Button>
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('common.back')}
+        </Button>
+        <ExportPdfButton kind="members" id={member.id} />
+      </div>
 
       {/* ---------- Identity header ---------- */}
       <Card className="overflow-hidden">
@@ -197,7 +201,7 @@ export default function MemberDetail() {
                       dir="ltr"
                       className="focus-ring rounded tabular-nums text-primary hover:underline"
                     >
-                      {member.member_phone}
+                      {fmtPhone(member.member_phone)}
                     </a>
                   </Row>
                 )}
@@ -209,7 +213,7 @@ export default function MemberDetail() {
                       dir="ltr"
                       className="focus-ring rounded tabular-nums text-primary hover:underline"
                     >
-                      {member.father_phone}
+                      {fmtPhone(member.father_phone)}
                     </a>
                   </Row>
                 )}
@@ -220,7 +224,7 @@ export default function MemberDetail() {
                       dir="ltr"
                       className="focus-ring rounded tabular-nums text-primary hover:underline"
                     >
-                      {member.mother_phone}
+                      {fmtPhone(member.mother_phone)}
                     </a>
                   </Row>
                 )}

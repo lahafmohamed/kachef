@@ -7,6 +7,7 @@ import { useFetch, useLocalStorage } from '../hooks';
 import { toDate, toISO } from '../lib/date';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
+import ExportPdfButton from '../components/ExportPdfButton';
 import {
   Avatar,
   Badge,
@@ -1109,6 +1110,7 @@ export default function Branches() {
             </option>
           ))}
         </Select>
+        <ExportPdfButton kind="branches" id={b.id} className="ms-auto" />
       </div>
 
       <Card>

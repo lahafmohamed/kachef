@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
-import { useFetch } from '../hooks';
+import { useDebounced, useFetch } from '../hooks';
 import { branchName } from '../utils';
+import Credentials from '../components/Credentials';
 import {
   Badge,
   Button,
@@ -19,10 +20,14 @@ import {
   SkeletonPage,
   useConfirm,
   useToast,
+  IconAlert,
+  IconKey,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconShield,
   IconTrash,
+  IconUserCheck,
   IconUsers,
 } from '../components/ui';
 
@@ -76,9 +81,12 @@ const PERM_GROUPS = [
 
 const ALL_PERM_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
 
+// Mirrors the server's USERNAME_RE: what a login name may look like
+export const USERNAME_RE = /^[a-z][a-z0-9._-]{2,31}$/;
+export const USERNAME_PATTERN = '[a-z][a-z0-9._\\-]{2,31}';
+
 const EMPTY_USER = {
   username: '',
-  password: '',
   display_name: '',
   role: 'user',
   branches: [],
@@ -88,10 +96,103 @@ const EMPTY_USER = {
 // The server sends perms normalized to the granular array; null = full access
 const normalizePerms = (p) => (p ? p.filter((k) => ALL_PERM_KEYS.includes(k)) : [...ALL_PERM_KEYS]);
 
-function UserForm({ initial, branches, onSaved, onCancel }) {
+const initials = (u) => (u.display_name || u.username || '').trim().slice(0, 2).toUpperCase();
+
+/**
+ * Login-name field: proposed by the server from the display name (transliterated,
+ * deduplicated), editable, with a button to propose again. Once the admin has
+ * typed in it, the display name stops overwriting it.
+ */
+function UsernameField({ form, setForm, isEdit, exceptId, original }) {
+  const { t } = useTranslation();
+  const [touched, setTouched] = useState(isEdit);
+  const [busy, setBusy] = useState(false);
+  const debouncedName = useDebounced(form.display_name, 350);
+  const requestId = useRef(0);
+
+  async function propose(name) {
+    const id = ++requestId.current;
+    setBusy(true);
+    try {
+      const params = new URLSearchParams({ name: name || '' });
+      if (exceptId) params.set('except', String(exceptId));
+      const r = await api.get(`/users/username-suggestion?${params}`);
+      if (id === requestId.current) setForm((f) => ({ ...f, username: r.username }));
+    } catch {
+      /* the field stays editable by hand */
+    } finally {
+      if (id === requestId.current) setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (touched || !debouncedName.trim()) return;
+    propose(debouncedName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedName, touched]);
+
+  const value = form.username;
+  // An untouched legacy name (spaces, Arabic) may stay: only a new value is checked
+  const unchanged = isEdit && value === original;
+  const invalid = value !== '' && !unchanged && !USERNAME_RE.test(value);
+  const legacy = unchanged && !USERNAME_RE.test(value);
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor="u_name">{t('auth.username')}</Label>
+      <div className="flex gap-2">
+        <Input
+          id="u_name"
+          required
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          dir="ltr"
+          pattern={unchanged ? undefined : USERNAME_PATTERN}
+          aria-invalid={invalid || undefined}
+          aria-describedby="u_name_hint"
+          className="font-mono"
+          value={value}
+          onChange={(e) => {
+            setTouched(true);
+            setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }));
+          }}
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          loading={busy}
+          disabled={!form.display_name.trim()}
+          onClick={() => {
+            setTouched(false);
+            propose(form.display_name);
+          }}
+          aria-label={t('admin.usernameRegenerate')}
+          title={t('admin.usernameRegenerate')}
+        >
+          {!busy && <IconRefresh />}
+        </Button>
+      </div>
+      <p
+        id="u_name_hint"
+        className={`text-xs ${invalid ? 'font-medium text-destructive' : legacy ? 'font-medium text-warning' : 'text-muted-foreground'}`}
+      >
+        {invalid
+          ? t('admin.usernameInvalid')
+          : legacy
+            ? t('admin.usernameLegacyHint')
+            : t(isEdit ? 'admin.usernameChangedHint' : 'admin.usernameHint')}
+      </p>
+    </div>
+  );
+}
+
+function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel }) {
   const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [error, setError] = useState(null);
   const isEdit = !!initial.id;
 
@@ -119,81 +220,110 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
     }));
   }
 
+  function describe(err) {
+    const map = {
+      username_taken: t('admin.usernameTaken'),
+      invalid_username: t('admin.usernameInvalid'),
+      last_admin: t('admin.lastAdmin'),
+      cannot_edit_self: t('admin.cannotEditSelf'),
+      'password too short': t('admin.passwordTooShort'),
+    };
+    return map[err.message] || err.message;
+  }
+
   async function submit(e) {
     e.preventDefault();
     setError(null);
+    if (form.username !== initial.username && !USERNAME_RE.test(form.username))
+      return setError(t('admin.usernameInvalid'));
     setSaving(true);
     const body = {
-      display_name: form.display_name || null,
+      username: form.username,
+      display_name: form.display_name.trim(),
       role: form.role,
       // Empty branch selection = every فرقة; the server stores the complete set as null
       branches: form.branches.length ? form.branches : null,
       perms: form.perms,
     };
-    if (form.password) body.password = form.password;
     try {
-      if (isEdit) await api.put(`/users/${initial.id}`, body);
-      else await api.post('/users', { ...body, username: form.username, password: form.password });
-      onSaved();
+      if (isEdit) {
+        await api.put(`/users/${initial.id}`, body);
+        onSaved();
+      } else {
+        const created = await api.post('/users', body);
+        onSaved({ quietToast: true });
+        onCredentials({ username: created.username, password: created.password });
+      }
     } catch (err) {
-      const map = {
-        username_taken: t('admin.usernameTaken'),
-        last_admin: t('admin.lastAdmin'),
-        'password too short': t('admin.passwordTooShort'),
-      };
-      setError(map[err.message] || err.message);
+      setError(describe(err));
       setSaving(false);
+    }
+  }
+
+  async function resetPassword() {
+    const ok = await confirm({
+      title: t('admin.resetPassword'),
+      message: t('admin.resetPasswordConfirm', { name: form.display_name || form.username }),
+      confirmLabel: t('admin.resetPassword'),
+    });
+    if (!ok) return;
+    setError(null);
+    setResetting(true);
+    try {
+      const updated = await api.put(`/users/${initial.id}`, { reset_password: true });
+      onSaved({ quietToast: true });
+      onCredentials({ username: updated.username, password: updated.password });
+    } catch (err) {
+      setError(describe(err));
+      setResetting(false);
     }
   }
 
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="u_name">{t('auth.username')}</Label>
-        <Input
-          id="u_name"
-          required
-          disabled={isEdit}
-          autoComplete="off"
-          autoCapitalize="none"
-          dir="ltr"
-          value={form.username}
-          onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-        />
-      </div>
-      <div className="space-y-1.5">
         <Label htmlFor="u_display">{t('admin.displayName')}</Label>
         <Input
           id="u_display"
+          required
+          autoFocus={!isEdit}
           autoComplete="off"
           value={form.display_name || ''}
           onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))}
         />
+        <p className="text-xs text-muted-foreground">{t('admin.displayNameHint')}</p>
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="u_pass">{t(isEdit ? 'admin.newPassword' : 'auth.password')}</Label>
-        <Input
-          id="u_pass"
-          type="password"
-          required={!isEdit}
-          autoComplete="new-password"
-          dir="ltr"
-          placeholder={isEdit ? t('admin.keepPassword') : undefined}
-          value={form.password}
-          onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-        />
-      </div>
+
+      <UsernameField form={form} setForm={setForm} isEdit={isEdit} exceptId={initial.id} original={initial.username} />
+
+      {isEdit ? (
+        !isSelf && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+            <span className="text-sm">{t('auth.password')}</span>
+            <Button variant="outline" size="sm" loading={resetting} onClick={resetPassword}>
+              <IconKey />
+              {t('admin.resetPassword')}
+            </Button>
+          </div>
+        )
+      ) : (
+        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          {t('admin.passwordGenerated')}
+        </p>
+      )}
+
       <div className="space-y-1.5">
         <Label htmlFor="u_role">{t('admin.role')}</Label>
         <Select
           id="u_role"
           value={form.role}
+          disabled={isSelf}
           onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
         >
           <option value="user">{t('admin.roleUser')}</option>
           <option value="admin">{t('admin.roleAdmin')}</option>
         </Select>
-        <p className="text-xs text-muted-foreground">{t('admin.roleHint')}</p>
+        <p className="text-xs text-muted-foreground">{t(isSelf ? 'admin.cannotEditSelf' : 'admin.roleHint')}</p>
       </div>
       {form.role === 'user' && (
         <div className="space-y-1.5">
@@ -273,10 +403,97 @@ function UserForm({ initial, branches, onSaved, onCancel }) {
           {t('common.cancel')}
         </Button>
         <Button type="submit" loading={saving}>
-          {t('common.save')}
+          {t(isEdit ? 'common.save' : 'admin.createUser')}
         </Button>
       </div>
     </form>
+  );
+}
+
+function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }) {
+  const { t } = useTranslation();
+  const isSelf = u.id === me.id;
+  return (
+    <li className={`flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5 ${u.active ? '' : 'opacity-70'}`}>
+      <span
+        aria-hidden="true"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-semibold text-secondary-foreground"
+      >
+        {initials(u)}
+      </span>
+      <div className="min-w-40 flex-1">
+        <div className="font-medium">
+          {u.display_name || u.username}
+          {isSelf && <span className="ms-2 text-xs text-muted-foreground">{t('admin.you')}</span>}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+          <span className="font-mono" dir="ltr">
+            {u.username}
+          </span>
+          {u.username_legacy && (
+            <span className="inline-flex items-center gap-1 text-warning" title={t('admin.usernameLegacyHint')}>
+              <IconAlert className="h-3 w-3" />
+              {t('admin.usernameLegacy')}
+            </span>
+          )}
+          {u.leader_name && (
+            <span className="inline-flex items-center gap-1" title={t('admin.linkedLeader')}>
+              <IconKey className="h-3 w-3" />
+              {u.leader_name}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {!u.active && <Badge variant="destructive">{t('admin.inactive')}</Badge>}
+        {u.role === 'admin' ? (
+          <Badge variant="warning">
+            <IconShield className="h-3 w-3" />
+            {t('admin.roleAdmin')}
+          </Badge>
+        ) : (
+          <>
+            {u.branches === null ? (
+              <Badge variant="outline">{t('admin.allBranches')}</Badge>
+            ) : (
+              u.branches.map((id) => <Badge key={id}>{nameOf(id)}</Badge>)
+            )}
+            {u.perms !== null && <Badge variant="secondary">{t('admin.customPerms')}</Badge>}
+          </>
+        )}
+        {u.active && u.must_change_password && (
+          <Badge variant="info" title={t('admin.tempPasswordHint')}>
+            {t('admin.tempPassword')}
+          </Badge>
+        )}
+      </div>
+      <div className="flex gap-0.5">
+        {!u.active && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onReactivate(u)}
+            aria-label={t('admin.reactivate')}
+            title={t('admin.reactivate')}
+          >
+            <IconUserCheck className="text-success" />
+          </Button>
+        )}
+        <Button variant="ghost" size="icon" onClick={() => onEdit(u)} aria-label={t('common.edit')} title={t('common.edit')}>
+          <IconPencil />
+        </Button>
+        <Button
+          variant="destructive-ghost"
+          size="icon"
+          disabled={isSelf}
+          onClick={() => (u.active ? onDeactivate(u) : onDelete(u))}
+          aria-label={t(u.active ? 'admin.deactivate' : 'admin.deletePermanently')}
+          title={t(u.active ? 'admin.deactivate' : 'admin.deletePermanently')}
+        >
+          <IconTrash />
+        </Button>
+      </div>
+    </li>
   );
 }
 
@@ -288,28 +505,83 @@ export default function Admin() {
   const users = useFetch('/users');
   const branches = useFetch('/branches');
   const [editing, setEditing] = useState(null);
+  // { username, password } right after a creation or a reset — shown exactly once
+  const [credentials, setCredentials] = useState(null);
 
   if (users.loading) return <SkeletonPage />;
   if (users.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={users.reload} retryLabel={t('error.retry')} />;
 
   const list = users.data || [];
+  const activeUsers = list.filter((u) => u.active);
+  const inactiveUsers = list.filter((u) => !u.active);
   const branchList = branches.data || [];
   const nameOf = (id) => {
     const b = branchList.find((x) => x.id === id);
     return b ? branchName(b, i18n.language) : id;
   };
+  const label = (u) => u.display_name || u.username;
 
-  async function remove(u) {
-    if (!(await confirm({ title: t('common.delete'), message: t('admin.confirmDelete') }))) return;
+  function describe(err) {
+    const map = {
+      cannot_delete_self: t('admin.cannotDeleteSelf'),
+      cannot_edit_self: t('admin.cannotEditSelf'),
+      last_admin: t('admin.lastAdmin'),
+    };
+    return map[err.message] || err.message;
+  }
+
+  async function deactivate(u) {
+    const ok = await confirm({
+      title: t('admin.deactivate'),
+      message: t('admin.confirmDeactivate', { name: label(u) }),
+      confirmLabel: t('admin.deactivate'),
+    });
+    if (!ok) return;
     try {
       await api.del(`/users/${u.id}`);
       users.reload({ quiet: true });
-      toast.success(t('admin.deleted'));
+      toast.success(t('admin.deactivated'));
     } catch (err) {
-      toast.error(err.message === 'cannot_delete_self' ? t('admin.cannotDeleteSelf') : err.message);
+      toast.error(describe(err));
     }
   }
+
+  async function reactivate(u) {
+    try {
+      await api.put(`/users/${u.id}`, { active: true });
+      users.reload({ quiet: true });
+      toast.success(t('admin.reactivated'));
+    } catch (err) {
+      toast.error(describe(err));
+    }
+  }
+
+  async function remove(u) {
+    const ok = await confirm({
+      title: t('admin.deletePermanently'),
+      message: t('admin.confirmDeletePermanent', { name: label(u) }),
+      confirmLabel: t('admin.deletePermanently'),
+    });
+    if (!ok) return;
+    try {
+      await api.del(`/users/${u.id}?permanent=1`);
+      users.reload({ quiet: true });
+      toast.success(t('admin.deleted'));
+    } catch (err) {
+      toast.error(describe(err));
+    }
+  }
+
+  const edit = (u) =>
+    setEditing({
+      ...u,
+      display_name: u.display_name || '',
+      branches: u.branches || [],
+      perms: normalizePerms(u.perms),
+    });
+
+  const rowProps = { me, nameOf, onEdit: edit, onDeactivate: deactivate, onReactivate: reactivate, onDelete: remove };
 
   return (
     <div className="space-y-6">
@@ -322,80 +594,37 @@ export default function Admin() {
 
       <Card>
         <CardContent className="p-0 pb-2">
-          {list.length === 0 ? (
+          {activeUsers.length === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('admin.noUsers')} />
           ) : (
             <ul className="divide-y divide-border">
-              {list.map((u) => (
-                <li key={u.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <span
-                    aria-hidden="true"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-semibold text-secondary-foreground"
-                  >
-                    {(u.display_name || u.username).slice(0, 2).toUpperCase()}
-                  </span>
-                  <div className="min-w-40 flex-1">
-                    <div className="font-medium">
-                      {u.display_name || u.username}
-                      {u.id === me.id && (
-                        <span className="ms-2 text-xs text-muted-foreground">{t('admin.you')}</span>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground" dir="ltr">
-                      {u.username}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {u.role === 'admin' ? (
-                      <Badge variant="warning">
-                        <IconShield className="h-3 w-3" />
-                        {t('admin.roleAdmin')}
-                      </Badge>
-                    ) : (
-                      <>
-                        {u.branches === null ? (
-                          <Badge variant="outline">{t('admin.allBranches')}</Badge>
-                        ) : (
-                          u.branches.map((id) => <Badge key={id}>{nameOf(id)}</Badge>)
-                        )}
-                        {u.perms !== null && (
-                          <Badge variant="secondary">{t('admin.customPerms')}</Badge>
-                        )}
-                      </>
-                    )}
-                  </div>
-                  <div className="flex gap-0.5">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() =>
-                        setEditing({
-                          ...u,
-                          password: '',
-                          branches: u.branches || [],
-                          perms: normalizePerms(u.perms),
-                        })
-                      }
-                      aria-label={t('common.edit')}
-                    >
-                      <IconPencil />
-                    </Button>
-                    <Button
-                      variant="destructive-ghost"
-                      size="icon"
-                      disabled={u.id === me.id}
-                      onClick={() => remove(u)}
-                      aria-label={t('common.delete')}
-                    >
-                      <IconTrash />
-                    </Button>
-                  </div>
-                </li>
+              {activeUsers.map((u) => (
+                <UserRow key={u.id} u={u} {...rowProps} />
               ))}
             </ul>
           )}
         </CardContent>
       </Card>
+
+      {inactiveUsers.length > 0 && (
+        <section className="space-y-2">
+          <div className="px-1">
+            <h2 className="text-sm font-semibold text-muted-foreground">
+              {t('admin.inactiveSection')} ({inactiveUsers.length})
+            </h2>
+            <p className="text-xs text-muted-foreground">{t('admin.inactiveHint')}</p>
+          </div>
+          <Card>
+            <CardContent className="p-0 pb-2">
+              <ul className="divide-y divide-border">
+                {inactiveUsers.map((u) => (
+                  <UserRow key={u.id} u={u} {...rowProps} />
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       <Dialog
         open={!!editing}
@@ -406,12 +635,25 @@ export default function Admin() {
           <UserForm
             initial={editing}
             branches={branchList}
-            onSaved={() => {
+            isSelf={editing.id === me.id}
+            onSaved={({ quietToast } = {}) => {
               setEditing(null);
               users.reload({ quiet: true });
-              toast.success(t('common.saved'));
+              if (!quietToast) toast.success(t('common.saved'));
             }}
+            onCredentials={setCredentials}
             onCancel={() => setEditing(null)}
+          />
+        )}
+      </Dialog>
+
+      {/* Closing is the only way to lose the clear-text password: the card says so */}
+      <Dialog open={!!credentials} onClose={() => setCredentials(null)} title={t('admin.credentialsTitle')} size="sm">
+        {credentials && (
+          <Credentials
+            username={credentials.username}
+            password={credentials.password}
+            onClose={() => setCredentials(null)}
           />
         )}
       </Dialog>

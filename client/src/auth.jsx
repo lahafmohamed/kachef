@@ -77,8 +77,14 @@ export function AuthProvider({ children }) {
     setUser(null);
   }
 
+  /** Server-confirmed fresh copy of the signed-in user (after a password change) */
+  function updateUser(u) {
+    sessionStorage.setItem(USER_KEY, JSON.stringify(u));
+    setUser(u);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, endedReason }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser, endedReason }}>
       {children}
       <IdleGuard />
     </AuthContext.Provider>

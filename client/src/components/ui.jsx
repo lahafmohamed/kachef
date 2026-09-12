@@ -274,6 +274,19 @@ export const IconKey = (p) => (
     <path d="m15.5 7.5 3 3" />
   </Icon>
 );
+export const IconRefresh = (p) => (
+  <Icon {...p}>
+    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+    <polyline points="21 3 21 9 15 9" />
+  </Icon>
+);
+export const IconUserCheck = (p) => (
+  <Icon {...p}>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <polyline points="16 11 18 13 22 9" />
+  </Icon>
+);
 export const IconMore = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="1" />
@@ -286,6 +299,13 @@ export const IconLogout = (p) => (
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     <path d="m16 17 5-5-5-5" />
     <path d="M21 12H9" />
+  </Icon>
+);
+export const IconDownload = (p) => (
+  <Icon {...p}>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M12 15V3" />
   </Icon>
 );
 

@@ -5,6 +5,8 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
+import ExportPdfButton from '../components/ExportPdfButton';
+import FilterSelect from '../components/FilterSelect';
 import {
   Avatar,
   Badge,
@@ -24,6 +26,7 @@ import {
   useToast,
   IconArrow,
   IconAward,
+  IconShield,
   IconSparkles,
   IconTrendingUp,
 } from '../components/ui';
@@ -37,10 +40,45 @@ export default function Promotions() {
   const editable = has('promotions.apply');
   const pending = useFetch('/promotions/pending');
   const history = useFetch('/promotions/history');
-  const [busy, setBusy] = useState(null); // null | 'all' | member id
+  const branches = useFetch('/branches');
+  const [busy, setBusy] = useState(null); // null | 'all' | 'picked' | member id
+  // '' = كل الفرق. الفلترة على الفرقة التي يخرج منها العنصر، كما يفعل الخادم حين
+  // يحصر قائدًا في فرقه: الترفيع يخصّ الفرقة التي يغادرها صاحبه.
+  const [branch, setBranch] = useState('');
+  // العناصر المؤشَّرون للترفيع دفعةً واحدة
+  const [picked, setPicked] = useState(() => new Set());
 
-  const pendingList = pending.data || [];
-  const historyList = history.data || [];
+  const sameBranch = (id) => !branch || String(id) === String(branch);
+  const pendingList = (pending.data || []).filter((p) => sameBranch(p.current_branch.id));
+  const historyList = (history.data || []).filter((h) => sameBranch(h.old_branch_id));
+  const branchList = branches.data || [];
+  const pickedIds = pendingList.filter((p) => picked.has(p.id)).map((p) => p.id);
+  const allPicked = pendingList.length > 0 && pickedIds.length === pendingList.length;
+
+  // تغيير الفرقة يمسح التأشير: اسم مؤشَّر ثم مخفيّ بالفلتر لا يُرفَّع من حيث لا يُرى
+  function pickBranch(v) {
+    setBranch(v);
+    setPicked(new Set());
+  }
+
+  function togglePick(id) {
+    setPicked((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // «تأشير الكل» يخصّ المعروض وحده، و هو هنا كل ما مرّ من فلتر الفرقة
+  function toggleAll() {
+    setPicked(allPicked ? new Set() : new Set(pendingList.map((p) => p.id)));
+  }
+  // الاسم يذهب إلى عنوان الصفحة و منه إلى اسم ملف الـ PDF
+  const branchLabel = branchName(
+    branchList.find((b) => String(b.id) === String(branch)),
+    i18n.language
+  );
 
   async function promote(ids, key) {
     const many = ids.length > 1;
@@ -57,6 +95,11 @@ export default function Promotions() {
     setBusy(key);
     try {
       await api.post('/promotions/validate', { member_ids: ids });
+      setPicked((sel) => {
+        const next = new Set(sel);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
       pending.reload({ quiet: true });
       history.reload({ quiet: true });
       toast.success(t('promotion.promoted', { count: ids.length }));
@@ -70,18 +113,43 @@ export default function Promotions() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('promotion.pending')} description={t('promotion.subtitle')}>
-        {editable && pendingList.length > 0 && (
-          <Button
-            variant="brand"
-            loading={busy === 'all'}
-            disabled={!!busy}
-            onClick={() => promote(pendingList.map((p) => p.id), 'all')}
-          >
-            <IconTrendingUp />
-            {t('promotion.promoteAll', { count: pendingList.length })}
-          </Button>
+        {pendingList.length > 0 && (
+          <>
+            {/* الفرقة رقمًا في الرابط، و 0 تعني كل الفرق — الورقة تُبنى من نفس
+                القائمة المعروضة هنا، بنفس الفلتر */}
+            <ExportPdfButton kind="promotions" id={branch || 0} size="default" />
+            {editable && (
+              <Button
+                variant="brand"
+                loading={busy === 'all'}
+                disabled={!!busy}
+                onClick={() => promote(pendingList.map((p) => p.id), 'all')}
+              >
+                <IconTrendingUp />
+                {t('promotion.promoteAll', { count: pendingList.length })}
+              </Button>
+            )}
+          </>
         )}
       </PageHeader>
+
+      {/* فلتر واحد: الفرقة التي يغادرها العنصر — يحكم القائمتين معًا، الانتظار و السجل */}
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterSelect
+          value={branch}
+          onChange={pickBranch}
+          allLabel={t('member.allBranches')}
+          ariaLabel={t('member.branch')}
+          className="w-full sm:w-auto sm:min-w-48"
+          icon={<IconShield className="opacity-60" />}
+          options={branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) }))}
+        />
+        {branch && (
+          <Button variant="ghost" size="sm" onClick={() => pickBranch('')}>
+            {t('common.clearFilters')}
+          </Button>
+        )}
+      </div>
 
       {pending.error ? (
         <ErrorState message={t('error.loadFailed')} onRetry={pending.reload} retryLabel={t('error.retry')} />
@@ -99,14 +167,32 @@ export default function Promotions() {
           {pendingList.length === 0 ? (
             <EmptyState
               icon={<IconSparkles className="h-6 w-6 text-success" />}
-              title={t('promotion.noPending')}
+              title={branch ? t('promotion.noPendingInBranch', { branch: branchLabel }) : t('promotion.noPending')}
             >
-              {t('promotion.noPendingHint')}
+              {branch ? t('promotion.noPendingInBranchHint') : t('promotion.noPendingHint')}
             </EmptyState>
           ) : (
             <ul className="divide-y divide-border">
+              {editable && pendingList.length > 1 && (
+                <li className="px-4 py-2 sm:px-5">
+                  <label className="flex min-h-9 w-fit cursor-pointer items-center gap-3 text-sm font-medium">
+                    <input type="checkbox" checked={allPicked} onChange={toggleAll} />
+                    {t('promotion.selectAll', { count: pendingList.length })}
+                  </label>
+                </li>
+              )}
               {pendingList.map((p) => (
                 <li key={p.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+                  {/* التأشير خارج الرابط: الضغط على الاسم يفتح بطاقة العنصر، لا يؤشِّره */}
+                  {editable && (
+                    <input
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={picked.has(p.id)}
+                      onChange={() => togglePick(p.id)}
+                      aria-label={t('promotion.selectOne', { name: memberName(p) })}
+                    />
+                  )}
                   <Avatar photo={p.photo} name={avatarName(p)} />
                   <div className="min-w-32 flex-1">
                     <Link
@@ -139,6 +225,29 @@ export default function Promotions() {
                 </li>
               ))}
             </ul>
+          )}
+          {/* شريط التأشير يلتصق بالأسفل، و فوق شريط التنقّل في الهاتف: لولا ذلك لاختفى
+              الزرّ تحته، و التأشير بلا زرّ ترفيع لا معنى له */}
+          {editable && pickedIds.length > 0 && (
+            <div className="sticky bottom-[var(--bottomnav-h)] z-10 flex flex-wrap items-center gap-2 rounded-b-2xl border-t border-border bg-card px-4 py-2.5 sm:px-5 lg:bottom-0">
+              <span className="text-sm font-medium">
+                {t('promotion.selected', { count: pickedIds.length })}
+              </span>
+              <span className="hidden grow sm:block" />
+              <Button
+                size="sm"
+                variant="brand"
+                loading={busy === 'picked'}
+                disabled={!!busy}
+                onClick={() => promote(pickedIds, 'picked')}
+              >
+                <IconTrendingUp />
+                {t('promotion.promoteSelected', { count: pickedIds.length })}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setPicked(new Set())}>
+                {t('common.clearSelection')}
+              </Button>
+            </div>
           )}
         </Card>
       )}

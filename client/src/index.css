@@ -13,7 +13,8 @@
    Tailwind utilities read them through the @theme inline block.
    ============================================================ */
 
-:root {
+:root,
+.print-light {
   /* Surfaces — warm neutral ground, pure white cards */
   --background: hsl(45 12% 97%);
   --foreground: hsl(220 15% 14%);
@@ -450,4 +451,53 @@ input[type="radio"] {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* ============================================================
+   PDF export — the /print/* pages render a paper sheet and hand it to the
+   browser's print dialog, where "Save as PDF" produces the file. .print-light
+   (declared with :root above) pins the light palette so a dark-mode phone
+   never prints a black page; the rules below shape the paper itself.
+   ============================================================ */
+
+.print-sheet {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm 12mm 14mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-sheet {
+    max-width: none;
+    padding: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+  .print-sheet tr,
+  .print-sheet li,
+  .print-sheet .avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .print-sheet thead {
+    display: table-header-group;
+  }
+  .print-sheet h2 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  .print-sheet a {
+    color: inherit;
+    text-decoration: none;
+  }
 }

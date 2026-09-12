@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { renderPdf, chromiumMissing } = require('./pdf');
 const crypto = require('crypto');
 const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate } = require('./db');
 
@@ -123,9 +124,116 @@ function normalizePerms(raw) {
   return expandPerms([...out]);
 }
 
+// ---------- Usernames ----------
+// A login name is typed on a phone keyboard, dictated over the phone and matched
+// case-insensitively by SQLite's NOCASE (ASCII only). So: lowercase ASCII letters,
+// digits, dot/underscore/hyphen, 3–32 chars, starting with a letter. Accounts made
+// before this rule keep working; the admin page flags them so they can be renamed.
+const USERNAME_RE = /^[a-z][a-z0-9._-]{2,31}$/;
+const USERNAME_MAX = 32;
+
+const normalizeUsername = (raw) =>
+  String(raw ?? '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase();
+
+const usernameError = (name) => (USERNAME_RE.test(name) ? null : 'invalid_username');
+
+// Arabic letters → Latin, one glyph at a time. Good enough to propose "ahmad.baydoun"
+// from أحمد بيضون; the admin can still edit the result before saving.
+const ARABIC_LATIN = {
+  'ا': 'a', 'أ': 'a', 'إ': 'i', 'آ': 'a', 'ٱ': 'a', 'ب': 'b', 'ت': 't', 'ث': 'th', 'ج': 'j',
+  'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'dh', 'ر': 'r', 'ز': 'z', 'س': 's', 'ش': 'sh', 'ص': 's',
+  'ض': 'd', 'ط': 't', 'ظ': 'z', 'ع': 'a', 'غ': 'gh', 'ف': 'f', 'ق': 'q', 'ك': 'k', 'ل': 'l',
+  'م': 'm', 'ن': 'n', 'ه': 'h', 'ة': 'a', 'و': 'w', 'ي': 'y', 'ى': 'a', 'ئ': 'i', 'ؤ': 'u',
+  'ء': '', 'ﻻ': 'la', 'گ': 'g', 'پ': 'p', 'چ': 'ch', 'ڤ': 'v',
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+};
+
+// Whole words first: letter-by-letter Arabic drops the short vowels ("ahmd"), so
+// the names that come up all the time in the فوج get their usual Latin spelling.
+const ARABIC_NAMES = {
+  'احمد': 'ahmad', 'أحمد': 'ahmad', 'محمد': 'mohamad', 'محمود': 'mahmoud', 'حسين': 'hussein',
+  'حسن': 'hassan', 'علي': 'ali', 'عباس': 'abbas', 'حيدر': 'haidar', 'عبد': 'abed', 'ابراهيم': 'ibrahim',
+  'إبراهيم': 'ibrahim', 'يوسف': 'youssef', 'موسى': 'moussa', 'عيسى': 'issa', 'جعفر': 'jaafar',
+  'كاظم': 'kazem', 'قاسم': 'kassem', 'مهدي': 'mahdi', 'رضا': 'rida', 'زين': 'zein', 'كريم': 'karim',
+  'سامي': 'sami', 'رامي': 'rami', 'هادي': 'hadi', 'عادل': 'adel', 'خليل': 'khalil', 'جواد': 'jawad',
+  'مصطفى': 'mostafa', 'صادق': 'sadek', 'باقر': 'baker', 'نبيل': 'nabil', 'وسام': 'wissam',
+  'بلال': 'bilal', 'طارق': 'tarek', 'خالد': 'khaled', 'عمر': 'omar', 'أمير': 'amir', 'امير': 'amir',
+  'فاطمة': 'fatima', 'فاطمه': 'fatima', 'زينب': 'zeinab', 'مريم': 'mariam', 'زهراء': 'zahraa',
+  'الزهراء': 'zahraa', 'خديجة': 'khadija', 'سارة': 'sara', 'ساره': 'sara', 'نور': 'nour',
+  'هدى': 'houda', 'رنا': 'rana', 'لينا': 'lina', 'دينا': 'dina', 'ريم': 'rim', 'حنان': 'hanan',
+  'رقية': 'rokaya', 'آية': 'aya', 'ايه': 'aya', 'بتول': 'batoul', 'سكينة': 'soukaina', 'هبة': 'hiba',
+  'ملاك': 'malak', 'جنى': 'jana', 'لمى': 'lama', 'ياسمين': 'yasmine', 'نادين': 'nadine',
+  'بيضون': 'baydoun', 'حيدرأحمد': 'haidar.ahmad', 'مازح': 'mazeh', 'حمود': 'hammoud', 'فران': 'fran',
+  'شهاب': 'chehab', 'خليفة': 'khalifeh', 'ناصر': 'nasser', 'سعد': 'saad', 'صالح': 'saleh',
+  'عواضة': 'awada', 'فقيه': 'fakih', 'قانصو': 'kanso', 'حرب': 'harb', 'جابر': 'jaber', 'ضاهر': 'daher',
+  'يونس': 'younes', 'شمس': 'chams', 'الدين': 'eddine', 'الله': 'allah',
+};
+
+function transliterate(text) {
+  return String(text || '')
+    .replace(/[ً-ْـ]/g, '') // tashkil + tatweel carry no letter
+    .split(/(\s+)/)
+    .map((word) => {
+      const known = ARABIC_NAMES[word.trim()];
+      if (known) return known;
+      return word
+        .split('')
+        .map((ch) => (ch in ARABIC_LATIN ? ARABIC_LATIN[ch] : ch))
+        .join('');
+    })
+    .join('');
+}
+
+// "Ahmad Baydoun" / "أحمد بيضون" → "ahmad.baydoun"; unusable input → "user"
+function usernameBase(name) {
+  const words = normalizeUsername(transliterate(name))
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  let base = words.join('.').replace(/^[^a-z]+/, '');
+  if (base.length > USERNAME_MAX) base = base.slice(0, USERNAME_MAX).replace(/[._-]+$/, '');
+  if (base.length < 3) base = (base + 'user').slice(0, USERNAME_MAX);
+  return base;
+}
+
+// First free variant of the base: ahmad.baydoun, ahmad.baydoun2, ahmad.baydoun3…
+function suggestUsername(name, { exceptId = null } = {}) {
+  const base = usernameBase(name);
+  const taken = (candidate) => {
+    const row = db.prepare('SELECT id FROM users WHERE username = ?').get(candidate);
+    return row && row.id !== exceptId;
+  };
+  if (!taken(base)) return base;
+  for (let n = 2; n < 1000; n++) {
+    const suffix = String(n);
+    const candidate = base.slice(0, USERNAME_MAX - suffix.length) + suffix;
+    if (!taken(candidate)) return candidate;
+  }
+  return base + crypto.randomBytes(2).toString('hex');
+}
+
+// كلمة سرّ تُولَّد و تُعرض مرّة واحدة. أحرف لا تلتبس ببعضها (لا 0/O و لا 1/l):
+// ستُملى شفهيًا أو تُنسخ على هاتف.
+function generatePassword() {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(12);
+  let out = '';
+  for (let i = 0; i < 12; i++) {
+    out += alphabet[bytes[i] % alphabet.length];
+    if (i === 3 || i === 7) out += '-';
+  }
+  return out;
+}
+
 const publicUser = (u) => ({
   id: u.id,
   username: u.username,
+  // Made before the username rule existed (spaces, Arabic, capitals): still logs in,
+  // but the admin page suggests renaming it
+  username_legacy: !USERNAME_RE.test(u.username || ''),
   display_name: u.display_name,
   role: u.role,
   // null = every فرقة; otherwise the branch ids this account may see
@@ -134,6 +242,7 @@ const publicUser = (u) => ({
   perms: u.perms ? normalizePerms(JSON.parse(u.perms)) : null,
   // القائد صاحب الحساب إن وُلّد من صفحة القادة
   leader_id: u.leader_id ?? null,
+  leader_name: u.leader_name ?? null,
   active: u.active === undefined ? true : !!u.active,
   must_change_password: !!u.must_change_password,
 });
@@ -491,13 +600,49 @@ function parsePermList(v) {
   return keys.length === ALL_PERMS.length ? null : JSON.stringify(keys);
 }
 
+// Active accounts first; the deactivated ones sit in their own section on the page
+const USER_LIST_SQL = `
+  SELECT u.*, (SELECT ${fullNameSQL('l')} FROM leaders l WHERE l.id = u.leader_id) AS leader_name
+    FROM users u ORDER BY u.active DESC, u.username`;
+const userById = (id) =>
+  db
+    .prepare(
+      `SELECT u.*, (SELECT ${fullNameSQL('l')} FROM leaders l WHERE l.id = u.leader_id) AS leader_name
+         FROM users u WHERE u.id = ?`
+    )
+    .get(id);
+
 app.get('/api/users', requireAdmin, (req, res) => {
-  res.json(db.prepare('SELECT * FROM users ORDER BY username').all().map(publicUser));
+  res.json(db.prepare(USER_LIST_SQL).all().map(publicUser));
 });
 
+// What the form fills in while the admin types a display name. `except` = the
+// account being edited, so its own current name never counts as taken.
+app.get('/api/users/username-suggestion', requireAdmin, (req, res) => {
+  const except = Number(req.query.except);
+  res.json({
+    username: suggestUsername(String(req.query.name || ''), {
+      exceptId: Number.isInteger(except) ? except : null,
+    }),
+  });
+});
+
+const lastActiveAdmin = (u) =>
+  u.role === 'admin' &&
+  u.active &&
+  db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n <= 1;
+
+// A password is generated unless the caller sends one. Either way the account
+// must replace it at first login, and the clear text is returned exactly once.
 app.post('/api/users', requireAdmin, (req, res) => {
-  const { username, password, display_name, role } = req.body;
-  if (!username || !String(username).trim()) return res.status(400).json({ error: 'username required' });
+  const { display_name, role } = req.body;
+  const username = req.body.username
+    ? normalizeUsername(req.body.username)
+    : suggestUsername(String(display_name || ''));
+  const nameErr = usernameError(username);
+  if (nameErr) return res.status(400).json({ error: nameErr });
+  const generated = !req.body.password;
+  const password = generated ? generatePassword() : String(req.body.password);
   const passErr = passwordError(password);
   if (passErr) return res.status(400).json({ error: passErr });
   if (!['admin', 'user'].includes(role || 'user')) return res.status(400).json({ error: 'invalid role' });
@@ -512,17 +657,10 @@ app.post('/api/users', requireAdmin, (req, res) => {
           (username, password_hash, display_name, role, branches, perms, active, must_change_password)
          VALUES (?, ?, ?, ?, ?, ?, 1, 1)`
       )
-      .run(
-        String(username).trim(),
-        hashPassword(String(password)),
-        display_name || null,
-        role || 'user',
-        branches,
-        perms
-      );
-    const created = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+      .run(username, hashPassword(password), String(display_name || '').trim() || null, role || 'user', branches, perms);
+    const created = userById(info.lastInsertRowid);
     auditEvent(req, 'create', 'user', created.id, null, publicUser(created));
-    res.status(201).json(publicUser(created));
+    res.status(201).json({ ...publicUser(created), ...(generated ? { password } : {}) });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(400).json({ error: 'username_taken' });
     throw e;
@@ -534,11 +672,18 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   if (!u) return res.status(404).json({ error: 'user not found' });
   const role = req.body.role ?? u.role;
   if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'invalid role' });
-  // The last admin cannot be demoted, or the admin page becomes unreachable
   const active = req.body.active === undefined ? !!u.active : !!req.body.active;
-  if (u.role === 'admin' && u.active && (role !== 'admin' || !active)) {
-    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
-    if (admins <= 1) return res.status(400).json({ error: 'last_admin' });
+  // An admin cannot lock themselves out, and the last admin cannot be demoted
+  // either, or the admin page becomes unreachable
+  if (u.id === req.user.id && (!active || role !== 'admin'))
+    return res.status(400).json({ error: 'cannot_edit_self' });
+  if ((role !== 'admin' || !active) && lastActiveAdmin(u)) return res.status(400).json({ error: 'last_admin' });
+  // Renaming applies the new rule; an untouched legacy name stays as it is
+  let username = u.username;
+  if (req.body.username !== undefined && normalizeUsername(req.body.username) !== u.username) {
+    username = normalizeUsername(req.body.username);
+    const nameErr = usernameError(username);
+    if (nameErr) return res.status(400).json({ error: nameErr });
   }
   const branches =
     req.body.branches === undefined ? u.branches : parseBranchList(req.body.branches);
@@ -549,31 +694,58 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'invalid perms' });
   let password_hash = u.password_hash;
   let mustChange = u.must_change_password || 0;
-  if (req.body.password) {
-    const passErr = passwordError(req.body.password);
+  // reset_password: a fresh generated one, shown once in the response
+  let newPassword = null;
+  if (req.body.reset_password) newPassword = generatePassword();
+  else if (req.body.password) newPassword = String(req.body.password);
+  if (newPassword !== null) {
+    const passErr = passwordError(newPassword);
     if (passErr) return res.status(400).json({ error: passErr });
-    password_hash = hashPassword(String(req.body.password));
+    password_hash = hashPassword(newPassword);
     mustChange = 1;
-    // A password change kicks that user's devices out
-    db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
   }
-  db.prepare(
-    `UPDATE users SET display_name = ?, role = ?, branches = ?, perms = ?, password_hash = ?,
-       active = ?, must_change_password = ? WHERE id = ?`
-  ).run(req.body.display_name ?? u.display_name, role, branches, perms, password_hash, active ? 1 : 0, mustChange, u.id);
-  if (!active) db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
-  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+  try {
+    db.prepare(
+      `UPDATE users SET username = ?, display_name = ?, role = ?, branches = ?, perms = ?, password_hash = ?,
+         active = ?, must_change_password = ? WHERE id = ?`
+    ).run(
+      username,
+      req.body.display_name === undefined ? u.display_name : String(req.body.display_name || '').trim() || null,
+      role,
+      branches,
+      perms,
+      password_hash,
+      active ? 1 : 0,
+      mustChange,
+      u.id
+    );
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(400).json({ error: 'username_taken' });
+    throw e;
+  }
+  // A password change or a deactivation kicks that user's devices out
+  if (newPassword !== null || !active) db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
+  const updated = userById(u.id);
   auditEvent(req, 'update', 'user', u.id, publicUser(u), publicUser(updated));
-  res.json(publicUser(updated));
+  res.json({ ...publicUser(updated), ...(req.body.reset_password ? { password: newPassword } : {}) });
 });
 
+// Default: deactivate (the account stays listed, can be reactivated, keeps its
+// audit trail). `?permanent=1` removes the row: tokens cascade, audit rows keep
+// the actor's name but lose the id.
 app.delete('/api/users/:id', requireAdmin, (req, res) => {
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'cannot_delete_self' });
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  const user = userById(req.params.id);
   if (!user) return res.status(404).json({ error: 'user not found' });
-  if (user.role === 'admin' && user.active) {
-    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
-    if (admins <= 1) return res.status(400).json({ error: 'last_admin' });
+  if (lastActiveAdmin(user)) return res.status(400).json({ error: 'last_admin' });
+  const permanent = ['1', 'true'].includes(String(req.query.permanent || ''));
+  if (permanent) {
+    db.transaction(() => {
+      db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(user.id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    })();
+    auditEvent(req, 'delete', 'user', user.id, publicUser(user), null);
+    return res.status(204).end();
   }
   db.transaction(() => {
     db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(user.id);
@@ -1909,6 +2081,7 @@ app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) =>
   const rows = db
     .prepare(
        `SELECT p.id, p.promoted_at, p.member_id, p.matalib,
+        p.old_branch_id, p.new_branch_id,
         p.reversed_at, p.reversed_by, p.reversal_reason,
         m.first_name, m.father_name, m.last_name,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
@@ -2114,27 +2287,22 @@ const ACCOUNT_PRESETS = {
   full: null,
 };
 
-// كلمة سرّ تُولَّد و تُعرض مرّة واحدة. أحرف لا تلتبس ببعضها (لا 0/O و لا 1/l):
-// ستُملى شفهيًا أو تُنسخ على هاتف.
-function generatePassword() {
-  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
-  const bytes = crypto.randomBytes(12);
-  let out = '';
-  for (let i = 0; i < 12; i++) {
-    out += alphabet[bytes[i] % alphabet.length];
-    if (i === 3 || i === 7) out += '-';
-  }
-  return out;
-}
-
 app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
   const leader = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
   if (!leader) return res.status(404).json({ error: 'leader not found' });
-  // حساب واحد لكل قائد: الثاني التباسٌ لا فائدة
-  if (db.prepare('SELECT id FROM users WHERE leader_id = ?').get(leader.id))
-    return res.status(409).json({ error: 'account_exists' });
-  const username = String(req.body?.username || '').trim();
-  if (!username) return res.status(400).json({ error: 'username required' });
+  // حساب واحد لكل قائد: الثاني التباسٌ لا فائدة. A previously revoked (deactivated)
+  // account is brought back instead of leaving an orphan next to a new one.
+  const existing = db.prepare('SELECT * FROM users WHERE leader_id = ?').get(leader.id);
+  if (existing && existing.active) return res.status(409).json({ error: 'account_exists' });
+  const leaderName = [leader.first_name, leader.father_name, leader.last_name].filter(Boolean).join(' ');
+  // No username sent = take the generated one (first.last, deduplicated)
+  const username = req.body?.username
+    ? normalizeUsername(req.body.username)
+    : suggestUsername([leader.first_name, leader.last_name].filter(Boolean).join(' '), {
+        exceptId: existing?.id ?? null,
+      });
+  const nameErr = usernameError(username);
+  if (nameErr) return res.status(400).json({ error: nameErr });
   const preset = req.body?.preset;
   if (!Object.prototype.hasOwnProperty.call(ACCOUNT_PRESETS, preset))
     return res.status(400).json({ error: 'invalid preset' });
@@ -2142,31 +2310,32 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
   if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
   const password = generatePassword();
   const perms = ACCOUNT_PRESETS[preset];
-  let info;
+  const permsJson = perms ? JSON.stringify(perms) : null;
+  let id;
   try {
-    info = db
-      .prepare(
-        `INSERT INTO users
-          (username, password_hash, display_name, role, branches, perms, leader_id, active, must_change_password)
-         VALUES (?, ?, ?, 'user', ?, ?, ?, 1, 1)`
-      )
-      .run(
-        username,
-        hashPassword(password),
-        [leader.first_name, leader.father_name, leader.last_name].filter(Boolean).join(' '),
-        branches,
-        perms ? JSON.stringify(perms) : null,
-        leader.id
-      );
+    if (existing) {
+      db.prepare(
+        `UPDATE users SET username = ?, password_hash = ?, display_name = ?, role = 'user', branches = ?,
+           perms = ?, active = 1, must_change_password = 1 WHERE id = ?`
+      ).run(username, hashPassword(password), leaderName, branches, permsJson, existing.id);
+      id = existing.id;
+    } else {
+      id = db
+        .prepare(
+          `INSERT INTO users
+            (username, password_hash, display_name, role, branches, perms, leader_id, active, must_change_password)
+           VALUES (?, ?, ?, 'user', ?, ?, ?, 1, 1)`
+        )
+        .run(username, hashPassword(password), leaderName, branches, permsJson, leader.id).lastInsertRowid;
+    }
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'username_taken' });
     throw e;
   }
+  const created = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  auditEvent(req, existing ? 'update' : 'create', 'user', created.id, existing ? publicUser(existing) : null, publicUser(created));
   // كلمة السرّ تُعاد هنا وحدها و لا تُخزَّن إلا مجزّأة: من أضاعها يولّد غيرها من صفحة الأدمن
-  res.status(201).json({
-    user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)),
-    password,
-  });
+  res.status(201).json({ user: publicUser(created), password });
 });
 
 app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) => {
@@ -2213,8 +2382,8 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
   const rows = db
     .prepare(
       `SELECT l.*,
-        (SELECT u.id FROM users u WHERE u.leader_id = l.id LIMIT 1) AS account_user_id,
-        (SELECT u.username FROM users u WHERE u.leader_id = l.id LIMIT 1) AS account_username,
+        (SELECT u.id FROM users u WHERE u.leader_id = l.id AND u.active = 1 LIMIT 1) AS account_user_id,
+        (SELECT u.username FROM users u WHERE u.leader_id = l.id AND u.active = 1 LIMIT 1) AS account_username,
         (SELECT COUNT(*) FROM sessions s WHERE s.leader_id = l.id AND s.kind != 'visit') AS sessions_count,
         (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
           WHERE sl.leader_id = l.id AND sl.status = 'present' AND s.kind != 'visit') AS present_count,
@@ -3501,6 +3670,65 @@ app.get('/api/stats', (req, res) => {
 
 // Production: serve the built client if present (npm run build at repo root)
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
+
+// ---------- تصدير PDF ----------
+// Chromium opens the app's own /print/<kind>/<id> sheet with the caller's token and
+// prints it. The sheet's API calls run under that same token, so the file holds
+// exactly what the caller may see on screen — no separate permission model.
+const PDF_KINDS = {
+  sessions: 'sessions.read',
+  members: 'members.read',
+  leaders: 'leaders.read',
+  branches: 'branches.read',
+  // قائمة لا بطاقة: «الترفيعات في الانتظار»، و الرقم فرقةٌ لا عنصر — 0 يعني كل الفرق
+  promotions: 'promotions.read',
+};
+// Where Chromium finds the app: the served build in production, Vite in dev
+const clientBaseUrl = () =>
+  process.env.CLIENT_URL ||
+  (fs.existsSync(clientDist) ? `http://127.0.0.1:${process.env.PORT || 3001}` : 'http://127.0.0.1:5173');
+
+app.get('/api/export/:kind/:id.pdf', async (req, res) => {
+  const perm = PDF_KINDS[req.params.kind];
+  if (!perm) return res.status(404).json({ error: 'not found' });
+  if (!hasPerm(req, perm)) return res.status(403).json({ error: 'forbidden' });
+  if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+  const lang = req.query.lang === 'ar' ? 'ar' : 'fr';
+  try {
+    const { pdf, title } = await renderPdf({
+      url: `${clientBaseUrl()}/print/${req.params.kind}/${req.params.id}`,
+      token: req.token,
+      lang,
+    });
+    // The tab title ("Fiche du membre — Ali Ahmad") names the file
+    const name = `${(title || 'export')
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120)}.pdf`;
+    // Plain-ASCII fallback for old clients: accents stripped, other scripts dropped
+    const ascii = name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\x20-\x7e]+/g, '')
+      .replace(/"/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', pdf.length);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
+    );
+    res.send(pdf);
+  } catch (err) {
+    console.error('pdf export failed:', err.message);
+    if (err.code === 'pdf_page_error') return res.status(502).json({ error: 'pdf_page_error' });
+    if (chromiumMissing(err)) return res.status(501).json({ error: 'pdf_unavailable' });
+    res.status(500).json({ error: 'pdf_failed' });
+  }
+});
 if (fs.existsSync(clientDist)) {
   // Hashed asset filenames change on every build, so they can be cached hard.
   // index.html must NOT be cached: a stale copy keeps pointing phones at the

@@ -17,6 +17,18 @@ export function fmtDate(iso) {
   return dateFormat(i18n.language).format(toDate(iso)).replace(/[‎‏؜]/g, '');
 }
 
+/**
+ * Phone number as read aloud: Ivorian 10-digit numbers in pairs ("07 08 12 34 56").
+ * Anything else — international prefix, two numbers in one field — shows as typed.
+ */
+export function fmtPhone(raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  const compact = s.replace(/[\s.-]/g, '');
+  if (!/^\d{10}$/.test(compact)) return s;
+  return compact.replace(/(\d{2})(?=\d)/g, '$1 ');
+}
+
 export function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }

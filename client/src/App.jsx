@@ -17,7 +17,9 @@ import PrepCardDetail from './pages/PrepCardDetail';
 import Promotions from './pages/Promotions';
 import Leaders from './pages/Leaders';
 import LeaderDetail from './pages/LeaderDetail';
+import PrintReport from './pages/PrintReport';
 import Settings from './pages/Settings';
+import ChangePasswordGate from './pages/ChangePassword';
 import {
   Button,
   ConfirmProvider,
@@ -98,11 +100,27 @@ function Shell() {
   const { user } = useAuth();
   // Mirrors the server rule; the server enforces it again on every request
   const { can } = usePerms();
+  const location = useLocation();
 
   // No session → nothing but the login screen, whatever the URL says
   if (!user) return <Login />;
+  // A generated password is a bootstrap credential: the server serves no data
+  // until it is replaced, so the app shows nothing else either
+  if (user.must_change_password) return <ChangePasswordGate />;
 
   const isAdmin = user.role === 'admin';
+
+  // Printable sheets (PDF export) render without the app chrome: no sidebar,
+  // tab bar or header on the paper. Each sheet re-checks its page's permission.
+  if (location.pathname.startsWith('/print/'))
+    return (
+      <ErrorBoundary title={t('error.crashTitle')} retryLabel={t('error.reload')}>
+        <Routes>
+          <Route path="/print/:kind/:id" element={<PrintReport />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </ErrorBoundary>
+    );
 
   return (
     <Layout>

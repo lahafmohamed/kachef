@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -8,6 +8,8 @@ import { avatarName, branchName, fileToDataUrl, memberName } from '../utils';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import SearchSelect from '../components/SearchSelect';
+import Credentials from '../components/Credentials';
+import { USERNAME_PATTERN, USERNAME_RE } from './Admin';
 import {
   Avatar,
   Badge,
@@ -502,17 +504,30 @@ const ACCOUNT_PRESET_KEYS = ['branch', 'amana', 'readonly', 'full'];
  */
 function AccountDialog({ leader, branches, onClose, onCreated }) {
   const { t, i18n } = useTranslation();
-  const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   // كلمة السرّ بعد الإنشاء — وجودها يقلب الحوار إلى شاشة العرض الوحيد
   const [result, setResult] = useState(null);
   const [form, setForm] = useState(() => ({
-    username: [leader.first_name, leader.last_name].filter(Boolean).join('.').replace(/\s+/g, ''),
+    username: '',
     preset: 'branch',
     // فرق توصيفاته الحالية مؤشَّرة سلفًا؛ لا تأشير = كل الفرق
     branch_ids: [...new Set((leader.roles || []).filter((r) => r.branch_id).map((r) => r.branch_id))],
   }));
+  const usernameInvalid = form.username !== '' && !USERNAME_RE.test(form.username);
+
+  // اسم الدخول يقترحه الخادم: حروف لاتينية، بلا فراغ، غير مأخوذ
+  useEffect(() => {
+    let alive = true;
+    const name = [leader.first_name, leader.last_name].filter(Boolean).join(' ');
+    api
+      .get(`/users/username-suggestion?${new URLSearchParams({ name })}`)
+      .then((r) => alive && setForm((f) => (f.username ? f : { ...f, username: r.username })))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [leader.first_name, leader.last_name]);
 
   function toggleBranch(id) {
     setForm((f) => ({
@@ -536,24 +551,14 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
       setResult(r);
       onCreated();
     } catch (err) {
-      setError(
-        err.message === 'username_taken'
-          ? t('leader.accountTaken')
-          : err.message === 'account_exists'
-            ? t('leader.accountExists')
-            : err.message
-      );
+      const map = {
+        username_taken: t('leader.accountTaken'),
+        invalid_username: t('admin.usernameInvalid'),
+        account_exists: t('leader.accountExists'),
+      };
+      setError(map[err.message] || err.message);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function copyAll() {
-    try {
-      await navigator.clipboard.writeText(`${result.user.username}\n${result.password}`);
-      toast.success(t('leader.accountCopied'));
-    } catch {
-      toast.error(t('error.loadFailed'));
     }
   }
 
@@ -566,29 +571,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
       size="sm"
     >
       {result ? (
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">{t('leader.accountPasswordOnce')}</p>
-          <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-4" dir="ltr">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-xs text-muted-foreground">{t('leader.accountUsername')}</span>
-              <span className="font-medium">{result.user.username}</span>
-            </div>
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-xs text-muted-foreground">{t('leader.accountPassword')}</span>
-              <span className="select-all font-mono text-lg font-semibold tracking-wide">
-                {result.password}
-              </span>
-            </div>
-          </div>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" onClick={copyAll}>
-              {t('leader.accountCopy')}
-            </Button>
-            <Button variant="brand" onClick={onClose}>
-              {t('common.close')}
-            </Button>
-          </div>
-        </div>
+        <Credentials username={result.user.username} password={result.password} onClose={onClose} />
       ) : (
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-1.5">
@@ -597,10 +580,18 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
               id="acc_username"
               required
               autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
               dir="ltr"
+              pattern={USERNAME_PATTERN}
+              aria-invalid={usernameInvalid || undefined}
+              className="font-mono"
               value={form.username}
-              onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
             />
+            <p className={`text-xs ${usernameInvalid ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
+              {t(usernameInvalid ? 'admin.usernameInvalid' : 'admin.usernameHint')}
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="acc_preset">{t('leader.accountPreset')}</Label>
