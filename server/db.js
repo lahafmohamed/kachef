@@ -286,6 +286,9 @@ CREATE TABLE IF NOT EXISTS attendance (
   -- Snapshot the organisational position at the time of the session.
   branch_id INTEGER REFERENCES branches(id),
   group_id INTEGER,
+  -- الاشتراك المالي الذي دفعه هذا العنصر في هذا النشاط. NULL = لم يدفع (أو لم يُسجَّل بعد)،
+  -- و الرقم هو المبلغ المدفوع فعلًا — قد يخالف sessions.fee (دفعة جزئية أو إعفاء).
+  paid REAL,
   UNIQUE(session_id, member_id)
 );
 
@@ -701,6 +704,9 @@ function migrate() {
   ensureColumn('sessions', 'updated_at', 'updated_at TEXT');
   db.exec("UPDATE sessions SET updated_at = datetime('now') WHERE updated_at IS NULL");
   migrateAttendanceRoster();
+  // الاشتراك المدفوع لكل عنصر في كل نشاط — بعد إعادة بناء الجدول أعلاه، فالبناء
+  // ينسخ الأعمدة التي يعرفها وحدها و كان ليسقط هذا العمود لو زِيد قبله
+  ensureColumn('attendance', 'paid', 'paid REAL');
   // Added after migrateSessions on purpose: its rebuild only knows the older column set
   ensureColumn(
     'sessions',
@@ -826,6 +832,8 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_sessions_date_kind ON sessions(date, kind);
     CREATE INDEX IF NOT EXISTS idx_sessions_branch_date ON sessions(branch_id, date);
     CREATE INDEX IF NOT EXISTS idx_attendance_member_session ON attendance(member_id, session_id);
+    -- مجموع اشتراكات العنصر يُقرأ في كل فتح لملفّه: صفوف الدفع وحدها
+    CREATE INDEX IF NOT EXISTS idx_attendance_member_paid ON attendance(member_id) WHERE paid IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_attendance_session_status ON attendance(session_id, status);
     CREATE INDEX IF NOT EXISTS idx_attendance_branch_session ON attendance(branch_id, session_id);
     CREATE INDEX IF NOT EXISTS idx_promotions_member_date ON promotions(member_id, promoted_at);

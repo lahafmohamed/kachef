@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fmtDate, fmtPhone, memberName } from '../utils';
+import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
 import {
@@ -30,6 +30,7 @@ import {
   IconBack,
   IconCake,
   IconCalendar,
+  IconCoins,
   IconPhone,
   IconPin,
   IconSchool,
@@ -91,6 +92,9 @@ export default function MemberDetail() {
         [h.title, h.date, fmtDate(h.date)].some((v) => String(v || '').toLowerCase().includes(hq))
       )
     : stats.history;
+  // الاشتراكات المدفوعة تراكميًّا — يحسبها السيرفر من خانات الأنشطة. تصل NULL
+  // لمن لا يملك صلاحية رؤية المبالغ، فتختفي البطاقة كلها.
+  const subs = member.subscriptions;
   const rateTone =
     stats.rate === null ? 'text-foreground' : stats.rate >= 75 ? 'text-success' : stats.rate >= 50 ? 'text-warning' : 'text-destructive';
 
@@ -242,6 +246,14 @@ export default function MemberDetail() {
                 <div className="text-3xl font-bold leading-none tabular-nums">{stats.present}</div>
                 <div className="mt-1 text-xs text-muted-foreground">{t('leader.timesPresent')}</div>
               </div>
+              {subs && (
+                <div className="text-center">
+                  <div className="text-3xl font-bold leading-none tabular-nums text-success">
+                    {fmtAmount(subs.total)}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{t('member.subscriptionsPaid')}</div>
+                </div>
+              )}
             </div>
           </div>
         </CardContent>
@@ -387,6 +399,70 @@ export default function MemberDetail() {
                 </li>
               ))}
             </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ---------- الاشتراكات المدفوعة: المجموع التراكمي و تفصيله نشاطًا نشاطًا ---------- */}
+      {subs && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              <IconCoins className="h-4 w-4 text-muted-foreground" />
+              {t('member.subscriptions')}
+              <Badge variant={subs.total > 0 ? 'success' : 'outline'}>{fmtAmount(subs.total)}</Badge>
+            </CardTitle>
+            {subs.count > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {t('member.subscriptionsCount', { count: subs.count })}
+              </p>
+            )}
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            {subs.count === 0 ? (
+              <EmptyState icon={<IconCoins className="h-6 w-6" />} title={t('member.noSubscriptions')} />
+            ) : (
+              <Table>
+                <thead className="border-b border-border">
+                  <tr>
+                    <Th>{t('common.date')}</Th>
+                    <Th>{t('session.sessionTitle')}</Th>
+                    <Th className="text-end">{t('member.amount')}</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {subs.history.map((r) => (
+                    <tr
+                      key={r.session_id}
+                      onClick={() => navigate(`/sessions/${r.session_id}`)}
+                      className="cursor-pointer transition-colors hover:bg-accent/40"
+                    >
+                      <Td className="whitespace-nowrap tabular-nums">{fmtDate(r.date)}</Td>
+                      <Td>
+                        <Link
+                          to={`/sessions/${r.session_id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                        >
+                          {r.title}
+                        </Link>
+                      </Td>
+                      <Td className="text-end font-medium tabular-nums">{fmtAmount(r.amount)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="border-t-2 border-border">
+                  <tr>
+                    <Td className="font-semibold" colSpan={2}>
+                      {t('member.subscriptionsTotal')}
+                    </Td>
+                    <Td className="text-end font-bold tabular-nums text-success">
+                      {fmtAmount(subs.total)}
+                    </Td>
+                  </tr>
+                </tfoot>
+              </Table>
+            )}
           </CardContent>
         </Card>
       )}

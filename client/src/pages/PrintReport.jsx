@@ -8,6 +8,7 @@ import {
   activityTypeKey,
   avatarName,
   branchName,
+  fmtAmount,
   fmtDate,
   fmtPhone,
   fmtTime,
@@ -334,16 +335,43 @@ function SessionReport({ id, onReady, kindLabel }) {
   const groupTotal = branchCounts.reduce((n, c) => n + (Number(c.count) || 0), 0);
   const natureKey = activityTypeKey(session.activity_type);
 
+  // خانة الاشتراك تُطبع حين يكون فيها ما يُطبع: نشاط بلا اشتراكات (أو مستخدم لا يرى
+  // المبالغ، فتصله فارغة) يبقى جدوله كما كان
+  const showPaid = roster.some((m) => m.paid !== null && m.paid !== undefined);
+  const rosterCollected = roster.reduce((n, m) => n + (m.paid || 0), 0);
+
   const summary = [
     { value: counts.present, label: t('print.presentCount'), cls: 'text-success' },
     { value: counts.absent, label: t('print.absentCount'), cls: 'text-destructive' },
     ...(isLeaders ? [] : [{ value: counts.excused, label: t('print.excusedCount'), cls: 'text-warning' }]),
     { value: counts.unmarked, label: t('print.unmarkedCount'), cls: 'text-muted-foreground' },
     ...(isLeaders ? [{ value: counts.rate, label: t('print.rate'), cls: 'text-primary' }] : []),
+    // حصيلة الاشتراكات، محسوبة من خانات اللائحة
+    ...(showPaid
+      ? [
+          {
+            value: fmtAmount(rosterCollected),
+            label: t('session.subscriptions'),
+            cls: 'text-success',
+            hint: t('session.paidCount', {
+              paid: roster.filter((m) => m.paid !== null && m.paid !== undefined).length,
+              total: roster.length,
+            }),
+          },
+        ]
+      : []),
   ];
 
   const rosterTable = (rows) => (
-    <Table head={['#', t('member.name'), t('member.group'), t('member.status')]}>
+    <Table
+      head={[
+        '#',
+        t('member.name'),
+        t('member.group'),
+        ...(showPaid ? [{ label: t('session.subscriptions'), className: 'text-end' }] : []),
+        t('member.status'),
+      ]}
+    >
       {rows.map((m, i) => (
         <tr key={m.id}>
           <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
@@ -356,6 +384,11 @@ function SessionReport({ id, onReady, kindLabel }) {
             )}
           </td>
           <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
+          {showPaid && (
+            <td className={cn(tdNum, 'w-24 text-end font-medium')}>
+              {m.paid !== null && m.paid !== undefined ? fmtAmount(m.paid) : '—'}
+            </td>
+          )}
           <td className={td}>
             <Status status={m.status} />
           </td>
@@ -606,6 +639,16 @@ function MemberReport({ id, onReady, kindLabel }) {
             label: t('print.consecutive'),
             cls: stats.consecutive_absences >= 3 ? 'text-destructive' : undefined,
           },
+          // المجموع التراكمي لاشتراكاته — يغيب عمّن لا يرى المبالغ، فلا يصله الحقل
+          ...(m.subscriptions
+            ? [
+                {
+                  value: fmtAmount(m.subscriptions.total),
+                  label: t('member.subscriptionsPaid'),
+                  cls: 'text-success',
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -662,6 +705,38 @@ function MemberReport({ id, onReady, kindLabel }) {
                 <td className={cn(td, 'text-muted-foreground')}>{v.leaders || '—'}</td>
               </tr>
             ))}
+          </Table>
+        </>
+      )}
+
+      {/* الاشتراكات المدفوعة تراكميًّا — تُطبع لمن يرى المبالغ وحده */}
+      {m.subscriptions?.count > 0 && (
+        <>
+          <H2 aside={t('member.subscriptionsCount', { count: m.subscriptions.count })}>
+            {t('member.subscriptions')}
+          </H2>
+          <Table
+            head={[
+              t('common.date'),
+              t('session.sessionTitle'),
+              { label: t('member.amount'), className: 'text-end' },
+            ]}
+          >
+            {m.subscriptions.history.map((r) => (
+              <tr key={r.session_id}>
+                <td className={cn(tdNum, 'w-24 text-muted-foreground')}>{fmtDate(r.date)}</td>
+                <td className={cn(td, 'font-medium')}>{r.title}</td>
+                <td className={cn(tdNum, 'w-28 text-end font-medium')}>{fmtAmount(r.amount)}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-foreground/50">
+              <td className={cn(td, 'font-bold')} colSpan={2}>
+                {t('member.subscriptionsTotal')}
+              </td>
+              <td className={cn(tdNum, 'text-end font-bold text-success')}>
+                {fmtAmount(m.subscriptions.total)}
+              </td>
+            </tr>
           </Table>
         </>
       )}

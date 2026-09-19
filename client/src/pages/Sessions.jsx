@@ -885,6 +885,9 @@ export default function Sessions() {
                   value={form.fee}
                   onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}
                 />
+                {/* المبلغ هنا هو المتوقَّع من كل عنصر: تفتح به خانة الاشتراك في
+                    لائحة الحضور، فلا يُكتب رقمًا رقمًا لمن دفعه كاملًا */}
+                <p className="text-xs text-muted-foreground">{t('session.feeHint')}</p>
               </div>
           );
           const branchesField = !isLeadersOnly && !isGroup && (

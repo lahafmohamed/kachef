@@ -248,6 +248,14 @@ export const IconAward = (p) => (
     <path d="M15.5 13.5 17 22l-5-3-5 3 1.5-8.5" />
   </Icon>
 );
+export const IconCoins = (p) => (
+  <Icon {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M18.09 10.37A6 6 0 1 1 10.34 18" />
+    <path d="M7 6h1v4" />
+    <path d="m16.71 13.88.7.71-2.82 2.82" />
+  </Icon>
+);
 export const IconLock = (p) => (
   <Icon {...p}>
     <rect x="3" y="11" width="18" height="11" rx="2" />
@@ -1094,11 +1102,12 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
             aria-pressed={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center text-center leading-tight font-medium transition-colors',
+              'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center text-center leading-tight font-medium',
+              'transition-[color,background-color,border-color,scale] duration-150 active:scale-[0.96]',
               pad,
               i > 0 && 'border-s border-border',
               active
-                ? cn(tones[o.tone || 'default'], 'animate-pop')
+                ? tones[o.tone || 'default']
                 : 'bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
             )}
           >

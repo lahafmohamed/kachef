@@ -29,6 +29,20 @@ export function fmtPhone(raw) {
   return compact.replace(/(\d{2})(?=\d)/g, '$1 ');
 }
 
+// مبالغ الاشتراكات: أرقام لاتينية مفصولة بالآلاف في اللغتين، كالتواريخ — الفرنك
+// يُكتب بلا كسور، و الكسر يظهر حين يوجد فقط.
+const amountFormats = {};
+export function fmtAmount(v) {
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  const locale = i18n.language === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
+  const fmt = (amountFormats[locale] ??= new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 2,
+  }));
+  return fmt.format(n).replace(/[‎‏؜]/g, '');
+}
+
 export function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }

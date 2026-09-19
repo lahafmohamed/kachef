@@ -296,6 +296,16 @@ function stripContact(req, m) {
 // Money is its own permission, like contact info
 const stripFee = (req, s) => (hasPerm(req, 'sessions.read.fees') ? s : { ...s, fee: null });
 
+// الاشتراك المدفوع لكل عنصر مالٌ كذلك: يسقط مع الأجرة نفسها لمن لا يرى المبالغ
+const stripRosterFees = (req, payload) =>
+  hasPerm(req, 'sessions.read.fees')
+    ? payload
+    : {
+        ...payload,
+        roster: (payload.roster || []).map((m) => ({ ...m, paid: null })),
+        subscriptions: null,
+      };
+
 // A session dies after 15 minutes without a request, so an unattended machine
 // stops being a way in. Absolute cap on top: even an actively used session is
 // re-authenticated once a day.
@@ -889,6 +899,43 @@ function familyVisits(memberId) {
        ORDER BY s.date DESC, s.id DESC`
     )
     .all(memberId);
+}
+
+// ---------- الاشتراكات المالية ----------
+// المبلغ يسكن صف الحضور (attendance.paid): هو اشتراك هذا العنصر في هذا النشاط،
+// و المجاميع كلها تُحسب منه عند القراءة — لا يُخزَّن مجموع، فلا يشيخ رقمٌ حين
+// يُصحَّح مبلغ أو يُلغى.
+
+// كل ما دفعه عنصر اشتراكاتٍ، من أوّل نشاط إلى آخره — تراكمي عبر الفرق كلها
+function memberSubscriptions(memberId) {
+  const history = db
+    .prepare(
+      `SELECT s.id AS session_id, s.date, s.title, s.kind, a.paid AS amount
+       FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE a.member_id = ? AND a.paid IS NOT NULL
+       ORDER BY s.date DESC, s.id DESC`
+    )
+    .all(memberId);
+  return { total: history.reduce((n, r) => n + r.amount, 0), count: history.length, history };
+}
+
+// حصيلة نشاط واحد. payers = من دفع، roster_total = كل من في اللائحة
+const sessionSubscriptions = (sessionId) =>
+  db
+    .prepare(
+      `SELECT COUNT(paid) AS payers, COALESCE(SUM(paid), 0) AS collected, COUNT(*) AS roster_total
+       FROM attendance WHERE session_id = ?`
+    )
+    .get(sessionId);
+
+// مبلغ اشتراك مقبول: رقم موجب، أو NULL حين يُلغى التسجيل («لم يدفع»).
+// undefined = مرفوض. النصّ يُقبل لأن الحقل في الواجهة نصّي.
+function parsePaid(v) {
+  if (v === null || v === '') return null;
+  if (typeof v !== 'number' && typeof v !== 'string') return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n;
 }
 
 // Visits are deliberately excluded: a زيارة الأهل is not an activity the عنصر
@@ -1838,9 +1885,11 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   // فرق العنصر عبر الزمن، الأحدث أولًا — للمشترك الواقع يوم الترقية نفسه:
   // فرقته الجديدة قد لا تكون من فرق النشاط، فيُنسب لآخر فرقة له فيه.
   const branchTimeline = [m.branch_id, ...periodsAsc.map((p) => p.old_branch_id).reverse()];
+  // المبالغ صلاحية قائمة بذاتها، كالهواتف: من لا يراها لا تصله أرقامها أصلًا
+  const canSeeFees = hasPerm(req, 'sessions.read.fees');
   const allRows = db
     .prepare(
-      `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id,
+      `SELECT a.status, a.paid, s.date, s.title, s.matalib, s.id AS session_id,
         (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS sb_ids
        FROM attendance a JOIN sessions s ON s.id = a.session_id
        WHERE a.member_id = ? AND s.kind = 'activity' AND a.status != 'unmarked' AND s.date <= ?
@@ -1856,7 +1905,7 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
           : ids.includes(at)
             ? at
             : (branchTimeline.find((b) => ids.includes(b)) ?? ids[0]);
-      return { status: r.status, date: r.date, title: r.title, session_id: r.session_id, matalib: JSON.parse(r.matalib || '[]'), attributed_branch: branch };
+      return { status: r.status, paid: canSeeFees ? r.paid : null, date: r.date, title: r.title, session_id: r.session_id, matalib: JSON.parse(r.matalib || '[]'), attributed_branch: branch };
     });
   const currentStats = statsFromRows(allRows.filter((r) => r.attributed_branch === m.branch_id));
   const earned = earnedNumbersInBranch(m.id, m.branch_id);
@@ -1878,6 +1927,9 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
       ...m,
       age: calcAge(m.birth_date),
       stats: { ...currentStats, requirements_earned: earned.length, earned_numbers: earned },
+      // الاشتراكات المدفوعة تراكميًّا منذ الانتساب — عبر الفرق كلها، فالترقية لا تصفّر
+      // مالًا دُفع. يجمعها البرنامج من خانات الأنشطة، لا يُدخَل المجموع يدويًا.
+      subscriptions: canSeeFees ? memberSubscriptions(m.id) : null,
       former_attendance,
       visits: familyVisits(m.id),
       // مطالب زيدت أو أُلغيت يدويًا — the UI marks them apart from the ones earned in أنشطة
@@ -3303,7 +3355,8 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     .prepare(
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
               COALESCE(a.branch_id, m.branch_id) AS branch_id,
-              a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status
+              a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status,
+              a.paid
        FROM attendance a JOIN members m ON m.id = a.member_id
        LEFT JOIN branch_groups g ON g.id = a.group_id
        WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) IN (${rosterList})
@@ -3335,31 +3388,33 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
            ORDER BY sl.role = 'helper', l.last_name, l.first_name`
     )
     .all(s.id);
-  res.json(
-    stripFee(req, {
-      ...s,
-      matalib: JSON.parse(s.matalib || '[]'),
-      roster,
-      animators,
-      branch_counts: branchCountsOf(s.id),
-      branch_ids: branchIds,
-      // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها
-      prep_cards: db
-        .prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id')
-        .all(s.id),
-      // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
-      my_branch_ids: myBranchIds,
-      // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
-      groups: db
-        .prepare(
-          `SELECT g.id, g.branch_id, g.name FROM session_groups sg
-           JOIN branch_groups g ON g.id = sg.group_id
-           WHERE sg.session_id = ? ORDER BY g.branch_id, g.sort_order, g.id`
-        )
-        .all(s.id),
-      group_ids: groupIdsOfSession(s.id),
-    })
-  );
+  // الأجرة و مبالغ الاشتراكات تسقط معًا عمّن لا يملك صلاحية رؤية المبالغ
+  const payload = stripFee(req, {
+    ...s,
+    matalib: JSON.parse(s.matalib || '[]'),
+    roster,
+    animators,
+    // حصيلة اشتراكات النشاط كاملًا — يحسبها البرنامج من الخانات، لا تُدخَل يدويًا
+    subscriptions: sessionSubscriptions(s.id),
+    branch_counts: branchCountsOf(s.id),
+    branch_ids: branchIds,
+    // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها
+    prep_cards: db
+      .prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id')
+      .all(s.id),
+    // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
+    my_branch_ids: myBranchIds,
+    // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
+    groups: db
+      .prepare(
+        `SELECT g.id, g.branch_id, g.name FROM session_groups sg
+         JOIN branch_groups g ON g.id = sg.group_id
+         WHERE sg.session_id = ? ORDER BY g.branch_id, g.sort_order, g.id`
+      )
+      .all(s.id),
+    group_ids: groupIdsOfSession(s.id),
+  });
+  res.json(stripRosterFees(req, payload));
 });
 
 // عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,
@@ -3414,22 +3469,37 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   // الحضور يُكتب فرقةً فرقة: قائد الفرقة (أو مساعده) يضع حضور عناصره وحدهم، فلا
   // يملأ شخص واحد حضور كل الفرق في نشاط مشترك. الأدمن غير مقيّد.
   const writable = new Set(myBranchesOfSession(req, s.id));
+  // المال صلاحية قائمة بذاتها: من لا يرى المبالغ لا يسجّل دفعًا
+  const canSeeFees = hasPerm(req, 'sessions.read.fees');
   const memberBranch = db.prepare('SELECT branch_id, group_id FROM members WHERE id = ?');
-  const upsert = db.prepare(
+  const upsertStatus = db.prepare(
     `INSERT INTO attendance (session_id, member_id, status) VALUES (?, ?, ?)
      ON CONFLICT(session_id, member_id) DO UPDATE SET status = excluded.status`
   );
+  // الاشتراك يُكتب وحده: العنصر قد يدفع قبل أن يُنقَّط حضوره، و تصحيح المبلغ بعدها
+  // لا يجوز أن يقلب حالته. NULL = لم يدفع.
+  const upsertPaid = db.prepare(
+    `INSERT INTO attendance (session_id, member_id, paid) VALUES (?, ?, ?)
+     ON CONFLICT(session_id, member_id) DO UPDATE SET paid = excluded.paid`
+  );
   const run = db.transaction(() => {
     for (const r of records) {
-      if (!r.member_id || !['present', 'absent', 'excused'].includes(r.status))
+      const withStatus = r.status !== undefined;
+      const withPaid = 'paid' in r;
+      if (!r.member_id || (!withStatus && !withPaid)) throw new Error('invalid record');
+      if (withStatus && !['present', 'absent', 'excused'].includes(r.status))
         throw new Error('invalid record');
+      const paid = withPaid ? parsePaid(r.paid) : undefined;
+      if (withPaid && paid === undefined) throw new Error('invalid paid');
+      if (withPaid && !canSeeFees) throw new Error('forbidden_fees');
       const m = memberBranch.get(r.member_id);
       if (!m) throw new Error('invalid record');
       if (!writable.has(m.branch_id)) throw new Error('forbidden_branch');
       // عنصر خارج مجموعات النشاط ليس في قائمته أصلًا — الزيارة مستثناة، فحضورها
       // هو أسماء من زيرَ بعينهم، لا قائمة فرقة تُفلتر.
       if (s.kind !== 'visit' && !memberInSessionGroups(s.id, m)) throw new Error('forbidden_group');
-      upsert.run(s.id, r.member_id, r.status);
+      if (withStatus) upsertStatus.run(s.id, r.member_id, r.status);
+      if (withPaid) upsertPaid.run(s.id, r.member_id, paid);
     }
   });
   try {
@@ -3437,11 +3507,12 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   } catch (e) {
     // فرقة أو مجموعة خارج نطاق النشاط: منعٌ لا خطأ في البيانات
     return res
-      .status(['forbidden_branch', 'forbidden_group'].includes(e.message) ? 403 : 400)
+      .status(['forbidden_branch', 'forbidden_group', 'forbidden_fees'].includes(e.message) ? 403 : 400)
       .json({ error: e.message });
   }
   notifyAdmins(req, 'attendance', s);
-  res.json({ ok: true });
+  // الحصيلة تعود مع كل حفظ: البرنامج يجمعها، فلا يجمعها القائد على ورقة
+  res.json({ ok: true, subscriptions: canSeeFees ? sessionSubscriptions(s.id) : null });
 });
 
 // ---------- بطاقات التحضير ----------
