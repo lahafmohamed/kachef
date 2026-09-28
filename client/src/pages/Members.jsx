@@ -66,7 +66,7 @@ const EMPTY_FORM = {
   status: 'active',
 };
 
-function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCancel }) {
+function MemberForm({ initial, originalBranchId = null, branches, lookups, onCreateLookup, onSave, onCancel }) {
   const { t, i18n } = useTranslation();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -78,6 +78,11 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
   // تخصّ فرقتها، و الخادم يرفض مجموعةً من غيرها.
   const branchGroups = branches.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
   const setBranch = (e) => setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '' }));
+
+  // تغيير فرقة عنصر مسجَّل يُحفظ في سجلّه، و الخادم يريد سببه: نقلٌ حقيقي (بتاريخه،
+  // فحضوره السابق يبقى لفرقته القديمة) أو تصحيحُ فرقةٍ سُجّلت خطأً.
+  const [branchChange, setBranchChange] = useState({ reason: '', date: todayISO() });
+  const branchChanged = originalBranchId !== null && String(form.branch_id) !== String(originalBranchId);
 
   async function handlePhoto(e) {
     const file = e.target.files[0];
@@ -96,6 +101,11 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
         branch_id: Number(form.branch_id),
         // المجموعة تخصّ فرقتها: تغيير الفرقة يُلغي المجموعة بدل أن يرسل واحدة يرفضها الخادم
         group_id: form.group_id === '' ? null : Number(form.group_id),
+        ...(branchChanged && {
+          branch_change_reason: branchChange.reason,
+          // Without a date the server dates the move today
+          branch_change_date: branchChange.reason === 'transfer' ? branchChange.date || undefined : undefined,
+        }),
       });
     } catch (err) {
       setError(err.message);
@@ -126,8 +136,6 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
           <Label htmlFor="birth_date">{t('member.birthDate')}</Label>
           <DatePicker
             id="birth_date"
-            required
-            clearable={false}
             toYear={new Date().getFullYear()}
             value={form.birth_date}
             onChange={set('birth_date')}
@@ -187,10 +195,8 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="blood_type">{t('member.bloodType')}</Label>
-          <Select id="blood_type" required value={form.blood_type || ''} onChange={set('blood_type')}>
-            <option value="" disabled>
-              {t('member.pickBloodType')}
-            </option>
+          <Select id="blood_type" value={form.blood_type || ''} onChange={set('blood_type')}>
+            <option value="">{t('member.noValue')}</option>
             {BLOOD_TYPES.map((bt) => (
               <option key={bt} value={bt}>
                 {bt}
@@ -215,6 +221,35 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
             ))}
           </Select>
         </div>
+        {branchChanged && (
+          <div className="space-y-1.5">
+            <Label htmlFor="branch_change_reason">{t('member.branchChangeReason')}</Label>
+            <Select
+              id="branch_change_reason"
+              required
+              value={branchChange.reason}
+              onChange={(e) => setBranchChange((c) => ({ ...c, reason: e.target.value }))}
+            >
+              <option value="" disabled>
+                {t('member.pickReason')}
+              </option>
+              <option value="transfer">{t('member.branchTransfer')}</option>
+              <option value="correction">{t('member.branchCorrection')}</option>
+            </Select>
+          </div>
+        )}
+        {branchChanged && branchChange.reason === 'transfer' && (
+          <div className="space-y-1.5">
+            <Label htmlFor="branch_change_date">{t('member.branchChangeDate')}</Label>
+            <DatePicker
+              id="branch_change_date"
+              clearable={false}
+              toYear={new Date().getFullYear()}
+              value={branchChange.date}
+              onChange={(e) => setBranchChange((c) => ({ ...c, date: e.target.value }))}
+            />
+          </div>
+        )}
         {/* المجموعة تظهر للفرق المقسَّمة وحدها: توزيع الفرقة كلها يُدار من صفحة الفرق،
             و هنا يُصحَّح توزيع عنصر واحد وهو يُسجَّل أو يُعدَّل. */}
         {branchGroups.length > 0 && (
@@ -267,8 +302,6 @@ function MemberForm({ initial, branches, lookups, onCreateLookup, onSave, onCanc
           <Label htmlFor="join_date">{t('member.joinDate')}</Label>
           <DatePicker
             id="join_date"
-            required
-            clearable={false}
             fromYear={2000}
             value={form.join_date}
             onChange={set('join_date')}
@@ -968,7 +1001,7 @@ export default function Members() {
                     last_name: editing.last_name,
                     father_name: editing.father_name || '',
                     mother_name: editing.mother_name || '',
-                    birth_date: editing.birth_date,
+                    birth_date: editing.birth_date || '',
                     birth_place: editing.birth_place || '',
                     address_abidjan: editing.address_abidjan || '',
                     address_lebanon: editing.address_lebanon || '',
@@ -980,11 +1013,12 @@ export default function Members() {
                     member_phone: editing.member_phone || '',
                     father_phone: editing.father_phone || '',
                     mother_phone: editing.mother_phone || '',
-                    join_date: editing.join_date,
+                    join_date: editing.join_date || '',
                     photo: editing.photo,
                     status: editing.status,
                   }
             }
+            originalBranchId={editing === 'new' ? null : editing.branch_id}
             branches={branchList}
             lookups={lookupLists}
             onCreateLookup={createLookup}

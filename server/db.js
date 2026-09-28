@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS branches (
   min_age INTEGER NOT NULL,
   max_age INTEGER,
   sort_order INTEGER NOT NULL,
-  total_requirements INTEGER NOT NULL DEFAULT 0
+  total_requirements INTEGER NOT NULL DEFAULT 0,
+  -- فرقة خاصة لكل الأعمار (الفرنكوفونية): خارج سلّم السنّ، لا ترفيع منها و لا إليها
+  all_ages INTEGER NOT NULL DEFAULT 0
 );
 
 -- مجموعات الفرقة: الفرقة الكبيرة تُقسَّم إلى مجموعات، لأن الحصّة الواحدة لا تسع
@@ -42,7 +44,7 @@ CREATE TABLE IF NOT EXISTS members (
   last_name TEXT NOT NULL,
   father_name TEXT,
   mother_name TEXT,
-  birth_date TEXT NOT NULL,
+  birth_date TEXT,
   birth_place TEXT,
   address_abidjan TEXT,
   address_lebanon TEXT,
@@ -52,7 +54,7 @@ CREATE TABLE IF NOT EXISTS members (
   member_phone TEXT,
   father_phone TEXT,
   mother_phone TEXT,
-  join_date TEXT NOT NULL,
+  join_date TEXT,
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   archived_at TEXT,
@@ -601,6 +603,30 @@ function migrateAnnualPlan() {
   db.pragma('foreign_keys = ON');
 }
 
+// تسجيل عنصر لا يطلب إلا الاسم و الشهرة: تاريخ الميلاد و تاريخ الانتساب كثيرًا ما
+// يُجهلان يوم يُحضَر الولد أول مرة. SQLite cannot relax NOT NULL in place, so the table
+// is rebuilt — from its own stored DDL, because ensureColumn appended columns over the
+// years and their order differs from the CREATE above: nothing is listed, nothing is lost.
+function migrateMemberOptionalDates() {
+  const cols = db.prepare('PRAGMA table_info(members)').all();
+  if (!cols.some((c) => (c.name === 'birth_date' || c.name === 'join_date') && c.notnull)) return;
+  const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'members'").get().sql;
+  const relaxed = ddl
+    .replace(/\b(birth_date|join_date)(\s+TEXT)\s+NOT\s+NULL/gi, '$1$2')
+    .replace(/^CREATE TABLE\s+("?)members\1\s*\(/i, 'CREATE TABLE members_new (');
+  if (!relaxed.startsWith('CREATE TABLE members_new (')) return;
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(relaxed);
+    db.exec(`
+      INSERT INTO members_new SELECT * FROM members;
+      DROP TABLE members;
+      ALTER TABLE members_new RENAME TO members;
+    `);
+  })();
+  db.pragma('foreign_keys = ON');
+}
+
 // القالب القديم ولّد خمسة توصيفات لكل فرقة (أساسي، متقدم و مساعده، أول و مساعده)
 // و الفوج لا يعرف إلا قائد الفرقة و مساعده. التصحيح: «الأساسي» يُعاد تسميته
 // «قائد الفرقة» (هو رأسها، و يحتفظ بمن عُيّن فيه)، و الفارغ من البقية يُحذف،
@@ -671,6 +697,7 @@ function migrateAmanaHelpers() {
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('branches', 'all_ages', 'all_ages INTEGER NOT NULL DEFAULT 0');
   // Idle-timeout bookkeeping. ALTER TABLE cannot take datetime('now') as a default,
   // so the column lands nullable and old rows inherit their creation time.
   ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
@@ -740,8 +767,7 @@ function migrate() {
   ensureColumn('members', 'member_phone', 'member_phone TEXT');
   // المدرسة: added for the school filter, nullable so old rows stay valid
   ensureColumn('members', 'school', 'school TEXT');
-  // فصيلة الدم: required on the form from now on, but nullable in SQL — the rows
-  // registered before it existed stay valid until someone next edits them
+  // فصيلة الدم: optional like every field but the name, so nullable in SQL
   ensureColumn('members', 'blood_type', 'blood_type TEXT');
   // مجموعة العنصر داخل فرقته. NULL = لم يُوزَّع بعد، و هو حال كل العناصر قبل هذه
   // الميزة. الحذف يُفرَّغ يدويًا قبل DELETE: عمود مُضاف بـ ALTER لا يُعتمد عليه في
@@ -749,6 +775,8 @@ function migrate() {
   ensureColumn('members', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
   ensureColumn('members', 'archived_at', 'archived_at TEXT');
   ensureColumn('members', 'archived_by', 'archived_by TEXT');
+  // After every members column exists, before the members indexes are (re)created below
+  migrateMemberOptionalDates();
   // ربط بطاقة التحضير بنشاطها — added after the table's first release
   ensureColumn(
     'prep_cards',

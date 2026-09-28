@@ -141,10 +141,15 @@ export default function MemberDetail() {
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <Badge>{branchName(member, i18n.language)}</Badge>
                   {member.group_name && <Badge variant="outline">{member.group_name}</Badge>}
-                  <span className="tabular-nums">
-                    {member.age} {t('common.years')}
+                  {member.age != null && (
+                    <span className="tabular-nums">
+                      {member.age} {t('common.years')}
+                    </span>
+                  )}
+                  <span>
+                    {member.age != null && '· '}
+                    {t(member.sex === 'M' ? 'member.male' : 'member.female')}
                   </span>
-                  <span>· {t(member.sex === 'M' ? 'member.male' : 'member.female')}</span>
                   <Badge variant={member.status === 'active' ? 'success' : 'secondary'}>
                     {t(member.status === 'active' ? 'member.active' : 'member.inactive')}
                   </Badge>
@@ -152,14 +157,18 @@ export default function MemberDetail() {
               </div>
 
               <dl className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-                <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.birthDate')}>
-                  <span className="tabular-nums">
-                    {fmtDate(member.birth_date)} · {member.age} {t('common.years')}
-                  </span>
-                </Row>
-                <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.joinDate')}>
-                  <span className="tabular-nums">{fmtDate(member.join_date)}</span>
-                </Row>
+                {member.birth_date && (
+                  <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.birthDate')}>
+                    <span className="tabular-nums">
+                      {fmtDate(member.birth_date)} · {member.age} {t('common.years')}
+                    </span>
+                  </Row>
+                )}
+                {member.join_date && (
+                  <Row icon={<IconCalendar className="h-3.5 w-3.5" />} label={t('member.joinDate')}>
+                    <span className="tabular-nums">{fmtDate(member.join_date)}</span>
+                  </Row>
+                )}
                 {member.birth_place && (
                   <Row icon={<IconPin className="h-3.5 w-3.5" />} label={t('member.birthPlace')}>
                     {member.birth_place}

@@ -1,15 +1,14 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
+import NewBranchDialog, { AllAgesToggle } from '../components/NewBranchDialog';
 import {
+  cn,
   Badge,
   Button,
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
-  Dialog,
   EmptyState,
   ErrorState,
   Input,
@@ -19,6 +18,7 @@ import {
   useConfirm,
   useTheme,
   useToast,
+  IconChevronDown,
   IconLanguages,
   IconMoon,
   IconPencil,
@@ -28,7 +28,66 @@ import {
   IconTrash,
 } from '../components/ui';
 
-const EMPTY_BRANCH = { name_fr: '', name_ar: '', min_age: '', max_age: '', total_requirements: '' };
+/**
+ * A settings card that folds down to its title. Every section starts closed, so
+ * the page opens as a short list of what can be configured instead of a wall of
+ * forms. The body stays mounted while folded — its data loads once and a
+ * half-typed value survives — and `inert` keeps it out of the tab order and
+ * away from screen readers until it is opened again.
+ */
+function SettingsSection({ title, badge, open: openProp, onOpenChange, children }) {
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = onOpenChange ?? setOpenState;
+  const bodyId = useId();
+
+  return (
+    <Card className="max-w-3xl">
+      <h2>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen(!open)}
+          className={cn(
+            'focus-ring group flex w-full cursor-pointer items-center gap-3 rounded-2xl p-4 text-start transition-colors sm:p-5',
+            // Folded, the whole card is the target; open, a tint would butt
+            // straight into the first row of the body, so only the chevron reacts.
+            open ? 'rounded-b-none' : 'hover:bg-accent/50'
+          )}
+        >
+          {/* Wraps so a badge drops under the title on a phone instead of
+              squeezing it to one word per line */}
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5">
+            <span className="text-base font-semibold leading-tight tracking-tight">{title}</span>
+            {badge}
+          </span>
+          <IconChevronDown
+            className={cn(
+              'text-muted-foreground transition-[color,rotate] duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-hover:text-foreground',
+              open && 'rotate-180'
+            )}
+          />
+        </button>
+      </h2>
+      {/* 0fr → 1fr folds to the body's real height without measuring it.
+          Clipped with overflow: clip where supported — hidden would turn this
+          wrapper into a scroll container and trap the branches' sticky Save
+          bar inside it. Safari < 16 falls back to hidden. */}
+      <div
+        id={bodyId}
+        className={cn(
+          'grid transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+          open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        )}
+      >
+        <div inert={!open} className="min-h-0 overflow-hidden supports-[overflow:clip]:overflow-clip">
+          {children}
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 /**
  * لائحة مطالب فرقة القادة — the one followed on بطاقة تقدم القائد, year after year.
@@ -75,12 +134,9 @@ function LeaderMatalibCard() {
   }
 
   return (
-    <Card className="max-w-3xl">
-      <CardHeader>
-        <CardTitle>{t('settings.leaderMatalib')}</CardTitle>
-        <p className="text-sm text-muted-foreground">{t('settings.leaderMatalibHint')}</p>
-      </CardHeader>
+    <SettingsSection title={t('settings.leaderMatalib')}>
       <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">{t('settings.leaderMatalibHint')}</p>
         {error ? (
           <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
         ) : loading ? (
@@ -135,7 +191,7 @@ function LeaderMatalibCard() {
           </Button>
         </form>
       </CardContent>
-    </Card>
+    </SettingsSection>
   );
 }
 
@@ -206,12 +262,9 @@ function LookupListsCard() {
   }
 
   return (
-    <Card className="max-w-3xl">
-      <CardHeader>
-        <CardTitle>{t('settings.lookups')}</CardTitle>
-        <p className="text-sm text-muted-foreground">{t('settings.lookupsHint')}</p>
-      </CardHeader>
+    <SettingsSection title={t('settings.lookups')}>
       <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">{t('settings.lookupsHint')}</p>
         <div className="flex flex-wrap gap-2">
           {LOOKUP_KINDS.map((k) => (
             <Button
@@ -314,7 +367,7 @@ function LookupListsCard() {
           </Button>
         </form>
       </CardContent>
-    </Card>
+    </SettingsSection>
   );
 }
 
@@ -329,10 +382,9 @@ export default function Settings() {
 
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Held here, not in the section: creating a branch opens it on the new one.
+  const [branchesOpen, setBranchesOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [newBranch, setNewBranch] = useState(EMPTY_BRANCH);
-  const [createError, setCreateError] = useState(null);
-  const [createSaving, setCreateSaving] = useState(false);
 
   function setField(id, field, value) {
     setDirty(true);
@@ -349,6 +401,7 @@ export default function Settings() {
           min_age: Number(b.min_age),
           max_age: b.max_age === '' || b.max_age === null ? null : Number(b.max_age),
           total_requirements: Number(b.total_requirements) || 0,
+          all_ages: !!b.all_ages,
         });
       }
       setDirty(false);
@@ -361,27 +414,10 @@ export default function Settings() {
     }
   }
 
-  async function createBranch(e) {
-    e.preventDefault();
-    setCreateError(null);
-    setCreateSaving(true);
-    try {
-      await api.post('/branches', {
-        name_fr: newBranch.name_fr,
-        name_ar: newBranch.name_ar,
-        min_age: Number(newBranch.min_age),
-        max_age: newBranch.max_age === '' ? null : Number(newBranch.max_age),
-        total_requirements: Number(newBranch.total_requirements) || 0,
-      });
-      setCreating(false);
-      setNewBranch(EMPTY_BRANCH);
-      reload({ quiet: true });
-      toast.success(t('settings.branchCreated'));
-    } catch (err) {
-      setCreateError(err.message);
-    } finally {
-      setCreateSaving(false);
-    }
+  function branchCreated() {
+    setCreating(false);
+    setBranchesOpen(true);
+    reload({ quiet: true });
   }
 
   async function removeBranch(b) {
@@ -402,8 +438,6 @@ export default function Settings() {
     }
   }
 
-  const setNew = (field) => (e) => setNewBranch((f) => ({ ...f, [field]: e.target.value }));
-
   return (
     <div className="space-y-4">
       <PageHeader title={t('settings.title')} description={t('settings.subtitle')}>
@@ -414,10 +448,7 @@ export default function Settings() {
       </PageHeader>
 
       {/* ---------- Appearance & language ---------- */}
-      <Card className="max-w-3xl">
-        <CardHeader>
-          <CardTitle>{t('settings.appearance')}</CardTitle>
-        </CardHeader>
+      <SettingsSection title={t('settings.appearance')}>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -479,15 +510,18 @@ export default function Settings() {
             </div>
           </div>
         </CardContent>
-      </Card>
+      </SettingsSection>
 
       {/* ---------- Branches ---------- */}
-      <Card className="max-w-3xl">
-        <CardHeader>
-          <CardTitle>{t('settings.ageRanges')}</CardTitle>
-          <p className="text-sm text-muted-foreground">{t('settings.noLimit')}</p>
-        </CardHeader>
+      <SettingsSection
+        title={t('settings.ageRanges')}
+        open={branchesOpen}
+        onOpenChange={setBranchesOpen}
+        // Folding the section must not hide that there is something to save
+        badge={dirty && !saving && <Badge variant="warning">{t('settings.unsaved')}</Badge>}
+      >
         <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">{t('settings.noLimit')}</p>
           {error ? (
             <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
           ) : loading ? (
@@ -545,29 +579,37 @@ export default function Settings() {
                     />
                   </div>
                 </div>
+                <AllAgesToggle
+                  checked={!!b.all_ages}
+                  onChange={(v) => setField(b.id, 'all_ages', v ? 1 : 0)}
+                />
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`min-${b.id}`}>{t('settings.minAge')}</Label>
-                    <Input
-                      id={`min-${b.id}`}
-                      type="number"
-                      inputMode="numeric"
-                      min="0"
-                      value={b.min_age}
-                      onChange={(e) => setField(b.id, 'min_age', e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`max-${b.id}`}>{t('settings.maxAge')}</Label>
-                    <Input
-                      id={`max-${b.id}`}
-                      type="number"
-                      inputMode="numeric"
-                      min="0"
-                      value={b.max_age ?? ''}
-                      onChange={(e) => setField(b.id, 'max_age', e.target.value)}
-                    />
-                  </div>
+                  {!b.all_ages && (
+                    <>
+                      <div className="space-y-1.5">
+                        <Label htmlFor={`min-${b.id}`}>{t('settings.minAge')}</Label>
+                        <Input
+                          id={`min-${b.id}`}
+                          type="number"
+                          inputMode="numeric"
+                          min="0"
+                          value={b.min_age}
+                          onChange={(e) => setField(b.id, 'min_age', e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor={`max-${b.id}`}>{t('settings.maxAge')}</Label>
+                        <Input
+                          id={`max-${b.id}`}
+                          type="number"
+                          inputMode="numeric"
+                          min="0"
+                          value={b.max_age ?? ''}
+                          onChange={(e) => setField(b.id, 'max_age', e.target.value)}
+                        />
+                      </div>
+                    </>
+                  )}
                   <div className="space-y-1.5">
                     <Label htmlFor={`reqs-${b.id}`}>{t('settings.totalRequirements')}</Label>
                     <Input
@@ -601,7 +643,7 @@ export default function Settings() {
             </>
           )}
         </CardContent>
-      </Card>
+      </SettingsSection>
 
       {/* ---------- لوائح مكان السكن والمدارس ---------- */}
       <LookupListsCard />
@@ -609,70 +651,7 @@ export default function Settings() {
       {/* ---------- مطالب القادة (بطاقة تقدم القائد) ---------- */}
       <LeaderMatalibCard />
 
-      <Dialog open={creating} onClose={() => setCreating(false)} title={t('settings.newBranch')}>
-        <form onSubmit={createBranch} className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="nb_fr">{t('settings.nameFr')}</Label>
-              <Input id="nb_fr" dir="ltr" required value={newBranch.name_fr} onChange={setNew('name_fr')} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="nb_ar">{t('settings.nameAr')}</Label>
-              <Input id="nb_ar" dir="rtl" required value={newBranch.name_ar} onChange={setNew('name_ar')} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="nb_min">{t('settings.minAge')}</Label>
-              <Input
-                id="nb_min"
-                type="number"
-                inputMode="numeric"
-                min="0"
-                required
-                value={newBranch.min_age}
-                onChange={setNew('min_age')}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="nb_max">{t('settings.maxAge')}</Label>
-              <Input
-                id="nb_max"
-                type="number"
-                inputMode="numeric"
-                min="0"
-                value={newBranch.max_age}
-                onChange={setNew('max_age')}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="nb_reqs">{t('settings.totalRequirements')}</Label>
-              <Input
-                id="nb_reqs"
-                type="number"
-                inputMode="numeric"
-                min="0"
-                required
-                value={newBranch.total_requirements}
-                onChange={setNew('total_requirements')}
-              />
-            </div>
-          </div>
-          {createError && (
-            <p role="alert" className="text-sm font-medium text-destructive">
-              {createError}
-            </p>
-          )}
-          <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" onClick={() => setCreating(false)}>
-              {t('common.cancel')}
-            </Button>
-            <Button type="submit" loading={createSaving}>
-              {t('common.save')}
-            </Button>
-          </div>
-        </form>
-      </Dialog>
+      <NewBranchDialog open={creating} onClose={() => setCreating(false)} onCreated={branchCreated} />
     </div>
   );
 }

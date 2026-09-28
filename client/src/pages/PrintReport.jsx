@@ -590,7 +590,8 @@ function MemberReport({ id, onReady, kindLabel }) {
             {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
           </Tag>
           <Tag tone="neutral">
-            {m.age} {t('common.years')} · {t(m.sex === 'M' ? 'member.male' : 'member.female')}
+            {m.age != null && `${m.age} ${t('common.years')} · `}
+            {t(m.sex === 'M' ? 'member.male' : 'member.female')}
           </Tag>
         </Tags>
       </PersonHeader>
@@ -1022,7 +1023,11 @@ function BranchReport({ id, onReady, kindLabel }) {
   const active = members.filter((m) => m.status === 'active');
   const inactive = members.filter((m) => m.status !== 'active');
   const leaders = (b.leaders || []).filter((l) => l.leader_id);
-  const ages = b.max_age ? `${b.min_age}–${b.max_age} ${t('branch.years')}` : `${b.min_age}+`;
+  const ages = b.all_ages
+    ? t('branch.allAges')
+    : b.max_age
+      ? `${b.min_age}–${b.max_age} ${t('branch.years')}`
+      : `${b.min_age}+`;
   const activities = sessions.filter((s) => s.kind !== 'visit');
   const visits = sessions.filter((s) => s.kind === 'visit');
 
@@ -1116,10 +1121,10 @@ function BranchReport({ id, onReady, kindLabel }) {
                   <tr key={m.id}>
                     <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
                     <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
-                    <td className={tdNum}>{m.age}</td>
+                    <td className={tdNum}>{m.age ?? '—'}</td>
                     <td className={td}>{t(m.sex === 'M' ? 'member.male' : 'member.female')}</td>
                     <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
-                    <td className={cn(tdNum, 'text-muted-foreground')}>{fmtDate(m.join_date)}</td>
+                    <td className={cn(tdNum, 'text-muted-foreground')}>{fmtDate(m.join_date) || '—'}</td>
                     <td className={cn(tdNum, 'text-end')}>
                       {st.present}/{marked}
                     </td>

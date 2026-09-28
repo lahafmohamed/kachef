@@ -768,6 +768,8 @@ app.delete('/api/users/:id', requireAdmin, (req, res) => {
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function calcAge(birthDate, ref = new Date()) {
+  // تاريخ الميلاد اختياري: بلا تاريخ لا سنّ، لا رقمٌ مختلق
+  if (!birthDate) return null;
   const b = new Date(birthDate + 'T00:00:00');
   let age = ref.getFullYear() - b.getFullYear();
   const m = ref.getMonth() - b.getMonth();
@@ -788,7 +790,9 @@ function targetBranchFor(age, branches) {
 }
 
 function pendingPromotions() {
-  const branches = getBranches();
+  // فرقة كل الأعمار خارج سلّم السنّ: عناصرها يبقون فيها، و لا يُرقّى إليها أحد.
+  // عنصرٌ فيها يسقط أدناه عند !cur.
+  const branches = getBranches().filter((b) => !b.all_ages);
   const byId = Object.fromEntries(branches.map((b) => [b.id, b]));
   // موقع كل فرقة في الفوج — الترقية تصعد فقط، و المقارنة بالموقع لا بالسنّ
   const rank = new Map(branches.map((b, i) => [b.id, i]));
@@ -798,6 +802,8 @@ function pendingPromotions() {
     const cur = byId[m.branch_id];
     if (!cur || cur.max_age === null) continue;
     const age = calcAge(m.birth_date);
+    // بلا تاريخ ميلاد لا يُعرف السنّ، فلا تُقترح ترفيعة: الفرقة تُغيَّر يدويًا من ملفّه
+    if (age === null) continue;
     // حدود الفرق متقاطعة قصدًا (الكشافة ١٢–١٤، الجوالة ١٤–١٨): ابن الأربعة عشر
     // بلغ أدنى سنّ الجوالة و هو بعدُ في سنّ الكشافة. فالترقية تُقترح ببلوغ الفرقة
     // الأعلى لا بتجاوز أقصى سنّ فرقته — و إلا ظلّ المتقاطعون بلا ترقية أبدًا.
@@ -1384,11 +1390,18 @@ app.put('/api/branches/:id/plan/month', requirePerm('branches.plan'), (req, res)
   res.json(planFor(branch.id, year));
 });
 
+// فرق كل الأعمار تأتي بعد سلّم السنّ في كل القوائم — و إلا صارت أول فرقة، أي
+// الفرقة التي يُقترح عليها كل عنصر جديد
+const ALL_AGES_SORT_ORDER = 1000;
+
 function validateBranchBody(body, { requireNames }) {
-  const { min_age, max_age, total_requirements, name_fr, name_ar } = body;
-  if (!Number.isInteger(min_age) || min_age < 0) return 'invalid min_age';
-  if (max_age !== null && max_age !== undefined && (!Number.isInteger(max_age) || max_age < min_age))
-    return 'invalid max_age';
+  const { min_age, max_age, total_requirements, name_fr, name_ar, all_ages } = body;
+  // فرقة كل الأعمار لا حدود سنّ لها: تُخزَّن 0 / NULL و لا تُفحص
+  if (!all_ages) {
+    if (!Number.isInteger(min_age) || min_age < 0) return 'invalid min_age';
+    if (max_age !== null && max_age !== undefined && (!Number.isInteger(max_age) || max_age < min_age))
+      return 'invalid max_age';
+  }
   if (!Number.isInteger(total_requirements) || total_requirements < 0)
     return 'invalid total_requirements';
   if (requireNames || name_fr !== undefined) {
@@ -1535,34 +1548,47 @@ app.post('/api/branches', requireAdmin, (req, res) => {
   const err = validateBranchBody(req.body, { requireNames: true });
   if (err) return res.status(400).json({ error: err });
   const { name_fr, name_ar, min_age, max_age, total_requirements } = req.body;
+  const allAges = !!req.body.all_ages;
   // sort_order mirrors min_age so branches always list in age order
   const info = db
     .prepare(
-      'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(name_fr.trim(), name_ar.trim(), min_age, max_age ?? null, min_age, total_requirements);
+    .run(
+      name_fr.trim(),
+      name_ar.trim(),
+      allAges ? 0 : min_age,
+      allAges ? null : (max_age ?? null),
+      allAges ? ALL_AGES_SORT_ORDER : min_age,
+      total_requirements,
+      allAges ? 1 : 0
+    );
   res.status(201).json(db.prepare('SELECT * FROM branches WHERE id = ?').get(info.lastInsertRowid));
 });
 
 app.put('/api/branches/:id', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT * FROM branches WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'branch not found' });
-  const err = validateBranchBody(req.body, { requireNames: false });
+  // Absent = unchanged, like the names: a request that does not mention it must not flip it
+  const allAges = req.body.all_ages !== undefined ? !!req.body.all_ages : !!existing.all_ages;
+  const err = validateBranchBody({ ...req.body, all_ages: allAges }, { requireNames: false });
   if (err) return res.status(400).json({ error: err });
   const { min_age, max_age, total_requirements, name_fr, name_ar } = req.body;
   const usedMax = maxRequirementUsed(existing.id);
   if (total_requirements < usedMax)
     return res.status(409).json({ error: 'requirements_in_use', minimum: usedMax });
   db.prepare(
-    `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?
+    `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?,
+       all_ages = ?
      WHERE id = ?`
   ).run(
     name_fr !== undefined ? name_fr.trim() : existing.name_fr,
     name_ar !== undefined ? name_ar.trim() : existing.name_ar,
-    min_age,
-    max_age ?? null,
-    min_age,
+    allAges ? 0 : min_age,
+    allAges ? null : (max_age ?? null),
+    allAges ? ALL_AGES_SORT_ORDER : min_age,
     total_requirements,
+    allAges ? 1 : 0,
     req.params.id
   );
   res.json(db.prepare('SELECT * FROM branches WHERE id = ?').get(req.params.id));
@@ -1672,7 +1698,9 @@ app.delete('/api/lookups/:id', requireAdmin, (req, res) => {
 
 // ---------- Members ----------
 
-const MEMBER_FIELDS = ['first_name', 'last_name', 'birth_date', 'sex', 'branch_id', 'join_date', 'blood_type'];
+// Only the name is typed by force. sex and branch_id always arrive — the form preselects
+// them — and stay required because the table's CHECK / foreign key need them.
+const MEMBER_FIELDS = ['first_name', 'last_name', 'sex', 'branch_id'];
 
 // فصيلة الدم — a closed list: a group outing needs it readable at a glance, and a
 // free-text field would fill up with "O positif", "o+", "O +" for the same thing.
@@ -1700,12 +1728,13 @@ function validateMember(body) {
   for (const f of MEMBER_FIELDS) {
     if (body[f] === undefined || body[f] === null || body[f] === '') return `missing field: ${f}`;
   }
-  if (!BLOOD_TYPES.includes(body.blood_type)) return 'invalid blood_type';
+  if (body.blood_type && !BLOOD_TYPES.includes(body.blood_type)) return 'invalid blood_type';
   if (!['M', 'F'].includes(body.sex)) return 'invalid sex';
   if (!['active', 'inactive'].includes(body.status || 'active')) return 'invalid status';
   if (!String(body.first_name).trim() || !String(body.last_name).trim()) return 'invalid name';
-  if (!validISODate(body.birth_date) || !validISODate(body.join_date)) return 'invalid date';
-  if (body.birth_date > todayISO()) return 'invalid birth_date';
+  if (body.join_date && !validISODate(body.join_date)) return 'invalid date';
+  if (body.birth_date && (!validISODate(body.birth_date) || body.birth_date > todayISO()))
+    return 'invalid birth_date';
   if (![body.member_phone, body.father_phone, body.mother_phone].every(validPhone)) return 'invalid phone';
   if (!validPhoto(body.photo)) return 'invalid photo';
   if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(body.branch_id)) return 'invalid branch_id';
@@ -1716,8 +1745,9 @@ function validateMember(body) {
 // the oldest عنصر is the one born first.
 const MEMBER_SORTS = {
   name: 'm.last_name, m.first_name',
-  age_desc: 'm.birth_date ASC, m.last_name',
-  age_asc: 'm.birth_date DESC, m.last_name',
+  // بلا تاريخ ميلاد = سنّ مجهول: آخر القائمة في الاتجاهين، لا «الأكبر» لأن NULL يسبق
+  age_desc: 'm.birth_date IS NULL, m.birth_date ASC, m.last_name',
+  age_asc: 'm.birth_date IS NULL, m.birth_date DESC, m.last_name',
   school: "COALESCE(NULLIF(m.school, ''), 'zzz'), m.last_name, m.first_name",
   residence: "COALESCE(NULLIF(m.address_abidjan, ''), 'zzz'), m.last_name, m.first_name",
 };
@@ -1944,14 +1974,16 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   if (err) return res.status(400).json({ error: err });
   if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
   const b = req.body;
+  // IS, not =: two entries with the same name and no birth date are the same عنصر
+  // registered twice — the date is what tells real homonyms apart
   const duplicate = db
     .prepare(
       `SELECT id FROM members
        WHERE lower(trim(first_name)) = lower(trim(?))
-         AND lower(trim(last_name)) = lower(trim(?)) AND birth_date = ?
+         AND lower(trim(last_name)) = lower(trim(?)) AND birth_date IS ?
        LIMIT 1`
     )
-    .get(b.first_name, b.last_name, b.birth_date);
+    .get(b.first_name, b.last_name, b.birth_date || null);
   if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
@@ -1964,9 +1996,9 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
     )
     .run(
       String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
-      b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-      b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
-      b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null, b.status || 'active'
+      b.birth_date || null, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
+      b.school || null, b.blood_type || null, b.sex, b.branch_id, groupId, b.member_phone || null,
+      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null, b.status || 'active'
     );
   const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'member', created.id, null, created);
@@ -2004,9 +2036,9 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
        WHERE id = ?`
     ).run(
       String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
-      b.birth_date, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
-      b.school || null, b.blood_type, b.sex, b.branch_id, groupId, b.member_phone || null,
-      b.father_phone || null, b.mother_phone || null, b.join_date, b.photo || null,
+      b.birth_date || null, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
+      b.school || null, b.blood_type || null, b.sex, b.branch_id, groupId, b.member_phone || null,
+      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null,
       b.status || 'active', b.status || 'active', b.status || 'active', req.params.id
     );
     if (branchChanged)

@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { usePerms } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
 import { toDate, toISO } from '../lib/date';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
+import NewBranchDialog from '../components/NewBranchDialog';
 import {
   Avatar,
   Badge,
@@ -1048,24 +1049,54 @@ export default function Branches() {
   const { t, i18n } = useTranslation();
   const res = useFetch('/branches/overview');
   const [selectedId, setSelectedId] = useLocalStorage('branches.selected', null);
+  // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const [creating, setCreating] = useState(false);
 
   if (res.loading) return <SkeletonPage />;
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
+  const newBranchButton = isAdmin && (
+    <Button variant="brand" onClick={() => setCreating(true)}>
+      <IconPlus />
+      {t('settings.newBranch')}
+    </Button>
+  );
+  const newBranchDialog = isAdmin && (
+    <NewBranchDialog
+      open={creating}
+      onClose={() => setCreating(false)}
+      onCreated={(created) => {
+        setCreating(false);
+        // Opens on the new فرقة: it is the one about to be set up
+        setSelectedId(created.id);
+        res.reload({ quiet: true });
+      }}
+    />
+  );
+
   const branches = res.data || [];
   if (branches.length === 0)
     return (
       <div className="space-y-6">
-        <PageHeader title={t('branch.pageTitle')} description={t('branch.pageSubtitle')} />
+        <PageHeader title={t('branch.pageTitle')} description={t('branch.pageSubtitle')}>
+          {newBranchButton}
+        </PageHeader>
         <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('dashboard.noBranches')} />
+        {newBranchDialog}
       </div>
     );
 
   // One فرقة at a time. A stale saved id (فرقة deleted) falls back to the first one.
   const b = branches.find((x) => x.id === selectedId) || branches[0];
   const name = branchName(b, i18n.language);
-  const ages = b.max_age ? `${b.min_age}–${b.max_age} ${t('branch.years')}` : `${b.min_age}+`;
+  const ages = b.all_ages
+    ? t('branch.allAges')
+    : b.max_age
+      ? `${b.min_age}–${b.max_age} ${t('branch.years')}`
+      : `${b.min_age}+`;
   const matalibPct = b.matalib.total
     ? Math.round((b.matalib.covered_count / b.matalib.total) * 100)
     : 0;
@@ -1074,7 +1105,9 @@ export default function Branches() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t('branch.pageTitle')} description={t('branch.pageSubtitle')} />
+      <PageHeader title={t('branch.pageTitle')} description={t('branch.pageSubtitle')}>
+        {newBranchButton}
+      </PageHeader>
 
       <div className="flex flex-wrap items-center gap-2">
         {/* Chips on a wide screen, a plain select on a phone — same state either way */}
@@ -1218,6 +1251,8 @@ export default function Branches() {
           <BranchSessions key={b.id} branchId={b.id} />
         </CardContent>
       </Card>
+
+      {newBranchDialog}
     </div>
   );
 }
