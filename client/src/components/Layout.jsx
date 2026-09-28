@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { branchName } from '../utils';
 import { ChangePasswordDialog } from '../pages/ChangePassword';
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import {
   cn,
   Button,
@@ -14,6 +15,7 @@ import {
   useTheme,
   IconAward,
   IconBell,
+  IconChevronDown,
   IconHome,
   IconInbox,
   IconUsers,
@@ -29,6 +31,7 @@ import {
   IconShield,
   IconSun,
   IconMoon,
+  IconSwap,
 } from './ui';
 
 const NAV_ITEMS = [
@@ -190,39 +193,36 @@ function BottomNav() {
   );
 }
 
-function LangToggle({ compact }) {
+/* Icon-only toggles for the mobile bar; the sidebar has them in AccountMenu. */
+function LangToggle() {
   const { i18n, t } = useTranslation();
   const isAr = i18n.language === 'ar';
   return (
     <Button
       variant="outline"
-      size={compact ? 'icon' : 'sm'}
+      size="icon"
       onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}
       aria-label={t('nav.switchLang')}
       title={t('nav.switchLang')}
-      className={compact ? '' : 'w-full gap-2'}
     >
       <IconLanguages />
-      {!compact && (isAr ? 'Français' : 'العربية')}
     </Button>
   );
 }
 
-function ThemeToggle({ compact }) {
+function ThemeToggle() {
   const { theme, toggle } = useTheme();
   const { t } = useTranslation();
   const dark = theme === 'dark';
   return (
     <Button
       variant="outline"
-      size={compact ? 'icon' : 'sm'}
+      size="icon"
       onClick={toggle}
       aria-label={t(dark ? 'nav.lightMode' : 'nav.darkMode')}
       title={t(dark ? 'nav.lightMode' : 'nav.darkMode')}
-      className={compact ? '' : 'w-full gap-2'}
     >
-      {dark ? <IconSun /> : <IconMoon />}
-      {!compact && t(dark ? 'nav.lightMode' : 'nav.darkMode')}
+      <IconSwap on={dark} onIcon={<IconSun />} offIcon={<IconMoon />} />
     </Button>
   );
 }
@@ -243,7 +243,7 @@ function fmtNotifTime(createdAt, lng) {
  * Polls the unread count once a minute; opening the panel marks everything seen.
  * Rendered only for admins — the server refuses everyone else anyway.
  */
-function NotificationsBell({ compact }) {
+function NotificationsBell({ variant = 'outline' }) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
@@ -297,20 +297,10 @@ function NotificationsBell({ compact }) {
 
   return (
     <>
-      {compact ? (
-        <Button variant="outline" size="icon" onClick={openPanel} aria-label={label} title={label} className="relative">
-          <IconBell />
-          {badge}
-        </Button>
-      ) : (
-        <Button variant="outline" size="sm" onClick={openPanel} className="w-full gap-2">
-          <span className="relative inline-flex">
-            <IconBell />
-            {badge}
-          </span>
-          {t('notif.title')}
-        </Button>
-      )}
+      <Button variant={variant} size="icon" onClick={openPanel} aria-label={label} title={label} className="relative">
+        <IconBell />
+        {badge}
+      </Button>
 
       <Dialog open={open} onClose={() => setOpen(false)} title={t('notif.title')}>
         {items === null ? (
@@ -385,53 +375,135 @@ function Brand({ className }) {
   );
 }
 
-/** Who is signed in + the way out. Compact icon-only variant for the mobile bar. */
-function UserMenu({ compact }) {
+/** Password + the way out, icon-only, for the mobile bar. */
+function UserMenu() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
   const [changing, setChanging] = useState(false);
   if (!user) return null;
-  if (compact)
-    return (
-      <>
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={() => setChanging(true)}
-          aria-label={t('auth.changePassword')}
-          title={t('auth.changePassword')}
-        >
-          <IconKey />
-        </Button>
-        <Button variant="outline" size="icon" onClick={logout} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
-          <IconLogout />
-        </Button>
-        <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
-      </>
-    );
   return (
-    <div className="space-y-2">
-      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
-      <div className="flex items-center gap-2 px-1 text-sm">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground">
-          {(user.display_name || user.username).slice(0, 2).toUpperCase()}
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate font-medium">{user.display_name || user.username}</span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {t(user.role === 'admin' ? 'admin.roleAdmin' : 'admin.roleUser')}
-          </span>
-        </span>
-      </div>
-      <Button variant="outline" size="sm" onClick={() => setChanging(true)} className="w-full gap-2">
+    <>
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={() => setChanging(true)}
+        aria-label={t('auth.changePassword')}
+        title={t('auth.changePassword')}
+      >
         <IconKey />
-        {t('auth.changePassword')}
       </Button>
-      <Button variant="outline" size="sm" onClick={logout} className="w-full gap-2">
+      <Button variant="outline" size="icon" onClick={logout} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
         <IconLogout />
-        {t('auth.signOut')}
       </Button>
-    </div>
+      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
+    </>
+  );
+}
+
+function MenuItem({ icon, children, ...props }) {
+  return (
+    <button
+      type="button"
+      className="focus-ring flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-start text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+      {...props}
+    >
+      {icon}
+      <span className="truncate">{children}</span>
+    </button>
+  );
+}
+
+/**
+ * Sidebar footer: a single row saying who is signed in, with whatever is passed
+ * as children (the bell) beside it. Password, language, theme and sign-out open
+ * from that row in a popover instead of stacking up as full-width buttons, so
+ * the nav above keeps the height. The bell stays outside on purpose — an unread
+ * count hidden behind a click is a count nobody sees.
+ */
+function AccountMenu({ children }) {
+  const { t, i18n } = useTranslation();
+  const { user, logout } = useAuth();
+  const { theme, toggle } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const triggerRef = useRef(null);
+  if (!user) return null;
+
+  const name = user.display_name || user.username;
+  const isAr = i18n.language === 'ar';
+  const dark = theme === 'dark';
+
+  function changePassword() {
+    // Park focus on the trigger before the dialog opens: the dialog hands focus
+    // back to whatever held it when it opened, and this item is about to unmount.
+    triggerRef.current?.focus();
+    setOpen(false);
+    setChanging(true);
+  }
+
+  // Up/Down step through the items the way a menu does; Tab keeps working too.
+  function onKeyDown(e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const items = [...e.currentTarget.querySelectorAll('button')];
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === 'ArrowDown' ? i + 1 : (i === -1 ? items.length : i) - 1;
+    items[(next + items.length) % items.length]?.focus();
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      {/* Anchored on the whole row so the panel spans it, bell included */}
+      <PopoverAnchor asChild>
+        <div className="flex items-center gap-1">
+          <PopoverTrigger asChild>
+            <button
+              ref={triggerRef}
+              type="button"
+              className="focus-ring group flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-xl p-1.5 text-start transition-colors hover:bg-accent data-[state=open]:bg-accent"
+            >
+              <span
+                aria-hidden="true"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground"
+              >
+                {name.slice(0, 2).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1 text-sm">
+                <span className="block truncate font-medium">{name}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {t(user.role === 'admin' ? 'admin.roleAdmin' : 'admin.roleUser')}
+                </span>
+              </span>
+              {/* Points up while closed: the panel opens above the row */}
+              <IconChevronDown className="rotate-180 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-0" />
+            </button>
+          </PopoverTrigger>
+          {children}
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        side="top"
+        sideOffset={8}
+        aria-label={t('nav.account')}
+        onKeyDown={onKeyDown}
+        className="w-(--radix-popover-trigger-width) origin-(--radix-popover-content-transform-origin) p-1.5 data-[state=open]:animate-[dialog-in_var(--dur-base)_var(--ease-out-soft)] data-[state=closed]:animate-[dialog-out_var(--dur-fast)_ease-out_both]"
+      >
+        <MenuItem icon={<IconKey />} onClick={changePassword}>
+          {t('auth.changePassword')}
+        </MenuItem>
+        <MenuItem icon={<IconLanguages />} onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}>
+          {isAr ? 'Français' : 'العربية'}
+        </MenuItem>
+        <MenuItem icon={<IconSwap on={dark} onIcon={<IconSun />} offIcon={<IconMoon />} />} onClick={toggle}>
+          {t(dark ? 'nav.lightMode' : 'nav.darkMode')}
+        </MenuItem>
+        <div role="separator" className="-mx-1.5 my-1.5 h-px bg-border" />
+        <MenuItem icon={<IconLogout />} onClick={logout}>
+          {t('auth.signOut')}
+        </MenuItem>
+      </PopoverContent>
+      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
+    </Popover>
   );
 }
 
@@ -455,11 +527,10 @@ export default function Layout({ children }) {
         <nav aria-label={t('nav.primary')} className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
           <SidebarNav />
         </nav>
-        <div className="flex flex-col gap-2 border-t border-border p-3">
-          <UserMenu />
-          <NotificationsBell />
-          <LangToggle />
-          <ThemeToggle />
+        <div className="border-t border-border p-3">
+          <AccountMenu>
+            <NotificationsBell variant="ghost" />
+          </AccountMenu>
         </div>
       </aside>
 
@@ -469,10 +540,10 @@ export default function Layout({ children }) {
         <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
           <Brand className="min-w-0" />
           <div className="flex shrink-0 items-center gap-1">
-            <NotificationsBell compact />
-            <ThemeToggle compact />
-            <LangToggle compact />
-            <UserMenu compact />
+            <NotificationsBell />
+            <ThemeToggle />
+            <LangToggle />
+            <UserMenu />
           </div>
         </div>
       </header>

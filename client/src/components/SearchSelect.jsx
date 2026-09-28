@@ -139,7 +139,12 @@ export default function SearchSelect({
           {current ? currentLabel : placeholder}
         </span>
       </span>
-      <IconChevronDown className="shrink-0 opacity-50" />
+      <IconChevronDown
+        className={cn(
+          'shrink-0 opacity-50 transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+          open && 'rotate-180'
+        )}
+      />
     </PopoverTrigger>
   );
 

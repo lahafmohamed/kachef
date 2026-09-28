@@ -48,7 +48,7 @@ export function SelectTrigger({ className, children, icon, ...props }) {
   return (
     <SelectPrimitive.Trigger
       className={cn(
-        'focus-ring flex h-11 w-full items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs',
+        'group focus-ring flex h-11 w-full items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs',
         'transition-colors hover:bg-accent/40 focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 sm:h-10',
         'data-[placeholder]:text-muted-foreground [&>span]:truncate',
         className
@@ -59,8 +59,10 @@ export function SelectTrigger({ className, children, icon, ...props }) {
         {icon}
         {children}
       </span>
+      {/* The chevron points at where the panel went. Rotating it is the one
+          cue that survives the panel being portalled somewhere else on screen. */}
       <SelectPrimitive.Icon asChild>
-        <Chevron />
+        <Chevron className="transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-180" />
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   );

@@ -36,6 +36,7 @@ import {
   IconPencil,
   IconPlus,
   IconShield,
+  IconSwap,
   IconTrash,
   IconUsers,
   IconX,
@@ -620,13 +621,19 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
                     aria-pressed={on}
                     onClick={() => toggleBranch(b.id)}
                     className={cn(
-                      'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
+                      'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm sm:min-h-9',
+                      'transition-[color,background-color,border-color,scale] active:scale-[0.96]',
                       on
                         ? 'border-primary bg-primary/10 font-medium text-primary'
                         : 'border-input bg-card text-muted-foreground hover:bg-accent'
                     )}
                   >
-                    {on && <IconCheck className="h-3.5 w-3.5" />}
+                    <IconSwap
+                      on={on}
+                      onIcon={<IconCheck className="h-3.5 w-3.5" />}
+                      className="h-3.5 w-3.5"
+                      collapse
+                    />
                     {branchName(b, i18n.language)}
                   </button>
                 );

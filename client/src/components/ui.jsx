@@ -373,6 +373,62 @@ export function Spinner({ className }) {
   );
 }
 
+/**
+ * Cross-fades one icon into another in place — theme toggles, check marks on a
+ * selectable chip, anything whose icon is a function of state.
+ *
+ * Both slots stay mounted and stacked in a single grid cell, so the outgoing
+ * icon animates *out* instead of vanishing. There is no motion library in this
+ * project, so the swap is a plain CSS transition, which also means it is
+ * interruptible — toggle twice quickly and the second swap picks up wherever
+ * the first had reached.
+ *
+ * Two shapes:
+ *  - `offIcon` given (theme toggle): the box is a fixed size and never resizes.
+ *  - `collapse` (a check on a selectable chip): the box animates from zero
+ *    width, so an unselected chip carries no dead space but the row still does
+ *    not jump — the reflow is spread over the transition instead of landing on
+ *    one frame. Assumes the parent is a flex row with `gap-1.5`: the negative
+ *    inline-end margin cancels that gap while collapsed, so the chip closes up
+ *    completely. The icons inside keep their own size and are clipped by the
+ *    box, which makes the check appear to grow out of the chip's edge.
+ */
+export function IconSwap({ on, onIcon, offIcon = null, collapse = false, className }) {
+  return (
+    <span
+      className={cn(
+        'relative inline-grid h-4 w-4 shrink-0 place-items-center',
+        className,
+        // Last so tailwind-merge lets the collapsed width beat the caller's.
+        collapse && [
+          'overflow-hidden transition-[width,margin-inline-end] duration-200',
+          'ease-[cubic-bezier(0.2,0,0,1)]',
+          !on && 'w-0 -me-1.5',
+        ]
+      )}
+    >
+      {[
+        { key: 'off', node: offIcon, show: !on },
+        { key: 'on', node: onIcon, show: on },
+      ].map(({ key, node, show }) => (
+        <span
+          key={key}
+          aria-hidden="true"
+          className={cn(
+            'col-start-1 row-start-1 flex transition-[opacity,scale,filter] duration-200',
+            'ease-[cubic-bezier(0.2,0,0,1)]',
+            // blur-[0px], not blur-0: v4 dropped `blur-0`, and without a filter
+            // declared on both sides the blur snaps off instead of resolving.
+            show ? 'scale-100 opacity-100 blur-[0px]' : 'scale-[0.25] opacity-0 blur-[4px]'
+          )}
+        >
+          {node}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /* Solid variants carry a hairline top highlight so they read as lit surfaces
    rather than flat swatches, and a color-matched glow instead of grey shadow. */
 const buttonVariants = {
@@ -734,6 +790,31 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  // The panel outlives `open` by the length of its exit animation, so dismissing
+  // fades and settles instead of cutting to nothing — a sheet that slides up
+  // over 320ms and then vanishes on a single frame reads as a glitch. Focus and
+  // the scroll lock are released immediately (the effect below), not at the end
+  // of the exit: only the pixels linger.
+  const [render, setRender] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setRender(true);
+      return;
+    }
+    const id = setTimeout(() => setRender(false), 200); // --dur-base
+    return () => clearTimeout(id);
+  }, [open]);
+
+  // Callers almost all write `{editing && <Form/>}` and clear `editing` on the
+  // same tick that closes the dialog, and titles read `editing?.id ? … : …`.
+  // Rendering live props through the exit would therefore fade out an empty
+  // shell with the wrong heading. Hold the last frame we were handed while open
+  // and play the exit against that — the user watches the dialog they were
+  // actually looking at leave.
+  const lastFrame = useRef(null);
+  if (open) lastFrame.current = { title, description, children };
+  const frame = (open ? null : lastFrame.current) || { title, description, children };
+
   useEffect(() => {
     if (!open) return;
     restoreRef.current = document.activeElement;
@@ -777,14 +858,26 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
     };
   }, [open]);
 
-  if (!open) return null;
+  if (!render) return null;
 
   const widths = { sm: 'sm:max-w-sm', md: 'sm:max-w-lg', lg: 'sm:max-w-2xl' };
+  // On the way out the panel is decoration only: it must not swallow the click
+  // that follows the dismissal, and assistive tech must not still see a dialog.
+  const leaving = !open;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
+    <div
+      aria-hidden={leaving || undefined}
+      className={cn(
+        'fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4',
+        leaving && 'pointer-events-none'
+      )}
+    >
       <div
-        className="animate-overlay-in absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className={cn(
+          'absolute inset-0 bg-black/50 backdrop-blur-sm',
+          leaving ? 'animate-overlay-out' : 'animate-overlay-in'
+        )}
         onClick={onClose}
       />
       <div
@@ -794,7 +887,8 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
         aria-labelledby={titleId}
         tabIndex={-1}
         className={cn(
-          'animate-sheet-in sm:animate-dialog-in relative flex max-h-[92dvh] w-full flex-col',
+          'relative flex max-h-[92dvh] w-full flex-col',
+          leaving ? 'animate-sheet-out sm:animate-dialog-out' : 'animate-sheet-in sm:animate-dialog-in',
           'rounded-t-3xl border border-border bg-card shadow-xl outline-none',
           'sm:max-h-[88dvh] sm:rounded-2xl',
           widths[size]
@@ -805,15 +899,19 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5 sm:py-4">
           <div className="min-w-0">
             <h2 id={titleId} className="truncate font-semibold">
-              {title}
+              {frame.title}
             </h2>
-            {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
+            {frame.description && (
+              <p className="mt-0.5 text-sm text-muted-foreground">{frame.description}</p>
+            )}
           </div>
           <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label={t('common.close')}>
             <IconX />
           </Button>
         </div>
-        <div ref={contentRef} className="safe-b flex-1 overflow-y-auto p-4 sm:p-5">{children}</div>
+        <div ref={contentRef} className="safe-b flex-1 overflow-y-auto p-4 sm:p-5">
+          {frame.children}
+        </div>
       </div>
     </div>,
     document.body
@@ -890,10 +988,21 @@ export function ToastProvider({ children }) {
   const seq = useRef(0);
   const timers = useRef(new Map());
 
+  // Two-phase: mark the toast leaving so it can fade, then drop it from the
+  // stack once the exit has played. Same reasoning as the sheet — an element
+  // that animated its way in should not leave on a single frame.
   const dismiss = useCallback((id) => {
     clearTimeout(timers.current.get(id));
     timers.current.delete(id);
-    setToasts((ts) => ts.filter((t) => t.id !== id));
+    setToasts((ts) => ts.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
+    clearTimeout(timers.current.get(`${id}:out`));
+    timers.current.set(
+      `${id}:out`,
+      setTimeout(() => {
+        timers.current.delete(`${id}:out`);
+        setToasts((ts) => ts.filter((x) => x.id !== id));
+      }, 120) // --dur-fast
+    );
   }, []);
 
   const arm = useCallback(
@@ -935,11 +1044,12 @@ export function ToastProvider({ children }) {
           // sticky save bars, so toasts there covered the very buttons just tapped.
           className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex flex-col items-center gap-2 px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
         >
-          {toasts.map(({ id, message, type, ms }) => {
+          {toasts.map(({ id, message, type, ms, leaving }) => {
             const { cls, Icon: I } = toastStyles[type] || toastStyles.info;
-            // Hovering or focusing holds the toast; leaving restarts the full timer
-            const hold = () => clearTimeout(timers.current.get(id));
-            const release = () => arm(id, ms);
+            // Hovering or focusing holds the toast; leaving restarts the full
+            // timer. A toast already on its way out ignores both.
+            const hold = () => !leaving && clearTimeout(timers.current.get(id));
+            const release = () => !leaving && arm(id, ms);
             return (
               <div
                 key={id}
@@ -950,18 +1060,28 @@ export function ToastProvider({ children }) {
                 onFocus={hold}
                 onBlur={release}
                 className={cn(
-                  'animate-toast-in pointer-events-auto flex w-full max-w-sm items-start gap-2.5',
+                  'flex w-full max-w-sm items-start gap-2.5',
+                  leaving ? 'animate-toast-out pointer-events-none' : 'animate-toast-in pointer-events-auto',
                   'glass rounded-xl border ps-4 pe-2 py-2.5 text-sm font-medium shadow-lg',
                   cls
                 )}
               >
                 <I className="mt-1" />
                 <span className="flex-1 py-0.5">{message}</span>
+                {/* The visible square stays 32px so it sits inside the toast,
+                    but the pseudo-element takes the real hit area to 44px —
+                    this control is thumb-sized on phones, where the toast
+                    renders at the top of the screen. */}
                 <button
                   type="button"
                   onClick={() => dismiss(id)}
                   aria-label={t('common.close')}
-                  className="focus-ring -me-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md opacity-70 transition-opacity hover:opacity-100"
+                  className={cn(
+                    'focus-ring relative -me-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md',
+                    'opacity-70 transition-opacity hover:opacity-100',
+                    'before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-11',
+                    'before:-translate-x-1/2 before:-translate-y-1/2 before:content-[""]'
+                  )}
                 >
                   <IconX className="h-4 w-4" />
                 </button>
@@ -1125,6 +1245,12 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
  */
 export function RequirementGrid({ total, selected = [], onToggle, label }) {
   const set = new Set(selected);
+  // `animate-pop` acknowledges a tap, so only the tapped cell may play it.
+  // Keying it off `on` alone fired the animation for every already-earned cell
+  // the instant the grid mounted: open a عنصر with fifteen مطالب and fifteen
+  // cells popped at once, which reads as a page glitch rather than feedback.
+  // Same rule as skipping enter animations on first render.
+  const [popped, setPopped] = useState(null);
   return (
     <div
       role={onToggle ? 'group' : 'list'}
@@ -1145,11 +1271,16 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
             key={n}
             type="button"
             aria-pressed={on}
-            onClick={() => onToggle(n)}
+            onClick={() => {
+              setPopped(n);
+              onToggle(n);
+            }}
             className={cn(
               cls,
               'focus-ring cursor-pointer',
-              on ? 'animate-pop' : 'hover:border-primary/40 hover:bg-accent hover:text-accent-foreground'
+              on
+                ? popped === n && 'animate-pop'
+                : 'hover:border-primary/40 hover:bg-accent hover:text-accent-foreground'
             )}
           >
             {n}

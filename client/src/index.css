@@ -395,10 +395,32 @@ input[type="radio"] {
   100% { transform: scale(1); }
 }
 
+/* Exits. An exit is softer and quicker than its enter: it moves a small fixed
+   distance rather than retracing the whole entrance, so dismissing never feels
+   like a second animation to sit through. ease-out in both directions. The
+   sheet enters from translateY(100%) but leaves on 12px — sliding a full screen
+   height back down is the single most common way a dismissal feels slow. */
+@keyframes overlay-out {
+  to { opacity: 0; }
+}
+@keyframes dialog-out {
+  to { opacity: 0; transform: scale(0.98) translateY(4px); }
+}
+@keyframes sheet-out {
+  to { opacity: 0; transform: translateY(12px); }
+}
+@keyframes toast-out {
+  to { opacity: 0; transform: scale(0.97); }
+}
+
 .animate-overlay-in { animation: overlay-in var(--dur-base) ease-out; }
 .animate-dialog-in { animation: dialog-in var(--dur-base) var(--ease-out-soft); }
 .animate-sheet-in { animation: sheet-in var(--dur-slow) var(--ease-out-soft); }
 .animate-toast-in { animation: toast-in var(--dur-base) var(--ease-spring); }
+.animate-overlay-out { animation: overlay-out var(--dur-fast) ease-out both; }
+.animate-dialog-out { animation: dialog-out var(--dur-fast) ease-out both; }
+.animate-sheet-out { animation: sheet-out var(--dur-base) ease-out both; }
+.animate-toast-out { animation: toast-out var(--dur-fast) ease-out both; }
 .animate-fade-up { animation: fade-up var(--dur-slow) var(--ease-out-soft) both; }
 .animate-pop { animation: pop var(--dur-base) var(--ease-spring); }
 .animate-spin-slow { animation: spin 900ms linear infinite; }

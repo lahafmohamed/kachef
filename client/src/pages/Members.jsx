@@ -357,7 +357,11 @@ function MemberSubline({ m }) {
     <div className="mt-0.5 flex max-w-72 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs font-normal leading-4 text-muted-foreground">
       {items.map(({ Icon, text }, i) => (
         <span key={i} className="inline-flex min-w-0 max-w-full items-center gap-1">
-          <Icon className="h-3.5 w-3.5 opacity-70" strokeWidth={1.5} />
+          {/* Stroke is numeric against a 24 viewBox, so it scales with the icon:
+              at 14px, 2.25 renders the same ~1.3px hairline every other icon in
+              the app already draws at 16px/2. Leaving it at 1.5 rendered 0.9px —
+              a visibly thinner line than the text it labels. */}
+          <Icon className="h-3.5 w-3.5 opacity-70" strokeWidth={2.25} />
           <span className="truncate">{text}</span>
         </span>
       ))}

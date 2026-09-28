@@ -36,6 +36,7 @@ import {
   IconPlus,
   IconShield,
   IconSort,
+  IconSwap,
   IconX,
 } from '../components/ui';
 
@@ -912,7 +913,12 @@ export default function Sessions() {
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
                         )}
                       >
-                        {on && <IconCheck className="h-3.5 w-3.5" />}
+                        <IconSwap
+                          on={on}
+                          onIcon={<IconCheck className="h-3.5 w-3.5" />}
+                          className="h-3.5 w-3.5"
+                          collapse
+                        />
                         {branchName(b, i18n.language)}
                         {primary && form.branch_ids.length > 1 && (
                           <span className="text-xs uppercase opacity-70">
@@ -961,7 +967,12 @@ export default function Sessions() {
                                   : 'border-input bg-card text-muted-foreground hover:bg-accent'
                               )}
                             >
-                              {on && <IconCheck className="h-3.5 w-3.5" />}
+                              <IconSwap
+                                on={on}
+                                onIcon={<IconCheck className="h-3.5 w-3.5" />}
+                                className="h-3.5 w-3.5"
+                                collapse
+                              />
                               {g.name}
                               <span className="text-xs opacity-70">{g.member_count}</span>
                             </button>
