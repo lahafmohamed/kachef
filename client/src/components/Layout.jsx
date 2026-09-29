@@ -507,8 +507,14 @@ function AccountMenu({ children }) {
   );
 }
 
+// Pages built as wide tables take the width of a big screen; every other page keeps
+// the 1152px column, where a line of text stays readable
+const WIDE_PAGES = ['/leaders'];
+
 export default function Layout({ children }) {
   const { t } = useTranslation();
+  const { pathname } = useLocation();
+  const wide = WIDE_PAGES.includes(pathname);
 
   return (
     <div className="min-h-dvh">
@@ -551,7 +557,10 @@ export default function Layout({ children }) {
       <div className="relative lg:ps-64">
         <main
           id="main"
-          className="relative mx-auto max-w-6xl p-4 pb-[calc(var(--bottomnav-h)+1.5rem)] sm:p-6 lg:p-8 lg:pb-10"
+          className={cn(
+            'relative mx-auto p-4 pb-[calc(var(--bottomnav-h)+1.5rem)] sm:p-6 lg:p-8 lg:pb-10',
+            wide ? 'max-w-[100rem]' : 'max-w-6xl'
+          )}
         >
           {children}
         </main>

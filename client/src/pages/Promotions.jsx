@@ -24,6 +24,7 @@ import {
   Th,
   useConfirm,
   useToast,
+  IconArchive,
   IconArrow,
   IconAward,
   IconShield,
@@ -38,6 +39,9 @@ export default function Promotions() {
   // View-only accounts see who is due for promotion but cannot apply it
   const { has } = usePerms();
   const editable = has('promotions.apply');
+  // جوّالٌ بلغ سنّ الفرقة التالية و توقّف: يُؤرشَف بدل أن يُرفَّع، و يُعاد تفعيله من ملفّه
+  const canArchive = has('members.delete');
+  const canPick = editable || canArchive;
   const pending = useFetch('/promotions/pending');
   const history = useFetch('/promotions/history');
   const branches = useFetch('/branches');
@@ -79,6 +83,34 @@ export default function Promotions() {
     branchList.find((b) => String(b.id) === String(branch)),
     i18n.language
   );
+
+  async function archive(ids, key) {
+    const many = ids.length > 1;
+    if (
+      !(await confirm({
+        title: t('promotion.archive'),
+        message: t(many ? 'promotion.archiveConfirmMany' : 'promotion.archiveConfirmOne', { count: ids.length }),
+        confirmLabel: t('promotion.archive'),
+      }))
+    )
+      return;
+
+    setBusy(key);
+    try {
+      await api.post('/members/archive', { member_ids: ids });
+      setPicked((sel) => {
+        const next = new Set(sel);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      pending.reload({ quiet: true });
+      toast.success(t('promotion.archived', { count: ids.length }));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function promote(ids, key) {
     const many = ids.length > 1;
@@ -173,7 +205,7 @@ export default function Promotions() {
             </EmptyState>
           ) : (
             <ul className="divide-y divide-border">
-              {editable && pendingList.length > 1 && (
+              {canPick && pendingList.length > 1 && (
                 <li className="px-4 py-2 sm:px-5">
                   <label className="flex min-h-9 w-fit cursor-pointer items-center gap-3 text-sm font-medium">
                     <input type="checkbox" checked={allPicked} onChange={toggleAll} />
@@ -184,7 +216,7 @@ export default function Promotions() {
               {pendingList.map((p) => (
                 <li key={p.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
                   {/* التأشير خارج الرابط: الضغط على الاسم يفتح بطاقة العنصر، لا يؤشِّره */}
-                  {editable && (
+                  {canPick && (
                     <input
                       type="checkbox"
                       className="shrink-0"
@@ -210,17 +242,35 @@ export default function Promotions() {
                     <IconArrow className="shrink-0 text-muted-foreground rtl:rotate-180" />
                     <Badge variant="solid">{branchName(p.target_branch, i18n.language)}</Badge>
                   </div>
-                  {editable && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      loading={busy === p.id}
-                      disabled={!!busy}
-                      onClick={() => promote([p.id], p.id)}
-                      className="w-full sm:w-auto"
-                    >
-                      {t('promotion.promote')}
-                    </Button>
+                  {canPick && (
+                    <div className="flex w-full gap-2 sm:w-auto">
+                      {canArchive && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          loading={busy === `archive-${p.id}`}
+                          disabled={!!busy}
+                          onClick={() => archive([p.id], `archive-${p.id}`)}
+                          aria-label={t('promotion.archiveOne', { name: memberName(p) })}
+                          className="flex-1 text-muted-foreground sm:flex-none"
+                        >
+                          <IconArchive />
+                          {t('promotion.archive')}
+                        </Button>
+                      )}
+                      {editable && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          loading={busy === p.id}
+                          disabled={!!busy}
+                          onClick={() => promote([p.id], p.id)}
+                          className="flex-1 sm:flex-none"
+                        >
+                          {t('promotion.promote')}
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </li>
               ))}
@@ -228,22 +278,36 @@ export default function Promotions() {
           )}
           {/* شريط التأشير يلتصق بالأسفل، و فوق شريط التنقّل في الهاتف: لولا ذلك لاختفى
               الزرّ تحته، و التأشير بلا زرّ ترفيع لا معنى له */}
-          {editable && pickedIds.length > 0 && (
+          {canPick && pickedIds.length > 0 && (
             <div className="sticky bottom-[var(--bottomnav-h)] z-10 flex flex-wrap items-center gap-2 rounded-b-2xl border-t border-border bg-card px-4 py-2.5 sm:px-5 lg:bottom-0">
               <span className="text-sm font-medium">
                 {t('promotion.selected', { count: pickedIds.length })}
               </span>
               <span className="hidden grow sm:block" />
-              <Button
-                size="sm"
-                variant="brand"
-                loading={busy === 'picked'}
-                disabled={!!busy}
-                onClick={() => promote(pickedIds, 'picked')}
-              >
-                <IconTrendingUp />
-                {t('promotion.promoteSelected', { count: pickedIds.length })}
-              </Button>
+              {canArchive && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  loading={busy === 'archive-picked'}
+                  disabled={!!busy}
+                  onClick={() => archive(pickedIds, 'archive-picked')}
+                >
+                  <IconArchive />
+                  {t('promotion.archiveSelected', { count: pickedIds.length })}
+                </Button>
+              )}
+              {editable && (
+                <Button
+                  size="sm"
+                  variant="brand"
+                  loading={busy === 'picked'}
+                  disabled={!!busy}
+                  onClick={() => promote(pickedIds, 'picked')}
+                >
+                  <IconTrendingUp />
+                  {t('promotion.promoteSelected', { count: pickedIds.length })}
+                </Button>
+              )}
               <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setPicked(new Set())}>
                 {t('common.clearSelection')}
               </Button>

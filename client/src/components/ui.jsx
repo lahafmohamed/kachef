@@ -140,6 +140,22 @@ export const IconTrash = (p) => (
     <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
   </Icon>
 );
+export const IconArchive = (p) => (
+  <Icon {...p}>
+    <rect width="20" height="5" x="2" y="3" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" />
+  </Icon>
+);
+export const IconArchiveRestore = (p) => (
+  <Icon {...p}>
+    <rect width="20" height="5" x="2" y="3" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h2" />
+    <path d="M20 8v11a2 2 0 0 1-2 2h-2" />
+    <path d="m9 15 3-3 3 3" />
+    <path d="M12 12v9" />
+  </Icon>
+);
 export const IconAlert = (p) => (
   <Icon {...p}>
     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />

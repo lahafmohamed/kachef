@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtDate, fmtPhone, memberName, todayISO } from '../utils';
+import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtPhone, memberName, todayISO } from '../utils';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
@@ -15,6 +15,7 @@ import {
   Badge,
   Button,
   Card,
+  cn,
   Dialog,
   EmptyState,
   ErrorState,
@@ -26,17 +27,16 @@ import {
   Table,
   Td,
   Th,
-  useConfirm,
   useToast,
   IconCake,
   IconFilter,
+  IconAlert,
   IconPencil,
   IconPin,
   IconPlus,
   IconSchool,
   IconShield,
   IconSort,
-  IconTrash,
   IconUsers,
 } from '../components/ui';
 
@@ -387,7 +387,7 @@ function MemberSubline({ m }) {
         ].filter(Boolean);
   if (items.length === 0) return null;
   return (
-    <div className="mt-0.5 flex max-w-72 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs font-normal leading-4 text-muted-foreground">
+    <div className="mt-0.5 flex max-w-60 flex-wrap @5xl:max-w-80 items-center gap-x-2.5 gap-y-0.5 text-xs font-normal leading-4 text-muted-foreground">
       {items.map(({ Icon, text }, i) => (
         <span key={i} className="inline-flex min-w-0 max-w-full items-center gap-1">
           {/* Stroke is numeric against a 24 viewBox, so it scales with the icon:
@@ -405,7 +405,74 @@ function MemberSubline({ m }) {
 /** Number in an LTR island so it never reverses inside an Arabic row. */
 function Phone({ value }) {
   if (!value) return dash;
-  return <span dir="ltr">{fmtPhone(value)}</span>;
+  // Une case contient parfois deux numéros ("0708904643/0708904644", ou collés
+  // sans séparateur) : chacun est formaté et posé sur sa ligne, collé au libellé
+  // même en arabe, où une ligne qui se replie partait au bout de la cellule.
+  const parts = String(value)
+    .split(/\s*[/,;]\s*/)
+    .flatMap((n) => {
+      const digits = n.replace(/[\s.-]/g, '');
+      return /^(\d{10}){2,}$/.test(digits) ? digits.match(/\d{10}/g) : [n];
+    })
+    .filter(Boolean);
+  return (
+    <span dir="ltr" className="inline-flex flex-col">
+      {parts.map((n, i) => (
+        <span key={i} className="whitespace-nowrap">
+          {fmtPhone(n)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Présence dans la fiche actuelle — le même chiffre que sur la fiche du membre.
+ * Trois absences d'affilée passent au rouge : c'est le signe qu'un عنصر décroche,
+ * souvent avant qu'on pense à l'archiver.
+ */
+function Attendance({ a, t }) {
+  if (!a || a.rate === null) return dash;
+  const tone = a.rate >= 75 ? 'text-success' : a.rate >= 50 ? 'text-warning' : 'text-destructive';
+  return (
+    <div className="flex items-center gap-2 whitespace-nowrap tabular-nums">
+      <span className={cn('font-semibold', tone)}>{a.rate}%</span>
+      <span className="text-xs text-muted-foreground">
+        {a.present}/{a.total}
+      </span>
+      {a.absences >= 3 && (
+        <Badge variant="destructive" title={t('member.consecutiveAbsences', { count: a.absences })}>
+          <IconAlert className="h-3 w-3" />
+          {t('member.absencesShort', { count: a.absences })}
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Les deux numéros des parents dans une seule colonne, chacun sous son libellé :
+ * la colonne «mère», vide la plupart du temps, coûtait 200px à chaque ligne.
+ */
+function ParentPhones({ m, t }) {
+  if (m.kind === 'leader') return <Phone value={m.phone} />;
+  const rows = [
+    m.father_phone && { label: t('member.fatherShort'), value: m.father_phone },
+    m.mother_phone && { label: t('member.motherShort'), value: m.mother_phone },
+  ].filter(Boolean);
+  if (rows.length === 0) return dash;
+  return (
+    <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-0.5">
+      {rows.map((r) => (
+        <div key={r.label} className="contents">
+          <dt className="text-xs text-muted-foreground">{r.label}</dt>
+          <dd className="tabular-nums">
+            <Phone value={r.value} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 /* 36px visible, 40px hit area: the pseudo-element pads 2px a side and the
@@ -413,7 +480,7 @@ function Phone({ value }) {
 const ROW_ACTION = 'relative before:absolute before:-inset-0.5';
 
 /** One member as a tappable card — the mobile equivalent of a table row. */
-function MemberCard({ m, lang, t, onEdit, onDelete }) {
+function MemberCard({ m, lang, t, onEdit }) {
   // Un chef dans la liste : même carte, mais elle mène à sa fiche de chef
   const isChef = m.kind === 'leader';
   return (
@@ -424,7 +491,9 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
       >
         <Avatar photo={m.photo} name={avatarName(m)} className="h-11 w-11" />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">
+          {/* dir="auto" : un nom latin dans l'interface arabe se coupe par sa fin
+              («Abass Ahmad Chak…»), pas par son début («…ss Ahmad Chakaroun») */}
+          <div dir="auto" className="truncate font-medium rtl:text-right">
             {memberName(m)}
           </div>
           <MemberSubline m={m} />
@@ -441,19 +510,10 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
           </div>
         </div>
       </Link>
-      {(onEdit || onDelete) && (
-        <div className="flex shrink-0 gap-2">
-          {onEdit && (
-            <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')}>
-              <IconPencil />
-            </Button>
-          )}
-          {onDelete && (
-            <Button variant="destructive-ghost" size="icon" onClick={onDelete} aria-label={t('common.delete')}>
-              <IconTrash />
-            </Button>
-          )}
-        </div>
+      {onEdit && (
+        <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')} className="shrink-0">
+          <IconPencil />
+        </Button>
       )}
     </li>
   );
@@ -462,12 +522,10 @@ function MemberCard({ m, lang, t, onEdit, onDelete }) {
 export default function Members() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
-  const confirm = useConfirm();
   // View-only accounts get the list without any add/edit/delete affordance
   const { has } = usePerms();
   const canCreate = has('members.create');
   const canModify = has('members.edit');
-  const canDelete = has('members.delete');
   // Les chefs s'affichent dans la liste comme une branche à part entière
   const canSeeLeaders = has('leaders.read');
 
@@ -622,17 +680,6 @@ export default function Members() {
     toast.success(t(editing === 'new' ? 'member.created' : 'member.updated'));
   }
 
-  async function remove(m) {
-    if (!(await confirm({ message: t('common.confirmDeleteMember'), title: t('common.delete') }))) return;
-    try {
-      await api.del(`/members/${m.id}`);
-      members.reload({ quiet: true });
-      toast.success(t('member.deleted'));
-    } catch (err) {
-      toast.error(err.message);
-    }
-  }
-
   return (
     <div className="space-y-4">
       <PageHeader title={t('member.title')} description={t('member.subtitle', { count: list.length })}>
@@ -652,7 +699,7 @@ export default function Members() {
             value={q}
             onChange={setQ}
             placeholder={t('member.searchAny')}
-            className="sm:min-w-64"
+            className="sm:min-w-64 sm:flex-1"
           />
           <div className="grid grid-cols-2 gap-2 sm:flex">
             <FilterSelect
@@ -710,12 +757,13 @@ export default function Members() {
               value={sort}
               onChange={setSort}
               ariaLabel={t('member.sortBy')}
-              className="sm:w-auto sm:min-w-48"
+              className="min-w-40 flex-1 sm:w-auto sm:min-w-48 sm:flex-none"
               icon={<IconSort className="opacity-60" />}
               options={[
                 { value: 'name', label: t('member.sortName') },
                 { value: 'age_desc', label: t('member.sortAgeDesc') },
                 { value: 'age_asc', label: t('member.sortAgeAsc') },
+                { value: 'attendance', label: t('member.sortAttendance') },
                 ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
                 ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
               ]}
@@ -884,102 +932,102 @@ export default function Members() {
                   lang={i18n.language}
                   t={t}
                   onEdit={canModify && m.kind !== 'leader' ? () => setEditing(m) : null}
-                  onDelete={canDelete && m.kind !== 'leader' ? () => remove(m) : null}
                 />
               ))}
             </ul>
           </Card>
 
-          {/* Desktop: full table */}
-          <Card className="hidden md:block">
+          {/* Desktop: table. Columns drop by the card's own width (container
+              queries), not the viewport's: with the sidebar open, a 1280px screen
+              leaves the table under 960px. Short columns stay on one line; the
+              name and phone columns take the wrapping. */}
+          <Card className="@container hidden overflow-hidden md:block">
             <Table>
-              <thead className="border-b border-border">
+              <thead className="border-b border-border bg-muted/40">
                 <tr>
-                  <Th>{t('member.name')}</Th>
+                  <Th className="ps-4">{t('member.name')}</Th>
                   <Th>{t('member.age')}</Th>
                   <Th>{t('member.branch')}</Th>
-                  <Th>{t('member.fatherPhone')}</Th>
-                  <Th>{t('member.motherPhone')}</Th>
-                  <Th>{t('member.joinDate')}</Th>
-                  <Th>{t('member.status')}</Th>
-                  {(canModify || canDelete) && <Th className="text-end">{t('common.actions')}</Th>}
+                  <Th className="hidden @3xl:table-cell">{t('member.attendance')}</Th>
+                  <Th className="hidden @4xl:table-cell">{t('member.phones')}</Th>
+                  {canModify && (
+                    <Th className="pe-4 text-end">
+                      <span className="sr-only">{t('common.actions')}</span>
+                    </Th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {list.map((m) => (
-                  // Un chef et un membre peuvent partager le même id numérique
-                  <tr
-                    key={`${m.kind || 'member'}-${m.id}`}
-                    className="group transition-colors hover:bg-accent/40"
-                  >
-                    <Td>
-                      <Link
-                        to={m.kind === 'leader' ? `/leaders/${m.id}` : `/members/${m.id}`}
-                        className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
-                      >
-                        <Avatar photo={m.photo} name={avatarName(m)} className="h-9 w-9" />
-                        <div className="min-w-0">
-                          <div className="leading-snug">{memberName(m)}</div>
-                          <MemberSubline m={m} />
-                        </div>
-                      </Link>
-                    </Td>
-                    <Td className="tabular-nums">
-                      <div className="flex items-center gap-2">
-                        {m.age != null ? `${m.age} ${t('common.years')}` : dash}
-                        {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
-                      </div>
-                    </Td>
-                    <Td>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge>
-                          {m.kind === 'leader' ? t('branch.leaders') : branchName(m, i18n.language)}
-                        </Badge>
-                        {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
-                      </div>
-                    </Td>
-                    <Td>
-                      <Phone value={m.kind === 'leader' ? m.phone : m.father_phone} />
-                    </Td>
-                    <Td>
-                      <Phone value={m.kind === 'leader' ? null : m.mother_phone} />
-                    </Td>
-                    <Td>{(m.kind === 'leader' ? m.join_year : fmtDate(m.join_date)) || dash}</Td>
-                    <Td>
-                      <Badge variant={m.status === 'active' ? 'success' : 'secondary'}>
-                        {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
-                      </Badge>
-                    </Td>
-                    {(canModify || canDelete) && (
-                      <Td className="text-end">
-                        <div className="flex justify-end gap-1">
-                          {canModify && m.kind !== 'leader' && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className={ROW_ACTION}
-                              onClick={() => setEditing(m)}
-                              aria-label={t('common.edit')}
-                            >
-                              <IconPencil />
-                            </Button>
-                          )}
-                          {canDelete && m.kind !== 'leader' && (
-                            <Button
-                              variant="destructive-ghost"
-                              size="icon"
-                              className={ROW_ACTION}
-                              onClick={() => remove(m)}
-                              aria-label={t('common.delete')}
-                            >
-                              <IconTrash />
-                            </Button>
-                          )}
+                {list.map((m) => {
+                  const inactive = m.status !== 'active';
+                  return (
+                    // Un chef et un membre peuvent partager le même id numérique
+                    <tr
+                      key={`${m.kind || 'member'}-${m.id}`}
+                      className="group transition-colors hover:bg-accent/40"
+                    >
+                      <Td className="ps-4">
+                        <Link
+                          to={m.kind === 'leader' ? `/leaders/${m.id}` : `/members/${m.id}`}
+                          className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
+                        >
+                          <Avatar
+                            photo={m.photo}
+                            name={avatarName(m)}
+                            className={cn('h-9 w-9', inactive && 'opacity-60 grayscale')}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 leading-snug">
+                              <span className={cn(inactive && 'text-muted-foreground')}>{memberName(m)}</span>
+                              {/* Le statut ne s'affiche que quand il fait exception : une
+                                  colonne «Actif» répétée sur 200 lignes ne disait rien */}
+                              {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+                            </div>
+                            <MemberSubline m={m} />
+                          </div>
+                        </Link>
+                      </Td>
+                      <Td className="whitespace-nowrap tabular-nums">
+                        <div className="flex items-center gap-2">
+                          {m.age != null ? `${m.age} ${t('common.years')}` : dash}
+                          {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
                         </div>
                       </Td>
-                    )}
-                  </tr>
-                ))}
+                      <Td>
+                        <div className="flex items-center gap-1.5 whitespace-nowrap">
+                          <Badge>
+                            {m.kind === 'leader' ? t('branch.leaders') : branchName(m, i18n.language)}
+                          </Badge>
+                          {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
+                        </div>
+                      </Td>
+                      <Td className="hidden @3xl:table-cell">
+                        <Attendance a={m.attendance} t={t} />
+                      </Td>
+                      <Td className="hidden @4xl:table-cell">
+                        <ParentPhones m={m} t={t} />
+                      </Td>
+                      {canModify && (
+                        <Td className="pe-4 text-end">
+                          <div className="flex justify-end">
+                            {m.kind !== 'leader' && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className={ROW_ACTION}
+                                onClick={() => setEditing(m)}
+                                aria-label={t('common.edit')}
+                                title={t('common.edit')}
+                              >
+                                <IconPencil />
+                              </Button>
+                            )}
+                          </div>
+                        </Td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </Table>
           </Card>

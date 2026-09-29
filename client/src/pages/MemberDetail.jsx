@@ -23,8 +23,11 @@ import {
   Table,
   Td,
   Th,
+  useConfirm,
   useToast,
   IconAlert,
+  IconArchive,
+  IconArchiveRestore,
   IconArrow,
   IconAward,
   IconBack,
@@ -54,6 +57,13 @@ export default function MemberDetail() {
   // A قائد with this permission may add a مطلب the عنصر earned outside a نشاط,
   // or cancel one that was credited by mistake.
   const canEditMatalib = has('members.matalib');
+  const canRestore = has('members.edit');
+  // L'archivage se fait ici seulement, fiche ouverte : depuis une liste de 200
+  // lignes, un clic de travers suffisait à sortir quelqu'un des activités.
+  const canArchive = has('members.delete');
+  const confirm = useConfirm();
+  const [restoring, setRestoring] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const { data: member, setData: setMember, loading, error, reload } = useFetch(`/members/${id}`);
 
@@ -73,6 +83,42 @@ export default function MemberDetail() {
       toast.success(t('member.matalibUpdated'));
     } catch (err) {
       toast.error(err.message);
+    }
+  }
+
+  // عنصرٌ مؤرشف يعود كما كان، بفرقته و سجلّه: إن تجاوز سنّها عاد إلى قائمة الترفيعات
+  async function restore() {
+    setRestoring(true);
+    try {
+      const updated = await api.post(`/members/${id}/restore`);
+      setMember((m) => ({ ...m, status: updated.status, archived_at: null, archived_by: null }));
+      toast.success(t('member.restored'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function archive() {
+    if (
+      !(await confirm({
+        title: t('member.archive'),
+        message: t('member.archiveConfirm'),
+        confirmLabel: t('member.archive'),
+      }))
+    )
+      return;
+    setArchiving(true);
+    try {
+      await api.del(`/members/${id}`);
+      // Le bandeau «archivé le … par …» vient du serveur : on relit la fiche
+      await reload({ quiet: true });
+      toast.success(t('member.archived'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -105,8 +151,41 @@ export default function MemberDetail() {
           <IconBack className="rtl:rotate-180" />
           {t('common.back')}
         </Button>
-        <ExportPdfButton kind="members" id={member.id} />
+        <div className="flex items-center gap-2">
+          {canArchive && member.status === 'active' && (
+            <Button variant="ghost" size="sm" loading={archiving} onClick={archive}>
+              <IconArchive />
+              {t('member.archive')}
+            </Button>
+          )}
+          <ExportPdfButton kind="members" id={member.id} />
+        </div>
       </div>
+
+      {member.status !== 'active' && (
+        <Card className="border-warning/35 bg-warning/10">
+          <CardContent className="flex flex-wrap items-center gap-3 p-4">
+            <IconArchive className="h-5 w-5 text-warning" />
+            <div className="min-w-40 flex-1">
+              <p className="text-sm font-medium">
+                {member.archived_at
+                  ? t(member.archived_by ? 'member.archivedOnBy' : 'member.archivedOn', {
+                      date: fmtDate(member.archived_at.slice(0, 10)),
+                      name: member.archived_by,
+                    })
+                  : t('member.inactive')}
+              </p>
+              <p className="text-xs text-muted-foreground">{t('member.archivedHint')}</p>
+            </div>
+            {canRestore && (
+              <Button size="sm" variant="outline" loading={restoring} onClick={restore}>
+                <IconArchiveRestore />
+                {t('member.restore')}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ---------- Identity header ---------- */}
       <Card className="overflow-hidden">

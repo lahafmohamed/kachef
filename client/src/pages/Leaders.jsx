@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -822,6 +822,215 @@ function OrgChart({ assignments, branches, lang, t }) {
   );
 }
 
+const TABS = ['tachkila', 'leaders'];
+
+// One column template for the heading row and every row, so the columns line up
+// down the whole table. Below md the same rows wrap as they always did.
+const SLOT_COLS =
+  'md:grid md:grid-cols-[2.5rem_minmax(12rem,1.1fr)_minmax(15rem,1fr)_minmax(7rem,0.5fr)_7.5rem] md:gap-x-4';
+// The account and the actions columns exist for an admin only
+const LEADER_COLS_ADMIN =
+  'md:grid md:grid-cols-[minmax(13rem,1.2fr)_minmax(12rem,1.3fr)_5.5rem_7rem_6.5rem_minmax(7rem,0.6fr)_7.5rem] md:gap-x-4';
+const LEADER_COLS =
+  'md:grid md:grid-cols-[minmax(13rem,1.2fr)_minmax(12rem,1.3fr)_5.5rem_7rem_6.5rem] md:gap-x-4';
+const HEAD_CLS =
+  'hidden border-y border-border bg-muted/40 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground md:items-center';
+
+function GroupHeading({ children, count }) {
+  return (
+    <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:border-t-0 sm:px-5">
+      {children}
+      <Badge variant="outline">{count}</Badge>
+    </div>
+  );
+}
+
+/**
+ * One توصيف as a row of the table: avatar, المسؤولية, who holds it, فرقة, actions.
+ * The row exists even with no قائد yet; the inline picker fills or frees it.
+ */
+function SlotRow({ a, child = false, page }) {
+  const { t, lng, locked, canEdit, leaders, quickAssign, addAssistant, setEditingAssignment, removeAssignment } =
+    page;
+  return (
+    <li className={cn('flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5', SLOT_COLS)}>
+      {a.leader_id ? (
+        <Link to={`/leaders/${a.leader_id}`} className="focus-ring shrink-0 rounded-full">
+          <Avatar photo={a.photo} name={avatarName(a)} />
+        </Link>
+      ) : (
+        <span
+          aria-hidden="true"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground"
+        >
+          <IconShield className="h-4 w-4" />
+        </span>
+      )}
+      {/* A أمانة helper hangs under its أمين: the start rule marks the team */}
+      <div className={cn('min-w-40 flex-1', child && 'border-s-2 border-border ps-3')}>
+        <div className={cn('font-medium [overflow-wrap:anywhere]', !a.leader_id && 'text-muted-foreground')}>
+          {a.title}
+        </div>
+        {a.group_name && (
+          <Badge variant="outline" className="mt-1">
+            {a.group_name}
+          </Badge>
+        )}
+      </div>
+      <div className="w-full md:w-auto">
+        {canEdit ? (
+          <SearchSelect
+            value={a.leader_id || ''}
+            onChange={(e) => quickAssign(a, e.target.value)}
+            ariaLabel={`${a.title} — ${t('leader.selectLeader')}`}
+            className="max-w-none md:max-w-80"
+            options={leaders.map((l) => ({ value: l.id, label: memberName(l) }))}
+            clearLabel={t('leader.unassigned')}
+            placeholder={t('leader.unassigned')}
+            searchPlaceholder={t('common.search')}
+            emptyLabel={t('common.noResults')}
+          />
+        ) : a.leader_id ? (
+          <Link
+            to={`/leaders/${a.leader_id}`}
+            className="focus-ring inline-block rounded text-sm hover:text-primary hover:underline"
+          >
+            {memberName(a)}
+          </Link>
+        ) : (
+          <span className="text-sm text-muted-foreground">{t('leader.unassigned')}</span>
+        )}
+      </div>
+      <div className="min-w-0">{a.branch_id && <Badge>{branchName(a, lng)}</Badge>}</div>
+      <div className="flex items-center justify-end gap-1 md:justify-self-end">
+        {/* Frozen year (or non-admin account): the row is read-only */}
+        {locked && (
+          <span className="text-muted-foreground" title={t('leader.lockedBadge')} aria-hidden="true">
+            <IconLock className="h-4 w-4" />
+          </span>
+        )}
+        {canEdit && (
+          <>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => addAssistant(a)}
+              aria-label={t('leader.addAssistant')}
+              title={t('leader.addAssistant')}
+            >
+              <IconPlus />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={() => setEditingAssignment(a)} aria-label={t('common.edit')}>
+              <IconPencil />
+            </Button>
+            <Button
+              variant="destructive-ghost"
+              size="icon"
+              onClick={() => removeAssignment(a)}
+              aria-label={t('common.delete')}
+            >
+              <IconTrash />
+            </Button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** One قائد as a row of the table: name, المسؤوليات, activities, présence, card, account, actions. */
+function LeaderRow({ l, cols, page }) {
+  const { t, isAdmin, revokeAccount, setAccountFor, setEditingLeader, removeLeader } = page;
+  return (
+    <li className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5', cols)}>
+      <Link to={`/leaders/${l.id}`} className="focus-ring flex min-w-40 flex-1 items-center gap-3 rounded-md">
+        <Avatar photo={l.photo} name={avatarName(l)} />
+        <span
+          className={cn(
+            'min-w-0 font-medium',
+            l.status === 'inactive' && 'text-muted-foreground line-through decoration-1'
+          )}
+        >
+          {memberName(l)}
+        </span>
+      </Link>
+      <div className="flex w-full flex-wrap gap-1.5 md:w-auto">
+        {l.roles.length === 0 ? (
+          <span className="text-xs text-muted-foreground">{t('leader.noRole')}</span>
+        ) : (
+          l.roles.map((r, i) => (
+            <Badge key={i} variant={r.role_type === 'branch' ? 'default' : 'warning'}>
+              {r.title}
+            </Badge>
+          ))
+        )}
+      </div>
+      <span className="text-sm tabular-nums">
+        {l.sessions_count}
+        {/* The column heading says it from md up; on a phone the words stay */}
+        <span className="text-muted-foreground md:sr-only"> {t('leader.sessionsLed')}</span>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Badge variant="success" title={t('leader.timesPresent')}>
+          <IconCheck className="h-3 w-3" />
+          {l.present_count}
+        </Badge>
+        <Badge variant="destructive" title={t('leader.timesAbsent')}>
+          <IconX className="h-3 w-3" />
+          {l.absent_count}
+        </Badge>
+      </span>
+      {/* بطاقة تقدم القائد لسنة التشكيلة الجارية */}
+      <span className="text-sm">
+        {l.card?.total > 0 ? (
+          <Badge variant={l.card.done_count === l.card.total ? 'success' : 'outline'}>
+            {t('leader.cardProgress', { done: l.card.done_count, total: l.card.total })}
+          </Badge>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </span>
+      {/* من له حساب يظهر اسمه هنا — جواب «من يدخل الموقع؟» من القائمة نفسها */}
+      {isAdmin && (
+        <span className="min-w-0">
+          {l.account_username ? (
+            <Badge variant="outline" dir="ltr" className="max-w-40">
+              <IconKey className="h-3 w-3" />
+              <span className="truncate">{l.account_username}</span>
+            </Badge>
+          ) : (
+            <span className="text-sm text-muted-foreground">—</span>
+          )}
+        </span>
+      )}
+      {isAdmin && (
+        <div className="flex gap-1 md:justify-self-end">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => (l.account_user_id ? revokeAccount(l) : setAccountFor(l))}
+            aria-label={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
+            title={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
+          >
+            <IconKey className={l.account_user_id ? 'text-primary' : undefined} />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => setEditingLeader(l)} aria-label={t('common.edit')}>
+            <IconPencil />
+          </Button>
+          <Button
+            variant="destructive-ghost"
+            size="icon"
+            onClick={() => removeLeader(l)}
+            aria-label={t('common.delete')}
+          >
+            <IconTrash />
+          </Button>
+        </div>
+      )}
+    </li>
+  );
+}
+
 export default function Leaders() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -834,6 +1043,9 @@ export default function Leaders() {
   const [branchFilter, setBranchFilter] = useLocalStorage('leaders.branchFilter', '');
   // 'list' = الأسطر القابلة للتعيين، 'tree' = الهيكلية. تفضيل يبقى من زيارة لأخرى.
   const [view, setView] = useLocalStorage('leaders.tachkilaView', 'list');
+  // Which section the page shows — kept from one visit to the next, like the view
+  const [tab, setTab] = useLocalStorage('leaders.tab', 'tachkila');
+  const tabRefs = useRef({});
   const [editingLeader, setEditingLeader] = useState(null);
   const [editingAssignment, setEditingAssignment] = useState(null);
   // القائد الذي يُنشأ له حساب دخول
@@ -1001,101 +1213,70 @@ export default function Leaders() {
     return l.roles.some((r) => String(r.branch_id) === branchFilter);
   });
 
-  function GroupHeading({ children, count }) {
-    return (
-      <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:border-t-0 sm:px-5">
-        {children}
-        <Badge variant="outline">{count}</Badge>
-      </div>
-    );
+  // What the rows need from the page
+  const page = {
+    t,
+    lng: i18n.language,
+    locked,
+    canEdit,
+    isAdmin,
+    leaders,
+    quickAssign,
+    addAssistant,
+    removeAssignment,
+    setEditingAssignment,
+    revokeAccount,
+    setAccountFor,
+    setEditingLeader,
+    removeLeader,
+  };
+  const current = TABS.includes(tab) ? tab : 'tachkila';
+  const filled = tachkila.assignments.filter((a) => a.leader_id).length;
+  const total = tachkila.assignments.length;
+  const leaderCols = isAdmin ? LEADER_COLS_ADMIN : LEADER_COLS;
+
+  // Arrow keys move between the tabs (mirrored in Arabic), Home / End jump to the ends
+  function onTabKeyDown(e) {
+    const rtl = document.documentElement.dir === 'rtl';
+    const i = TABS.indexOf(current);
+    const step = { ArrowRight: rtl ? -1 : 1, ArrowLeft: rtl ? 1 : -1 }[e.key];
+    let next = null;
+    if (step) next = TABS[(i + step + TABS.length) % TABS.length];
+    else if (e.key === 'Home') next = TABS[0];
+    else if (e.key === 'End') next = TABS[TABS.length - 1];
+    if (!next) return;
+    e.preventDefault();
+    setTab(next);
+    tabRefs.current[next]?.focus();
   }
 
-  // One row = one توصيف. It exists even with no قائد yet; the inline select fills or frees it.
-  function AssignmentRow({ a, child = false }) {
-    return (
-      <li
-        className={cn(
-          'flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5',
-          child && 'border-s-2 border-border ms-6 sm:ms-8'
-        )}
-      >
-        {a.leader_id ? (
-          <Link to={`/leaders/${a.leader_id}`} className="focus-ring rounded-full">
-            <Avatar photo={a.photo} name={avatarName(a)} />
-          </Link>
-        ) : (
-          <span
-            aria-hidden="true"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground"
-          >
-            <IconShield className="h-4 w-4" />
-          </span>
-        )}
-        <div className="min-w-40 flex-1 space-y-1.5">
-          <div className={cn('font-medium', !a.leader_id && 'text-muted-foreground')}>{a.title}</div>
-          {canEdit ? (
-            <SearchSelect
-              value={a.leader_id || ''}
-              onChange={(e) => quickAssign(a, e.target.value)}
-              ariaLabel={`${a.title} — ${t('leader.selectLeader')}`}
-              className="max-w-64"
-              options={leaders.map((l) => ({ value: l.id, label: memberName(l) }))}
-              clearLabel={t('leader.unassigned')}
-              placeholder={t('leader.unassigned')}
-              searchPlaceholder={t('common.search')}
-              emptyLabel={t('common.noResults')}
-            />
-          ) : a.leader_id ? (
-            <Link
-              to={`/leaders/${a.leader_id}`}
-              className="focus-ring inline-block rounded text-sm hover:text-primary hover:underline"
-            >
-              {memberName(a)}
-            </Link>
-          ) : (
-            <span className="text-sm text-muted-foreground">{t('leader.unassigned')}</span>
-          )}
-        </div>
-        {a.branch_id && <Badge>{branchName(a, i18n.language)}</Badge>}
-        {a.group_name && <Badge variant="outline">{a.group_name}</Badge>}
-        {/* Frozen year (or non-admin account): the row is read-only */}
-        {locked && (
-          <span className="text-muted-foreground" title={t('leader.lockedBadge')} aria-hidden="true">
-            <IconLock className="h-4 w-4" />
-          </span>
-        )}
-        {canEdit && (
-          <div className="flex gap-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => addAssistant(a)}
-              aria-label={t('leader.addAssistant')}
-              title={t('leader.addAssistant')}
-            >
-              <IconPlus />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setEditingAssignment(a)}
-              aria-label={t('common.edit')}
-            >
-              <IconPencil />
-            </Button>
-            <Button
-              variant="destructive-ghost"
-              size="icon"
-              onClick={() => removeAssignment(a)}
-              aria-label={t('common.delete')}
-            >
-              <IconTrash />
-            </Button>
-          </div>
-        )}
-      </li>
-    );
-  }
+  const tabs = [
+    {
+      id: 'tachkila',
+      label: t('leader.tachkila'),
+      count: total ? t('leader.filledCount', { filled, total }) : null,
+      title: total ? t('leader.filledHint', { filled, total }) : undefined,
+    },
+    { id: 'leaders', label: t('leader.leadersList'), count: filteredLeaders.length },
+  ];
+
+  // The فرقة filter scopes both tabs, so each tab carries a copy of it
+  const branchSelect = (className) => (
+    <Select
+      value={branchFilter}
+      onChange={(e) => setBranchFilter(e.target.value)}
+      aria-label={t('member.branch')}
+      className={cn('min-w-36 flex-1 sm:w-auto sm:flex-initial', className)}
+    >
+      <option value="">{t('member.allBranches')}</option>
+      {branches.map((b) => (
+        <option key={b.id} value={b.id}>
+          {branchName(b, i18n.language)}
+        </option>
+      ))}
+      <option value="amana">{t('leader.amanat')}</option>
+    </Select>
+  );
 
   return (
     <div className="space-y-6">
@@ -1108,285 +1289,248 @@ export default function Leaders() {
         )}
       </PageHeader>
 
-      {/* ---------- التشكيلة ---------- */}
-      <Card>
-        <CardHeader className="gap-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <CardTitle>{t('leader.tachkila')}</CardTitle>
-              {locked && (
-                <Badge variant="warning">
-                  <IconLock className="h-3.5 w-3.5" />
-                  {t('leader.lockedBadge')}
-                </Badge>
+      {/* One section at a time: the التشكيلة and the القادة each take the whole width */}
+      <div
+        role="tablist"
+        aria-label={t('leader.sections')}
+        onKeyDown={onTabKeyDown}
+        className="no-scrollbar flex gap-1 overflow-x-auto border-b border-border"
+      >
+        {tabs.map((x) => {
+          const on = x.id === current;
+          return (
+            <button
+              key={x.id}
+              ref={(el) => (tabRefs.current[x.id] = el)}
+              type="button"
+              role="tab"
+              id={`leaders-tab-${x.id}`}
+              aria-selected={on}
+              aria-controls="leaders-tabpanel"
+              tabIndex={on ? 0 : -1}
+              title={x.title}
+              onClick={() => setTab(x.id)}
+              className={cn(
+                'focus-ring -mb-px inline-flex min-h-11 cursor-pointer items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-4 text-sm font-medium transition-colors',
+                on ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {locked
-                ? t('leader.lockedHint', {
-                    by: tachkila.locked_by || '—',
-                    admin: isAdmin ? t('leader.lockedHintAdmin') : t('leader.lockedHintUser'),
-                  })
-                : canEdit
-                  ? t('leader.tachkilaHint')
-                  : t('leader.readOnlyHint')}
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-            <SegmentedControl
-              label={t('leader.viewLabel')}
-              value={view}
-              onChange={setView}
-              size="sm"
-              className="col-span-2 sm:col-span-1"
-              options={[
-                { value: 'list', label: t('leader.viewList') },
-                { value: 'tree', label: t('leader.viewTree') },
-              ]}
-            />
-            <Select
-              value={branchFilter}
-              onChange={(e) => setBranchFilter(e.target.value)}
-              aria-label={t('member.branch')}
-              className="min-w-36 flex-1 sm:w-auto sm:flex-initial"
             >
-              <option value="">{t('member.allBranches')}</option>
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {branchName(b, i18n.language)}
-                </option>
-              ))}
-              <option value="amana">{t('leader.amanat')}</option>
-            </Select>
-            {tachkila.years.length > 0 && (
-              <Select
-                value={tachkila.year || ''}
-                onChange={(e) => setYear(e.target.value)}
-                aria-label={t('leader.year')}
-                className="min-w-28 flex-1 sm:w-auto sm:flex-initial"
-              >
-                {tachkila.years.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </Select>
-            )}
-            {isAdmin && (
-              <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => setCreatingYear(true)}>
-                <IconPlus />
-                {t('leader.newYear')}
-              </Button>
-            )}
-            {/* Only an admin may freeze a تشكيلة or lift the freeze */}
-            {isAdmin && tachkila.year && (
-              <Button variant={locked ? 'brand' : 'outline'} size="sm" className="w-full sm:w-auto" onClick={toggleLock}>
-                <IconLock />
-                {t(locked ? 'leader.unlock' : 'leader.lock')}
-              </Button>
-            )}
-            {canEdit && tachkila.year && tachkila.missing_count > 0 && (
-              <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={fillTemplate}>
-                <IconShield />
-                {t('leader.fillTemplate', { count: tachkila.missing_count })}
-              </Button>
-            )}
-            {tachkila.year && canEdit && (
-              <Button size="sm" className="w-full sm:w-auto" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
-                <IconPlus />
-                {t('leader.addAssignment')}
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="p-0 pb-2">
-          {tachkilaRes.loading ? (
-            <div className="space-y-3 p-4">
-              <Skeleton className="h-12" />
-              <Skeleton className="h-12" />
-            </div>
-          ) : tachkilaRes.error ? (
-            <div className="p-4">
-              <ErrorState
-                message={t('error.loadFailed')}
-                onRetry={tachkilaRes.reload}
-                retryLabel={t('error.retry')}
-              />
-            </div>
-          ) : tachkila.assignments.length === 0 ? (
-            <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
-          ) : view === 'tree' ? (
-            /* الهيكلية تعرض الفوج كله: فلتر الفرقة يخصّ اللائحة وحدها */
-            <OrgChart
-              assignments={tachkila.assignments}
-              branches={branches}
-              lang={i18n.language}
-              t={t}
-            />
-          ) : branchGroups.length === 0 && !(showAmanat && amanat.length > 0) ? (
-            <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
-          ) : (
-            <div>
-              {/* الأمانات first — عميد الفوج heads the organigram — then فرقة by فرقة */}
-              {showAmanat && amanat.length > 0 && (
+              {x.label}
+              {x.count != null && <Badge variant={on ? 'default' : 'secondary'}>{x.count}</Badge>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div role="tabpanel" id="leaders-tabpanel" aria-labelledby={`leaders-tab-${current}`}>
+        {current === 'tachkila' ? (
+          /* ---------- التشكيلة ---------- */
+          <Card className="overflow-hidden">
+            <CardHeader className="gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle>{t('leader.tachkila')}</CardTitle>
+                  {locked && (
+                    <Badge variant="warning">
+                      <IconLock className="h-3.5 w-3.5" />
+                      {t('leader.lockedBadge')}
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {locked
+                    ? t('leader.lockedHint', {
+                        by: tachkila.locked_by || '—',
+                        admin: isAdmin ? t('leader.lockedHintAdmin') : t('leader.lockedHintUser'),
+                      })
+                    : canEdit
+                      ? t('leader.tachkilaHint')
+                      : t('leader.readOnlyHint')}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                <SegmentedControl
+                  label={t('leader.viewLabel')}
+                  value={view}
+                  onChange={setView}
+                  size="sm"
+                  className="col-span-2 sm:col-span-1"
+                  options={[
+                    { value: 'list', label: t('leader.viewList') },
+                    { value: 'tree', label: t('leader.viewTree') },
+                  ]}
+                />
+                {branchSelect()}
+                {tachkila.years.length > 0 && (
+                  <Select
+                    value={tachkila.year || ''}
+                    onChange={(e) => setYear(e.target.value)}
+                    aria-label={t('leader.year')}
+                    className="min-w-28 flex-1 sm:w-auto sm:flex-initial"
+                  >
+                    {tachkila.years.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+                {isAdmin && (
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => setCreatingYear(true)}>
+                    <IconPlus />
+                    {t('leader.newYear')}
+                  </Button>
+                )}
+                {/* Only an admin may freeze a تشكيلة or lift the freeze */}
+                {isAdmin && tachkila.year && (
+                  <Button
+                    variant={locked ? 'brand' : 'outline'}
+                    size="sm"
+                    className="w-full sm:w-auto"
+                    onClick={toggleLock}
+                  >
+                    <IconLock />
+                    {t(locked ? 'leader.unlock' : 'leader.lock')}
+                  </Button>
+                )}
+                {canEdit && tachkila.year && tachkila.missing_count > 0 && (
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={fillTemplate}>
+                    <IconShield />
+                    {t('leader.fillTemplate', { count: tachkila.missing_count })}
+                  </Button>
+                )}
+                {tachkila.year && canEdit && (
+                  <Button size="sm" className="w-full sm:w-auto" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
+                    <IconPlus />
+                    {t('leader.addAssignment')}
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              {tachkilaRes.loading ? (
+                <div className="space-y-3 p-4">
+                  <Skeleton className="h-12" />
+                  <Skeleton className="h-12" />
+                </div>
+              ) : tachkilaRes.error ? (
+                <div className="p-4">
+                  <ErrorState
+                    message={t('error.loadFailed')}
+                    onRetry={tachkilaRes.reload}
+                    retryLabel={t('error.retry')}
+                  />
+                </div>
+              ) : tachkila.assignments.length === 0 ? (
+                <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
+              ) : view === 'tree' ? (
+                /* الهيكلية تعرض الفوج كله: فلتر الفرقة يخصّ اللائحة وحدها */
+                <OrgChart assignments={tachkila.assignments} branches={branches} lang={i18n.language} t={t} />
+              ) : branchGroups.length === 0 && !(showAmanat && amanat.length > 0) ? (
+                <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noAssignments')} />
+              ) : (
                 <div>
-                  <GroupHeading count={amanat.length}>{t('leader.amanat')}</GroupHeading>
-                  <ul className="divide-y divide-border">
-                    {/* الأمين ثم تابعوه في إثره بإزاحة، فالفريق يُقرأ كتلةً واحدة */}
-                    {amanat
-                      .filter((a) => !a.parent_id)
-                      .flatMap((root) => [
-                        <AssignmentRow key={root.id} a={root} />,
-                        ...amanat
-                          .filter((c) => c.parent_id === root.id)
-                          .map((c) => <AssignmentRow key={c.id} a={c} child />),
-                      ])}
-                    {/* تابعٌ فقد أمينه في عرضٍ قديم لا يختفي */}
-                    {amanat
-                      .filter((a) => a.parent_id && !amanat.some((r) => r.id === a.parent_id))
-                      .map((a) => (
-                        <AssignmentRow key={a.id} a={a} />
-                      ))}
-                  </ul>
+                  {/* Column heads for the eye only: every cell already names itself */}
+                  <div aria-hidden="true" className={cn(HEAD_CLS, SLOT_COLS)}>
+                    <span />
+                    <span>{t('leader.role')}</span>
+                    <span>{t('leader.colLeader')}</span>
+                    <span>{t('member.branch')}</span>
+                    <span />
+                  </div>
+                  {/* الأمانات first — عميد الفوج heads the organigram — then فرقة by فرقة */}
+                  {showAmanat && amanat.length > 0 && (
+                    <div>
+                      <GroupHeading count={amanat.length}>{t('leader.amanat')}</GroupHeading>
+                      <ul className="divide-y divide-border">
+                        {/* الأمين ثم تابعوه في إثره بإزاحة، فالفريق يُقرأ كتلةً واحدة */}
+                        {amanat
+                          .filter((a) => !a.parent_id)
+                          .flatMap((root) => [
+                            <SlotRow key={root.id} a={root} page={page} />,
+                            ...amanat
+                              .filter((c) => c.parent_id === root.id)
+                              .map((c) => <SlotRow key={c.id} a={c} child page={page} />),
+                          ])}
+                        {/* تابعٌ فقد أمينه في عرضٍ قديم لا يختفي */}
+                        {amanat
+                          .filter((a) => a.parent_id && !amanat.some((r) => r.id === a.parent_id))
+                          .map((a) => (
+                            <SlotRow key={a.id} a={a} page={page} />
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                  {branchGroups.map((g) => (
+                    <div key={g.branch.id}>
+                      <GroupHeading count={g.list.length}>{branchName(g.branch, i18n.language)}</GroupHeading>
+                      <ul className="divide-y divide-border">
+                        {g.list.map((a) => (
+                          <SlotRow key={a.id} a={a} page={page} />
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
                 </div>
               )}
-              {branchGroups.map((g) => (
-                <div key={g.branch.id}>
-                  <GroupHeading count={g.list.length}>{branchName(g.branch, i18n.language)}</GroupHeading>
+            </CardContent>
+          </Card>
+        ) : (
+          /* ---------- القادة ---------- */
+          <Card className="overflow-hidden">
+            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle>{t('leader.leadersList')}</CardTitle>
+                  <Badge variant="outline">{filteredLeaders.length}</Badge>
+                </div>
+                {/* فرقة القادة: قادة الفوج تُتابع مطالبهم سنويًا مثل باقي الفرق */}
+                <p className="mt-1 text-sm text-muted-foreground">{t('leader.cardHint')}</p>
+              </div>
+              {branchSelect('sm:max-w-56')}
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              {leadersRes.loading ? (
+                <div className="space-y-3 p-4">
+                  <Skeleton className="h-12" />
+                  <Skeleton className="h-12" />
+                  <Skeleton className="h-12" />
+                </div>
+              ) : filteredLeaders.length === 0 ? (
+                <EmptyState
+                  icon={<IconUsers className="h-6 w-6" />}
+                  title={t('leader.noLeaders')}
+                  action={
+                    isAdmin ? (
+                      <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+                        <IconPlus />
+                        {t('leader.addLeader')}
+                      </Button>
+                    ) : null
+                  }
+                />
+              ) : (
+                <div>
+                  <div aria-hidden="true" className={cn(HEAD_CLS, leaderCols)}>
+                    <span>{t('leader.colLeader')}</span>
+                    <span>{t('leader.colRoles')}</span>
+                    <span>{t('leader.colActivities')}</span>
+                    <span>{t('leader.colPresence')}</span>
+                    <span>{t('leader.colCard')}</span>
+                    {isAdmin && <span>{t('leader.colAccount')}</span>}
+                    {isAdmin && <span />}
+                  </div>
                   <ul className="divide-y divide-border">
-                    {g.list.map((a) => (
-                      <AssignmentRow key={a.id} a={a} />
+                    {filteredLeaders.map((l) => (
+                      <LeaderRow key={l.id} l={l} cols={leaderCols} page={page} />
                     ))}
                   </ul>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ---------- القادة ---------- */}
-      <Card>
-        <CardHeader className="flex-row items-start justify-between">
-          <div>
-            <CardTitle>{t('leader.leadersList')}</CardTitle>
-            {/* فرقة القادة: قادة الفوج تُتابع مطالبهم سنويًا مثل باقي الفرق */}
-            <p className="mt-1 text-sm text-muted-foreground">{t('leader.cardHint')}</p>
-          </div>
-          <Badge variant="outline">{filteredLeaders.length}</Badge>
-        </CardHeader>
-        <CardContent className="p-0 pb-2">
-          {leadersRes.loading ? (
-            <div className="space-y-3 p-4">
-              <Skeleton className="h-12" />
-              <Skeleton className="h-12" />
-              <Skeleton className="h-12" />
-            </div>
-          ) : filteredLeaders.length === 0 ? (
-            <EmptyState
-              icon={<IconUsers className="h-6 w-6" />}
-              title={t('leader.noLeaders')}
-              action={
-                isAdmin ? (
-                  <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
-                    <IconPlus />
-                    {t('leader.addLeader')}
-                  </Button>
-                ) : null
-              }
-            />
-          ) : (
-            <ul className="divide-y divide-border">
-              {filteredLeaders.map((l) => (
-                <li key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <Link
-                    to={`/leaders/${l.id}`}
-                    className="focus-ring flex min-w-40 flex-1 items-center gap-3 rounded-md"
-                  >
-                    <Avatar photo={l.photo} name={avatarName(l)} />
-                    <div className="min-w-0 flex-1">
-                      <span
-                        className={cn(
-                          'font-medium',
-                          l.status === 'inactive' && 'text-muted-foreground line-through decoration-1'
-                        )}
-                      >
-                        {memberName(l)}
-                      </span>
-                      <div className="mt-0.5 flex flex-wrap gap-1.5">
-                        {l.roles.length === 0 ? (
-                          <span className="text-xs text-muted-foreground">{t('leader.noRole')}</span>
-                        ) : (
-                          l.roles.map((r, i) => (
-                            <Badge key={i} variant={r.role_type === 'branch' ? 'default' : 'warning'}>
-                              {r.title}
-                            </Badge>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </Link>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {/* من له حساب يظهر اسمه هنا — جواب «من يدخل الموقع؟» من القائمة نفسها */}
-                    {isAdmin && l.account_username && (
-                      <Badge variant="outline" dir="ltr" className="max-w-40">
-                        <IconKey className="h-3 w-3" />
-                        <span className="truncate">{l.account_username}</span>
-                      </Badge>
-                    )}
-                    <span className="tabular-nums">
-                      {l.sessions_count} {t('leader.sessionsLed')}
-                    </span>
-                    <Badge variant="success">
-                      <IconCheck className="h-3 w-3" />
-                      {l.present_count}
-                    </Badge>
-                    <Badge variant="destructive">
-                      <IconX className="h-3 w-3" />
-                      {l.absent_count}
-                    </Badge>
-                    {/* بطاقة تقدم القائد لسنة التشكيلة الجارية */}
-                    {l.card?.total > 0 && (
-                      <Badge variant={l.card.done_count === l.card.total ? 'success' : 'outline'}>
-                        {t('leader.cardProgress', { done: l.card.done_count, total: l.card.total })}
-                      </Badge>
-                    )}
-                  </div>
-                  {isAdmin && (
-                    <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => (l.account_user_id ? revokeAccount(l) : setAccountFor(l))}
-                        aria-label={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
-                        title={t(l.account_user_id ? 'leader.accountRevoke' : 'leader.accountCreate')}
-                      >
-                        <IconKey className={l.account_user_id ? 'text-primary' : undefined} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setEditingLeader(l)}
-                        aria-label={t('common.edit')}
-                      >
-                        <IconPencil />
-                      </Button>
-                      <Button
-                        variant="destructive-ghost"
-                        size="icon"
-                        onClick={() => removeLeader(l)}
-                        aria-label={t('common.delete')}
-                      >
-                        <IconTrash />
-                      </Button>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       <Dialog
         open={!!editingLeader}
