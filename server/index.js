@@ -1196,6 +1196,39 @@ function currentScoutYear() {
 // costs the فرقة its achievement
 const planTitleKey = (t) => String(t || '').trim().toLowerCase();
 
+// بند «كما اعتُمد» ما دام على يومه و باسمه
+const matchesBaseline = (row, base) =>
+  row.date === base.date && planTitleKey(row.title) === planTitleKey(base.title);
+
+// الاعتماد، و مقارنة الخطة الحالية بالنسخة المعتمدة. respect = نسبة البنود المعتمدة
+// التي بقيت كما هي؛ المعدَّل و المحذوف يُنقصانها، و المضاف يُعدّ وحده.
+function planDiff(branchId, year, items) {
+  const validation =
+    db
+      .prepare('SELECT validated_at, validated_by FROM plan_validations WHERE branch_id = ? AND year = ?')
+      .get(branchId, year) || null;
+  const baseline = db
+    .prepare('SELECT id, date, title FROM plan_baseline WHERE branch_id = ? AND year = ? ORDER BY date, id')
+    .all(branchId, year);
+  const kept = new Set(items.map((i) => i.baseline_id).filter(Boolean));
+  const removed = baseline.filter((b) => !kept.has(b.id));
+  const changed = items.filter((i) => i.base && i.changed).length;
+  const same = items.filter((i) => i.base && !i.changed).length;
+  const added = validation ? items.filter((i) => !i.base).length : 0;
+  return {
+    validation,
+    removed,
+    summary: {
+      validated_total: baseline.length,
+      same,
+      changed,
+      removed: removed.length,
+      added,
+      respect: validation && baseline.length ? Math.round((same / baseline.length) * 100) : null,
+    },
+  };
+}
+
 // Years offered in the picker: every year that has plan rows, the current scout
 // year, and the next one — an annual plan is written before its year starts.
 function planYears() {
@@ -1222,7 +1255,12 @@ function syncPrimaryPlanItem(sessionId) {
 // الخطة الكاملة لفرقة في سنة، مع النشاط الذي حقّق كل بند إن وُجد
 function planFor(branchId, year) {
   const items = db
-    .prepare('SELECT id, year, branch_id, date, title FROM annual_plan WHERE branch_id = ? AND year = ? ORDER BY date, id')
+    .prepare(
+      `SELECT p.id, p.year, p.branch_id, p.date, p.title, p.baseline_id,
+              b.date AS base_date, b.title AS base_title
+         FROM annual_plan p LEFT JOIN plan_baseline b ON b.id = p.baseline_id
+        WHERE p.branch_id = ? AND p.year = ? ORDER BY p.date, p.id`
+    )
     .all(branchId, year);
   const range = scoutYearRange(year);
   const sessions = range
@@ -1255,11 +1293,15 @@ function planFor(branchId, year) {
       byTitle.get(k).push(s);
     }
   }
-  const rows = items.map((i) => {
+  const rows = items.map(({ base_date, base_title, ...i }) => {
     const titleMatches = byTitle.get(planTitleKey(i.title));
     const s = byPlan.get(i.id) || (titleMatches?.length ? titleMatches.shift() : null);
+    // البند كما اعتُمد، و هل تغيّر منذ الاعتماد
+    const base = i.baseline_id ? { id: i.baseline_id, date: base_date, title: base_title } : null;
     return {
       ...i,
+      base,
+      changed: base ? !matchesBaseline(i, base) : false,
       session: s ? { id: s.id, title: s.title, date: s.date, linked: s.linked_item_id === i.id } : null,
     };
   });
@@ -1268,6 +1310,7 @@ function planFor(branchId, year) {
     year,
     years: planYears(),
     items: rows,
+    ...planDiff(branchId, year, rows),
     total: rows.length,
     done_count: doneCount,
     rate: rows.length ? Math.round((doneCount / rows.length) * 100) : null,
@@ -1427,6 +1470,116 @@ app.put('/api/branches/:id/plan/month', requirePerm('branches.plan'), (req, res)
     }
   })();
   res.json(planFor(branch.id, year));
+});
+
+// اعتماد خطة فرقة لسنة: تُحفظ نسخة ثابتة منها، و تُقارن بها كل تعديلاتها اللاحقة.
+// إعادة الاعتماد تستبدل النسخة: التعديلات حتى الآن تصير هي الخطة المعتمدة.
+app.post('/api/branches/:id/plan/validate', requireAdmin, (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  const year = normYear(req.body?.year);
+  if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
+  const items = db
+    .prepare('SELECT id, date, title FROM annual_plan WHERE branch_id = ? AND year = ? ORDER BY date, id')
+    .all(branch.id, year);
+  if (!items.length) return res.status(400).json({ error: 'plan_empty' });
+  const ins = db.prepare('INSERT INTO plan_baseline (branch_id, year, date, title) VALUES (?, ?, ?, ?)');
+  const link = db.prepare('UPDATE annual_plan SET baseline_id = ? WHERE id = ?');
+  db.transaction(() => {
+    db.prepare('DELETE FROM plan_baseline WHERE branch_id = ? AND year = ?').run(branch.id, year);
+    for (const i of items) link.run(ins.run(branch.id, year, i.date, i.title).lastInsertRowid, i.id);
+    db.prepare(
+      `INSERT INTO plan_validations (branch_id, year, validated_at, validated_by)
+       VALUES (?, ?, datetime('now'), ?)
+       ON CONFLICT (branch_id, year) DO UPDATE SET validated_at = excluded.validated_at,
+         validated_by = excluded.validated_by`
+    ).run(branch.id, year, req.user.display_name || req.user.username);
+  })();
+  res.json(planFor(branch.id, year));
+});
+
+// سحب الاعتماد: الخطة تعود مسودّة، و تُنسى النسخة المعتمدة
+app.delete('/api/branches/:id/plan/validate', requireAdmin, (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  const year = normYear(req.query.year);
+  if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
+  db.transaction(() => {
+    db.prepare('DELETE FROM plan_baseline WHERE branch_id = ? AND year = ?').run(branch.id, year);
+    db.prepare('DELETE FROM plan_validations WHERE branch_id = ? AND year = ?').run(branch.id, year);
+  })();
+  res.json(planFor(branch.id, year));
+});
+
+// إرجاع بند كما اعتُمد: بند محذوف يعود، و بند معدَّل يستعيد يومه و اسمه. يحتفظ الصف
+// برقمه، فالنشاط المربوط به يبقى مربوطًا. بند آخر في يوم الأصل يحلّ محلّه الأصل.
+app.post('/api/branches/:id/plan/restore', requirePerm('branches.plan'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+  const base = db
+    .prepare('SELECT id, year, date, title FROM plan_baseline WHERE id = ? AND branch_id = ?')
+    .get(Number(req.body?.baseline_id), branch.id);
+  if (!base) return res.status(404).json({ error: 'baseline item not found' });
+  const own = db.prepare('SELECT id FROM annual_plan WHERE baseline_id = ?').get(base.id);
+  const atDate = db
+    .prepare('SELECT id FROM annual_plan WHERE branch_id = ? AND year = ? AND date = ?')
+    .get(branch.id, base.year, base.date);
+  db.transaction(() => {
+    if (own && atDate && atDate.id !== own.id) db.prepare('DELETE FROM annual_plan WHERE id = ?').run(atDate.id);
+    const target = own || atDate;
+    if (target)
+      db.prepare('UPDATE annual_plan SET date = ?, title = ?, baseline_id = ? WHERE id = ?').run(
+        base.date,
+        base.title,
+        base.id,
+        target.id
+      );
+    else
+      db.prepare('INSERT INTO annual_plan (year, branch_id, date, title, baseline_id) VALUES (?, ?, ?, ?, ?)').run(
+        base.year,
+        branch.id,
+        base.date,
+        base.title,
+        base.id
+      );
+  })();
+  res.json(planFor(branch.id, base.year));
+});
+
+// كل الخطط في صفحة واحدة: لكل فرقة ظاهرة للمستخدم خطتها، اعتمادها، و ما تغيّر
+// منذ الاعتماد
+app.get('/api/plans/overview', requirePerm('branches.read'), (req, res) => {
+  const wanted = normYear(req.query.year);
+  const year = scoutYearRange(wanted) ? wanted : currentScoutYear();
+  const branches = db
+    .prepare('SELECT id, name_fr, name_ar FROM branches ORDER BY sort_order, id')
+    .all()
+    .filter((b) => branchOk(req, b.id));
+  res.json({
+    year,
+    years: planYears(),
+    branches: branches.map((b) => {
+      const plan = planFor(b.id, year);
+      return {
+        ...b,
+        total: plan.total,
+        done_count: plan.done_count,
+        rate: plan.rate,
+        validation: plan.validation,
+        summary: plan.summary,
+        removed: plan.removed,
+        items: plan.items.map((i) => ({
+          id: i.id,
+          date: i.date,
+          title: i.title,
+          base: i.base,
+          changed: i.changed,
+          done: !!i.session,
+        })),
+      };
+    }),
+  });
 });
 
 // فرق كل الأعمار تأتي بعد سلّم السنّ في كل القوائم — و إلا صارت أول فرقة، أي

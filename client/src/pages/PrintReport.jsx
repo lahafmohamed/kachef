@@ -1566,7 +1566,9 @@ function PlanReport({ id, onReady, kindLabel }) {
     <ListSheet
       kindLabel={kindLabel}
       title={title}
-      count={`${plan.done_count}/${plan.total}${plan.rate !== null ? ` · ${plan.rate}%` : ''}`}
+      count={`${plan.done_count}/${plan.total}${plan.rate !== null ? ` · ${plan.rate}%` : ''}${
+        plan.validation ? ` · ${t('branch.planRespect')} ${plan.summary.respect ?? 0}%` : ` · ${t('branch.planDraftShort')}`
+      }`}
       empty={t('branch.planFree')}
       head={[
         { label: '#', className: 'w-8' },
@@ -1574,16 +1576,42 @@ function PlanReport({ id, onReady, kindLabel }) {
         t('session.sessionTitle'),
         t('print.planStatus'),
       ]}
-      rows={plan.items.map((item, i) => (
-        <tr key={item.id}>
-          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
-          <td className={tdNum}>{fmtDate(item.date)}</td>
-          <td className={cn(td, 'font-medium')}>{item.title}</td>
-          <td className={cn(td, item.session ? 'text-success' : 'text-muted-foreground')}>
-            {item.session ? t('print.planDone', { date: fmtDate(item.session.date) }) : t('branch.planNotDone')}
-          </td>
-        </tr>
-      ))}
+      rows={[
+        ...plan.items.map((item) => ({ item, date: item.date })),
+        // بنود معتمدة حُذفت بعد الاعتماد: تُطبع في يومها، مشطوبة
+        ...(plan.removed || []).map((base) => ({ base, date: base.date })),
+      ]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(({ item, base }) =>
+          item ? (
+            <tr key={item.id}>
+              <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{plan.items.indexOf(item) + 1}</td>
+              <td className={tdNum}>{fmtDate(item.date)}</td>
+              <td className={cn(td, 'font-medium')}>
+                {item.title}
+                {item.changed && (
+                  <div className="text-xs font-normal text-muted-foreground">
+                    {t('branch.planWas')} {item.base.title}
+                    {item.base.date !== item.date && ` · ${fmtDate(item.base.date)}`}
+                  </div>
+                )}
+                {plan.validation && !item.base && (
+                  <div className="text-xs font-normal text-muted-foreground">{t('branch.planAdded')}</div>
+                )}
+              </td>
+              <td className={cn(td, item.session ? 'text-success' : 'text-muted-foreground')}>
+                {item.session ? t('print.planDone', { date: fmtDate(item.session.date) }) : t('branch.planNotDone')}
+              </td>
+            </tr>
+          ) : (
+            <tr key={`removed-${base.id}`}>
+              <td className={cn(tdNum, 'w-8')} />
+              <td className={cn(tdNum, 'text-muted-foreground')}>{fmtDate(base.date)}</td>
+              <td className={cn(td, 'text-muted-foreground line-through')}>{base.title}</td>
+              <td className={cn(td, 'text-muted-foreground')}>{t('branch.planRemoved')}</td>
+            </tr>
+          )
+        )}
     />
   );
 }

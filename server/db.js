@@ -350,6 +350,25 @@ CREATE TABLE IF NOT EXISTS annual_plan (
   title TEXT NOT NULL
 );
 
+-- اعتماد الخطة السنوية: كل فرقة تكتب خطتها أول السنة، ثم يعتمدها المسؤول. الاعتماد
+-- يحفظ نسخة ثابتة من الخطة (plan_baseline)، و كل تغيير بعده يُقرأ بالمقارنة معها:
+-- بند معدَّل (يوم أو اسم)، بند محذوف، بند مضاف — لمعرفة هل التزمت الفرقة بخطتها.
+CREATE TABLE IF NOT EXISTS plan_validations (
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  year TEXT NOT NULL,
+  validated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  validated_by TEXT,
+  PRIMARY KEY (branch_id, year)
+);
+
+CREATE TABLE IF NOT EXISTS plan_baseline (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  year TEXT NOT NULL,
+  date TEXT NOT NULL,
+  title TEXT NOT NULL
+);
+
 -- Referential lists an admin curates (quartiers d'Abidjan, régions du Liban, écoles).
 -- Registration picks from them instead of typing free text, so "Zone 4" is always
 -- spelled the same way and filtering on it actually returns everybody.
@@ -741,6 +760,12 @@ function migrate() {
     'plan_item_id INTEGER REFERENCES annual_plan(id) ON DELETE SET NULL'
   );
   migrateAnnualPlan();
+  // بند الخطة كما اعتُمد؛ NULL = أُضيف بعد الاعتماد (أو الخطة لم تُعتمد بعد)
+  ensureColumn(
+    'annual_plan',
+    'baseline_id',
+    'baseline_id INTEGER REFERENCES plan_baseline(id) ON DELETE SET NULL'
+  );
   // الأنشطة القديمة كانت لفرقة واحدة و ببند خطة واحد: تُنسخ إلى الجدولين ليصيرا هما
   // المرجع لسؤالَي «أي فرق يخصّ؟» و «أي بنود ينفّذ؟». يُعاد التنفيذ بلا ضرر بفضل OR IGNORE.
   db.exec(`

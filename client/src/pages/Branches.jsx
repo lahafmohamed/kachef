@@ -38,6 +38,7 @@ import {
   IconLink,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconShield,
   IconTrash,
   IconTrendingUp,
@@ -165,6 +166,25 @@ function daysOf(key) {
 // كل سبوت الشهر — the plan's default rows: normally every سبت carries a نشاط
 const saturdaysOf = (key) => daysOf(key).filter((d) => toDate(d).getDay() === 6);
 
+/** صفوف الشهر للتحرير: كل سبت و لو فارغًا، و الأيام المحفوظة معها، مرتّبة بالتاريخ. */
+function monthRows(items, key) {
+  const byDate = new Map(
+    items
+      .filter((i) => i.date.startsWith(key))
+      .map((i) => [i.date, { ...i, extra: toDate(i.date).getDay() !== 6 }])
+  );
+  for (const d of saturdaysOf(key))
+    if (!byDate.has(d)) byDate.set(d, { id: null, date: d, title: '', session: null, extra: false });
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Same rule as the server: trimmed, case-folded
+const titleKey = (v) => String(v || '').trim().toLowerCase();
+
+// بند تغيّر منذ اعتماد الخطة — يُحسب من المسودّة، فيظهر قبل الحفظ
+const differsFromBase = (row) =>
+  !!row.base && (row.date !== row.base.date || titleKey(row.title) !== titleKey(row.base.title));
+
 // "sam. 06/09" — weekday and day, latin digits in both locales
 const dayLabelFormats = {};
 function fmtDay(iso, lng) {
@@ -177,35 +197,64 @@ function fmtDay(iso, lng) {
   return f.format(toDate(iso)).replace(/[‎‏؜]/g, '');
 }
 
-/** صف واحد من جدول الشهر: يوم + النشاط المبرمج فيه + حالته. */
-function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink }) {
+/** خانة اليوم: سبوت الشهر ثابتة، و اليوم الإضافي يُختار من أيام الشهر الحرّة. */
+function DayCell({ row, index, days, canEdit, onDate }) {
   const { t, i18n } = useTranslation();
   const isSaturday = toDate(row.date)?.getDay() === 6;
+  // An extra day stays changeable; the Saturdays of the month are fixed rows
+  return row.extra && canEdit ? (
+    <Select
+      value={row.date}
+      onChange={(e) => onDate(index, e.target.value)}
+      aria-label={t('common.date')}
+      className="h-11 sm:h-9"
+    >
+      {days.map((d) => (
+        <option key={d} value={d}>
+          {fmtDay(d, i18n.language)}
+        </option>
+      ))}
+    </Select>
+  ) : (
+    <span className="flex items-center gap-1.5 text-sm tabular-nums">
+      {isSaturday && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />}
+      <span className={isSaturday ? 'font-medium' : 'text-muted-foreground'}>
+        {fmtDay(row.date, i18n.language)}
+      </span>
+    </span>
+  );
+}
+
+/** سطر تحت بند تغيّر منذ الاعتماد: ما كان في الخطة المعتمدة، و زرّ يعيده كما كان. */
+function BaseNote({ base, removed, showDate, canEdit, onRestore }) {
+  const { t, i18n } = useTranslation();
+  return (
+    <div className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs sm:col-span-3">
+      <Badge variant={removed ? 'destructive' : 'warning'}>
+        {t(removed ? 'branch.planRemoved' : 'branch.planChanged')}
+      </Badge>
+      <span className="text-muted-foreground">
+        {t('branch.planWas')} <span className="font-medium text-foreground">{base.title}</span>
+        {showDate && <span className="tabular-nums"> · {fmtDay(base.date, i18n.language)}</span>}
+      </span>
+      {canEdit && (
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onRestore(base.id)}>
+          <IconRefresh />
+          {t('branch.planRestore')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** صف واحد من جدول الشهر: يوم + النشاط المبرمج فيه + حالته. */
+function PlanRow({ row, index, days, canEdit, validated, removedHere, onTitle, onDate, onRemove, onLink, onRestore }) {
+  const { t } = useTranslation();
+  const changed = differsFromBase(row);
 
   return (
     <li className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:grid-cols-[9rem_1fr_auto]">
-      {/* An extra day stays changeable; the Saturdays of the month are fixed rows */}
-      {row.extra && canEdit ? (
-        <Select
-          value={row.date}
-          onChange={(e) => onDate(index, e.target.value)}
-          aria-label={t('common.date')}
-          className="h-11 sm:h-9"
-        >
-          {days.map((d) => (
-            <option key={d} value={d}>
-              {fmtDay(d, i18n.language)}
-            </option>
-          ))}
-        </Select>
-      ) : (
-        <span className="flex items-center gap-1.5 text-sm tabular-nums">
-          {isSaturday && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />}
-          <span className={isSaturday ? 'font-medium' : 'text-muted-foreground'}>
-            {fmtDay(row.date, i18n.language)}
-          </span>
-        </span>
-      )}
+      <DayCell row={row} index={index} days={days} canEdit={canEdit} onDate={onDate} />
 
       {canEdit ? (
         <Input
@@ -221,6 +270,8 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink 
       )}
 
       <div className="col-span-2 flex items-center gap-2 sm:col-span-1">
+        {/* أُضيف بعد اعتماد الخطة */}
+        {validated && !row.base && row.title.trim() && <Badge variant="info">{t('branch.planAdded')}</Badge>}
         {row.session ? (
           <Link
             to={`/sessions/${row.session.id}`}
@@ -256,7 +307,81 @@ function PlanRow({ row, index, days, canEdit, onTitle, onDate, onRemove, onLink 
           </Button>
         )}
       </div>
+
+      {changed && (
+        <BaseNote
+          base={row.base}
+          removed={!row.title.trim()}
+          showDate={row.date !== row.base.date}
+          canEdit={canEdit}
+          onRestore={onRestore}
+        />
+      )}
+      {!changed && removedHere && <BaseNote base={removedHere} removed canEdit={canEdit} onRestore={onRestore} />}
     </li>
+  );
+}
+
+/**
+ * حال اعتماد الخطة: مسودّة، أو معتمدة مع نسبة الالتزام بها و ما تغيّر منذ اعتمادها.
+ * الاعتماد و سحبه للمسؤول وحده، كما في الخادم.
+ */
+function ValidationBar({ plan, isAdmin, busy, onValidate, onUnvalidate }) {
+  const { t } = useTranslation();
+  const v = plan.validation;
+  const sum = plan.summary;
+  return (
+    <div
+      className={
+        v
+          ? 'space-y-2 rounded-xl border border-success/25 bg-success/8 px-3 py-2.5'
+          : 'space-y-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5'
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-1.5 text-sm font-medium">
+          {v ? <IconCheck className="h-4 w-4 text-success" /> : <IconClock className="h-4 w-4 text-warning" />}
+          {v
+            ? t('branch.planValidated', { date: fmtDate(v.validated_at.slice(0, 10)), by: v.validated_by || '—' })
+            : t('branch.planDraft')}
+        </span>
+        <span className="grow" />
+        {isAdmin && (
+          <>
+            {v && (
+              <Button size="sm" variant="ghost" onClick={onUnvalidate} disabled={busy}>
+                {t('branch.planUnvalidate')}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={v ? 'outline' : 'brand'}
+              onClick={onValidate}
+              loading={busy}
+              disabled={!v && plan.total === 0}
+            >
+              <IconCheck />
+              {t(v ? 'branch.planRevalidate' : 'branch.planValidate')}
+            </Button>
+          </>
+        )}
+      </div>
+      {v ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
+            {t('branch.planRespect')} · {sum.respect ?? 0}%
+          </Badge>
+          <Badge variant="outline">{t('branch.planCountSame', { count: sum.same, total: sum.validated_total })}</Badge>
+          {sum.changed > 0 && <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>}
+          {sum.removed > 0 && (
+            <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
+          )}
+          {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
+        </div>
+      ) : (
+        <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planValidateHint')}</p>
+      )}
+    </div>
   );
 }
 
@@ -380,6 +505,10 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
 function AnnualPlan({ branchId }) {
   const { t, i18n } = useTranslation();
   const { can } = usePerms();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const confirm = useConfirm();
+  const [validating, setValidating] = useState(false);
   const toast = useToast();
   const [year, setYear] = useState('');
   // Opens on the month the قائد is living in, not on أيلول
@@ -399,13 +528,7 @@ function AnnualPlan({ branchId }) {
   // offered even when empty, saved days join them, and the whole month sorts by date.
   useEffect(() => {
     if (!plan || !key) return;
-    const saved = plan.items.filter((i) => i.date.startsWith(key));
-    const byDate = new Map(
-      saved.map((i) => [i.date, { ...i, extra: toDate(i.date).getDay() !== 6 }])
-    );
-    for (const d of saturdaysOf(key))
-      if (!byDate.has(d)) byDate.set(d, { id: null, date: d, title: '', session: null, extra: false });
-    setRows([...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)));
+    setRows(monthRows(plan.items, key));
     setDirty(false);
   }, [plan, key]);
 
@@ -458,11 +581,59 @@ function AnnualPlan({ branchId }) {
     setLinkId(row.id);
   }
 
+  // إرجاع بند كما اعتُمد — بعد حفظ المسودّة، للسبب نفسه
+  async function restore(baselineId) {
+    if (dirty && !(await save())) return;
+    try {
+      res.setData(await api.post(`/branches/${branchId}/plan/restore`, { baseline_id: baselineId }));
+      toast.success(t('common.saved'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  // الاعتماد يصوّر الخطة المحفوظة: ما في المسودّة يُحفظ أولًا
+  async function validate() {
+    if (
+      plan.validation &&
+      !(await confirm({ title: t('branch.planRevalidate'), message: t('branch.planRevalidateConfirm') }))
+    )
+      return;
+    if (dirty && !(await save())) return;
+    setValidating(true);
+    try {
+      res.setData(await api.post(`/branches/${branchId}/plan/validate`, { year: plan.year }));
+      toast.success(t('common.saved'));
+    } catch (err) {
+      toast.error(err.message === 'plan_empty' ? t('branch.planEmptyError') : err.message);
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  async function unvalidate() {
+    if (!(await confirm({ title: t('branch.planUnvalidate'), message: t('branch.planUnvalidateConfirm') })))
+      return;
+    setValidating(true);
+    try {
+      res.setData(await api.del(`/branches/${branchId}/plan/validate?year=${encodeURIComponent(plan.year)}`));
+      toast.success(t('common.saved'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setValidating(false);
+    }
+  }
+
   const monthDone = rows.filter((r) => r.session).length;
   const monthPlanned = rows.filter((r) => r.title.trim()).length;
   const linkItem = plan?.items.find((i) => i.id === linkId) || null;
   // Days still selectable for an extra row: the free ones, plus the row's own date
   const takenDates = new Set(rows.filter((r) => !r.extra).map((r) => r.date));
+  // بنود معتمدة حُذفت هذا الشهر: تحت صف يومها، أو تحت الجدول إن لم يبقَ لها صف
+  const removedMonth = (plan?.removed || []).filter((b) => key && b.date.startsWith(key));
+  const removedAt = (row) => removedMonth.find((b) => b.date === row.date && row.base?.id !== b.id);
+  const removedLoose = removedMonth.filter((b) => !rows.some((r) => r.date === b.date));
 
   return (
     <Card>
@@ -513,6 +684,14 @@ function AnnualPlan({ branchId }) {
               </div>
             )}
 
+            <ValidationBar
+              plan={plan}
+              isAdmin={isAdmin}
+              busy={validating}
+              onValidate={validate}
+              onUnvalidate={unvalidate}
+            />
+
             <div className="flex flex-wrap items-center gap-2">
               <Select
                 className="w-auto"
@@ -562,15 +741,28 @@ function AnnualPlan({ branchId }) {
                       index={i}
                       days={daysOf(key).filter((d) => d === row.date || !takenDates.has(d))}
                       canEdit={canEdit}
+                      validated={!!plan.validation}
+                      removedHere={removedAt(row)}
                       onTitle={setTitle}
                       onDate={setDate}
                       onRemove={removeRow}
                       onLink={openLink}
+                      onRestore={restore}
                     />
                   ))}
                 </ul>
               )}
             </div>
+
+            {removedLoose.length > 0 && (
+              <ul className="space-y-2 rounded-xl border border-dashed border-border px-3 py-2">
+                {removedLoose.map((b) => (
+                  <li key={b.id} className="grid grid-cols-[5rem_1fr] sm:grid-cols-[9rem_1fr_auto]">
+                    <BaseNote base={b} removed showDate canEdit={canEdit} onRestore={restore} />
+                  </li>
+                ))}
+              </ul>
+            )}
 
             <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planHint')}</p>
 
@@ -591,6 +783,164 @@ function AnnualPlan({ branchId }) {
   );
 }
 
+/**
+ * كل الخطط السنوية في صفحة واحدة: لكل فرقة حال اعتمادها و التزامها بها، ثم جدول
+ * الشهر فرقةً بجانب فرقة — ما بقي كما اعتُمد، ما عُدِّل (و ماذا كان)، ما حُذف، ما أُضيف.
+ */
+function PlansOverview({ onOpenBranch }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [year, setYear] = useState('');
+  const [month, setMonth] = useState(() => new Date().getMonth() + 1);
+  const res = useFetch(`/plans/overview${year ? `?year=${encodeURIComponent(year)}` : ''}`);
+  const data = res.data;
+  const key = data ? monthKey(data.year, month) : null;
+
+  // الأيام: كل يوم فيه بند أو بند معتمد محذوف عند أي فرقة
+  const dates = data
+    ? [
+        ...new Set(
+          data.branches.flatMap((b) => [...b.items, ...b.removed].map((i) => i.date).filter((d) => d.startsWith(key)))
+        ),
+      ].sort()
+    : [];
+
+  return (
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
+          {t('branch.planAll')}
+        </CardTitle>
+        {data && (
+          <Select className="w-auto" value={data.year} onChange={(e) => setYear(e.target.value)} aria-label={t('common.year')}>
+            {data.years.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </Select>
+        )}
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <p className="text-sm leading-relaxed text-muted-foreground">{t('branch.planAllSubtitle')}</p>
+        {res.loading && <Skeleton className="h-40" />}
+        {res.error && <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />}
+
+        {data && (
+          <>
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {data.branches.map((b) => {
+                const sum = b.summary;
+                return (
+                  <li key={b.id}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenBranch(b.id)}
+                      className="focus-ring flex h-full w-full flex-col gap-2 rounded-xl border border-border px-3 py-2.5 text-start transition-colors hover:bg-accent/50"
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <span className="font-medium">{branchName(b, lng)}</span>
+                        <Badge variant={b.validation ? 'success' : 'warning'}>
+                          {t(b.validation ? 'branch.planValidatedShort' : 'branch.planDraftShort')}
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {t('branch.planProgress', { done: b.done_count, total: b.total })}
+                        {b.validation && ` · ${fmtDate(b.validation.validated_at.slice(0, 10))}`}
+                      </div>
+                      {b.validation && (
+                        <div className="flex flex-wrap gap-1.5">
+                          <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
+                            {t('branch.planRespect')} · {sum.respect ?? 0}%
+                          </Badge>
+                          {sum.changed > 0 && (
+                            <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>
+                          )}
+                          {sum.removed > 0 && (
+                            <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
+                          )}
+                          {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
+                        </div>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <Select className="w-auto" value={month} onChange={(e) => setMonth(Number(e.target.value))} aria-label={t('common.month')}>
+              {SCOUT_MONTHS.map((m) => (
+                <option key={m} value={m}>
+                  {monthName(m, lng)}
+                </option>
+              ))}
+            </Select>
+
+            {dates.length === 0 ? (
+              <p className="rounded-xl border border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                {t('branch.planFree')}
+              </p>
+            ) : (
+              // الجدول وحده يمرّ أفقيًا على الهاتف، لا الصفحة
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full min-w-[40rem] border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
+                      <th className="px-3 py-2 text-start font-medium">{t('common.date')}</th>
+                      {data.branches.map((b) => (
+                        <th key={b.id} className="px-3 py-2 text-start font-medium">
+                          {branchName(b, lng)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {dates.map((d) => (
+                      <tr key={d} className="align-top">
+                        <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">{fmtDay(d, lng)}</td>
+                        {data.branches.map((b) => {
+                          const item = b.items.find((i) => i.date === d);
+                          const gone = b.removed.find((r) => r.date === d);
+                          return (
+                            <td key={b.id} className="space-y-1 px-3 py-2">
+                              {item && (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {item.done && <IconCheck className="h-3.5 w-3.5 shrink-0 text-success" />}
+                                  <span className="font-medium">{item.title}</span>
+                                  {item.changed && <Badge variant="warning">{t('branch.planChanged')}</Badge>}
+                                  {b.validation && !item.base && <Badge variant="info">{t('branch.planAdded')}</Badge>}
+                                </div>
+                              )}
+                              {item?.changed && (
+                                <div className="text-xs text-muted-foreground">
+                                  {t('branch.planWas')} {item.base.title}
+                                  {item.base.date !== item.date && ` · ${fmtDay(item.base.date, lng)}`}
+                                </div>
+                              )}
+                              {gone && (
+                                <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+                                  <span className="line-through">{gone.title}</span>
+                                  <Badge variant="destructive">{t('branch.planRemoved')}</Badge>
+                                </div>
+                              )}
+                              {!item && !gone && <span className="text-muted-foreground">—</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 /** أنشطة of the selected فرقة, newest first, paged so a long history stays usable. */
 function BranchSessions({ branchId }) {
@@ -1091,6 +1441,8 @@ export default function Branches() {
     );
 
   // One فرقة at a time. A stale saved id (فرقة deleted) falls back to the first one.
+  // 'all' = كل الخطط السنوية جنبًا إلى جنب
+  const showAll = selectedId === 'all';
   const b = branches.find((x) => x.id === selectedId) || branches[0];
   const name = branchName(b, i18n.language);
   const ages = b.all_ages
@@ -1113,18 +1465,24 @@ export default function Branches() {
       <div className="flex flex-wrap items-center gap-2">
         {/* Chips on a wide screen, a plain select on a phone — same state either way */}
         <div className="hidden flex-wrap gap-2 sm:flex">
+          <Button size="sm" variant={showAll ? 'brand' : 'outline'} onClick={() => setSelectedId('all')}>
+            <IconCalendar />
+            {t('branch.planAll')}
+          </Button>
           {branches.map((x) => (
             <Button
               key={x.id}
               size="sm"
-              variant={x.id === b.id ? 'brand' : 'outline'}
+              variant={!showAll && x.id === b.id ? 'brand' : 'outline'}
               onClick={() => setSelectedId(x.id)}
             >
               {branchName(x, i18n.language)}
               <Badge
                 variant="outline"
                 className={
-                  x.id === b.id ? 'border-primary-foreground/35 text-primary-foreground' : undefined
+                  !showAll && x.id === b.id
+                    ? 'border-primary-foreground/35 text-primary-foreground'
+                    : undefined
                 }
               >
                 {x.members.active}
@@ -1134,124 +1492,131 @@ export default function Branches() {
         </div>
         <Select
           className="sm:hidden"
-          value={b.id}
-          onChange={(e) => setSelectedId(Number(e.target.value))}
+          value={showAll ? 'all' : b.id}
+          onChange={(e) => setSelectedId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
           aria-label={t('member.branch')}
         >
+          <option value="all">{t('branch.planAll')}</option>
           {branches.map((x) => (
             <option key={x.id} value={x.id}>
               {branchName(x, i18n.language)} ({x.members.active})
             </option>
           ))}
         </Select>
-        <ExportPdfButton kind="branches" id={b.id} className="ms-auto" />
+        {!showAll && <ExportPdfButton kind="branches" id={b.id} className="ms-auto" />}
       </div>
 
-      <Card>
-        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-          <CardTitle>{name}</CardTitle>
-          <div className="flex flex-wrap gap-1.5">
-            <Badge variant="outline">{ages}</Badge>
-            {b.last_session && (
-              <Badge variant="outline">
-                {t('branch.lastSession')} · {fmtDate(b.last_session.date)}
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
+      {showAll ? (
+        <PlansOverview onOpenBranch={setSelectedId} />
+      ) : (
+        <>
+          <Card>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+              <CardTitle>{name}</CardTitle>
+              <div className="flex flex-wrap gap-1.5">
+                <Badge variant="outline">{ages}</Badge>
+                {b.last_session && (
+                  <Badge variant="outline">
+                    {t('branch.lastSession')} · {fmtDate(b.last_session.date)}
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
 
-        <CardContent className="space-y-5">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
-            <Metric
-              icon={<IconUsers className="h-3.5 w-3.5" />}
-              label={t('branch.members')}
-              value={b.members.active}
-              hint={t('branch.sexSplit', { male: b.members.male, female: b.members.female })}
-            />
-            <Metric
-              icon={<IconCalendar className="h-3.5 w-3.5" />}
-              label={t('branch.activities')}
-              value={b.sessions_count}
-              hint={t('branch.thisMonth', { count: b.sessions_month })}
-            />
-            <Metric
-              icon={<IconCheck className="h-3.5 w-3.5" />}
-              label={t('branch.attendanceRate')}
-              value={b.attendance.rate !== null ? `${b.attendance.rate}%` : t('dashboard.noData')}
-              hint={t('branch.presentAbsent', {
-                present: b.attendance.present,
-                absent: b.attendance.absent,
-              })}
-            />
-            <Metric
-              icon={<IconAward className="h-3.5 w-3.5" />}
-              label={t('branch.matalib')}
-              value={`${b.matalib.covered_count}/${b.matalib.total}`}
-              hint={t('branch.matalibHint')}
-            />
-          </div>
+            <CardContent className="space-y-5">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+                <Metric
+                  icon={<IconUsers className="h-3.5 w-3.5" />}
+                  label={t('branch.members')}
+                  value={b.members.active}
+                  hint={t('branch.sexSplit', { male: b.members.male, female: b.members.female })}
+                />
+                <Metric
+                  icon={<IconCalendar className="h-3.5 w-3.5" />}
+                  label={t('branch.activities')}
+                  value={b.sessions_count}
+                  hint={t('branch.thisMonth', { count: b.sessions_month })}
+                />
+                <Metric
+                  icon={<IconCheck className="h-3.5 w-3.5" />}
+                  label={t('branch.attendanceRate')}
+                  value={b.attendance.rate !== null ? `${b.attendance.rate}%` : t('dashboard.noData')}
+                  hint={t('branch.presentAbsent', {
+                    present: b.attendance.present,
+                    absent: b.attendance.absent,
+                  })}
+                />
+                <Metric
+                  icon={<IconAward className="h-3.5 w-3.5" />}
+                  label={t('branch.matalib')}
+                  value={`${b.matalib.covered_count}/${b.matalib.total}`}
+                  hint={t('branch.matalibHint')}
+                />
+              </div>
 
-          <div>
-            <div className="mb-1.5 flex items-baseline justify-between text-sm">
-              <span className="font-medium">{t('branch.matalibProgress')}</span>
-              <span className="tabular-nums text-muted-foreground">{matalibPct}%</span>
-            </div>
-            <ProgressBar value={matalibPct} label={t('branch.matalibProgress')} />
-            {b.matalib.covered_count > 0 && (
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground" dir="ltr">
-                {b.matalib.covered.join(' · ')}
-              </p>
-            )}
-          </div>
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between text-sm">
+                  <span className="font-medium">{t('branch.matalibProgress')}</span>
+                  <span className="tabular-nums text-muted-foreground">{matalibPct}%</span>
+                </div>
+                <ProgressBar value={matalibPct} label={t('branch.matalibProgress')} />
+                {b.matalib.covered_count > 0 && (
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground" dir="ltr">
+                    {b.matalib.covered.join(' · ')}
+                  </p>
+                )}
+              </div>
 
-          <div>
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-              <IconShield className="h-4 w-4 text-muted-foreground" />
-              {t('branch.leaders')}
-              {b.year && <span className="text-xs text-muted-foreground">· {b.year}</span>}
-            </div>
-            {leaders.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t('branch.noLeaders')}</p>
-            ) : (
-              <ul className="grid gap-2 sm:grid-cols-2">
-                {leaders.map((l) => (
-                  <li key={l.id}>
-                    <Link
-                      to={`/leaders/${l.leader_id}`}
-                      className="focus-ring flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50"
-                    >
-                      <Avatar photo={l.photo} name={avatarName(l)} className="h-9 w-9" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">
-                          {memberName(l)}
-                        </div>
-                        <div className="truncate text-xs text-muted-foreground">{l.title}</div>
-                      </div>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <IconShield className="h-4 w-4 text-muted-foreground" />
+                  {t('branch.leaders')}
+                  {b.year && <span className="text-xs text-muted-foreground">· {b.year}</span>}
+                </div>
+                {leaders.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">{t('branch.noLeaders')}</p>
+                ) : (
+                  <ul className="grid gap-2 sm:grid-cols-2">
+                    {leaders.map((l) => (
+                      <li key={l.id}>
+                        <Link
+                          to={`/leaders/${l.leader_id}`}
+                          className="focus-ring flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50"
+                        >
+                          <Avatar photo={l.photo} name={avatarName(l)} className="h-9 w-9" />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">
+                              {memberName(l)}
+                            </div>
+                            <div className="truncate text-xs text-muted-foreground">{l.title}</div>
+                          </div>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </CardContent>
+          </Card>
 
-      {/* key: switching فرقة must refetch its own مجموعات, not show the previous one */}
-      <BranchGroups key={`groups-${b.id}`} branchId={b.id} />
+          {/* key: switching فرقة must refetch its own مجموعات, not show the previous one */}
+          <BranchGroups key={`groups-${b.id}`} branchId={b.id} />
 
-      {/* key: switching فرقة must refetch its own plan, not show the previous one */}
-      <AnnualPlan key={`plan-${b.id}`} branchId={b.id} />
+          {/* key: switching فرقة must refetch its own plan, not show the previous one */}
+          <AnnualPlan key={`plan-${b.id}`} branchId={b.id} />
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>{t('branch.sessionsTitle')}</CardTitle>
-          <Badge variant="outline">{b.sessions_count}</Badge>
-        </CardHeader>
-        <CardContent className="p-0 pb-2">
-          {/* key: switching فرقة must refetch, not reuse the previous list */}
-          <BranchSessions key={b.id} branchId={b.id} />
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader className="flex-row items-center justify-between">
+              <CardTitle>{t('branch.sessionsTitle')}</CardTitle>
+              <Badge variant="outline">{b.sessions_count}</Badge>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              {/* key: switching فرقة must refetch, not reuse the previous list */}
+              <BranchSessions key={b.id} branchId={b.id} />
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       {newBranchDialog}
     </div>
