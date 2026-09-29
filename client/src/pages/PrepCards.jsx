@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
+import ExportPdfButton from '../components/ExportPdfButton';
 import { branchName, fmtDate, fmtTime, memberName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
 import FilterSelect from '../components/FilterSelect';
@@ -85,6 +86,11 @@ export default function PrepCards() {
         title={t('prep.title')}
         description={filtering ? t('prep.resultCount', { count: list.length }) : t('prep.subtitle')}
       >
+        {(() => {
+          const q = new URLSearchParams(params);
+          q.delete('branch');
+          return <ExportPdfButton kind="prep-list" id={params.get('branch') || 0} query={q.toString()} />;
+        })()}
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>
             <IconPlus />

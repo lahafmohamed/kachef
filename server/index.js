@@ -3355,15 +3355,14 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     for (const g of groupIds)
       db.prepare('INSERT OR IGNORE INTO session_groups (session_id, group_id) VALUES (?, ?)')
         .run(sessionId, g);
-    // كل عناصر النشاط غير معلَّمين افتراضيًا (unmarked): لا يُحسبون في المعدّل حتى
-    // يُلمسوا — لئلّا يضرّ نشاطٌ لم يُؤخذ حضوره بعد بمعدّلات العناصر. القائد يقلب
-    // الحاضرين، و زرّ «الباقون غياب» يعلّم من بقي. (After the group inserts —
+    // كل عناصر النشاط غائبون افتراضيًا: القائد يقلب الحاضرين وحدهم. المعدّلات لا
+    // تحسب إلا الأنشطة التي حلّ تاريخها، فنشاطٌ مقبل لا يضرّ أحدًا. (After the group inserts —
     // the group-scope SQL reads session_groups for this very session.)
     if (kind === 'activity') {
       const rosterBranches = branchIds.map(intOr).join(',') || -1;
       db.prepare(
         `INSERT OR IGNORE INTO attendance (session_id, member_id, status, branch_id, group_id)
-         SELECT ?, m.id, 'unmarked', m.branch_id, m.group_id FROM members m
+         SELECT ?, m.id, 'absent', m.branch_id, m.group_id FROM members m
          WHERE m.branch_id IN (${rosterBranches}) AND m.status = 'active'
            AND ${memberInSessionGroupsSQL(sessionId, 'm')}`
       ).run(sessionId);
@@ -4007,6 +4006,22 @@ const PDF_KINDS = {
   branches: 'branches.read',
   // قائمة لا بطاقة: «الترفيعات في الانتظار»، و الرقم فرقةٌ لا عنصر — 0 يعني كل الفرق
   promotions: 'promotions.read',
+  // القوائم: الرقم فرقةٌ (0 = كل الفرق)، و المرشِّحات الحالية للصفحة تُمرَّر في الاستعلام
+  'members-list': 'members.read',
+  'leaders-list': 'leaders.read',
+  'sessions-list': 'sessions.read',
+  'prep-list': 'sessions.read',
+  // خطة الفرقة السنوية: الرقم فرقة، و ?year= السنة الكشفية
+  plan: 'branches.read',
+  prep: 'sessions.read',
+};
+// Filters the list sheets read from the query string — nothing else reaches Chromium's URL
+const printQuery = (q) => {
+  const out = new URLSearchParams();
+  for (const [k, v] of Object.entries(q || {}))
+    if (k !== 'lang' && /^[a-z_]{1,32}$/.test(k) && typeof v === 'string' && v.length <= 120) out.set(k, v);
+  const s = out.toString();
+  return s ? `?${s}` : '';
 };
 // Where Chromium finds the app: the served build in production, Vite in dev
 const clientBaseUrl = () =>
@@ -4021,7 +4036,7 @@ app.get('/api/export/:kind/:id.pdf', async (req, res) => {
   const lang = req.query.lang === 'ar' ? 'ar' : 'fr';
   try {
     const { pdf, title } = await renderPdf({
-      url: `${clientBaseUrl()}/print/${req.params.kind}/${req.params.id}`,
+      url: `${clientBaseUrl()}/print/${req.params.kind}/${req.params.id}${printQuery(req.query)}`,
       token: req.token,
       lang,
     });

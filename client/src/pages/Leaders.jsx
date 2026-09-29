@@ -1,3 +1,4 @@
+import ExportPdfButton from '../components/ExportPdfButton';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -1281,6 +1282,7 @@ export default function Leaders() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
+        <ExportPdfButton kind="leaders-list" id={0} />
         {isAdmin && (
           <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
             <IconPlus />

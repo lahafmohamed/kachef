@@ -478,6 +478,7 @@ function AnnualPlan({ branchId }) {
                 {t('branch.planProgress', { done: plan.done_count, total: plan.total })}
               </Badge>
             )}
+            <ExportPdfButton kind="plan" id={branchId} query={`year=${encodeURIComponent(plan.year)}`} />
             <Select
               className="w-auto"
               value={plan.year}

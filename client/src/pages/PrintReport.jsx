@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
@@ -43,6 +43,13 @@ const KINDS = {
   branches: { perm: 'branches.read', label: 'print.reportBranch', back: '/branches' },
   // الوحيدة التي ترقيمها ليس رقم بطاقة بل رقم فرقة، و 0 فيها تعني كل الفرق
   promotions: { perm: 'promotions.read', label: 'print.reportPromotions', back: '/promotions' },
+  // Lists: the id is a فرقة (0 = all), the page's filters ride in the query string
+  'members-list': { perm: 'members.read', label: 'print.reportMembersList', back: '/members' },
+  'leaders-list': { perm: 'leaders.read', label: 'print.reportLeadersList', back: '/leaders' },
+  'sessions-list': { perm: 'sessions.read', label: 'print.reportSessionsList', back: '/sessions' },
+  'prep-list': { perm: 'sessions.read', label: 'print.reportPrepList', back: '/prep-cards' },
+  plan: { perm: 'branches.read', label: 'print.reportPlan', back: '/branches' },
+  prep: { perm: 'sessions.read', label: 'print.reportPrep', back: '/prep-cards' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -1314,12 +1321,329 @@ function PromotionsReport({ id, onReady, kindLabel }) {
   );
 }
 
+/* ============================================================
+   Lists, annual plan, prep cards
+   ============================================================ */
+
+const SESSION_KIND_KEYS = {
+  activity: 'session.kindActivity',
+  visit: 'session.kindVisit',
+  leaders: 'session.kindLeaders',
+  group: 'session.kindGroup',
+};
+
+function NotFound() {
+  const { t } = useTranslation();
+  return (
+    <div data-print-error="">
+      <EmptyState icon={<IconAlert className="h-6 w-6 text-destructive" />} title={t('error.notFoundTitle')} />
+    </div>
+  );
+}
+
+function ListSheet({ kindLabel, title, count, head, rows, empty, signature = true }) {
+  const { t } = useTranslation();
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>{title}</H1>
+      <Tags>
+        <Tag tone="neutral">{count}</Tag>
+        <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
+      </Tags>
+      <H2 aside={rows.length || null}>{kindLabel}</H2>
+      {rows.length === 0 ? (
+        <p className="text-muted-foreground">{empty}</p>
+      ) : (
+        <Table head={head}>{rows}</Table>
+      )}
+      {signature && <Signature label={t('print.signatureLeader')} />}
+    </Sheet>
+  );
+}
+
+/** The فرقة a list sheet is about: id 0 means all of them. */
+function useListBranch(id, onReady) {
+  const { t, i18n } = useTranslation();
+  const all = String(id) === '0';
+  const branches = useFetch('/branches');
+  const b = (branches.data || []).find((x) => String(x.id) === String(id));
+  const name = all ? t('member.allBranches') : b ? branchName(b, i18n.language) : '';
+  const known = all || !!b;
+  useEffect(() => {
+    if (known) onReady(name);
+  }, [known, name, onReady]);
+  return { all, name, known, branches };
+}
+
+function MembersListReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const { all, name, known, branches } = useListBranch(id, onReady);
+  const qs = new URLSearchParams(sp);
+  if (!all) qs.set('branch', id);
+  const res = useFetch(`/members?${qs}`);
+
+  if (res.loading || branches.loading) return <SkeletonPage rows={6} />;
+  if (res.error || branches.error) return <LoadError onRetry={res.reload} />;
+  if (!known) return <NotFound />;
+
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={name}
+      count={t('member.subtitle', { count: list.length })}
+      empty={t('member.noMembers')}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('member.name'),
+        { label: t('member.age'), className: 'w-12' },
+        ...(all ? [t('member.branch')] : []),
+        t('member.group'),
+        t('member.parentPhone'),
+        t('member.status'),
+      ]}
+      rows={list.map((m, i) => (
+        <tr key={m.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
+          <td className={tdNum}>{m.age ?? '—'}</td>
+          {all && <td className={td}>{branchName(m, lng)}</td>}
+          <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
+          <td className={cn(tdNum, 'text-muted-foreground')}>{fmtPhone(m.parent_phone) || '—'}</td>
+          <td className={td}>{t(m.status === 'active' ? 'member.active' : 'member.inactive')}</td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function LeadersListReport({ onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const res = useFetch('/leaders');
+  const title = t('leader.leadersList');
+  useEffect(() => {
+    onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={title}
+      count={String(list.length)}
+      empty={t('leader.noLeaders')}
+      head={[{ label: '#', className: 'w-8' }, t('member.name'), t('leader.role'), t('leader.phone')]}
+      rows={list.map((l, i) => (
+        <tr key={l.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={cn(td, 'font-medium')}>{memberName(l)}</td>
+          <td className={td}>
+            {(l.roles || []).length
+              ? l.roles
+                  .map((r) => [r.title, r.branch_id ? branchName(r, lng) : null].filter(Boolean).join(' · '))
+                  .join(' / ')
+              : '—'}
+          </td>
+          <td className={cn(tdNum, 'text-muted-foreground')}>{fmtPhone(l.phone) || '—'}</td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function SessionsListReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const { all, name, known, branches } = useListBranch(id, onReady);
+  const qs = new URLSearchParams(sp);
+  if (!all) qs.set('branch', id);
+  const res = useFetch(`/sessions?${qs}`);
+
+  if (res.loading || branches.loading) return <SkeletonPage rows={6} />;
+  if (res.error || branches.error) return <LoadError onRetry={res.reload} />;
+  if (!known) return <NotFound />;
+
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={name}
+      count={String(list.length)}
+      empty={t('session.noSessions')}
+      signature={false}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('common.date'),
+        t('session.sessionTitle'),
+        t('session.kind'),
+        t('member.branch'),
+        { label: t('print.presences'), className: 'text-end' },
+      ]}
+      rows={list.map((s, i) => (
+        <tr key={s.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdNum}>{fmtDate(s.date)}</td>
+          <td className={cn(td, 'font-medium')}>{s.title}</td>
+          <td className={td}>{t(SESSION_KIND_KEYS[s.kind] || SESSION_KIND_KEYS.activity)}</td>
+          <td className={cn(td, 'text-muted-foreground')}>
+            {s.kind === 'leaders' || s.kind === 'group' ? '—' : branchName(s, lng)}
+          </td>
+          <td className={cn(tdNum, 'text-end')}>{s.present_count ?? 0}</td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function PrepListReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const qs = new URLSearchParams(sp);
+  if (String(id) !== '0') qs.set('branch', id);
+  const res = useFetch(`/prep-cards?${qs}`);
+  const title = t('prep.title');
+  useEffect(() => {
+    onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={title}
+      count={String(list.length)}
+      empty={t('prep.noCards')}
+      signature={false}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('common.date'),
+        t('session.sessionTitle'),
+        t('member.branch'),
+        t('prep.author'),
+      ]}
+      rows={list.map((c, i) => (
+        <tr key={c.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdNum}>{fmtDate(c.date)}</td>
+          <td className={cn(td, 'font-medium')}>{c.title}</td>
+          <td className={td}>{branchName(c, lng)}</td>
+          <td className={cn(td, 'text-muted-foreground')}>{c.leader || '—'}</td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function PlanReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const year = sp.get('year');
+  const res = useFetch(`/branches/${id}/plan${year ? `?year=${encodeURIComponent(year)}` : ''}`);
+  const branches = useFetch('/branches');
+  const b = (branches.data || []).find((x) => String(x.id) === String(id));
+  const plan = res.data;
+  const title = b && plan ? `${branchName(b, lng)} — ${plan.year}` : '';
+  useEffect(() => {
+    if (title) onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading || branches.loading) return <SkeletonPage rows={6} />;
+  if (!b || !plan) return res.error && res.error.status !== 404 ? <LoadError onRetry={res.reload} /> : <NotFound />;
+
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={title}
+      count={`${plan.done_count}/${plan.total}${plan.rate !== null ? ` · ${plan.rate}%` : ''}`}
+      empty={t('branch.planFree')}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('common.date'),
+        t('session.sessionTitle'),
+        t('print.planStatus'),
+      ]}
+      rows={plan.items.map((item, i) => (
+        <tr key={item.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdNum}>{fmtDate(item.date)}</td>
+          <td className={cn(td, 'font-medium')}>{item.title}</td>
+          <td className={cn(td, item.session ? 'text-success' : 'text-muted-foreground')}>
+            {item.session ? t('print.planDone', { date: fmtDate(item.session.date) }) : t('branch.planNotDone')}
+          </td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function PrepReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const res = useFetch(`/prep-cards/${id}`);
+  const c = res.data;
+  useEffect(() => {
+    if (c) onReady(c.title);
+  }, [c, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error || !c) return <LoadError onRetry={res.reload} />;
+
+  const texts = [
+    ['prep.goals', c.goals],
+    ['prep.segments', c.segments],
+    ['prep.tools', c.tools],
+    ['prep.notes', c.notes],
+  ].filter(([, v]) => v && String(v).trim());
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>{c.title}</H1>
+      <Tags>
+        <Tag>{branchName(c, lng)}</Tag>
+        <Tag tone="neutral">{fmtDate(c.date)}</Tag>
+        {c.start_time && <Tag tone="neutral">{fmtTime(c.start_time)}</Tag>}
+        {c.place && <Tag tone="neutral">{c.place}</Tag>}
+      </Tags>
+      <Facts
+        items={[
+          [t('prep.author'), c.leader || '—'],
+          [t('prep.matalib'), (c.matalib || []).join('، ') || null],
+        ]}
+      />
+      {texts.map(([key, v]) => (
+        <div key={key}>
+          <H2>{t(key)}</H2>
+          <p className="whitespace-pre-line leading-relaxed">{v}</p>
+        </div>
+      ))}
+    </Sheet>
+  );
+}
+
 const REPORTS = {
   sessions: SessionReport,
   members: MemberReport,
   leaders: LeaderReport,
   branches: BranchReport,
   promotions: PromotionsReport,
+  'members-list': MembersListReport,
+  'leaders-list': LeadersListReport,
+  'sessions-list': SessionsListReport,
+  'prep-list': PrepListReport,
+  plan: PlanReport,
+  prep: PrepReport,
 };
 
 /* ============================================================
@@ -1328,6 +1652,7 @@ const REPORTS = {
 
 export default function PrintReport() {
   const { kind, id } = useParams();
+  const [searchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { can } = usePerms();
   const cfg = KINDS[kind];
@@ -1366,7 +1691,7 @@ export default function PrintReport() {
             {t('common.back')}
           </Button>
           <p className="hidden min-w-0 flex-1 text-xs text-muted-foreground sm:block">{t('print.hint')}</p>
-          {allowed && <ExportPdfButton kind={kind} id={id} variant="brand" className="ms-auto" />}
+          {allowed && <ExportPdfButton kind={kind} id={id} query={searchParams.toString()} variant="brand" className="ms-auto" />}
         </div>
       </div>
 

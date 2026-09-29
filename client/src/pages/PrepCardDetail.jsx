@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
+import ExportPdfButton from '../components/ExportPdfButton';
 import { branchName, fmtDate, fmtTime } from '../utils';
 import PrepCardForm from '../components/PrepCardForm';
 import {
@@ -93,6 +94,7 @@ export default function PrepCardDetail() {
               {t('prep.createSession')}
             </Button>
           )}
+          <ExportPdfButton kind="prep" id={card.id} />
           {editable && (
             <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
               <IconPencil />

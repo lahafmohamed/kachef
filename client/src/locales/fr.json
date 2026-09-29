@@ -772,7 +772,8 @@
     "permSessionsAttendance": "Marquer les présences et gérer les animateurs",
     "permPromotionsApply": "Valider les promotions",
     "permMembersMatalib": "Ajouter et annuler un matlab pour un membre",
-    "permLeadersProgress": "Remplir la carte de progression du chef",
+    "permLeadersProgressSelf": "Remplir uniquement sa propre carte de progression",
+    "permLeadersProgress": "Remplir la carte de progression de n'importe quel chef",
     "permBranchesPlan": "Gérer le plan annuel",
     "permBranchesGroups": "Gérer les sous-groupes",
     "createUser": "Créer le compte",
@@ -846,6 +847,13 @@
     "consecutive": "Absences consécutives",
     "failed": "Le PDF n’a pas pu être généré. Réessayez.",
     "unavailable": "Génération PDF indisponible sur ce serveur.",
-    "reportPromotions": "Liste des promotions"
+    "reportPromotions": "Liste des promotions",
+    "reportMembersList": "Liste des membres",
+    "reportLeadersList": "Liste des chefs",
+    "reportSessionsList": "Liste des activités",
+    "reportPrepList": "Fiches de préparation",
+    "reportPlan": "Plan annuel",
+    "reportPrep": "Fiche de préparation",
+    "planStatus": "Réalisation"
   }
 }

@@ -1,3 +1,4 @@
+import ExportPdfButton from '../components/ExportPdfButton';
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -470,6 +471,11 @@ export default function Sessions() {
           filtering ? t('session.resultCount', { count: list.length }) : t('session.subtitle')
         }
       >
+        {(() => {
+          const q = new URLSearchParams(params);
+          q.delete('branch');
+          return <ExportPdfButton kind="sessions-list" id={params.get('branch') || 0} query={q.toString()} />;
+        })()}
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>
             <IconPlus />

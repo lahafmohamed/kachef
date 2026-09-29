@@ -12,24 +12,26 @@ import { Button, useToast, IconDownload } from './ui';
  * Should the server have no Chromium, the sheet page opens instead, where the
  * browser's own «Save as PDF» still works.
  */
-export default function ExportPdfButton({ kind, id, className, size = 'sm', variant = 'outline' }) {
+export default function ExportPdfButton({ kind, id, query = '', className, size = 'sm', variant = 'outline' }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
   const [busy, setBusy] = useState(false);
+  // A list sheet carries the page's filters: ?a=1&b=2 (no leading "?")
+  const qs = String(query || '').replace(/^\?/, '');
 
   async function run() {
     setBusy(true);
     try {
       const { blob, filename } = await api.download(
-        `/export/${kind}/${id}.pdf?lang=${encodeURIComponent(i18n.language)}`
+        `/export/${kind}/${id}.pdf?lang=${encodeURIComponent(i18n.language)}${qs ? `&${qs}` : ''}`
       );
       await saveFile(blob, filename || `${t('print.exportPdf')}.pdf`);
     } catch (err) {
       if (err.status === 501) {
         toast.error(t('print.unavailable'));
-        if (!location.pathname.startsWith('/print/')) navigate(`/print/${kind}/${id}`);
+        if (!location.pathname.startsWith('/print/')) navigate(`/print/${kind}/${id}${qs ? `?${qs}` : ''}`);
       } else {
         toast.error(t('print.failed'));
       }

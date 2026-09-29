@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { usePerms } from '../auth';
+import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
@@ -57,8 +57,10 @@ export default function LeaderDetail() {
   const back = useBack('/leaders');
   const toast = useToast();
   const { has } = usePerms();
+  const { user } = useAuth();
   // Filling in بطاقة تقدم القائد is its own permission; everyone else reads it
-  const canEditCard = has('leaders.progress');
+  const canEditCard =
+    has('leaders.progress.manage') || (has('leaders.progress.self') && Number(user?.leader_id) === Number(id));
   // '' = the year the server picks (the latest تشكيلة year)
   const [cardYear, setCardYear] = useState('');
   const {

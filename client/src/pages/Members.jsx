@@ -1,3 +1,4 @@
+import ExportPdfButton from '../components/ExportPdfButton';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -683,6 +684,11 @@ export default function Members() {
   return (
     <div className="space-y-4">
       <PageHeader title={t('member.title')} description={t('member.subtitle', { count: list.length })}>
+        {(() => {
+          const q = new URLSearchParams(params);
+          q.delete('branch');
+          return <ExportPdfButton kind="members-list" id={params.get('branch') || 0} query={q.toString()} />;
+        })()}
         {canCreate && (
           <Button variant="brand" onClick={() => setEditing('new')}>
             <IconPlus />

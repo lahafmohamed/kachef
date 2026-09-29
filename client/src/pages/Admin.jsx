@@ -74,7 +74,8 @@ const PERM_GROUPS = [
     // بطاقة تقدم القائد is a separate, grantable action.
     items: [
       { key: 'leaders.read', label: 'admin.permLeadersRead' },
-      { key: 'leaders.progress', label: 'admin.permLeadersProgress' },
+      { key: 'leaders.progress.self', label: 'admin.permLeadersProgressSelf' },
+      { key: 'leaders.progress.manage', label: 'admin.permLeadersProgress' },
     ],
   },
 ];
