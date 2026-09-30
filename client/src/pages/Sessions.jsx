@@ -6,6 +6,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
+import { toDate } from '../lib/date';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
@@ -27,9 +28,6 @@ import {
   RequirementGrid,
   Select,
   Skeleton,
-  Table,
-  Td,
-  Th,
   useToast,
   IconCalendar,
   IconCheck,
@@ -101,35 +99,171 @@ function ScopeBadge({ s, lang, t, branchList = [] }) {
   );
 }
 
-function AttendanceChips({ s, t }) {
+// ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses;
+// Latin digits keep days and years aligned with the rest of the app
+const intlLocale = (lng) => (lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR');
+const fmtMonth = (key, lng) =>
+  new Intl.DateTimeFormat(intlLocale(lng), { month: 'long', year: 'numeric' }).format(toDate(`${key}-01`));
+const fmtWeekday = (iso, lng) =>
+  new Intl.DateTimeFormat(intlLocale(lng), { weekday: 'short' }).format(toDate(iso));
+const fmtMonthShort = (iso, lng) =>
+  new Intl.DateTimeFormat(intlLocale(lng), { month: 'short' }).format(toDate(iso));
+
+/** Present / absent / excused as marked; a نشاط with nobody marked yet has no rate. */
+function tally(s) {
+  const marked = (s.present_count || 0) + (s.absent_count || 0) + (s.excused_count || 0);
+  return { marked, rate: marked ? Math.round((100 * (s.present_count || 0)) / marked) : null };
+}
+
+/** Rate across a month: every marked عنصر weighs the same, so a big نشاط counts for more. */
+function monthRate(rows) {
+  let present = 0;
+  let marked = 0;
+  for (const s of rows) {
+    // زيارة is 100% by nature and نشاط عام للفوج has counts, not a roll call
+    if (s.kind === 'visit' || s.kind === 'group') continue;
+    present += s.present_count || 0;
+    marked += tally(s).marked;
+  }
+  return marked ? Math.round((100 * present) / marked) : null;
+}
+
+/** The attendance column: one bar + the counts it is made of, never colour alone. */
+function AttendanceMeter({ s, t }) {
   // A نشاط عام للفوج is recorded by counts, so there is no present/absent to show
   if (s.kind === 'group')
     return (
-      <div className="flex flex-wrap gap-1.5">
-        <Badge variant="success">
-          {s.branch_counts_total ?? 0} {t('session.present')}
-        </Badge>
+      <p className="text-sm">
+        <span className="font-semibold tabular-nums">{s.branch_counts_total ?? 0}</span>{' '}
+        <span className="text-muted-foreground">{t('session.present')}</span>
         {s.leaders_count !== null && s.leaders_count !== undefined && (
-          <Badge variant="secondary">
-            {s.leaders_count} {t('leader.leadersList')}
-          </Badge>
+          <span className="text-muted-foreground">
+            {' · '}
+            <span className="tabular-nums">{s.leaders_count}</span> {t('leader.leadersList')}
+          </span>
         )}
+      </p>
+    );
+  if (s.kind === 'visit')
+    return <p className="text-sm text-muted-foreground">{t('session.visitedCount', { count: s.present_count || 0 })}</p>;
+
+  const { marked, rate } = tally(s);
+  if (!marked)
+    return (
+      <div className="space-y-1.5">
+        <p className="text-xs text-muted-foreground">{t('session.notMarked')}</p>
+        <div className="h-1.5 rounded-full border border-dashed border-border" />
       </div>
     );
+  const pct = (n) => `${(100 * (n || 0)) / marked}%`;
   return (
-    <div className="flex flex-wrap gap-1.5">
-      <Badge variant="success">
-        {s.present_count} {t('session.present')}
-      </Badge>
-      <Badge variant="destructive">
-        {s.absent_count} {t('session.absent')}
-      </Badge>
-      {s.excused_count > 0 && (
-        <Badge variant="warning">
-          {s.excused_count} {t('session.excused')}
-        </Badge>
-      )}
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="truncate text-xs text-muted-foreground">
+          <span className="tabular-nums">{s.present_count}</span> {t('session.present')}
+          {' · '}
+          <span className="tabular-nums">{s.absent_count}</span> {t('session.absent')}
+          {s.excused_count > 0 && (
+            <>
+              {' · '}
+              <span className="tabular-nums">{s.excused_count}</span> {t('session.excused')}
+            </>
+          )}
+        </p>
+        <span className="text-sm font-semibold tabular-nums" aria-label={`${t('session.rateLabel')} ${rate}%`}>
+          {rate}%
+        </span>
+      </div>
+      <div className="flex h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+        <span className="bg-success" style={{ width: pct(s.present_count) }} />
+        <span className="bg-warning" style={{ width: pct(s.excused_count) }} />
+        <span className="bg-destructive/70" style={{ width: pct(s.absent_count) }} />
+      </div>
     </div>
+  );
+}
+
+const KIND_TAG = {
+  visit: { key: 'session.kindVisit', variant: 'warning' },
+  leaders: { key: 'session.kindLeaders', variant: 'info' },
+  group: { key: 'session.kindGroup', variant: 'info' },
+};
+
+/**
+ * One line of the journal. The date block shows only on the first نشاط of a day,
+ * so two حصص on the same Saturday read as one day with two entries.
+ */
+function SessionRow({ s, showDate, ranked, lang, t, branchList }) {
+  const tag = KIND_TAG[s.kind];
+  const meta = [
+    fmtTime(s.start_time),
+    s.place?.trim(),
+    s.leader,
+    activityTypeKey(s.activity_type) && t(activityTypeKey(s.activity_type)),
+  ].filter(Boolean);
+  return (
+    <li>
+      <Link
+        to={`/sessions/${s.id}`}
+        className="focus-ring group grid grid-cols-[2.75rem_minmax(0,1fr)] gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-accent/40 sm:grid-cols-[3.25rem_minmax(0,1fr)_15rem] sm:items-center sm:px-5"
+      >
+        <div className={cn('self-start text-center', !showDate && 'invisible')}>
+          <span className="sr-only">{fmtDate(s.date)}</span>
+          <span aria-hidden="true" className="block text-2xl font-semibold leading-none tabular-nums">
+            {Number(s.date.slice(8, 10))}
+          </span>
+          <span aria-hidden="true" className="mt-1 block text-xs text-muted-foreground">
+            {ranked ? fmtMonthShort(s.date, lang) : fmtWeekday(s.date, lang)}
+          </span>
+        </div>
+
+        <div className="min-w-0 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-semibold group-hover:text-primary">{s.title}</span>
+            {tag && <Badge variant={tag.variant}>{t(tag.key)}</Badge>}
+          </div>
+          {meta.length > 0 && (
+            <p className="truncate text-sm text-muted-foreground" title={meta.join(' · ')}>
+              {meta.join(' · ')}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} />
+            {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
+            {s.matalib.length > 0 && (
+              <Badge variant="outline">
+                {s.matalib.length} {t('session.requirementsShort')}
+              </Badge>
+            )}
+          </div>
+        </div>
+
+        <div className="col-start-2 sm:col-start-3">
+          <AttendanceMeter s={s} t={t} />
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+function SessionList({ rows, ranked, lang, t, branchList }) {
+  return (
+    <Card className="overflow-hidden">
+      <ul className="divide-y divide-border">
+        {rows.map((s, i) => (
+          <SessionRow
+            key={s.id}
+            s={s}
+            // A ranked list jumps between dates, so every row keeps its own
+            showDate={ranked || i === 0 || rows[i - 1].date !== s.date}
+            ranked={ranked}
+            lang={lang}
+            t={t}
+            branchList={branchList}
+          />
+        ))}
+      </ul>
+    </Card>
   );
 }
 
@@ -170,6 +304,9 @@ export default function Sessions() {
 
   const activeFilters = [branch, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;
+  // What hides behind الفلاتر — the badge on the button counts only these
+  const moreFilters =
+    [leaderFilter, activityType, kindFilter].filter(Boolean).length + (sort !== 'date_desc' ? 1 : 0);
 
   function clearFilters() {
     setQ('');
@@ -463,6 +600,47 @@ export default function Sessions() {
   const allHelpersPicked =
     shownHelpers.length > 0 && shownHelpers.every((l) => form.helper_ids.includes(l.id));
 
+  const natureOptions = ACTIVITY_TYPES.map((a) => ({ value: a.value, label: t(a.key) }));
+  const kindOptions = [
+    { value: 'activity', label: t('session.kindActivity') },
+    { value: 'visit', label: t('session.kindVisit') },
+    { value: 'leaders', label: t('session.kindLeaders') },
+    { value: 'group', label: t('session.kindGroup') },
+  ];
+  const labelOf = (options, v) => options.find((o) => String(o.value) === String(v))?.label;
+  // Every active filter as a removable chip — the label is what the قائد picked
+  const chips = [
+    branch && {
+      key: 'branch',
+      label: branchName(branchList.find((b) => String(b.id) === String(branch)) || {}, i18n.language),
+      clear: () => setBranch(''),
+    },
+    (from || to) && {
+      key: 'period',
+      label: [fmtDate(from), fmtDate(to)].filter(Boolean).join(' – '),
+      clear: () => {
+        setFrom('');
+        setTo('');
+      },
+    },
+    leaderFilter && {
+      key: 'leader',
+      label: memberName(leaderList.find((l) => String(l.id) === String(leaderFilter)) || {}),
+      clear: () => setLeaderFilter(''),
+    },
+    activityType && { key: 'nature', label: labelOf(natureOptions, activityType), clear: () => setActivityType('') },
+    kindFilter && { key: 'kind', label: labelOf(kindOptions, kindFilter), clear: () => setKindFilter('') },
+  ].filter(Boolean);
+
+  // Month headers only make sense in date order; a ranking by attendance is one flat list
+  const ranked = sort !== 'date_desc' && sort !== 'date_asc';
+  const months = [];
+  for (const s of list) {
+    const key = s.date.slice(0, 7);
+    if (months.at(-1)?.key !== key) months.push({ key, rows: [] });
+    months.at(-1).rows.push(s);
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -484,124 +662,143 @@ export default function Sessions() {
         )}
       </PageHeader>
 
-      {/* Search always visible; the rest folds away on phones to keep the list
-          near the top, and is permanently open from sm up. */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder={t('session.searchPlaceholder')} />
+      {/* Toolbar: search + the two filters used every week stay in view; the rest
+          folds behind الفلاتر. On phones everything but the search folds. */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1 basis-0 sm:basis-64">
+            <SearchInput value={q} onChange={setQ} placeholder={t('session.searchPlaceholder')} />
+          </div>
+          <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
+            <FilterSelect
+              value={branch}
+              onChange={setBranch}
+              allLabel={t('member.allBranches')}
+              ariaLabel={t('member.branch')}
+              className="w-full sm:w-auto sm:min-w-44"
+              icon={<IconShield className="opacity-60" />}
+              options={branchList.map((b) => ({
+                value: b.id,
+                label: branchName(b, i18n.language),
+              }))}
+            />
+          </div>
+          <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
+            <DateRangePicker
+              value={{ from, to }}
+              onChange={({ from: f, to: tt }) => {
+                setFrom(f);
+                setTo(tt);
+              }}
+            />
+          </div>
           <Button
             variant="outline"
-            size="icon"
-            className="relative shrink-0 sm:hidden"
+            className="relative"
             aria-expanded={showFilters}
-            aria-label={t('session.filters')}
+            aria-controls="session-more-filters"
             onClick={() => setShowFilters((v) => !v)}
           >
             <IconFilter />
-            {activeFilters > 0 && (
-              <span className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[0.6875rem] font-bold text-primary-foreground">
-                {activeFilters}
+            {t('session.filters')}
+            {moreFilters > 0 && (
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[0.6875rem] font-bold tabular-nums text-primary-foreground">
+                {moreFilters}
               </span>
             )}
           </Button>
         </div>
 
-        <div
-          className={cn(
-            'flex-col gap-2 sm:flex sm:flex-row sm:flex-wrap sm:items-center',
-            showFilters ? 'flex' : 'hidden'
-          )}
-        >
-          <FilterSelect
-            value={branch}
-            onChange={setBranch}
-            allLabel={t('member.allBranches')}
-            ariaLabel={t('member.branch')}
-            className="sm:w-auto sm:min-w-44"
-            icon={<IconShield className="opacity-60" />}
-            options={branchList.map((b) => ({
-              value: b.id,
-              label: branchName(b, i18n.language),
-            }))}
-          />
-          <DateRangePicker
-            value={{ from, to }}
-            onChange={({ from: f, to: tt }) => {
-              setFrom(f);
-              setTo(tt);
-            }}
-          />
-          {/* Searchable: the قادة list runs to 40+ names, and this is the "what did
-              he actually run this year" question — it matches مساعدين too. */}
-          <SearchSelect
-            value={leaderFilter}
-            onChange={(e) => setLeaderFilter(e.target.value)}
-            options={leaderList.map((l) => ({ value: l.id, label: memberName(l) }))}
-            clearLabel={t('session.allAnimators')}
-            placeholder={t('session.allAnimators')}
-            searchPlaceholder={t('session.searchLeader')}
-            emptyLabel={t('member.noListValue')}
-            ariaLabel={t('session.leader')}
-            className="sm:w-auto sm:min-w-48"
-          />
-          <FilterSelect
-            value={activityType}
-            onChange={setActivityType}
-            allLabel={t('session.allNatures')}
-            ariaLabel={t('session.nature')}
-            className="sm:w-auto sm:min-w-44"
-            options={ACTIVITY_TYPES.map((a) => ({ value: a.value, label: t(a.key) }))}
-          />
-          <FilterSelect
-            value={kindFilter}
-            onChange={setKindFilter}
-            allLabel={t('session.allKinds')}
-            ariaLabel={t('session.kind')}
-            className="sm:w-auto sm:min-w-40"
-            options={[
-              { value: 'activity', label: t('session.kindActivity') },
-              { value: 'visit', label: t('session.kindVisit') },
-              { value: 'leaders', label: t('session.kindLeaders') },
-              { value: 'group', label: t('session.kindGroup') },
-            ]}
-          />
-          {/* "Which نشاط did they skip" is a ranking, not a filter — the counts are
-              already on every row, so it is one ORDER BY away. */}
-          <FilterSelect
-            value={sort}
-            onChange={setSort}
-            ariaLabel={t('member.sortBy')}
-            className="sm:w-auto sm:min-w-52"
-            icon={<IconSort className="opacity-60" />}
-            options={[
-              { value: 'date_desc', label: t('session.sortDateDesc') },
-              { value: 'date_asc', label: t('session.sortDateAsc') },
-              { value: 'absent_desc', label: t('session.sortAbsentDesc') },
-              { value: 'present_desc', label: t('session.sortPresentDesc') },
-              { value: 'rate_asc', label: t('session.sortRateAsc') },
-              { value: 'rate_desc', label: t('session.sortRateDesc') },
-            ]}
-          />
-          {filtering && (
+        {showFilters && (
+          <div id="session-more-filters" className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            {/* Searchable: the قادة list runs to 40+ names, and this is the "what did
+                he actually run this year" question — it matches مساعدين too. */}
+            <SearchSelect
+              value={leaderFilter}
+              onChange={(e) => setLeaderFilter(e.target.value)}
+              options={leaderList.map((l) => ({ value: l.id, label: memberName(l) }))}
+              clearLabel={t('session.allAnimators')}
+              placeholder={t('session.allAnimators')}
+              searchPlaceholder={t('session.searchLeader')}
+              emptyLabel={t('member.noListValue')}
+              ariaLabel={t('session.leader')}
+              className="sm:w-auto sm:min-w-48"
+            />
+            <FilterSelect
+              value={activityType}
+              onChange={setActivityType}
+              allLabel={t('session.allNatures')}
+              ariaLabel={t('session.nature')}
+              className="sm:w-auto sm:min-w-44"
+              options={natureOptions}
+            />
+            <FilterSelect
+              value={kindFilter}
+              onChange={setKindFilter}
+              allLabel={t('session.allKinds')}
+              ariaLabel={t('session.kind')}
+              className="sm:w-auto sm:min-w-40"
+              options={kindOptions}
+            />
+            {/* "Which نشاط did they skip" is a ranking, not a filter — the counts are
+                already on every row, so it is one ORDER BY away. */}
+            <FilterSelect
+              value={sort}
+              onChange={setSort}
+              ariaLabel={t('member.sortBy')}
+              className="sm:w-auto sm:min-w-52"
+              icon={<IconSort className="opacity-60" />}
+              options={[
+                { value: 'date_desc', label: t('session.sortDateDesc') },
+                { value: 'date_asc', label: t('session.sortDateAsc') },
+                { value: 'absent_desc', label: t('session.sortAbsentDesc') },
+                { value: 'present_desc', label: t('session.sortPresentDesc') },
+                { value: 'rate_asc', label: t('session.sortRateAsc') },
+                { value: 'rate_desc', label: t('session.sortRateDesc') },
+              ]}
+            />
+          </div>
+        )}
+
+        {/* What is narrowing the list, each removable on its own */}
+        {chips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {chips.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                onClick={c.clear}
+                aria-label={t('session.removeFilter', { label: c.label })}
+                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+              >
+                <span className="max-w-48 truncate">{c.label}</span>
+                <IconX className="h-3.5 w-3.5 opacity-70" />
+              </button>
+            ))}
             <Button variant="ghost" size="sm" onClick={clearFilters}>
-              <IconX />
               {t('common.clearFilters')}
             </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {sessions.error ? (
         <ErrorState message={t('error.loadFailed')} onRetry={sessions.reload} retryLabel={t('error.retry')} />
       ) : sessions.loading ? (
-        <Card className="divide-y divide-border">
-          {Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="space-y-2 p-4">
-              <Skeleton className="h-4 w-1/3" />
-              <Skeleton className="h-3 w-1/2" />
-            </div>
-          ))}
-        </Card>
+        <div className="space-y-3" aria-busy="true">
+          <Skeleton className="h-5 w-40" />
+          <Card className="divide-y divide-border">
+            {Array.from({ length: 4 }, (_, i) => (
+              <div key={i} className="flex gap-4 p-4">
+                <Skeleton className="h-10 w-10 shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/3" />
+                  <Skeleton className="h-3 w-1/2" />
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
       ) : list.length === 0 ? (
         <Card>
           <EmptyState
@@ -623,120 +820,34 @@ export default function Sessions() {
             {t(filtering ? 'common.noResultsHint' : 'session.noSessionsHint')}
           </EmptyState>
         </Card>
+      ) : ranked ? (
+        <SessionList rows={list} ranked lang={i18n.language} t={t} branchList={branchList} />
       ) : (
-        <>
-          {/* Mobile cards */}
-          <Card className="md:hidden">
-            <ul className="divide-y divide-border">
-              {list.map((s) => (
-                <li key={s.id}>
-                  <Link
-                    to={`/sessions/${s.id}`}
-                    className="focus-ring block px-4 py-3 transition-colors hover:bg-accent/50"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="font-medium">{s.title}</span>
-                      <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
-                        {fmtDate(s.date)}
-                      </span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <ScopeBadge s={s} lang={i18n.language} t={t} branchList={branchList} />
-                      {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
-                      {s.kind === 'visit' && <Badge variant="warning">{t('session.kindVisit')}</Badge>}
-                      {activityTypeKey(s.activity_type) && (
-                        <Badge variant="outline">{t(activityTypeKey(s.activity_type))}</Badge>
-                      )}
-                      {s.matalib.length > 0 && (
-                        <Badge variant="warning">
-                          {s.matalib.length} {t('session.requirementsShort')}
-                        </Badge>
-                      )}
-                      {(s.start_time || s.place) && (
-                        <span
-                          className="truncate text-xs text-muted-foreground"
-                          title={[fmtTime(s.start_time), s.place].filter(Boolean).join(' · ')}
-                        >
-                          {[fmtTime(s.start_time), s.place].filter(Boolean).join(' · ')}
-                        </span>
-                      )}
-                      {s.leader && (
-                        <span className="truncate text-xs text-muted-foreground" title={s.leader}>
-                          {s.leader}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-2">
-                      <AttendanceChips s={s} t={t} />
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </Card>
-
-          {/* Desktop table */}
-          <Card className="hidden md:block">
-            <Table>
-              <thead className="border-b border-border">
-                <tr>
-                  <Th>{t('common.date')}</Th>
-                  <Th>{t('session.sessionTitle')}</Th>
-                  <Th>{t('member.branch')}</Th>
-                  <Th>{t('session.leader')}</Th>
-                  <Th>{t('session.requirementsShort')}</Th>
-                  <Th>{t('session.attendance')}</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {list.map((s) => (
-                  <tr key={s.id} className="group transition-colors hover:bg-accent/40">
-                    <Td className="tabular-nums">{fmtDate(s.date)}</Td>
-                    <Td>
-                      <Link
-                        to={`/sessions/${s.id}`}
-                        className="focus-ring rounded font-medium group-hover:text-primary"
-                      >
-                        {s.title}
-                      </Link>
-                      {s.kind === 'visit' && (
-                        <Badge variant="warning" className="ms-2">
-                          {t('session.kindVisit')}
-                        </Badge>
-                      )}
-                      {s.plan_item_id && (
-                        <Badge variant="success" className="ms-2">
-                          {t('session.fromPlan')}
-                        </Badge>
-                      )}
-                      {(s.start_time || s.place || s.activity_type) && (
-                        <span className="block text-xs text-muted-foreground">
-                          {[
-                            fmtTime(s.start_time),
-                            s.place,
-                            activityTypeKey(s.activity_type) && t(activityTypeKey(s.activity_type)),
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </span>
-                      )}
-                    </Td>
-                    <Td>
-                      <ScopeBadge s={s} lang={i18n.language} t={t} branchList={branchList} />
-                    </Td>
-                    <Td className="text-muted-foreground">{s.leader || '—'}</Td>
-                    <Td>
-                      <Badge variant={s.matalib.length ? 'warning' : 'outline'}>{s.matalib.length}</Badge>
-                    </Td>
-                    <Td>
-                      <AttendanceChips s={s} t={t} />
-                    </Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-          </Card>
-        </>
+        <div className="space-y-6">
+          {months.map(({ key, rows }) => {
+            const rate = monthRate(rows);
+            return (
+              <section key={key} aria-labelledby={`month-${key}`} className="space-y-2">
+                {/* Sticks under the phone top bar (4rem + notch), at the top on desktop */}
+                <div className="sticky top-[calc(4rem+env(safe-area-inset-top,0px))] z-10 -mx-1 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 bg-background px-1 py-2 lg:top-0">
+                  <h2 id={`month-${key}`} className="text-base font-semibold">
+                    {fmtMonth(key, i18n.language)}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {t('session.monthCount', { count: rows.length })}
+                    {rate !== null && (
+                      <>
+                        {' · '}
+                        {t('session.monthRate')} <span dir="ltr" className="font-medium tabular-nums text-foreground">{rate}%</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+                <SessionList rows={rows} lang={i18n.language} t={t} branchList={branchList} />
+              </section>
+            );
+          })}
+        </div>
       )}
 
       <Dialog

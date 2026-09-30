@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
+import { phoneNumbers } from '../components/MemberParts';
 import {
   activityTypeKey,
   avatarName,
@@ -1375,6 +1376,17 @@ function useListBranch(id, onReady) {
   return { all, name, known, branches };
 }
 
+/**
+ * رقم ولي الأمر في القائمة: الأب أولًا، و الأم إن غاب — و أوّل رقم من خانة تحمل
+ * رقمين. من لا يملك members.contact وصلته الخانتان فارغتين، فالشرطة هي الصحيح.
+ */
+function parentPhone(m) {
+  const father = phoneNumbers(m.father_phone)[0];
+  if (father) return { number: father, mother: false };
+  const mother = phoneNumbers(m.mother_phone)[0];
+  return mother ? { number: mother, mother: true } : null;
+}
+
 function MembersListReport({ id, onReady, kindLabel }) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
@@ -1404,17 +1416,30 @@ function MembersListReport({ id, onReady, kindLabel }) {
         t('member.parentPhone'),
         t('member.status'),
       ]}
-      rows={list.map((m, i) => (
-        <tr key={m.id}>
-          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
-          <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
-          <td className={tdNum}>{m.age ?? '—'}</td>
-          {all && <td className={td}>{branchName(m, lng)}</td>}
-          <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
-          <td className={cn(tdNum, 'text-muted-foreground')}>{fmtPhone(m.parent_phone) || '—'}</td>
-          <td className={td}>{t(m.status === 'active' ? 'member.active' : 'member.inactive')}</td>
-        </tr>
-      ))}
+      rows={list.map((m, i) => {
+        const phone = parentPhone(m);
+        return (
+          <tr key={m.id}>
+            <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+            <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
+            <td className={tdNum}>{m.age ?? '—'}</td>
+            {all && <td className={td}>{branchName(m, lng)}</td>}
+            <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
+            <td className={cn(tdNum, 'text-muted-foreground')}>
+              {phone ? (
+                <>
+                  {/* LTR island: in an Arabic sheet the digit pairs would print reversed */}
+                  <span dir="ltr">{fmtPhone(phone.number)}</span>
+                  {phone.mother && <span className="text-xs"> ({t('member.motherShort')})</span>}
+                </>
+              ) : (
+                '—'
+              )}
+            </td>
+            <td className={td}>{t(m.status === 'active' ? 'member.active' : 'member.inactive')}</td>
+          </tr>
+        );
+      })}
     />
   );
 }
@@ -1450,7 +1475,15 @@ function LeadersListReport({ onReady, kindLabel }) {
                   .join(' / ')
               : '—'}
           </td>
-          <td className={cn(tdNum, 'text-muted-foreground')}>{fmtPhone(l.phone) || '—'}</td>
+          <td className={cn(tdNum, 'text-muted-foreground')}>
+            {/* LTR island: in an Arabic sheet the digit pairs printed reversed — a wrong
+                number. A cell holding two numbers gets both, each in pairs. */}
+            {phoneNumbers(l.phone).length ? (
+              <span dir="ltr">{phoneNumbers(l.phone).map((n) => fmtPhone(n)).join(' / ')}</span>
+            ) : (
+              '—'
+            )}
+          </td>
         </tr>
       ))}
     />

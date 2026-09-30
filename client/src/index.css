@@ -224,9 +224,14 @@ h1, h2, h3, h4 {
 }
 h1 { letter-spacing: -0.028em; }
 
-/* Descriptions and body copy: keep a short word off the last line alone */
-p {
-  text-wrap: pretty;
+/* Descriptions and body copy: keep a short word off the last line alone.
+   In the base layer on purpose: `text-wrap` also sets text-wrap-mode, and an
+   unlayered rule would beat every utility — `truncate` and `whitespace-nowrap`
+   on a <p> would silently keep wrapping. */
+@layer base {
+  p {
+    text-wrap: pretty;
+  }
 }
 
 /* Arabic is a joined script — any letter-spacing (negative or positive) pulls

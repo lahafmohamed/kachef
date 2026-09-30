@@ -34,6 +34,8 @@ async function failure(res, path) {
   }
   const err = new Error(body.error || res.statusText);
   err.status = res.status;
+  // The rest of the payload rides along: a 409 names the record it collided with
+  err.body = body;
   return err;
 }
 

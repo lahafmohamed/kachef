@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -9,14 +9,12 @@ import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
 import NewBranchDialog from '../components/NewBranchDialog';
+import { RateValue, UnderlineTabs } from '../components/MemberParts';
 import {
   Avatar,
   Badge,
   Button,
   Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Dialog,
   EmptyState,
   ErrorState,
@@ -24,9 +22,10 @@ import {
   Label,
   PageHeader,
   ProgressBar,
+  RequirementGrid,
   Select,
   Skeleton,
-  SkeletonPage,
+  cn,
   useConfirm,
   useToast,
   IconAward,
@@ -39,109 +38,15 @@ import {
   IconPencil,
   IconPlus,
   IconRefresh,
-  IconShield,
   IconTrash,
-  IconTrendingUp,
   IconUnlink,
   IconUsers,
 } from '../components/ui';
 
-/** One labelled number of the فرقة sheet — kept flat so four fit on a phone row. */
-function Metric({ icon, label, value, hint }) {
-  return (
-    <div className="rounded-xl border border-border bg-muted/20 p-3">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        {icon}
-        <span className="line-clamp-2 leading-tight">{label}</span>
-      </div>
-      <div className="tabular mt-1 text-2xl font-bold leading-none">{value}</div>
-      {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
-    </div>
-  );
-}
-
-/** A نشاط row: header always visible, participants unfolded on demand. */
-function SessionRow({ s }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-
-  return (
-    <li className="px-4 py-3 sm:px-5">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="focus-ring flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md text-start"
-      >
-        <div className="min-w-40 flex-1">
-          <div className="font-medium">{s.title}</div>
-          <div className="text-xs text-muted-foreground">
-            {fmtDate(s.date)}
-            {s.leader && ` · ${s.leader}`}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Badge variant="success">
-            {s.present.length} {t('session.present')}
-          </Badge>
-          <Badge variant="destructive">
-            {s.absent.length} {t('session.absent')}
-          </Badge>
-          <IconChevronDown className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
-        </div>
-      </button>
-
-      {open && (
-        <div className="mt-3 space-y-3 border-s-2 border-border ps-3">
-          {s.matalib.length > 0 && (
-            <div className="text-xs text-muted-foreground">
-              <span className="font-medium">{t('branch.matalib')}:</span>{' '}
-              <span dir="ltr">{s.matalib.join(' · ')}</span>
-            </div>
-          )}
-          {s.animators.length > 0 && (
-            <div className="text-xs text-muted-foreground">
-              <span className="font-medium">{t('branch.animators')}:</span>{' '}
-              {s.animators.map(memberName).join(' · ')}
-            </div>
-          )}
-          {s.present.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t('branch.noParticipants')}</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1.5">
-              {s.present.map((m) => (
-                <li key={m.id}>
-                  <Link
-                    to={`/members/${m.id}`}
-                    className="focus-ring flex min-h-10 items-center gap-2 rounded-full border border-border py-1 pe-3 ps-1 text-xs transition-colors hover:bg-accent/50 sm:min-h-8"
-                  >
-                    <Avatar photo={m.photo} name={avatarName(m)} className="h-6 w-6" />
-                    {memberName(m)}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-          {s.absent.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              <span className="font-medium">{t('session.absent')}:</span>{' '}
-              {s.absent.map(memberName).join(' · ')}
-            </p>
-          )}
-          <Link
-            to={`/sessions/${s.id}`}
-            className="focus-ring inline-block rounded text-xs font-medium text-primary hover:underline"
-          >
-            {t('branch.openSession')}
-          </Link>
-        </div>
-      )}
-    </li>
-  );
-}
-
 // Scout-year order: أيلول opens the year, آب closes it
 const SCOUT_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
+
+const TABS = ['plan', 'sessions', 'groups', 'matalib'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses
 const monthName = (m, lng) =>
@@ -185,6 +90,20 @@ const titleKey = (v) => String(v || '').trim().toLowerCase();
 const differsFromBase = (row) =>
   !!row.base && (row.date !== row.base.date || titleKey(row.title) !== titleKey(row.base.title));
 
+// A branch plan item carries its نشاط; an overview item only says whether it has one
+const isDone = (i) => !!(i.session || i.done);
+
+/** المبرمج و المنجز في كل شهر من السنة الكشفية — ما يُرسم على شريط الأشهر. */
+function monthStats(items, year) {
+  return SCOUT_MONTHS.map((m) => {
+    const key = monthKey(year, m);
+    const planned = items.filter((i) => i.date.startsWith(key) && String(i.title || '').trim());
+    return { month: m, key, planned: planned.length, done: planned.filter(isDone).length };
+  });
+}
+
+const intlLocale = (lng) => (lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR');
+
 // "sam. 06/09" — weekday and day, latin digits in both locales
 const dayLabelFormats = {};
 function fmtDay(iso, lng) {
@@ -197,10 +116,119 @@ function fmtDay(iso, lng) {
   return f.format(toDate(iso)).replace(/[‎‏؜]/g, '');
 }
 
+const weekdayFormats = {};
+const fmtWeekday = (iso, lng) =>
+  (weekdayFormats[lng] ??= new Intl.DateTimeFormat(intlLocale(lng), { weekday: 'long' })).format(toDate(iso));
+
+// "05/09" — day first, as on the paper plan
+const fmtDayMonth = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+
+const shortMonthFormats = {};
+const fmtShortMonth = (iso, lng) =>
+  (shortMonthFormats[lng] ??= new Intl.DateTimeFormat(intlLocale(lng), { month: 'short' }))
+    .format(toDate(iso))
+    .replace(/\.$/, '');
+
+function agesLabel(b, t) {
+  if (b.all_ages) return t('branch.allAges');
+  return b.max_age ? `${b.min_age}–${b.max_age} ${t('branch.years')}` : `${b.min_age}+`;
+}
+
+/* ============================================================
+   Shared pieces
+   ============================================================ */
+
+/** One cell of the figures strip — same shape as the عنصر profile's. */
+function Stat({ label, children, className }) {
+  return (
+    <div className={cn('min-w-0 space-y-2 bg-card p-4', className)}>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+/** Thin share bar — a part of a whole, drawn without the progressbar semantics. */
+function ShareBar({ value, tone = 'primary', className }) {
+  const pct = Math.max(0, Math.min(100, value || 0));
+  return (
+    <span aria-hidden="true" className={cn('block h-1.5 overflow-hidden rounded-full bg-muted', className)}>
+      <span
+        className={cn('block h-full rounded-full', tone === 'success' ? 'bg-success' : tone === 'warning' ? 'bg-warning' : 'bg-primary')}
+        style={{ width: `${pct}%` }}
+      />
+    </span>
+  );
+}
+
+/**
+ * The twelve months of the scout year, each with what it planned and what got done.
+ * One tap opens a month; the bars read as the year at a glance. A row on phones
+ * (scrolls sideways), two half-years on wider screens.
+ */
+function MonthStrip({ stats, value, onChange }) {
+  const { t, i18n } = useTranslation();
+  const refs = useRef({});
+  const todayKey = toISO(new Date()).slice(0, 7);
+
+  // Sideways only, and only when the strip is on screen: opening the page must not
+  // drag it down to the strip.
+  useEffect(() => {
+    const el = refs.current[value];
+    const box = el?.parentElement?.getBoundingClientRect();
+    if (box && box.top >= 0 && box.bottom <= window.innerHeight)
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [value]);
+
+  return (
+    <div
+      role="group"
+      aria-label={t('common.month')}
+      className="no-scrollbar relative -mx-3 flex gap-1.5 overflow-x-auto px-3 py-0.5 sm:mx-0 sm:grid sm:grid-cols-6 sm:overflow-visible sm:px-0"
+    >
+      {stats.map((s) => {
+        const on = s.month === value;
+        const full = s.planned > 0 && s.done === s.planned;
+        return (
+          <button
+            key={s.month}
+            ref={(el) => (refs.current[s.month] = el)}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onChange(s.month)}
+            className={cn(
+              'focus-ring flex min-w-[5.5rem] shrink-0 cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 text-start transition-colors sm:min-w-0',
+              on
+                ? 'border-primary/40 bg-accent text-accent-foreground'
+                : 'border-transparent hover:bg-accent/50'
+            )}
+          >
+            <span className="flex items-center gap-1.5 whitespace-nowrap text-[0.8125rem] font-medium leading-tight">
+              {monthName(s.month, i18n.language)}
+              {s.key === todayKey && (
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary">
+                  <span className="sr-only">{t('common.today')}</span>
+                </span>
+              )}
+            </span>
+            <span className={cn('text-xs tabular-nums', on ? 'text-accent-foreground/80' : 'text-muted-foreground')}>
+              {s.planned ? `${s.done}/${s.planned}` : '—'}
+            </span>
+            <ShareBar value={s.planned ? (s.done / s.planned) * 100 : 0} tone={full ? 'success' : 'primary'} className="h-1" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   Annual plan
+   ============================================================ */
+
 /** خانة اليوم: سبوت الشهر ثابتة، و اليوم الإضافي يُختار من أيام الشهر الحرّة. */
 function DayCell({ row, index, days, canEdit, onDate }) {
   const { t, i18n } = useTranslation();
-  const isSaturday = toDate(row.date)?.getDay() === 6;
   // An extra day stays changeable; the Saturdays of the month are fixed rows
   return row.extra && canEdit ? (
     <Select
@@ -216,20 +244,18 @@ function DayCell({ row, index, days, canEdit, onDate }) {
       ))}
     </Select>
   ) : (
-    <span className="flex items-center gap-1.5 text-sm tabular-nums">
-      {isSaturday && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />}
-      <span className={isSaturday ? 'font-medium' : 'text-muted-foreground'}>
-        {fmtDay(row.date, i18n.language)}
-      </span>
+    <span className="flex items-baseline gap-2 leading-tight sm:flex-col sm:gap-0.5">
+      <span className="text-sm font-semibold tabular-nums">{fmtDayMonth(row.date)}</span>
+      <span className="text-xs text-muted-foreground">{fmtWeekday(row.date, i18n.language)}</span>
     </span>
   );
 }
 
 /** سطر تحت بند تغيّر منذ الاعتماد: ما كان في الخطة المعتمدة، و زرّ يعيده كما كان. */
-function BaseNote({ base, removed, showDate, canEdit, onRestore }) {
+function BaseNote({ base, removed, showDate, canEdit, onRestore, className }) {
   const { t, i18n } = useTranslation();
   return (
-    <div className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs sm:col-span-3">
+    <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 text-xs', className)}>
       <Badge variant={removed ? 'destructive' : 'warning'}>
         {t(removed ? 'branch.planRemoved' : 'branch.planChanged')}
       </Badge>
@@ -247,46 +273,41 @@ function BaseNote({ base, removed, showDate, canEdit, onRestore }) {
   );
 }
 
-/** صف واحد من جدول الشهر: يوم + النشاط المبرمج فيه + حالته. */
-function PlanRow({ row, index, days, canEdit, validated, removedHere, onTitle, onDate, onRemove, onLink, onRestore }) {
+/**
+ * صف واحد من الشهر: يوم + النشاط المبرمج فيه + حالته. على الهاتف اليوم و الحالة
+ * في سطر، و العنوان تحتهما بعرض الشاشة كلّه — الخانة الضيّقة تقطع ما يُكتب.
+ */
+function PlanRow({ row, index, days, canEdit, validated, removedHere, today, onTitle, onDate, onRemove, onLink, onRestore }) {
   const { t } = useTranslation();
   const changed = differsFromBase(row);
+  const planned = !!row.title.trim();
+  // A past day whose نشاط never happened reads differently from one still ahead
+  const late = planned && !row.session && row.date < today;
 
   return (
-    <li className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:grid-cols-[9rem_1fr_auto]">
-      <DayCell row={row} index={index} days={days} canEdit={canEdit} onDate={onDate} />
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:px-5 sm:py-2.5">
+      <div className="min-w-0 sm:col-start-1 sm:row-start-1">
+        <DayCell row={row} index={index} days={days} canEdit={canEdit} onDate={onDate} />
+      </div>
 
-      {canEdit ? (
-        <Input
-          value={row.title}
-          onChange={(e) => onTitle(index, e.target.value)}
-          placeholder={t('branch.planActivityHint')}
-          autoComplete="off"
-          className="h-11 sm:h-9"
-          aria-label={t('branch.planActivity')}
-        />
-      ) : (
-        <span className="text-sm">{row.title || <span className="text-muted-foreground">—</span>}</span>
-      )}
-
-      <div className="col-span-2 flex items-center gap-2 sm:col-span-1">
+      <div className="flex items-center justify-end gap-1.5 sm:col-start-3 sm:row-start-1">
         {/* أُضيف بعد اعتماد الخطة */}
-        {validated && !row.base && row.title.trim() && <Badge variant="info">{t('branch.planAdded')}</Badge>}
+        {validated && !row.base && planned && <Badge variant="info">{t('branch.planAdded')}</Badge>}
         {row.session ? (
           <Link
             to={`/sessions/${row.session.id}`}
-            className="focus-ring inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/12 px-2 py-0.5 text-xs font-medium text-success"
+            className="focus-ring inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/12 px-2.5 py-0.5 text-xs font-medium text-success hover:bg-success/20"
           >
             <IconCheck className="h-3 w-3" />
             {fmtDate(row.session.date)}
           </Link>
-        ) : row.title.trim() ? (
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <IconClock className="h-3 w-3" />
+        ) : planned ? (
+          <span className={cn('inline-flex items-center gap-1 text-xs', late ? 'font-medium text-warning' : 'text-muted-foreground')}>
+            <IconClock className="h-3.5 w-3.5" />
             {t('branch.planNotDone')}
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
+          !canEdit && <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
         )}
         {/* الربط اليدوي: نشاط أُنشئ باسم آخر لا يلتقطه التطابق بالاسم، فيُربط من هنا.
             يحتاج بندًا محفوظًا — صف لم يُحفظ بعد لا id له يُربط به. */}
@@ -308,16 +329,40 @@ function PlanRow({ row, index, days, canEdit, validated, removedHere, onTitle, o
         )}
       </div>
 
+      <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+        {canEdit ? (
+          <Input
+            value={row.title}
+            onChange={(e) => onTitle(index, e.target.value)}
+            placeholder={t('branch.planActivityHint')}
+            autoComplete="off"
+            className="h-11 sm:h-9"
+            aria-label={`${t('branch.planActivity')} — ${fmtDayMonth(row.date)}`}
+          />
+        ) : (
+          <span className="text-sm">{row.title || <span className="text-muted-foreground">—</span>}</span>
+        )}
+      </div>
+
       {changed && (
         <BaseNote
           base={row.base}
-          removed={!row.title.trim()}
+          removed={!planned}
           showDate={row.date !== row.base.date}
           canEdit={canEdit}
           onRestore={onRestore}
+          className="col-span-2 sm:col-start-2"
         />
       )}
-      {!changed && removedHere && <BaseNote base={removedHere} removed canEdit={canEdit} onRestore={onRestore} />}
+      {!changed && removedHere && (
+        <BaseNote
+          base={removedHere}
+          removed
+          canEdit={canEdit}
+          onRestore={onRestore}
+          className="col-span-2 sm:col-start-2"
+        />
+      )}
     </li>
   );
 }
@@ -332,54 +377,59 @@ function ValidationBar({ plan, isAdmin, busy, onValidate, onUnvalidate }) {
   const sum = plan.summary;
   return (
     <div
-      className={
-        v
-          ? 'space-y-2 rounded-xl border border-success/25 bg-success/8 px-3 py-2.5'
-          : 'space-y-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5'
-      }
+      className={cn(
+        'flex flex-wrap items-start gap-3 rounded-xl border px-3.5 py-3',
+        v ? 'border-success/25 bg-success/8' : 'border-warning/30 bg-warning/10'
+      )}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="flex items-center gap-1.5 text-sm font-medium">
-          {v ? <IconCheck className="h-4 w-4 text-success" /> : <IconClock className="h-4 w-4 text-warning" />}
+      <span
+        className={cn(
+          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+          v ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'
+        )}
+      >
+        {v ? <IconCheck className="h-4 w-4" /> : <IconClock className="h-4 w-4" />}
+      </span>
+      <div className="min-w-48 flex-1 space-y-2 pt-1">
+        <p className="text-sm font-medium leading-snug">
           {v
             ? t('branch.planValidated', { date: fmtDate(v.validated_at.slice(0, 10)), by: v.validated_by || '—' })
             : t('branch.planDraft')}
-        </span>
-        <span className="grow" />
-        {isAdmin && (
-          <>
-            {v && (
-              <Button size="sm" variant="ghost" onClick={onUnvalidate} disabled={busy}>
-                {t('branch.planUnvalidate')}
-              </Button>
+        </p>
+        {v ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
+              {t('branch.planRespect')} · {sum.respect ?? 0}%
+            </Badge>
+            <Badge variant="outline">{t('branch.planCountSame', { count: sum.same, total: sum.validated_total })}</Badge>
+            {sum.changed > 0 && <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>}
+            {sum.removed > 0 && (
+              <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
             )}
-            <Button
-              size="sm"
-              variant={v ? 'outline' : 'brand'}
-              onClick={onValidate}
-              loading={busy}
-              disabled={!v && plan.total === 0}
-            >
-              <IconCheck />
-              {t(v ? 'branch.planRevalidate' : 'branch.planValidate')}
-            </Button>
-          </>
+            {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
+          </div>
+        ) : (
+          <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planValidateHint')}</p>
         )}
       </div>
-      {v ? (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
-            {t('branch.planRespect')} · {sum.respect ?? 0}%
-          </Badge>
-          <Badge variant="outline">{t('branch.planCountSame', { count: sum.same, total: sum.validated_total })}</Badge>
-          {sum.changed > 0 && <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>}
-          {sum.removed > 0 && (
-            <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          {v && (
+            <Button size="sm" variant="ghost" onClick={onUnvalidate} disabled={busy}>
+              {t('branch.planUnvalidate')}
+            </Button>
           )}
-          {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
+          <Button
+            size="sm"
+            variant={v ? 'outline' : 'brand'}
+            onClick={onValidate}
+            loading={busy}
+            disabled={!v && plan.total === 0}
+          >
+            <IconCheck />
+            {t(v ? 'branch.planRevalidate' : 'branch.planValidate')}
+          </Button>
         </div>
-      ) : (
-        <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planValidateHint')}</p>
       )}
     </div>
   );
@@ -501,9 +551,11 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
  * الخطة السنوية لفرقة واحدة، شهرًا بشهر: سبوت الشهر جاهزة كصفوف، القائد يكتب اسم
  * النشاط في كل سطر و يحفظ الشهر دفعة واحدة، و يضيف أي يوم آخر عند الحاجة.
  * التحقيق يُحسب في السيرفر: بند الخطة يخضرّ متى رُبط به نشاط أو أُنشئ نشاط بنفس الاسم.
+ * `onChange` يُنبّه الصفحة بعد كل حفظ (حال الخطة على بطاقات الفرق)، و `onDirtyChange`
+ * يُعلمها بمسودّة غير محفوظة قبل أن يُنقل القائد إلى فرقة أخرى.
  */
-function AnnualPlan({ branchId }) {
-  const { t, i18n } = useTranslation();
+function AnnualPlan({ branchId, onChange, onDirtyChange }) {
+  const { t } = useTranslation();
   const { can } = usePerms();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -520,6 +572,7 @@ function AnnualPlan({ branchId }) {
   const [linkId, setLinkId] = useState(null);
   const res = useFetch(`/branches/${branchId}/plan${year ? `?year=${encodeURIComponent(year)}` : ''}`);
   const canEdit = can('branches.plan');
+  const today = toISO(new Date());
 
   const plan = res.data;
   const key = plan ? monthKey(plan.year, month) : null;
@@ -531,6 +584,18 @@ function AnnualPlan({ branchId }) {
     setRows(monthRows(plan.items, key));
     setDirty(false);
   }, [plan, key]);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  // Every server answer is the whole plan: it replaces the local one, and the page
+  // refreshes what it shows about it
+  function setPlan(fresh) {
+    res.setData(fresh);
+    onChange?.();
+  }
 
   const edit = (fn) => {
     setRows(fn);
@@ -562,7 +627,7 @@ function AnnualPlan({ branchId }) {
           .filter((r) => r.date && r.title.trim())
           .map((r) => ({ ...(r.id ? { id: r.id } : {}), date: r.date, title: r.title.trim() })),
       });
-      res.setData(fresh);
+      setPlan(fresh);
       setDirty(false);
       toast.success(t('common.saved'));
       return true;
@@ -572,6 +637,19 @@ function AnnualPlan({ branchId }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  // الانتقال إلى شهر أو سنة أخرى يعيد بناء الصفوف، فيُحفظ الشهر المعدَّل أولًا —
+  // كما في الربط و الإرجاع أدناه — و يبقى القائد مكانه إن فشل الحفظ.
+  async function goMonth(m) {
+    if (m === month) return;
+    if (dirty && !(await save())) return;
+    setMonth(m);
+  }
+  async function goYear(y) {
+    if (y === plan.year) return;
+    if (dirty && !(await save())) return;
+    setYear(y);
   }
 
   // الربط يعيد الخطة من السيرفر فتُبنى الصفوف من جديد و تضيع التعديلات غير المحفوظة،
@@ -585,7 +663,7 @@ function AnnualPlan({ branchId }) {
   async function restore(baselineId) {
     if (dirty && !(await save())) return;
     try {
-      res.setData(await api.post(`/branches/${branchId}/plan/restore`, { baseline_id: baselineId }));
+      setPlan(await api.post(`/branches/${branchId}/plan/restore`, { baseline_id: baselineId }));
       toast.success(t('common.saved'));
     } catch (err) {
       toast.error(err.message);
@@ -602,7 +680,7 @@ function AnnualPlan({ branchId }) {
     if (dirty && !(await save())) return;
     setValidating(true);
     try {
-      res.setData(await api.post(`/branches/${branchId}/plan/validate`, { year: plan.year }));
+      setPlan(await api.post(`/branches/${branchId}/plan/validate`, { year: plan.year }));
       toast.success(t('common.saved'));
     } catch (err) {
       toast.error(err.message === 'plan_empty' ? t('branch.planEmptyError') : err.message);
@@ -616,7 +694,7 @@ function AnnualPlan({ branchId }) {
       return;
     setValidating(true);
     try {
-      res.setData(await api.del(`/branches/${branchId}/plan/validate?year=${encodeURIComponent(plan.year)}`));
+      setPlan(await api.del(`/branches/${branchId}/plan/validate?year=${encodeURIComponent(plan.year)}`));
       toast.success(t('common.saved'));
     } catch (err) {
       toast.error(err.message);
@@ -625,161 +703,148 @@ function AnnualPlan({ branchId }) {
     }
   }
 
-  const monthDone = rows.filter((r) => r.session).length;
-  const monthPlanned = rows.filter((r) => r.title.trim()).length;
-  const linkItem = plan?.items.find((i) => i.id === linkId) || null;
+  if (res.loading)
+    return (
+      <Card className="space-y-4 p-4 sm:p-5">
+        <Skeleton className="h-10 w-2/5" />
+        <Skeleton className="h-16" />
+        <Skeleton className="h-40" />
+      </Card>
+    );
+  if (res.error)
+    return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
+  if (!plan) return null;
+
+  const linkItem = plan.items.find((i) => i.id === linkId) || null;
   // Days still selectable for an extra row: the free ones, plus the row's own date
   const takenDates = new Set(rows.filter((r) => !r.extra).map((r) => r.date));
   // بنود معتمدة حُذفت هذا الشهر: تحت صف يومها، أو تحت الجدول إن لم يبقَ لها صف
-  const removedMonth = (plan?.removed || []).filter((b) => key && b.date.startsWith(key));
+  const removedMonth = (plan.removed || []).filter((b) => key && b.date.startsWith(key));
   const removedAt = (row) => removedMonth.find((b) => b.date === row.date && row.base?.id !== b.id);
   const removedLoose = removedMonth.filter((b) => !rows.some((r) => r.date === b.date));
+  // The open month counts from the draft, so a title typed shows on its bar at once
+  const stats = monthStats(plan.items, plan.year).map((s) =>
+    s.month === month
+      ? { ...s, planned: rows.filter((r) => r.title.trim()).length, done: rows.filter((r) => r.title.trim() && r.session).length }
+      : s
+  );
+  const monthFull = key && daysOf(key).every((d) => rows.some((r) => r.date === d));
 
   return (
-    <Card>
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-        <CardTitle className="flex items-center gap-2">
-          <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
-          {t('branch.planTitle')}
-        </CardTitle>
-        {plan && (
-          <div className="flex flex-wrap items-center gap-2">
-            {plan.total > 0 && (
-              <Badge variant="outline">
-                {t('branch.planProgress', { done: plan.done_count, total: plan.total })}
-              </Badge>
-            )}
-            <ExportPdfButton kind="plan" id={branchId} query={`year=${encodeURIComponent(plan.year)}`} />
-            <Select
-              className="w-auto"
-              value={plan.year}
-              onChange={(e) => setYear(e.target.value)}
-              aria-label={t('common.year')}
-            >
-              {plan.years.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </Select>
-          </div>
-        )}
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        {res.loading && <Skeleton className="h-40" />}
-        {res.error && (
-          <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
-        )}
-
-        {plan && (
-          <>
-            {plan.total > 0 && (
-              <div>
-                <div className="mb-1.5 flex items-baseline justify-between text-sm">
-                  <span className="font-medium">{t('branch.planRate')}</span>
-                  <span className="tabular-nums text-muted-foreground">{plan.rate}%</span>
-                </div>
-                <ProgressBar value={plan.rate} label={t('branch.planRate')} />
-              </div>
-            )}
-
-            <ValidationBar
-              plan={plan}
-              isAdmin={isAdmin}
-              busy={validating}
-              onValidate={validate}
-              onUnvalidate={unvalidate}
-            />
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Select
-                className="w-auto"
-                value={month}
-                onChange={(e) => setMonth(Number(e.target.value))}
-                aria-label={t('common.month')}
-              >
-                {SCOUT_MONTHS.map((m) => (
-                  <option key={m} value={m}>
-                    {monthName(m, i18n.language)}
+    <div className="space-y-3">
+      <Card>
+        <div className="space-y-4 p-4 sm:p-5">
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-muted-foreground">{t('branch.planRate')}</p>
+              <p className="mt-1 flex flex-wrap items-baseline gap-x-2">
+                <span dir="ltr" className="text-2xl font-bold tabular-nums">
+                  {plan.total > 0 ? `${plan.rate}%` : '—'}
+                </span>
+                {plan.total > 0 && (
+                  <span className="text-sm text-muted-foreground">
+                    {t('branch.planProgress', { done: plan.done_count, total: plan.total })}
+                  </span>
+                )}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select className="w-auto" value={plan.year} onChange={(e) => goYear(e.target.value)} aria-label={t('common.year')}>
+                {plan.years.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
                   </option>
                 ))}
               </Select>
-              <Badge variant={monthDone === monthPlanned && monthPlanned > 0 ? 'success' : 'outline'}>
-                {t('branch.planProgress', { done: monthDone, total: monthPlanned })}
-              </Badge>
-              <span className="hidden grow sm:block" />
-              {canEdit && (
-                <>
-                  <Button size="sm" variant="outline" onClick={addDay}>
-                    <IconPlus />
-                    {t('branch.planAddDay')}
-                  </Button>
-                  <Button size="sm" variant="brand" onClick={save} loading={saving} disabled={!dirty}>
-                    {t('common.save')}
-                  </Button>
-                </>
-              )}
+              <ExportPdfButton kind="plan" id={branchId} query={`year=${encodeURIComponent(plan.year)}`} compact />
             </div>
+          </div>
+          {plan.total > 0 && <ProgressBar value={plan.rate} label={t('branch.planRate')} className="h-2" />}
 
-            <div className="overflow-hidden rounded-xl border border-border">
-              <div className="hidden grid-cols-[9rem_1fr_auto] gap-3 border-b border-border bg-muted/30 px-3 py-2 text-xs font-medium text-muted-foreground sm:grid">
-                <span>{t('common.date')}</span>
-                <span>{t('branch.planActivity')}</span>
-                <span>{t('branch.planState')}</span>
-              </div>
-              {rows.length === 0 ? (
-                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                  {t('branch.planEmptyMonth')}
-                </p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {rows.map((row, i) => (
-                    <PlanRow
-                      key={`${row.id ?? 'new'}-${i}`}
-                      row={row}
-                      index={i}
-                      days={daysOf(key).filter((d) => d === row.date || !takenDates.has(d))}
-                      canEdit={canEdit}
-                      validated={!!plan.validation}
-                      removedHere={removedAt(row)}
-                      onTitle={setTitle}
-                      onDate={setDate}
-                      onRemove={removeRow}
-                      onLink={openLink}
-                      onRestore={restore}
-                    />
-                  ))}
-                </ul>
-              )}
-            </div>
+          <ValidationBar
+            plan={plan}
+            isAdmin={isAdmin}
+            busy={validating}
+            onValidate={validate}
+            onUnvalidate={unvalidate}
+          />
+        </div>
 
-            {removedLoose.length > 0 && (
-              <ul className="space-y-2 rounded-xl border border-dashed border-border px-3 py-2">
-                {removedLoose.map((b) => (
-                  <li key={b.id} className="grid grid-cols-[5rem_1fr] sm:grid-cols-[9rem_1fr_auto]">
-                    <BaseNote base={b} removed showDate canEdit={canEdit} onRestore={restore} />
-                  </li>
-                ))}
-              </ul>
-            )}
+        <div className="border-t border-border p-3 sm:p-4">
+          <MonthStrip stats={stats} value={month} onChange={goMonth} />
+        </div>
 
-            <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.planHint')}</p>
-
-            {linkItem && (
-              <LinkSessionDialog
-                key={linkItem.id}
-                branchId={branchId}
-                year={plan.year}
-                item={linkItem}
-                onClose={() => setLinkId(null)}
-                onDone={res.setData}
+        {rows.length === 0 ? (
+          <p className="border-t border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            {t('branch.planEmptyMonth')}
+          </p>
+        ) : (
+          <ul className="divide-y divide-border border-t border-border">
+            {rows.map((row, i) => (
+              <PlanRow
+                key={`${row.id ?? 'new'}-${i}`}
+                row={row}
+                index={i}
+                days={daysOf(key).filter((d) => d === row.date || !takenDates.has(d))}
+                canEdit={canEdit}
+                validated={!!plan.validation}
+                removedHere={removedAt(row)}
+                today={today}
+                onTitle={setTitle}
+                onDate={setDate}
+                onRemove={removeRow}
+                onLink={openLink}
+                onRestore={restore}
               />
-            )}
-          </>
+            ))}
+          </ul>
         )}
-      </CardContent>
-    </Card>
+
+        {removedLoose.length > 0 && (
+          <ul className="space-y-2 border-t border-dashed border-border px-4 py-3 sm:px-5">
+            {removedLoose.map((b) => (
+              <li key={b.id}>
+                <BaseNote base={b} removed showDate canEdit={canEdit} onRestore={restore} />
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Sticks to the screen's bottom edge while a change waits: the save stays
+            in reach from any row of a long month */}
+        {canEdit && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-2 rounded-b-2xl border-t border-border bg-card px-4 py-3 sm:px-5',
+              dirty && 'sticky bottom-[calc(var(--bottomnav-h)+0.5rem)] z-10 shadow-[0_-10px_20px_-16px_hsl(220_25%_12%/0.35)] lg:bottom-3'
+            )}
+          >
+            <Button size="sm" variant="outline" onClick={addDay} disabled={monthFull}>
+              <IconPlus />
+              {t('branch.planAddDay')}
+            </Button>
+            <span className="grow" />
+            {dirty && <span className="text-xs font-medium text-warning">{t('settings.unsaved')}</span>}
+            <Button size="sm" variant="brand" onClick={save} loading={saving} disabled={!dirty}>
+              {t('common.save')}
+            </Button>
+          </div>
+        )}
+      </Card>
+
+      <p className="px-1 text-xs leading-relaxed text-muted-foreground">{t('branch.planHint')}</p>
+
+      {linkItem && (
+        <LinkSessionDialog
+          key={linkItem.id}
+          branchId={branchId}
+          year={plan.year}
+          item={linkItem}
+          onClose={() => setLinkId(null)}
+          onDone={setPlan}
+        />
+      )}
+    </div>
   );
 }
 
@@ -804,14 +869,12 @@ function PlansOverview({ onOpenBranch }) {
         ),
       ].sort()
     : [];
+  const stats = data ? monthStats(data.branches.flatMap((b) => b.items), data.year) : [];
 
   return (
-    <Card>
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-        <CardTitle className="flex items-center gap-2">
-          <IconTrendingUp className="h-4 w-4 text-muted-foreground" />
-          {t('branch.planAll')}
-        </CardTitle>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">{t('branch.planAllSubtitle')}</p>
         {data && (
           <Select className="w-auto" value={data.year} onChange={(e) => setYear(e.target.value)} aria-label={t('common.year')}>
             {data.years.map((y) => (
@@ -821,16 +884,15 @@ function PlansOverview({ onOpenBranch }) {
             ))}
           </Select>
         )}
-      </CardHeader>
+      </div>
 
-      <CardContent className="space-y-4">
-        <p className="text-sm leading-relaxed text-muted-foreground">{t('branch.planAllSubtitle')}</p>
-        {res.loading && <Skeleton className="h-40" />}
-        {res.error && <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />}
+      {res.loading && <Skeleton className="h-64 rounded-2xl" />}
+      {res.error && <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />}
 
-        {data && (
-          <>
-            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {data && (
+        <>
+          <Card className="overflow-hidden">
+            <ul className="divide-y divide-border">
               {data.branches.map((b) => {
                 const sum = b.summary;
                 return (
@@ -838,59 +900,69 @@ function PlansOverview({ onOpenBranch }) {
                     <button
                       type="button"
                       onClick={() => onOpenBranch(b.id)}
-                      className="focus-ring flex h-full w-full flex-col gap-2 rounded-xl border border-border px-3 py-2.5 text-start transition-colors hover:bg-accent/50"
+                      className="focus-ring grid w-full cursor-pointer items-center gap-x-6 gap-y-2 px-4 py-3.5 text-start transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(0,1.6fr)] sm:px-5"
                     >
-                      <div className="flex w-full items-center justify-between gap-2">
-                        <span className="font-medium">{branchName(b, lng)}</span>
-                        <Badge variant={b.validation ? 'success' : 'warning'}>
-                          {t(b.validation ? 'branch.planValidatedShort' : 'branch.planDraftShort')}
-                        </Badge>
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {t('branch.planProgress', { done: b.done_count, total: b.total })}
-                        {b.validation && ` · ${fmtDate(b.validation.validated_at.slice(0, 10))}`}
-                      </div>
-                      {b.validation && (
-                        <div className="flex flex-wrap gap-1.5">
-                          <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
-                            {t('branch.planRespect')} · {sum.respect ?? 0}%
+                      <span className="flex items-center gap-2">
+                        <span className="font-semibold">{branchName(b, lng)}</span>
+                        {b.total > 0 && (
+                          <Badge variant={b.validation ? 'success' : 'warning'}>
+                            {t(b.validation ? 'branch.planValidatedShort' : 'branch.planDraftShort')}
                           </Badge>
-                          {sum.changed > 0 && (
-                            <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>
-                          )}
-                          {sum.removed > 0 && (
-                            <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
-                          )}
-                          {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
-                        </div>
+                        )}
+                      </span>
+                      {b.total > 0 ? (
+                        <span className="flex items-center gap-3">
+                          <ShareBar value={b.rate} className="flex-1" />
+                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                            {t('branch.planProgress', { done: b.done_count, total: b.total })}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">{t('branch.planFree')}</span>
                       )}
+                      <span className="flex flex-wrap gap-1.5 sm:justify-end">
+                        {b.validation && (
+                          <>
+                            <Badge variant={sum.respect === 100 ? 'success' : 'warning'}>
+                              {t('branch.planRespect')} · {sum.respect ?? 0}%
+                            </Badge>
+                            {sum.changed > 0 && (
+                              <Badge variant="warning">{t('branch.planCountChanged', { count: sum.changed })}</Badge>
+                            )}
+                            {sum.removed > 0 && (
+                              <Badge variant="destructive">{t('branch.planCountRemoved', { count: sum.removed })}</Badge>
+                            )}
+                            {sum.added > 0 && <Badge variant="info">{t('branch.planCountAdded', { count: sum.added })}</Badge>}
+                          </>
+                        )}
+                      </span>
                     </button>
                   </li>
                 );
               })}
             </ul>
+          </Card>
 
-            <Select className="w-auto" value={month} onChange={(e) => setMonth(Number(e.target.value))} aria-label={t('common.month')}>
-              {SCOUT_MONTHS.map((m) => (
-                <option key={m} value={m}>
-                  {monthName(m, lng)}
-                </option>
-              ))}
-            </Select>
+          <Card className="overflow-hidden">
+            <div className="p-3 sm:p-4">
+              <MonthStrip stats={stats} value={month} onChange={setMonth} />
+            </div>
 
             {dates.length === 0 ? (
-              <p className="rounded-xl border border-border px-3 py-6 text-center text-sm text-muted-foreground">
+              <p className="border-t border-border px-4 py-8 text-center text-sm text-muted-foreground">
                 {t('branch.planFree')}
               </p>
             ) : (
-              // الجدول وحده يمرّ أفقيًا على الهاتف، لا الصفحة
-              <div className="overflow-x-auto rounded-xl border border-border">
+              // الجدول وحده يمرّ أفقيًا على الهاتف، لا الصفحة؛ عمود التاريخ يبقى ظاهرًا
+              <div className="overflow-x-auto border-t border-border">
                 <table className="w-full min-w-[40rem] border-collapse text-sm">
                   <thead>
-                    <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
-                      <th className="px-3 py-2 text-start font-medium">{t('common.date')}</th>
+                    <tr className="border-b border-border bg-muted text-xs text-muted-foreground">
+                      <th scope="col" className="sticky start-0 bg-muted px-4 py-2.5 text-start font-medium sm:px-5">
+                        {t('common.date')}
+                      </th>
                       {data.branches.map((b) => (
-                        <th key={b.id} className="px-3 py-2 text-start font-medium">
+                        <th key={b.id} scope="col" className="px-3 py-2.5 text-start font-medium">
                           {branchName(b, lng)}
                         </th>
                       ))}
@@ -899,12 +971,18 @@ function PlansOverview({ onOpenBranch }) {
                   <tbody className="divide-y divide-border">
                     {dates.map((d) => (
                       <tr key={d} className="align-top">
-                        <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">{fmtDay(d, lng)}</td>
+                        <th
+                          scope="row"
+                          className="sticky start-0 whitespace-nowrap bg-card px-4 py-2.5 text-start font-normal sm:px-5"
+                        >
+                          <span className="block font-semibold tabular-nums">{fmtDayMonth(d)}</span>
+                          <span className="block text-xs text-muted-foreground">{fmtWeekday(d, lng)}</span>
+                        </th>
                         {data.branches.map((b) => {
                           const item = b.items.find((i) => i.date === d);
                           const gone = b.removed.find((r) => r.date === d);
                           return (
-                            <td key={b.id} className="space-y-1 px-3 py-2">
+                            <td key={b.id} className="space-y-1 px-3 py-2.5">
                               {item && (
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   {item.done && <IconCheck className="h-3.5 w-3.5 shrink-0 text-success" />}
@@ -935,10 +1013,129 @@ function PlansOverview({ onOpenBranch }) {
                 </table>
               </div>
             )}
-          </>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   Activities
+   ============================================================ */
+
+/** حضور نشاط: النسبة، و «حاضر من مسجَّل»، و شريط يقرأ بلمحة. */
+function AttendanceMeter({ present, total }) {
+  const { t } = useTranslation();
+  if (!total)
+    return <span className="max-w-24 shrink-0 text-end text-xs text-muted-foreground">{t('session.notMarked')}</span>;
+  const pct = Math.round((present / total) * 100);
+  return (
+    <span
+      role="img"
+      aria-label={t('member.presentOf', { present, total })}
+      className="flex w-20 shrink-0 flex-col gap-1.5 sm:w-32"
+    >
+      <span className="flex items-baseline justify-between gap-2 text-xs">
+        <RateValue rate={pct} />
+        <span className="tabular-nums text-muted-foreground" dir="ltr">
+          {present}/{total}
+        </span>
+      </span>
+      <ShareBar value={pct} tone="success" />
+    </span>
+  );
+}
+
+const KIND_BADGE = {
+  visit: ['warning', 'session.kindVisit'],
+  group: ['info', 'session.kindGroup'],
+};
+
+/** A نشاط row: date, title and attendance always visible, participants unfolded on demand. */
+function SessionRow({ s }) {
+  const { t, i18n } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const excused = s.excused?.length || 0;
+  const kind = KIND_BADGE[s.kind];
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="focus-ring flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-accent/40 sm:gap-4 sm:px-5"
+      >
+        <span className="flex w-14 shrink-0 flex-col items-center rounded-lg border border-border bg-muted/40 px-1 py-1.5 text-center">
+          <span className="text-lg font-bold leading-none tabular-nums">{Number(s.date.slice(8, 10))}</span>
+          <span className="mt-1 text-[0.6875rem] leading-tight text-muted-foreground">{fmtShortMonth(s.date, i18n.language)}</span>
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 font-medium leading-snug sm:line-clamp-1">{s.title}</span>
+          <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            {kind && <Badge variant={kind[0]}>{t(kind[1])}</Badge>}
+            {s.leader && <span className="truncate">{s.leader}</span>}
+          </span>
+        </span>
+        {s.kind === 'visit' ? (
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {t('session.visitedCount', { count: s.present.length })}
+          </span>
+        ) : (
+          <AttendanceMeter present={s.present.length} total={s.present.length + s.absent.length + excused} />
         )}
-      </CardContent>
-    </Card>
+        <IconChevronDown
+          className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200', open && 'rotate-180')}
+        />
+      </button>
+
+      {open && (
+        <div className="space-y-3 px-4 pb-4 sm:pe-5 sm:ps-[5.75rem]">
+          {s.matalib.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium">{t('branch.matalib')}:</span>{' '}
+              <span dir="ltr">{s.matalib.join(' · ')}</span>
+            </div>
+          )}
+          {s.animators.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium">{t('branch.animators')}:</span>{' '}
+              {s.animators.map(memberName).join(' · ')}
+            </div>
+          )}
+          {s.present.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t('branch.noParticipants')}</p>
+          ) : (
+            <ul className="flex flex-wrap gap-1.5">
+              {s.present.map((m) => (
+                <li key={m.id}>
+                  <Link
+                    to={`/members/${m.id}`}
+                    className="focus-ring flex min-h-10 items-center gap-2 rounded-full border border-border bg-card py-1 pe-3 ps-1 text-xs transition-colors hover:border-primary/35 hover:bg-accent sm:min-h-8"
+                  >
+                    <Avatar photo={m.photo} name={avatarName(m)} className="h-6 w-6 text-[0.625rem]" />
+                    {memberName(m)}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+          {s.absent.length > 0 && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-destructive">{t('session.absent')}:</span>{' '}
+              {s.absent.map(memberName).join(' · ')}
+            </p>
+          )}
+          <Link
+            to={`/sessions/${s.id}`}
+            className="focus-ring inline-block rounded text-xs font-medium text-primary hover:underline"
+          >
+            {t('branch.openSession')}
+          </Link>
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -951,21 +1148,22 @@ function BranchSessions({ branchId }) {
 
   if (res.loading)
     return (
-      <div className="space-y-3 p-4 sm:p-5">
-        <Skeleton className="h-12" />
-        <Skeleton className="h-12" />
-      </div>
+      <Card className="space-y-3 p-4 sm:p-5">
+        <Skeleton className="h-11" />
+        <Skeleton className="h-14" />
+        <Skeleton className="h-14" />
+      </Card>
     );
   if (res.error)
-    return (
-      <div className="p-4">
-        <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
-      </div>
-    );
+    return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
   const all = res.data || [];
   if (all.length === 0)
-    return <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('session.noSessions')} />;
+    return (
+      <Card>
+        <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('session.noSessions')} />
+      </Card>
+    );
 
   // Search covers what a قائد would look for: the نشاط, its date, its animator,
   // and the names of who took part — so "find the outing Yassine went to" works.
@@ -986,8 +1184,8 @@ function BranchSessions({ branchId }) {
       );
 
   return (
-    <>
-      <div className="px-4 pb-3 pt-1 sm:px-5">
+    <Card className="overflow-hidden">
+      <div className="border-b border-border p-3 sm:p-4">
         <SearchInput
           value={query}
           onChange={(v) => {
@@ -1008,39 +1206,43 @@ function BranchSessions({ branchId }) {
         </ul>
       )}
       {sessions.length > limit && (
-        <div className="p-4 sm:p-5">
-          <Button variant="outline" size="sm" onClick={() => setLimit((n) => n + 20)}>
+        <div className="border-t border-border p-3 text-center sm:p-4">
+          <Button variant="ghost" size="sm" onClick={() => setLimit((n) => n + 20)}>
             {t('branch.showMore', { count: sessions.length - limit })}
           </Button>
         </div>
       )}
-    </>
+    </Card>
   );
 }
 
+/* ============================================================
+   الطلائع
+   ============================================================ */
+
 /**
- * مجموعات الفرقة و توزيع عناصرها.
+ * طلائع الفرقة و توزيع عناصرها.
  *
- * الفرقة الكبيرة لا تسعها الحصّة الواحدة، و قد يعطي كل مجموعةٍ قائدٌ آخر نشاطًا
- * مختلفًا: فتُقسَّم إلى مجموعات يُوزَّع عليها العناصر بالاسم، ثم يختار النشاط
- * مجموعاته عند إنشائه. التوزيع يُحفظ فور تغييره — صفّ واحد لكل عنصر، فلا زرّ حفظ
+ * الفرقة الكبيرة لا تسعها الحصّة الواحدة، و قد يعطي كل طليعةٍ قائدٌ آخر نشاطًا
+ * مختلفًا: فتُقسَّم إلى طلائع يُوزَّع عليها العناصر بالاسم، ثم يختار النشاط
+ * طلائعه عند إنشائه. التوزيع يُحفظ فور تغييره — صفّ واحد لكل عنصر، فلا زرّ حفظ
  * ينتظر إلى آخر القائمة و لا خطر ضياع ما وُزِّع قبله.
  */
 function BranchGroups({ branchId }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { can } = usePerms();
   const toast = useToast();
   const confirm = useConfirm();
   const res = useFetch(`/branches/${branchId}/groups`);
   const canEdit = can('branches.groups');
-  // null = مغلق، { id, name } = إعادة تسمية، { name } = مجموعة جديدة
+  // null = مغلق، { id, name } = إعادة تسمية، { name } = طليعة جديدة
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [dialogError, setDialogError] = useState(null);
   const [query, setQuery] = useState('');
-  // '' = الكل، 'none' = بلا مجموعة، أو رقم مجموعة
+  // '' = الكل، 'none' = بلا طليعة، أو رقم طليعة
   const [filter, setFilter] = useState('');
-  // العناصر المؤشَّرة، و المجموعة التي سيُنقلون إليها. الاختيار يبقى عبر البحث و
+  // العناصر المؤشَّرة، و الطليعة التي سيُنقلون إليها. الاختيار يبقى عبر البحث و
   // الفلترة: القائد يجمع أسماءه من عدّة بحثات ثم ينقلهم دفعة واحدة.
   const [picked, setPicked] = useState(() => new Set());
   const [target, setTarget] = useState('');
@@ -1055,8 +1257,14 @@ function BranchGroups({ branchId }) {
     setAssigning(true);
   }
 
+  function openEditor(group) {
+    setDialogError(null);
+    setEditing(group);
+  }
+
   const groups = res.data?.groups || [];
   const members = res.data?.members || [];
+  const activeCount = members.filter((m) => m.status === 'active').length;
   const unassigned = members.filter((m) => !m.group_id && m.status === 'active').length;
 
   async function saveGroup(e) {
@@ -1116,7 +1324,7 @@ function BranchGroups({ branchId }) {
   // نقل المؤشَّرين دفعة واحدة. طلب واحد للجميع: توزيع فرقة من تسعين عنصرًا لا يحتمل
   // طلبًا لكل اسم. الردّ يُعيد تحميل القائمة، فالأعداد تُصحَّح من الخادم لا من الظنّ.
   async function moveSelected() {
-    // عنصر رُقّي أو حُذف بينما كان مؤشَّرًا يسقط من الدفعة: الخادم يرفض الطلب كلّه
+    // عنصر رُفّع أو حُذف بينما كان مؤشَّرًا يسقط من الدفعة: الخادم يرفض الطلب كلّه
     // إن حوى اسمًا خرج من الفرقة، فلا يُرسَل ما لم يعد في القائمة.
     const ids = [...picked].filter((id) => members.some((m) => m.id === id));
     if (!ids.length) return;
@@ -1139,21 +1347,14 @@ function BranchGroups({ branchId }) {
 
   if (res.loading)
     return (
-      <Card>
-        <CardContent className="space-y-3 py-5">
-          <Skeleton className="h-10" />
-          <Skeleton className="h-24" />
-        </CardContent>
+      <Card className="space-y-3 p-4 sm:p-5">
+        <Skeleton className="h-10" />
+        <Skeleton className="h-14" />
+        <Skeleton className="h-14" />
       </Card>
     );
   if (res.error)
-    return (
-      <Card>
-        <CardContent className="py-5">
-          <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
-        </CardContent>
-      </Card>
-    );
+    return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
   const q = query.trim().toLowerCase();
   const shown = members.filter((m) => {
@@ -1162,91 +1363,96 @@ function BranchGroups({ branchId }) {
   });
   const shownIds = shown.map((m) => m.id);
   const allShownPicked = shownIds.length > 0 && shownIds.every((id) => picked.has(id));
+  const share = (n) => (activeCount ? (n / activeCount) * 100 : 0);
 
   return (
-    <Card>
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-        <CardTitle>{t('branch.groupsTitle')}</CardTitle>
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-start gap-3 border-b border-border p-4 sm:p-5">
+        <p className="min-w-60 flex-1 text-sm leading-relaxed text-muted-foreground">{t('branch.groupsHint')}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{groups.length}</Badge>
+          {groups.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => openAssign()}>
+              <IconUsers />
+              {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
+            </Button>
+          )}
           {canEdit && (
-            <Button size="sm" variant="outline" onClick={() => { setDialogError(null); setEditing({ name: '' }); }}>
+            <Button size="sm" variant="brand" onClick={() => openEditor({ name: '' })}>
               <IconPlus />
               {t('branch.groupNew')}
             </Button>
           )}
         </div>
-      </CardHeader>
+      </div>
 
-      <CardContent className="space-y-4">
-        <p className="text-xs leading-relaxed text-muted-foreground">{t('branch.groupsHint')}</p>
-
-        {groups.length === 0 ? (
-          <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('branch.groupsEmpty')}>
-            {t('branch.groupsEmptyHint')}
-          </EmptyState>
-        ) : (
-          <>
-            <ul className="grid gap-2 sm:grid-cols-2">
-              {groups.map((g) => (
-                <li
-                  key={g.id}
-                  className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{g.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {t('branch.groupMembers', { count: g.member_count })}
-                    </div>
-                  </div>
-                  {canEdit && (
-                    <>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label={t('branch.groupRename')}
-                        onClick={() => { setDialogError(null); setEditing({ id: g.id, name: g.name }); }}
-                      >
-                        <IconPencil />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label={t('branch.groupDelete')}
-                        onClick={() => removeGroup(g)}
-                      >
-                        <IconTrash />
-                      </Button>
-                    </>
-                  )}
-                </li>
-              ))}
-            </ul>
-
-            {/* التوزيع نفسه في نافذة: قائمة الفرقة قد تبلغ تسعين اسمًا، و بسطها هنا
-                يدفن بقيّة الصفحة تحتها. البطاقة تبقى ملخّصًا، و القائمة تُفتح عند
-                الحاجة إليها. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4">
-              <Button size="sm" variant="outline" onClick={() => openAssign()}>
-                <IconUsers />
-                {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
-              </Button>
-              {unassigned > 0 ? (
-                // اختصار: يفتح النافذة على غير الموزَّعين وحدهم، و هم أول ما يُبحث عنه
-                <button
-                  type="button"
-                  className="focus-ring inline-flex min-h-11 items-center rounded px-2 text-xs text-muted-foreground underline sm:min-h-9"
-                  onClick={() => openAssign('none')}
-                >
-                  {t('branch.groupUnassigned', { count: unassigned })}
-                </button>
-              ) : (
-                <span className="text-xs text-muted-foreground">{t('branch.groupAllAssigned')}</span>
+      {groups.length === 0 ? (
+        <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('branch.groupsEmpty')}>
+          {t('branch.groupsEmptyHint')}
+        </EmptyState>
+      ) : (
+        <ul className="divide-y divide-border">
+          {groups.map((g) => (
+            <li key={g.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
+              <div className="grid min-w-0 flex-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
+                <div className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
+                  <p className="truncate font-medium">{g.name}</p>
+                  <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {t('branch.groupMembers', { count: g.member_count })}
+                  </p>
+                </div>
+                <ShareBar value={share(g.member_count)} />
+              </div>
+              {canEdit && (
+                <div className="flex shrink-0 items-center">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`${t('branch.groupRename')} — ${g.name}`}
+                    title={t('branch.groupRename')}
+                    onClick={() => openEditor({ id: g.id, name: g.name })}
+                  >
+                    <IconPencil />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`${t('branch.groupDelete')} — ${g.name}`}
+                    title={t('branch.groupDelete')}
+                    onClick={() => removeGroup(g)}
+                  >
+                    <IconTrash />
+                  </Button>
+                </div>
               )}
-            </div>
-          </>
-        )}
-      </CardContent>
+            </li>
+          ))}
+
+          {/* بلا طليعة: أول ما يُبحث عنه عند التوزيع، فالسطر يفتح النافذة عليهم وحدهم */}
+          <li className="flex items-center gap-3 bg-muted/30 px-4 py-3 sm:px-5">
+            {unassigned > 0 ? (
+              <>
+                <div className="grid min-w-0 flex-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
+                  <div className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
+                    <p className="truncate font-medium text-warning">{t('branch.groupNone')}</p>
+                    <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {t('branch.groupMembers', { count: unassigned })}
+                    </p>
+                  </div>
+                  <ShareBar value={share(unassigned)} tone="warning" />
+                </div>
+                <Button size="sm" variant="ghost" className="shrink-0" onClick={() => openAssign('none')}>
+                  {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
+                </Button>
+              </>
+            ) : (
+              <p className="flex items-center gap-2 text-sm text-success">
+                <IconCheck className="h-4 w-4" />
+                {t('branch.groupAllAssigned')}
+              </p>
+            )}
+          </li>
+        </ul>
+      )}
 
       <Dialog
         open={assigning}
@@ -1396,16 +1602,274 @@ function BranchGroups({ branchId }) {
   );
 }
 
+/* ============================================================
+   المطالب
+   ============================================================ */
+
+/** مطالب الفرقة: ما عمل عليه أيّ نشاط منها، رقمًا رقمًا — و ما لم يُلمس بعد. */
+function BranchMatalib({ b }) {
+  const { t } = useTranslation();
+  const { covered, covered_count: count, total } = b.matalib;
+  if (!total)
+    return (
+      <Card>
+        <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('branch.matalibEmpty')} />
+      </Card>
+    );
+  const pct = Math.round((count / total) * 100);
+  return (
+    <Card className="space-y-4 p-4 sm:p-5">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-sm text-muted-foreground">{t('branch.matalibHint')}</p>
+          <p className="text-sm tabular-nums">
+            <span className="font-semibold">
+              {count}/{total}
+            </span>
+            <span className="text-muted-foreground"> · </span>
+            <span dir="ltr" className="text-muted-foreground">
+              {pct}%
+            </span>
+          </p>
+        </div>
+        <ProgressBar value={pct} label={t('branch.matalibProgress')} className="h-2" />
+      </div>
+      <RequirementGrid total={total} selected={covered} label={t('branch.matalibProgress')} />
+    </Card>
+  );
+}
+
+/* ============================================================
+   Page
+   ============================================================ */
+
+/** Plan status mark on a فرقة tile: approved, or still a draft. */
+function PlanMark({ plan }) {
+  const { t } = useTranslation();
+  if (!plan?.total) return null;
+  const ok = !!plan.validation;
+  const label = `${t('branch.planTitle')}: ${t(ok ? 'branch.planValidatedShort' : 'branch.planDraftShort')}`;
+  return (
+    <span
+      title={label}
+      className={cn(
+        'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
+        ok ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
+      )}
+    >
+      {ok ? <IconCheck className="h-3 w-3" /> : <IconClock className="h-3 w-3" />}
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
+const tileClass = (on) =>
+  cn(
+    'focus-ring flex min-w-[8.75rem] flex-1 shrink-0 snap-start cursor-pointer flex-col justify-between gap-4 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150',
+    on
+      ? 'border-primary bg-card shadow-sm ring-1 ring-primary'
+      : 'border-border bg-card shadow-xs hover:border-primary/35 hover:bg-accent/40'
+  );
+
+/** One فرقة in the switcher: it selects, and it compares at a glance. */
+function BranchTile({ b, plan, selected, onSelect }) {
+  const { t, i18n } = useTranslation();
+  return (
+    <button type="button" aria-pressed={selected} onClick={onSelect} className={tileClass(selected)}>
+      <span className="flex w-full items-center justify-between gap-2">
+        <span className={cn('truncate text-sm font-semibold', selected && 'text-primary')}>
+          {branchName(b, i18n.language)}
+        </span>
+        <PlanMark plan={plan} />
+      </span>
+      <span className="flex w-full items-end justify-between gap-3">
+        <span className="leading-none">
+          <span className="block text-2xl font-bold leading-none tabular-nums">{b.members.active}</span>
+          <span className="mt-1.5 block text-xs text-muted-foreground">{t('settings.members')}</span>
+        </span>
+        <span className="text-end leading-none">
+          <span className="block text-sm leading-none">
+            <RateValue rate={b.attendance.rate} />
+          </span>
+          <span className="mt-1.5 block text-xs text-muted-foreground">{t('member.attendance')}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** Name, ages, last نشاط and the قادة of the selected فرقة. */
+function BranchHead({ b }) {
+  const { t, i18n } = useTranslation();
+  // Empty مسؤوليات are hidden here: this page answers "who leads this فرقة", not "what is missing"
+  const leaders = b.leaders.filter((l) => l.leader_id);
+  return (
+    <section aria-labelledby="branch-name" className="space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 id="branch-name" className="text-2xl font-bold tracking-tight">
+            {branchName(b, i18n.language)}
+          </h2>
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <span>{agesLabel(b, t)}</span>
+            {b.last_session && (
+              <>
+                <span aria-hidden="true" className="hidden sm:inline">
+                  ·
+                </span>
+                <span className="basis-full sm:basis-auto">
+                  {t('branch.lastSession')}:{' '}
+                  {/* dir="auto" isolates an Arabic title in the French line, or bidi pulls
+                      the date that follows in front of it */}
+                  <Link
+                    to={`/sessions/${b.last_session.id}`}
+                    dir="auto"
+                    className="focus-ring rounded font-medium text-foreground hover:text-primary hover:underline"
+                  >
+                    {b.last_session.title}
+                  </Link>{' '}
+                  <span className="tabular-nums">({fmtDate(b.last_session.date)})</span>
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <ExportPdfButton kind="branches" id={b.id} compact className="shrink-0" />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="me-1 text-xs font-medium text-muted-foreground">
+          {t('branch.leaders')}
+          {b.year && <span className="tabular-nums"> · {b.year}</span>}
+        </span>
+        {leaders.length === 0 ? (
+          <span className="text-sm text-muted-foreground">{t('branch.noLeaders')}</span>
+        ) : (
+          leaders.map((l) => (
+            <Link
+              key={l.id}
+              to={`/leaders/${l.leader_id}`}
+              className="focus-ring flex min-h-11 items-center gap-2 rounded-full border border-border bg-card py-1 pe-3 ps-1 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:min-h-9"
+            >
+              <Avatar photo={l.photo} name={avatarName(l)} className="h-7 w-7 text-[0.625rem]" />
+              <span className="text-sm font-medium">{memberName(l)}</span>
+              {l.title && <span className="text-xs text-muted-foreground">{l.title}</span>}
+            </Link>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The four numbers a قائد checks first — the عنصر profile's figures strip, for a فرقة. */
+function BranchFigures({ b }) {
+  const { t } = useTranslation();
+  const { covered_count: covered, total } = b.matalib;
+  return (
+    <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border sm:grid-cols-4">
+      <Stat label={t('branch.members')}>
+        <p className="text-2xl font-bold tabular-nums">{b.members.active}</p>
+        <p className="text-xs text-muted-foreground">
+          {t('branch.sexSplit', { male: b.members.male, female: b.members.female })}
+        </p>
+      </Stat>
+      <Stat label={t('branch.activities')}>
+        <p className="text-2xl font-bold tabular-nums">{b.sessions_count}</p>
+        <p className="text-xs text-muted-foreground">{t('branch.thisMonth', { count: b.sessions_month })}</p>
+      </Stat>
+      <Stat label={t('branch.attendanceRate')}>
+        <p>
+          <RateValue rate={b.attendance.rate} className="text-2xl font-bold" />
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {t('branch.presentAbsent', { present: b.attendance.present, absent: b.attendance.absent })}
+        </p>
+      </Stat>
+      <Stat label={t('branch.matalib')}>
+        <p className="text-2xl font-bold tabular-nums">
+          {covered}
+          {total > 0 && <span className="text-base font-medium text-muted-foreground"> / {total}</span>}
+        </p>
+        {total > 0 && <ShareBar value={(covered / total) * 100} className="mt-1" />}
+      </Stat>
+    </Card>
+  );
+}
+
+/**
+ * Tabs of the selected فرقة. Each panel mounts on its first visit and then stays,
+ * hidden: going to the أنشطة and back must not throw away a month typed but not saved.
+ */
+function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty }) {
+  const { t, i18n } = useTranslation();
+  const seen = useRef(new Set());
+  seen.current.add(tab);
+  const panel = (id, node) => seen.current.has(id) && <div hidden={tab !== id}>{node}</div>;
+
+  return (
+    <div className="space-y-4">
+      <UnderlineTabs
+        items={[
+          { id: 'plan', label: t('branch.planTitle') },
+          { id: 'sessions', label: t('branch.activities') },
+          { id: 'groups', label: t('branch.groupsTitle') },
+          { id: 'matalib', label: t('branch.matalib') },
+        ]}
+        value={tab}
+        onChange={onTab}
+        label={branchName(b, i18n.language)}
+        idPrefix="branch-tab"
+        panelId="branch-panel"
+      />
+      <div id="branch-panel" role="tabpanel" aria-labelledby={`branch-tab-${tab}`}>
+        {panel('plan', <AnnualPlan branchId={b.id} onChange={onPlanChange} onDirtyChange={onPlanDirty} />)}
+        {panel('sessions', <BranchSessions branchId={b.id} />)}
+        {panel('groups', <BranchGroups branchId={b.id} />)}
+        {panel('matalib', <BranchMatalib b={b} />)}
+      </div>
+    </div>
+  );
+}
+
+function BranchesSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true" aria-live="polite">
+      <Skeleton className="h-9 w-40" />
+      <div className="flex gap-2 overflow-hidden">
+        {Array.from({ length: 5 }, (_, i) => (
+          <Skeleton key={i} className="h-[5.75rem] min-w-[8.75rem] flex-1 rounded-xl" />
+        ))}
+      </div>
+      <Skeleton className="h-8 w-56" />
+      <Skeleton className="h-24 rounded-2xl" />
+      <Skeleton className="h-72 rounded-2xl" />
+    </div>
+  );
+}
+
 export default function Branches() {
   const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
   const res = useFetch('/branches/overview');
+  // Plan status of every فرقة, for the tiles. Optional: without it the tiles just
+  // lose their mark.
+  const plans = useFetch('/plans/overview');
   const [selectedId, setSelectedId] = useLocalStorage('branches.selected', null);
+  const [storedTab, setTab] = useLocalStorage('branches.tab', 'plan');
+  const tab = TABS.includes(storedTab) ? storedTab : 'plan';
   // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const [creating, setCreating] = useState(false);
+  // A month typed but not saved, in the open فرقة's plan: switching فرقة would lose it
+  const planDirty = useRef(false);
+  // Stable: the plan reports through it from an effect
+  const onPlanDirty = useCallback((v) => {
+    planDirty.current = v;
+  }, []);
 
-  if (res.loading) return <SkeletonPage />;
+  if (res.loading) return <BranchesSkeleton />;
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
@@ -1424,6 +1888,7 @@ export default function Branches() {
         // Opens on the new فرقة: it is the one about to be set up
         setSelectedId(created.id);
         res.reload({ quiet: true });
+        plans.reload({ quiet: true });
       }}
     />
   );
@@ -1435,7 +1900,9 @@ export default function Branches() {
         <PageHeader title={t('branch.pageTitle')} description={t('branch.pageSubtitle')}>
           {newBranchButton}
         </PageHeader>
-        <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('dashboard.noBranches')} />
+        <Card>
+          <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('dashboard.noBranches')} />
+        </Card>
         {newBranchDialog}
       </div>
     );
@@ -1444,17 +1911,23 @@ export default function Branches() {
   // 'all' = كل الخطط السنوية جنبًا إلى جنب
   const showAll = selectedId === 'all';
   const b = branches.find((x) => x.id === selectedId) || branches[0];
-  const name = branchName(b, i18n.language);
-  const ages = b.all_ages
-    ? t('branch.allAges')
-    : b.max_age
-      ? `${b.min_age}–${b.max_age} ${t('branch.years')}`
-      : `${b.min_age}+`;
-  const matalibPct = b.matalib.total
-    ? Math.round((b.matalib.covered_count / b.matalib.total) * 100)
-    : 0;
-  // Empty توصيفات are hidden here: this page answers "who is in this فرقة", not "what is missing"
-  const leaders = b.leaders.filter((l) => l.leader_id);
+  const planOf = (id) => plans.data?.branches.find((p) => p.id === id);
+  const validatedCount = plans.data?.branches.filter((p) => p.validation).length;
+
+  async function select(id) {
+    if (id === (showAll ? 'all' : b.id)) return;
+    if (
+      planDirty.current &&
+      !(await confirm({
+        title: t('settings.unsaved'),
+        message: t('branch.planLeaveConfirm'),
+        confirmLabel: t('branch.planLeave'),
+      }))
+    )
+      return;
+    planDirty.current = false;
+    setSelectedId(id);
+  }
 
   return (
     <div className="space-y-6">
@@ -1462,160 +1935,57 @@ export default function Branches() {
         {newBranchButton}
       </PageHeader>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Chips on a wide screen, a plain select on a phone — same state either way */}
-        <div className="hidden flex-wrap gap-2 sm:flex">
-          <Button size="sm" variant={showAll ? 'brand' : 'outline'} onClick={() => setSelectedId('all')}>
-            <IconCalendar />
-            {t('branch.planAll')}
-          </Button>
-          {branches.map((x) => (
-            <Button
-              key={x.id}
-              size="sm"
-              variant={!showAll && x.id === b.id ? 'brand' : 'outline'}
-              onClick={() => setSelectedId(x.id)}
-            >
-              {branchName(x, i18n.language)}
-              <Badge
-                variant="outline"
-                className={
-                  !showAll && x.id === b.id
-                    ? 'border-primary-foreground/35 text-primary-foreground'
-                    : undefined
-                }
-              >
-                {x.members.active}
-              </Badge>
-            </Button>
-          ))}
-        </div>
-        <Select
-          className="sm:hidden"
-          value={showAll ? 'all' : b.id}
-          onChange={(e) => setSelectedId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-          aria-label={t('member.branch')}
-        >
-          <option value="all">{t('branch.planAll')}</option>
-          {branches.map((x) => (
-            <option key={x.id} value={x.id}>
-              {branchName(x, i18n.language)} ({x.members.active})
-            </option>
-          ))}
-        </Select>
-        {!showAll && <ExportPdfButton kind="branches" id={b.id} className="ms-auto" />}
+      {/* Swiped sideways on a phone; a grid from tablet up, where a mouse has no swipe
+          and a hidden scrollbar would leave the last فرق out of reach */}
+      <div
+        role="group"
+        aria-label={t('branch.pageTitle')}
+        className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(8.75rem,1fr))] sm:overflow-visible sm:p-0"
+      >
+        {branches.map((x) => (
+          <BranchTile
+            key={x.id}
+            b={x}
+            plan={planOf(x.id)}
+            selected={!showAll && x.id === b.id}
+            onSelect={() => select(x.id)}
+          />
+        ))}
+        <button type="button" aria-pressed={showAll} onClick={() => select('all')} className={tileClass(showAll)}>
+          <span className={cn('flex items-center gap-1.5 text-sm font-semibold', showAll && 'text-primary')}>
+            <IconCalendar className="h-4 w-4 shrink-0" />
+            <span className="truncate">{t('branch.planAll')}</span>
+          </span>
+          <span className="leading-none">
+            <span className="block text-2xl font-bold leading-none tabular-nums">
+              {plans.data ? `${validatedCount}/${plans.data.branches.length}` : '—'}
+            </span>
+            <span className="mt-1.5 block text-xs text-muted-foreground">{t('branch.planValidatedShort')}</span>
+          </span>
+        </button>
       </div>
 
       {showAll ? (
-        <PlansOverview onOpenBranch={setSelectedId} />
+        <div className="pt-2">
+          <PlansOverview
+            onOpenBranch={(id) => {
+              setTab('plan');
+              select(id);
+            }}
+          />
+        </div>
       ) : (
-        <>
-          <Card>
-            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-              <CardTitle>{name}</CardTitle>
-              <div className="flex flex-wrap gap-1.5">
-                <Badge variant="outline">{ages}</Badge>
-                {b.last_session && (
-                  <Badge variant="outline">
-                    {t('branch.lastSession')} · {fmtDate(b.last_session.date)}
-                  </Badge>
-                )}
-              </div>
-            </CardHeader>
-
-            <CardContent className="space-y-5">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
-                <Metric
-                  icon={<IconUsers className="h-3.5 w-3.5" />}
-                  label={t('branch.members')}
-                  value={b.members.active}
-                  hint={t('branch.sexSplit', { male: b.members.male, female: b.members.female })}
-                />
-                <Metric
-                  icon={<IconCalendar className="h-3.5 w-3.5" />}
-                  label={t('branch.activities')}
-                  value={b.sessions_count}
-                  hint={t('branch.thisMonth', { count: b.sessions_month })}
-                />
-                <Metric
-                  icon={<IconCheck className="h-3.5 w-3.5" />}
-                  label={t('branch.attendanceRate')}
-                  value={b.attendance.rate !== null ? `${b.attendance.rate}%` : t('dashboard.noData')}
-                  hint={t('branch.presentAbsent', {
-                    present: b.attendance.present,
-                    absent: b.attendance.absent,
-                  })}
-                />
-                <Metric
-                  icon={<IconAward className="h-3.5 w-3.5" />}
-                  label={t('branch.matalib')}
-                  value={`${b.matalib.covered_count}/${b.matalib.total}`}
-                  hint={t('branch.matalibHint')}
-                />
-              </div>
-
-              <div>
-                <div className="mb-1.5 flex items-baseline justify-between text-sm">
-                  <span className="font-medium">{t('branch.matalibProgress')}</span>
-                  <span className="tabular-nums text-muted-foreground">{matalibPct}%</span>
-                </div>
-                <ProgressBar value={matalibPct} label={t('branch.matalibProgress')} />
-                {b.matalib.covered_count > 0 && (
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground" dir="ltr">
-                    {b.matalib.covered.join(' · ')}
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                  <IconShield className="h-4 w-4 text-muted-foreground" />
-                  {t('branch.leaders')}
-                  {b.year && <span className="text-xs text-muted-foreground">· {b.year}</span>}
-                </div>
-                {leaders.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t('branch.noLeaders')}</p>
-                ) : (
-                  <ul className="grid gap-2 sm:grid-cols-2">
-                    {leaders.map((l) => (
-                      <li key={l.id}>
-                        <Link
-                          to={`/leaders/${l.leader_id}`}
-                          className="focus-ring flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50"
-                        >
-                          <Avatar photo={l.photo} name={avatarName(l)} className="h-9 w-9" />
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">
-                              {memberName(l)}
-                            </div>
-                            <div className="truncate text-xs text-muted-foreground">{l.title}</div>
-                          </div>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* key: switching فرقة must refetch its own مجموعات, not show the previous one */}
-          <BranchGroups key={`groups-${b.id}`} branchId={b.id} />
-
-          {/* key: switching فرقة must refetch its own plan, not show the previous one */}
-          <AnnualPlan key={`plan-${b.id}`} branchId={b.id} />
-
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>{t('branch.sessionsTitle')}</CardTitle>
-              <Badge variant="outline">{b.sessions_count}</Badge>
-            </CardHeader>
-            <CardContent className="p-0 pb-2">
-              {/* key: switching فرقة must refetch, not reuse the previous list */}
-              <BranchSessions key={b.id} branchId={b.id} />
-            </CardContent>
-          </Card>
-        </>
+        <div key={b.id} className="space-y-6 pt-2">
+          <BranchHead b={b} />
+          <BranchFigures b={b} />
+          <BranchPanels
+            b={b}
+            tab={tab}
+            onTab={setTab}
+            onPlanChange={() => plans.reload({ quiet: true })}
+            onPlanDirty={onPlanDirty}
+          />
+        </div>
       )}
 
       {newBranchDialog}

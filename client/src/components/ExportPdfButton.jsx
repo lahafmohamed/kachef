@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { saveFile } from '../lib/download';
-import { Button, useToast, IconDownload } from './ui';
+import { Button, cn, useToast, IconDownload } from './ui';
 
 /**
  * Downloads the PDF of one نشاط / عنصر / قائد / فرقة. The server renders the
@@ -12,7 +12,16 @@ import { Button, useToast, IconDownload } from './ui';
  * Should the server have no Chromium, the sheet page opens instead, where the
  * browser's own «Save as PDF» still works.
  */
-export default function ExportPdfButton({ kind, id, query = '', className, size = 'sm', variant = 'outline' }) {
+export default function ExportPdfButton({
+  kind,
+  id,
+  query = '',
+  className,
+  size = 'sm',
+  variant = 'outline',
+  // Icon only on phones, where a header already holds the page's primary action
+  compact = false,
+}) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
@@ -41,9 +50,15 @@ export default function ExportPdfButton({ kind, id, query = '', className, size 
   }
 
   return (
-    <Button variant={variant} size={size} className={className} loading={busy} onClick={run}>
+    <Button
+      variant={variant}
+      size={size}
+      className={cn(compact && 'w-11 px-0 sm:w-auto sm:px-3', className)}
+      loading={busy}
+      onClick={run}
+    >
       {!busy && <IconDownload />}
-      {t('print.exportPdf')}
+      {compact ? <span className="sr-only sm:not-sr-only">{t('print.exportPdf')}</span> : t('print.exportPdf')}
     </Button>
   );
 }

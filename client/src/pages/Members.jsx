@@ -1,14 +1,22 @@
-import ExportPdfButton from '../components/ExportPdfButton';
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Link, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fileToDataUrl, fmtPhone, memberName, todayISO } from '../utils';
-import DatePicker from '../components/DatePicker';
+import { avatarName, birthdayWhen, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
+import ExportPdfButton from '../components/ExportPdfButton';
 import FilterSelect from '../components/FilterSelect';
+import MemberFormDialog from '../components/MemberForm';
+import {
+  AttendanceStrip,
+  RateValue,
+  UnderlineTabs,
+  callLabel,
+  contactsOf,
+  telHref,
+  whoLabel,
+} from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
 import {
@@ -16,1071 +24,1001 @@ import {
   Badge,
   Button,
   Card,
-  cn,
-  Dialog,
   EmptyState,
   ErrorState,
   Input,
   Label,
   PageHeader,
-  Select,
+  SegmentedControl,
   Skeleton,
-  Table,
-  Td,
   Th,
-  useToast,
+  cn,
+  IconAlert,
   IconCake,
   IconFilter,
-  IconAlert,
   IconPencil,
+  IconPhone,
   IconPin,
   IconPlus,
   IconSchool,
-  IconShield,
   IconSort,
   IconUsers,
+  IconX,
 } from '../components/ui';
 
-// Kept in step with BLOOD_TYPES on the server, which rejects anything else
-const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+// Filters the server applies, named as the API names them: the page URL and the
+// request share one vocabulary, and the PDF export takes the same query as is.
+const SERVER_FILTERS = [
+  'school',
+  'residence',
+  'residence_lebanon',
+  'blood',
+  'age_min',
+  'age_max',
+  'parent_phone',
+  'joined_from',
+  'joined_to',
+];
+// Everything the page keeps in its URL — so «back» from a profile lands on the
+// same فرقة, طليعة and search instead of the whole فوج.
+const URL_KEYS = ['branch', 'group', 'status', 'q', ...SERVER_FILTERS];
 
-const EMPTY_FORM = {
-  first_name: '',
-  last_name: '',
-  father_name: '',
-  mother_name: '',
-  birth_date: '',
-  birth_place: '',
-  address_abidjan: '',
-  address_lebanon: '',
-  school: '',
-  blood_type: '',
-  sex: 'M',
-  branch_id: '',
-  // مجموعة العنصر داخل فرقته — '' = لم يُوزَّع بعد، و هو حال كل فرقة غير مقسَّمة
-  group_id: '',
-  member_phone: '',
-  father_phone: '',
-  mother_phone: '',
-  join_date: todayISO(),
-  photo: null,
-  status: 'active',
-};
+const SCROLL_KEY = 'members.scroll';
 
-function MemberForm({ initial, originalBranchId = null, branches, lookups, onCreateLookup, onSave, onCancel }) {
-  const { t, i18n } = useTranslation();
-  const [form, setForm] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
+/**
+ * A text field mirrored into the URL. Typing stays on local state — the router
+ * applies URL changes in a transition, and a controlled input fed from there
+ * drops keystrokes — and the URL follows 250ms later. A change made elsewhere
+ * (a chip, «clear») flows back into the field.
+ */
+function useUrlField(sp, patch, key) {
+  const fromUrl = sp.get(key) || '';
+  const [value, setValue] = useState(fromUrl);
+  const pushed = useRef(fromUrl);
+  const debounced = useDebounced(value, 250);
+  useEffect(() => {
+    if (debounced === pushed.current) return;
+    pushed.current = debounced;
+    patch({ [key]: debounced });
+  }, [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (fromUrl === pushed.current) return; // our own write coming back
+    pushed.current = fromUrl;
+    setValue(fromUrl);
+  }, [fromUrl]);
+  return [value, setValue];
+}
 
-  const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
+// The leaders endpoint has no age; the list sorts and shows one
+const yearsSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null);
 
-  // مجموعات الفرقة المختارة. نقل العنصر إلى فرقة أخرى يُخرجه من مجموعته: المجموعة
-  // تخصّ فرقتها، و الخادم يرفض مجموعةً من غيرها.
-  const branchGroups = branches.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
-  const setBranch = (e) => setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '' }));
+/** Mixed scripts in one line («13 سنة · برية · Alghadir»): each part keeps its own direction. */
+function Parts({ parts }) {
+  return parts.filter(Boolean).map((p, i) => (
+    <span key={i}>
+      {i > 0 && ' · '}
+      <bdi>{p}</bdi>
+    </span>
+  ));
+}
 
-  // تغيير فرقة عنصر مسجَّل يُحفظ في سجلّه، و الخادم يريد سببه: نقلٌ حقيقي (بتاريخه،
-  // فحضوره السابق يبقى لفرقته القديمة) أو تصحيحُ فرقةٍ سُجّلت خطأً.
-  const [branchChange, setBranchChange] = useState({ reason: '', date: todayISO() });
-  const branchChanged = originalBranchId !== null && String(form.branch_id) !== String(originalBranchId);
-
-  async function handlePhoto(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const photo = await fileToDataUrl(file);
-    setForm((f) => ({ ...f, photo }));
-  }
-
-  async function submit(e) {
-    e.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
-      await onSave({
-        ...form,
-        branch_id: Number(form.branch_id),
-        // المجموعة تخصّ فرقتها: تغيير الفرقة يُلغي المجموعة بدل أن يرسل واحدة يرفضها الخادم
-        group_id: form.group_id === '' ? null : Number(form.group_id),
-        ...(branchChanged && {
-          branch_change_reason: branchChange.reason,
-          // Without a date the server dates the move today
-          branch_change_date: branchChange.reason === 'transfer' ? branchChange.date || undefined : undefined,
-        }),
-      });
-    } catch (err) {
-      setError(err.message);
-      setSaving(false);
-    }
-  }
+/**
+ * One line of the register. The whole row opens the profile; the name is the real
+ * link (keyboard, screen readers, open-in-new-tab) and the phone and pencil keep
+ * their own clicks. Columns appear with the card's width, not the viewport's.
+ */
+function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
+  const isChef = m.kind === 'leader';
+  const inactive = m.status !== 'active';
+  const href = isChef ? `/leaders/${m.id}` : `/members/${m.id}`;
+  const name = memberName(m);
+  const a = m.attendance;
+  const bday = birthdayWhen(m.birth_date);
+  const absences = !isChef && !inactive && a?.absences >= 3 ? a.absences : 0;
+  const contacts = contactsOf(m);
+  const primary = contacts[0];
+  const age = m.age != null ? `${m.age} ${t('common.years')}` : null;
+  const branchLabel = isChef ? t('branch.leaders') : branchName(m, lang);
+  // What tells two «Ali Ahmad» apart: école and quartier; for a قائد, their roles
+  const details = isChef ? (m.roles || []).map((r) => r.title) : [m.school, m.address_abidjan];
+  // فرقة / طليعة: a column on wide cards, folded into the line under the name on phones
+  const where = whereMode === 'branch' ? [branchLabel, m.group_name] : whereMode === 'group' ? [m.group_name] : [];
 
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor="first_name">{t('member.firstName')}</Label>
-          <Input id="first_name" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="last_name">{t('member.lastName')}</Label>
-          <Input id="last_name" required autoComplete="off" value={form.last_name} onChange={set('last_name')} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="father_name">{t('member.fatherName')}</Label>
-          <Input id="father_name" autoComplete="off" value={form.father_name || ''} onChange={set('father_name')} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="mother_name">{t('member.motherName')}</Label>
-          <Input id="mother_name" autoComplete="off" value={form.mother_name || ''} onChange={set('mother_name')} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="birth_date">{t('member.birthDate')}</Label>
-          <DatePicker
-            id="birth_date"
-            toYear={new Date().getFullYear()}
-            value={form.birth_date}
-            onChange={set('birth_date')}
+    <tr
+      onClick={(e) => {
+        if (e.target.closest('a, button') || window.getSelection()?.toString()) return;
+        onOpen(href);
+      }}
+      className="group cursor-pointer transition-colors hover:bg-accent/40"
+    >
+      {/* w-full + max-w-0: the name column takes what the others leave, and a long
+          line truncates inside it instead of widening the whole table */}
+      <td className="w-full max-w-0 py-3 ps-4 pe-2 @2xl:py-2.5">
+        <div className="flex items-center gap-3">
+          <Avatar
+            photo={m.photo}
+            name={avatarName(m)}
+            // Neutral initials: 200 teal discs would outshout the attendance colours
+            className={cn(
+              'h-10 w-10 bg-secondary text-secondary-foreground @2xl:h-8 @2xl:w-8 @2xl:text-[0.6875rem]',
+              inactive && 'opacity-60 grayscale'
+            )}
           />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="birth_place">{t('member.birthPlace')}</Label>
-          <Input id="birth_place" autoComplete="off" value={form.birth_place || ''} onChange={set('birth_place')} />
-        </div>
-        {/* Picked from the curated lists, never typed loose: a quartier spelled two ways
-            would split its people across two filters. A value the list is missing is added
-            from here — the entry joins the list, so the next تسجيل finds it ready. */}
-        <div className="space-y-1.5">
-          <Label htmlFor="address_abidjan">{t('member.addressAbidjan')}</Label>
-          <SearchSelect
-            id="address_abidjan"
-            value={form.address_abidjan || ''}
-            onChange={set('address_abidjan')}
-            options={lookups.residence_abidjan}
-            placeholder={t('member.pickValue')}
-            searchPlaceholder={t('member.searchOrAdd')}
-            emptyLabel={t('member.noListValue')}
-            clearLabel={t('member.noValue')}
-            onCreate={(label) => onCreateLookup('residence_abidjan', label)}
-            createLabel={(v) => t('member.addListValue', { value: v })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="address_lebanon">{t('member.addressLebanon')}</Label>
-          <SearchSelect
-            id="address_lebanon"
-            value={form.address_lebanon || ''}
-            onChange={set('address_lebanon')}
-            options={lookups.residence_lebanon}
-            placeholder={t('member.pickValue')}
-            searchPlaceholder={t('member.searchOrAdd')}
-            emptyLabel={t('member.noListValue')}
-            clearLabel={t('member.noValue')}
-            onCreate={(label) => onCreateLookup('residence_lebanon', label)}
-            createLabel={(v) => t('member.addListValue', { value: v })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="school">{t('member.school')}</Label>
-          <SearchSelect
-            id="school"
-            value={form.school || ''}
-            onChange={set('school')}
-            options={lookups.school}
-            placeholder={t('member.pickValue')}
-            searchPlaceholder={t('member.searchOrAdd')}
-            emptyLabel={t('member.noListValue')}
-            clearLabel={t('member.noValue')}
-            onCreate={(label) => onCreateLookup('school', label)}
-            createLabel={(v) => t('member.addListValue', { value: v })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="blood_type">{t('member.bloodType')}</Label>
-          <Select id="blood_type" value={form.blood_type || ''} onChange={set('blood_type')}>
-            <option value="">{t('member.noValue')}</option>
-            {BLOOD_TYPES.map((bt) => (
-              <option key={bt} value={bt}>
-                {bt}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="sex">{t('member.sex')}</Label>
-          <Select id="sex" value={form.sex} onChange={set('sex')}>
-            <option value="M">{t('member.male')}</option>
-            <option value="F">{t('member.female')}</option>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="branch_id">{t('member.branch')}</Label>
-          <Select id="branch_id" required value={form.branch_id} onChange={setBranch}>
-            {branches.map((b) => (
-              <option key={b.id} value={b.id}>
-                {branchName(b, i18n.language)}
-              </option>
-            ))}
-          </Select>
-        </div>
-        {branchChanged && (
-          <div className="space-y-1.5">
-            <Label htmlFor="branch_change_reason">{t('member.branchChangeReason')}</Label>
-            <Select
-              id="branch_change_reason"
-              required
-              value={branchChange.reason}
-              onChange={(e) => setBranchChange((c) => ({ ...c, reason: e.target.value }))}
-            >
-              <option value="" disabled>
-                {t('member.pickReason')}
-              </option>
-              <option value="transfer">{t('member.branchTransfer')}</option>
-              <option value="correction">{t('member.branchCorrection')}</option>
-            </Select>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {/* dir="auto": a Latin name in the Arabic UI keeps its own order */}
+              <Link
+                to={href}
+                dir="auto"
+                className={cn(
+                  'focus-ring line-clamp-2 rounded-sm text-[0.9375rem] font-medium leading-5 group-hover:text-primary @2xl:text-sm',
+                  inactive && 'text-muted-foreground'
+                )}
+              >
+                {name}
+              </Link>
+              {bday && (
+                <Badge variant="warning">
+                  <IconCake className="h-3 w-3" />
+                  {t(`birthday.${bday}`)}
+                </Badge>
+              )}
+              {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+            </div>
+            {/* Phones: age and طليعة fold in here; wider cards give them columns */}
+            <div className="mt-0.5 truncate text-xs text-muted-foreground @2xl:hidden">
+              <Parts parts={[age, ...where, ...details]} />
+            </div>
+            {details.some(Boolean) && (
+              <div className="mt-0.5 hidden truncate text-xs text-muted-foreground @2xl:block">
+                <Parts parts={details} />
+              </div>
+            )}
           </div>
-        )}
-        {branchChanged && branchChange.reason === 'transfer' && (
-          <div className="space-y-1.5">
-            <Label htmlFor="branch_change_date">{t('member.branchChangeDate')}</Label>
-            <DatePicker
-              id="branch_change_date"
-              clearable={false}
-              toYear={new Date().getFullYear()}
-              value={branchChange.date}
-              onChange={(e) => setBranchChange((c) => ({ ...c, date: e.target.value }))}
-            />
-          </div>
-        )}
-        {/* المجموعة تظهر للفرق المقسَّمة وحدها: توزيع الفرقة كلها يُدار من صفحة الفرق،
-            و هنا يُصحَّح توزيع عنصر واحد وهو يُسجَّل أو يُعدَّل. */}
-        {branchGroups.length > 0 && (
-          <div className="space-y-1.5">
-            <Label htmlFor="group_id">{t('member.group')}</Label>
-            <Select id="group_id" value={form.group_id ?? ''} onChange={set('group_id')}>
-              <option value="">{t('member.noGroup')}</option>
-              {branchGroups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </Select>
-          </div>
-        )}
-        <div className="space-y-1.5">
-          <Label htmlFor="member_phone">{t('member.memberPhone')}</Label>
-          <Input
-            id="member_phone"
-            type="tel"
-            inputMode="tel"
-            dir="ltr"
-            value={form.member_phone || ''}
-            onChange={set('member_phone')}
-          />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="father_phone">{t('member.fatherPhone')}</Label>
-          <Input
-            id="father_phone"
-            type="tel"
-            inputMode="tel"
-            dir="ltr"
-            value={form.father_phone || ''}
-            onChange={set('father_phone')}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="mother_phone">{t('member.motherPhone')}</Label>
-          <Input
-            id="mother_phone"
-            type="tel"
-            inputMode="tel"
-            dir="ltr"
-            value={form.mother_phone || ''}
-            onChange={set('mother_phone')}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="join_date">{t('member.joinDate')}</Label>
-          <DatePicker
-            id="join_date"
-            fromYear={2000}
-            value={form.join_date}
-            onChange={set('join_date')}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="status">{t('member.status')}</Label>
-          <Select id="status" value={form.status} onChange={set('status')}>
-            <option value="active">{t('member.active')}</option>
-            <option value="inactive">{t('member.inactive')}</option>
-          </Select>
-        </div>
-      </div>
+      </td>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="photo">{t('member.photo')}</Label>
-        <div className="flex flex-wrap items-center gap-3">
-          {form.photo && (
-            <Avatar photo={form.photo} name={form.first_name} className="h-14 w-14" />
+      <td className="hidden whitespace-nowrap px-3 text-sm tabular-nums @2xl:table-cell">
+        {m.age ?? <span className="text-muted-foreground">—</span>}
+      </td>
+
+      {whereMode !== 'none' && (
+        <td className="hidden px-3 text-sm @2xl:table-cell">
+          {where.filter(Boolean).length ? (
+            <div className="min-w-0 leading-tight">
+              <bdi className="block whitespace-nowrap">{where[0] || where[1]}</bdi>
+              {whereMode === 'branch' && where[1] && (
+                <bdi className="mt-0.5 block whitespace-nowrap text-xs text-muted-foreground">{where[1]}</bdi>
+              )}
+            </div>
+          ) : (
+            <span className="text-muted-foreground">—</span>
           )}
-          <Input
-            id="photo"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handlePhoto}
-            className="flex-1 py-2 file:me-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground"
-          />
-          {form.photo && (
-            <Button variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, photo: null }))}>
-              {t('member.removePhoto')}
+        </td>
+      )}
+
+      <td className="px-2 @2xl:px-3">
+        {isChef ? null : (
+          // Phones: the rate over its marks. Wide: marks then rate on one line.
+          <div className="flex flex-col items-end gap-1.5 @2xl:flex-row-reverse @2xl:items-center @2xl:justify-end @2xl:gap-2.5">
+            <span className="inline-flex items-center gap-1">
+              {/* Three absences in a row: the trailing rings already show it, the
+                  mark makes it findable at a glance — a sentence on every such
+                  row turned a فرقة at the start of the year into a wall of red */}
+              {absences > 0 && (
+                <span title={t('member.consecutiveAbsences', { count: absences })} className="text-destructive">
+                  <IconAlert className="h-3.5 w-3.5" />
+                  <span className="sr-only">{t('member.consecutiveAbsences', { count: absences })}</span>
+                </span>
+              )}
+              <RateValue rate={a?.rate} className="text-sm" />
+            </span>
+            <AttendanceStrip recent={a?.recent} />
+          </div>
+        )}
+      </td>
+
+      <td className="hidden px-3 @4xl:table-cell">
+        {contacts.length ? (
+          <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-0.5 whitespace-nowrap">
+            {contacts.slice(0, 2).map((c) => (
+              <div key={c.who} className="contents">
+                <dt className="text-xs text-muted-foreground">{isChef ? '' : whoLabel(t, c.who)}</dt>
+                <dd>
+                  <a
+                    href={telHref(c.numbers[0])}
+                    dir="ltr"
+                    aria-label={callLabel(t, c.who, name)}
+                    className="focus-ring rounded-sm text-sm tabular-nums hover:text-primary hover:underline"
+                  >
+                    {fmtPhone(c.numbers[0])}
+                  </a>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+
+      {/* Tap to call — the first number a قائد would try. Gone once the card is
+          wide enough to list the numbers themselves. */}
+      <td className="pe-2 @2xl:pe-1 @4xl:hidden">
+        {primary && (
+          <a
+            href={telHref(primary.numbers[0])}
+            aria-label={callLabel(t, primary.who, name)}
+            title={
+              isChef
+                ? fmtPhone(primary.numbers[0])
+                : `${whoLabel(t, primary.who)} · ${fmtPhone(primary.numbers[0])}`
+            }
+            className="focus-ring flex h-11 w-11 items-center justify-center rounded-lg text-primary transition-colors hover:bg-accent @2xl:h-9 @2xl:w-9"
+          >
+            <IconPhone />
+          </a>
+        )}
+      </td>
+
+      {canModify && (
+        <td className="hidden pe-3 @2xl:table-cell">
+          {!isChef && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onEdit(m)}
+              aria-label={`${t('common.edit')} — ${name}`}
+              title={t('common.edit')}
+              className="text-muted-foreground hover:text-accent-foreground"
+            >
+              <IconPencil />
             </Button>
           )}
-        </div>
-      </div>
-
-      {error && (
-        <p role="alert" className="text-sm font-medium text-destructive">
-          {error}
-        </p>
+        </td>
       )}
-
-      {/* Reversed on mobile so the primary action sits under the thumb */}
-      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" onClick={onCancel}>
-          {t('common.cancel')}
-        </Button>
-        <Button type="submit" loading={saving}>
-          {t('common.save')}
-        </Button>
-      </div>
-    </form>
+    </tr>
   );
 }
 
-/** Cake marker for a birthday today or tomorrow — null the rest of the year. */
-function BirthdayBadge({ birthDate, t }) {
-  const when = birthdayWhen(birthDate);
-  if (!when) return null;
+function RosterSkeleton() {
   return (
-    <Badge variant="warning" title={t(when === 'today' ? 'birthday.today' : 'birthday.tomorrow')}>
-      <IconCake className="h-3 w-3" />
-      {t(when === 'today' ? 'birthday.today' : 'birthday.tomorrow')}
-    </Badge>
-  );
-}
-
-/** An empty cell reads as a quiet dash, not as data. */
-const dash = <span className="text-muted-foreground">—</span>;
-
-/**
- * Second line under a name — what a قائد uses to tell two homonyms apart.
- * Members: école and quartier; chefs: their roles this year. Long values wrap
- * rather than truncate, so nothing a filter matched on gets hidden.
- */
-function MemberSubline({ m }) {
-  const items =
-    m.kind === 'leader'
-      ? (m.roles || []).map((r) => ({ Icon: IconShield, text: r.title }))
-      : [
-          m.school && { Icon: IconSchool, text: m.school },
-          m.address_abidjan && { Icon: IconPin, text: m.address_abidjan },
-        ].filter(Boolean);
-  if (items.length === 0) return null;
-  return (
-    <div className="mt-0.5 flex max-w-60 flex-wrap @5xl:max-w-80 items-center gap-x-2.5 gap-y-0.5 text-xs font-normal leading-4 text-muted-foreground">
-      {items.map(({ Icon, text }, i) => (
-        <span key={i} className="inline-flex min-w-0 max-w-full items-center gap-1">
-          {/* Stroke is numeric against a 24 viewBox, so it scales with the icon:
-              at 14px, 2.25 renders the same ~1.3px hairline every other icon in
-              the app already draws at 16px/2. Leaving it at 1.5 rendered 0.9px —
-              a visibly thinner line than the text it labels. */}
-          <Icon className="h-3.5 w-3.5 opacity-70" strokeWidth={2.25} />
-          <span className="truncate">{text}</span>
-        </span>
+    <div aria-hidden="true" className="divide-y divide-border">
+      {Array.from({ length: 7 }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 px-4 py-3">
+          <Skeleton className="h-10 w-10 rounded-full @2xl:h-8 @2xl:w-8" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-3.5 w-2/5" />
+            <Skeleton className="h-3 w-1/4" />
+          </div>
+          <Skeleton className="h-3 w-20" />
+        </div>
       ))}
     </div>
-  );
-}
-
-/** Number in an LTR island so it never reverses inside an Arabic row. */
-function Phone({ value }) {
-  if (!value) return dash;
-  // Une case contient parfois deux numéros ("0708904643/0708904644", ou collés
-  // sans séparateur) : chacun est formaté et posé sur sa ligne, collé au libellé
-  // même en arabe, où une ligne qui se replie partait au bout de la cellule.
-  const parts = String(value)
-    .split(/\s*[/,;]\s*/)
-    .flatMap((n) => {
-      const digits = n.replace(/[\s.-]/g, '');
-      return /^(\d{10}){2,}$/.test(digits) ? digits.match(/\d{10}/g) : [n];
-    })
-    .filter(Boolean);
-  return (
-    <span dir="ltr" className="inline-flex flex-col">
-      {parts.map((n, i) => (
-        <span key={i} className="whitespace-nowrap">
-          {fmtPhone(n)}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-/**
- * Présence dans la fiche actuelle — le même chiffre que sur la fiche du membre.
- * Trois absences d'affilée passent au rouge : c'est le signe qu'un عنصر décroche,
- * souvent avant qu'on pense à l'archiver.
- */
-function Attendance({ a, t }) {
-  if (!a || a.rate === null) return dash;
-  const tone = a.rate >= 75 ? 'text-success' : a.rate >= 50 ? 'text-warning' : 'text-destructive';
-  return (
-    <div className="flex items-center gap-2 whitespace-nowrap tabular-nums">
-      <span className={cn('font-semibold', tone)}>{a.rate}%</span>
-      <span className="text-xs text-muted-foreground">
-        {a.present}/{a.total}
-      </span>
-      {a.absences >= 3 && (
-        <Badge variant="destructive" title={t('member.consecutiveAbsences', { count: a.absences })}>
-          <IconAlert className="h-3 w-3" />
-          {t('member.absencesShort', { count: a.absences })}
-        </Badge>
-      )}
-    </div>
-  );
-}
-
-/**
- * Les deux numéros des parents dans une seule colonne, chacun sous son libellé :
- * la colonne «mère», vide la plupart du temps, coûtait 200px à chaque ligne.
- */
-function ParentPhones({ m, t }) {
-  if (m.kind === 'leader') return <Phone value={m.phone} />;
-  const rows = [
-    m.father_phone && { label: t('member.fatherShort'), value: m.father_phone },
-    m.mother_phone && { label: t('member.motherShort'), value: m.mother_phone },
-  ].filter(Boolean);
-  if (rows.length === 0) return dash;
-  return (
-    <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-0.5">
-      {rows.map((r) => (
-        <div key={r.label} className="contents">
-          <dt className="text-xs text-muted-foreground">{r.label}</dt>
-          <dd className="tabular-nums">
-            <Phone value={r.value} />
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-/* 36px visible, 40px hit area: the pseudo-element pads 2px a side and the
-   4px gap between neighbours keeps their hit areas from overlapping. */
-const ROW_ACTION = 'relative before:absolute before:-inset-0.5';
-
-/** One member as a tappable card — the mobile equivalent of a table row. */
-function MemberCard({ m, lang, t, onEdit }) {
-  // Un chef dans la liste : même carte, mais elle mène à sa fiche de chef
-  const isChef = m.kind === 'leader';
-  return (
-    <li className="flex items-center gap-3 p-3">
-      <Link
-        to={isChef ? `/leaders/${m.id}` : `/members/${m.id}`}
-        className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md"
-      >
-        <Avatar photo={m.photo} name={avatarName(m)} className="h-11 w-11" />
-        <div className="min-w-0 flex-1">
-          {/* dir="auto" : un nom latin dans l'interface arabe se coupe par sa fin
-              («Abass Ahmad Chak…»), pas par son début («…ss Ahmad Chakaroun») */}
-          <div dir="auto" className="truncate font-medium rtl:text-right">
-            {memberName(m)}
-          </div>
-          <MemberSubline m={m} />
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge>{isChef ? t('branch.leaders') : branchName(m, lang)}</Badge>
-            {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
-            {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
-            {m.age != null && (
-              <span className="text-xs text-muted-foreground">
-                {m.age} {t('common.years')}
-              </span>
-            )}
-            {m.status !== 'active' && <Badge variant="secondary">{t('member.inactive')}</Badge>}
-          </div>
-        </div>
-      </Link>
-      {onEdit && (
-        <Button variant="ghost" size="icon" onClick={onEdit} aria-label={t('common.edit')} className="shrink-0">
-          <IconPencil />
-        </Button>
-      )}
-    </li>
   );
 }
 
 export default function Members() {
   const { t, i18n } = useTranslation();
-  const toast = useToast();
-  // View-only accounts get the list without any add/edit/delete affordance
+  const lang = i18n.language;
+  const navigate = useNavigate();
+  const navType = useNavigationType();
+  // View-only accounts get the list without any add/edit affordance
   const { has } = usePerms();
   const canCreate = has('members.create');
   const canModify = has('members.edit');
+  const canContact = has('members.contact');
   // Les chefs s'affichent dans la liste comme une branche à part entière
   const canSeeLeaders = has('leaders.read');
 
-  const [branch, setBranch] = useState('');
-  // '' = كل المجموعات، 'none' = من لم يُوزَّع بعد، أو رقم مجموعة. يظهر مع فرقة مقسَّمة فقط.
-  const [group, setGroup] = useState('');
-  const [status, setStatus] = useState('');
-  const [school, setSchool] = useState('');
-  const [residence, setResidence] = useState('');
-  const [residenceLebanon, setResidenceLebanon] = useState('');
-  const [blood, setBlood] = useState('');
-  const [ageMin, setAgeMin] = useState('');
-  const [ageMax, setAgeMax] = useState('');
-  const [parentPhone, setParentPhone] = useState('');
-  const [joined, setJoined] = useState({ from: '', to: '' });
-  const [showFilters, setShowFilters] = useState(false);
-  // Sorting is a preference, not a filter: it survives from one visit to the next
-  const [sort, setSort] = useLocalStorage('members.sort', 'name');
-  const [q, setQ] = useState('');
-  const [editing, setEditing] = useState(null); // null | 'new' | member object
+  const [sp, setSp] = useSearchParams();
+  const param = (k) => sp.get(k) || '';
+  // Built on the live address, not the router's snapshot of it: two writes in the
+  // same tick (two debounced fields landing together) would otherwise each start
+  // from the same URL, and the second would drop the first's change.
+  const patch = (changes) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [k, v] of Object.entries(changes)) v === '' || v == null ? next.delete(k) : next.set(k, String(v));
+    setSp(next, { replace: true });
+  };
 
-  const dq = useDebounced(q, 250);
-  const dPhone = useDebounced(parentPhone, 250);
+  const branch = param('branch'); // '' | فرقة id | 'leaders'
+  const group = param('group'); // '' | طليعة id | 'none'
+  const status = param('status'); // '' = فعّال | 'inactive' | 'all'
+  const [q, setQ] = useUrlField(sp, patch, 'q');
+  const [ageMin, setAgeMin] = useUrlField(sp, patch, 'age_min');
+  const [ageMax, setAgeMax] = useUrlField(sp, patch, 'age_max');
+  const [parentPhone, setParentPhone] = useUrlField(sp, patch, 'parent_phone');
+  const f = {
+    ...Object.fromEntries(SERVER_FILTERS.map((k) => [k, param(k)])),
+    age_min: ageMin,
+    age_max: ageMax,
+    parent_phone: parentPhone,
+  };
+  // Sorting is a preference, not a filter: it survives from one visit to the next
+  // (and the dashboard presets it before sending a قائد here)
+  const [sort, setSort] = useLocalStorage('members.sort', 'name');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [formFor, setFormFor] = useState(null); // null | 'new' | member
+
+  const apiParams = new URLSearchParams();
+  for (const k of SERVER_FILTERS) if (f[k].trim()) apiParams.set(k, f[k].trim());
+  if (q.trim()) apiParams.set('q', q.trim());
+  if (sort && sort !== 'name') apiParams.set('sort', sort);
+  // فرقة, طليعة and status are cut on this side: one request fills every tab count
+  const apiQuery = useDebounced(apiParams.toString(), 250);
+  const members = useFetch(`/members?${apiQuery}`);
+  const leaders = useFetch('/leaders', { skip: !canSeeLeaders });
   const branches = useFetch('/branches');
   // Distinct مدارس / أماكن سكن actually in the base — the filters only offer real values
   const filterValues = useFetch('/members/filters');
-  // The curated lists behind the registration pickers
-  const lookups = useFetch('/lookups');
-
-  const params = new URLSearchParams();
-  // 'leaders' est une pseudo-branche côté client : le serveur ne la connaît pas
-  if (branch && branch !== 'leaders') params.set('branch', branch);
-  if (group) params.set('group', group);
-  if (status) params.set('status', status);
-  if (school) params.set('school', school);
-  if (residence) params.set('residence', residence);
-  if (residenceLebanon) params.set('residence_lebanon', residenceLebanon);
-  if (blood) params.set('blood', blood);
-  if (ageMin !== '') params.set('age_min', ageMin);
-  if (ageMax !== '') params.set('age_max', ageMax);
-  if (dPhone.trim()) params.set('parent_phone', dPhone.trim());
-  if (joined.from) params.set('joined_from', joined.from);
-  if (joined.to) params.set('joined_to', joined.to);
-  if (sort && sort !== 'name') params.set('sort', sort);
-  if (dq) params.set('q', dq);
-  const members = useFetch(`/members?${params}`);
-  const leadersFetch = useFetch('/leaders', { skip: !canSeeLeaders });
 
   const branchList = branches.data || [];
-  // مجموعات الفرقة المفلترة. بلا فرقة مختارة لا فلتر مجموعات: أسماء المجموعات
-  // تتكرر بين الفرق، فقائمة واحدة لها كلها لا تدلّ على شيء.
-  const filterGroups = branchList.find((b) => String(b.id) === String(branch))?.groups || [];
-  // تغيير الفرقة يُسقط فلتر المجموعة: مجموعة الفرقة السابقة لا تُرجع صفًا واحدًا
-  const pickBranch = (v) => {
-    setBranch(v);
-    setGroup('');
-  };
   const schools = filterValues.data?.schools || [];
   const residences = filterValues.data?.residences || [];
   const residencesLebanon = filterValues.data?.residencesLebanon || [];
-  // The pickers take plain labels; a value retired from a list still shows on the
-  // فرد who carries it, it simply can no longer be picked again.
-  const lookupLists = {
-    residence_abidjan: (lookups.data?.residence_abidjan || []).map((v) => v.label),
-    residence_lebanon: (lookups.data?.residence_lebanon || []).map((v) => v.label),
-    school: (lookups.data?.school || []).map((v) => v.label),
-  };
   const bloodTypes = filterValues.data?.bloodTypes || [];
 
-  // Adding a quartier / école straight from the registration form. A value someone
-  // else added meanwhile comes back as a duplicate: that is not a failure, the entry
-  // simply exists already — pick its stored spelling and carry on.
-  async function createLookup(kind, label) {
-    const wanted = String(label).trim();
-    try {
-      const row = await api.post('/lookups', { kind, label: wanted });
-      lookups.reload({ quiet: true });
-      return row.label;
-    } catch (err) {
-      if (err.message === 'duplicate label') {
-        const existing = (lookups.data?.[kind] || []).find(
-          (v) => v.label.toLowerCase() === wanted.toLowerCase()
-        );
-        return existing?.label || wanted;
-      }
-      toast.error(err.message);
-      return null;
-    }
-  }
-  // What the collapsed panel hides — the badge has to say it, or a filtered list
+  // A stale or foreign id in the URL falls back to «all» rather than an empty page
+  const currentBranch =
+    branch === 'leaders'
+      ? canSeeLeaders
+        ? 'leaders'
+        : ''
+      : branch && branchList.length && !branchList.some((b) => String(b.id) === branch)
+        ? ''
+        : branch;
+  const branchObj = branchList.find((b) => String(b.id) === currentBranch);
+  const groups = branchObj?.groups || [];
+  const currentGroup = groups.length ? group : '';
+
+  const statusOk = (m) =>
+    status === 'all' ? true : status === 'inactive' ? m.status !== 'active' : m.status === 'active';
+  const groupOk = (m) =>
+    !currentGroup || (currentGroup === 'none' ? m.group_id == null : String(m.group_id) === currentGroup);
+
+  // What the collapsed panel hides — the button has to say it, or a filtered list
   // looks like a bug to whoever opens the page next
   const advancedCount = [
-    school,
-    residence,
-    residenceLebanon,
-    blood,
-    ageMin !== '' || ageMax !== '' ? 'age' : '',
-    parentPhone.trim(),
-    joined.from || joined.to ? 'joined' : '',
+    f.school,
+    f.residence,
+    f.residence_lebanon,
+    f.blood,
+    f.age_min || f.age_max,
+    f.parent_phone.trim(),
+    f.joined_from || f.joined_to,
   ].filter(Boolean).length;
-  const filtering = !!(branch || group || status || q || advancedCount);
+  const filterCount = advancedCount + (status ? 1 : 0);
 
-  // Les chefs rejoignent la liste comme une branche à part : même recherche,
-  // même filtre de statut, même tri. Les filtres avancés et les groupes décrivent
-  // des champs de membre — dès qu'un de ces filtres est actif, les chefs sortent.
-  const leaderAge = (d) =>
-    d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null;
-  const chefsVisible = canSeeLeaders && !advancedCount && !group && (!branch || branch === 'leaders');
-  const needle = dq.trim().toLowerCase();
-  const chefRows = chefsVisible
-    ? (leadersFetch.data || [])
-        .filter((l) => !status || l.status === status)
-        .filter(
-          (l) =>
-            !needle ||
-            [l.first_name, l.father_name, l.last_name].filter(Boolean).join(' ').toLowerCase().includes(needle) ||
-            (l.phone || '').includes(needle)
-        )
-        .map((l) => ({ ...l, kind: 'leader', age: leaderAge(l.birth_date) }))
-    : [];
-  const memberRows = branch === 'leaders' ? [] : members.data || [];
-  const list = [...memberRows, ...chefRows];
-  // Le serveur trie les membres, mais la fusion ré-trie tout pour intercaler les chefs
-  if (chefRows.length && memberRows.length) {
-    if (sort === 'age_desc') list.sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
-    else if (sort === 'age_asc') list.sort((a, b) => (a.age ?? 999) - (b.age ?? 999));
-    else if (sort === 'name' || !sort) list.sort((a, b) => memberName(a).localeCompare(memberName(b)));
+  const allMembers = members.data || [];
+  const inStatus = allMembers.filter(statusOk);
+
+  // Les chefs rejoignent la liste comme une branche à part : même recherche, même
+  // statut. Les filtres avancés décrivent des champs de membre — dès qu'un est
+  // actif, les chefs sortent.
+  const needle = useDebounced(q, 250).trim().toLowerCase();
+  const chefRows =
+    canSeeLeaders && !advancedCount
+      ? (leaders.data || [])
+          .filter(statusOk)
+          .filter(
+            (l) =>
+              !needle ||
+              [l.first_name, l.father_name, l.last_name].filter(Boolean).join(' ').toLowerCase().includes(needle) ||
+              (l.phone || '').includes(needle)
+          )
+          .map((l) => ({ ...l, kind: 'leader', age: yearsSince(l.birth_date) }))
+      : [];
+
+  const perBranch = new Map();
+  for (const m of inStatus) perBranch.set(String(m.branch_id), (perBranch.get(String(m.branch_id)) || 0) + 1);
+  // Ready once every source has answered (or failed): عناصر landing before the
+  // فرق would show a فرقة tab empty for a moment — and restore the scroll against
+  // that short page
+  const loaded =
+    !!members.data &&
+    !!(branches.data || branches.error) &&
+    (!canSeeLeaders || !!(leaders.data || leaders.error));
+  const tabs = [
+    { id: '', label: t('member.tabAll'), count: loaded ? inStatus.length + chefRows.length : null },
+    ...branchList.map((b) => ({
+      id: String(b.id),
+      label: branchName(b, lang),
+      count: loaded ? perBranch.get(String(b.id)) || 0 : null,
+    })),
+    ...(canSeeLeaders ? [{ id: 'leaders', label: t('branch.leaders'), count: loaded ? chefRows.length : null }] : []),
+  ];
+
+  const inBranch = branchObj ? inStatus.filter((m) => String(m.branch_id) === currentBranch) : [];
+  const unassigned = inBranch.filter((m) => m.group_id == null).length;
+  const patrols = groups.length
+    ? [
+        { id: '', label: t('member.tabAll'), count: inBranch.length },
+        ...groups.map((g) => ({
+          id: String(g.id),
+          label: g.name,
+          count: inBranch.filter((m) => String(m.group_id) === String(g.id)).length,
+        })),
+        // «بلا طليعة» is the first thing a قائد looks for while distributing a فرقة
+        ...(unassigned || currentGroup === 'none'
+          ? [{ id: 'none', label: t('member.noGroup'), count: unassigned }]
+          : []),
+      ]
+    : null;
+
+  let list;
+  if (currentBranch === 'leaders') list = chefRows;
+  else if (currentBranch) list = inBranch.filter(groupOk);
+  else {
+    list = [...inStatus, ...chefRows];
+    // Le serveur trie les membres ; la fusion ré-trie pour intercaler les chefs —
+    // par nom de famille, comme le serveur, sinon l'onglet «Tous» et celui d'une
+    // فرقة rangeraient les mêmes personnes dans deux ordres différents
+    if (chefRows.length && inStatus.length) {
+      const family = (m) => `${m.last_name || ''} ${m.first_name || ''}`;
+      if (sort === 'age_desc') list.sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
+      else if (sort === 'age_asc') list.sort((a, b) => (a.age ?? 999) - (b.age ?? 999));
+      else if (sort === 'name' || !sort) list.sort((a, b) => family(a).localeCompare(family(b)));
+    }
   }
 
-  function clearFilters() {
-    setQ('');
-    setBranch('');
-    setGroup('');
-    setStatus('');
-    setSchool('');
-    setResidence('');
-    setResidenceLebanon('');
-    setBlood('');
-    setAgeMin('');
-    setAgeMax('');
-    setParentPhone('');
-    setJoined({ from: '', to: '' });
-  }
+  // Inactive ones the default view leaves out, in the same فرقة / طليعة
+  const hiddenInactive = status
+    ? 0
+    : allMembers.filter(
+        (m) =>
+          m.status !== 'active' &&
+          (!currentBranch || (currentBranch !== 'leaders' && String(m.branch_id) === currentBranch && groupOk(m)))
+      ).length;
 
-  async function save(form) {
-    if (editing === 'new') await api.post('/members', form);
-    else await api.put(`/members/${editing.id}`, form);
-    setEditing(null);
+  // The roster in one line: how many, how present, how many slipping away
+  const kids = list.filter((m) => m.kind !== 'leader');
+  const chefCount = list.length - kids.length;
+  const presentSum = kids.reduce((s, m) => s + (m.attendance?.present || 0), 0);
+  const markedSum = kids.reduce((s, m) => s + (m.attendance?.total || 0), 0);
+  const rosterRate = markedSum ? Math.round((100 * presentSum) / markedSum) : null;
+  const followCount = kids.filter((m) => m.status === 'active' && m.attendance?.absences >= 3).length;
+
+  const scopeTitle =
+    currentBranch === 'leaders'
+      ? t('branch.leaders')
+      : branchObj
+        ? [
+            branchName(branchObj, lang),
+            currentGroup &&
+              (currentGroup === 'none'
+                ? t('member.noGroup')
+                : groups.find((g) => String(g.id) === currentGroup)?.name),
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : t('member.allBranches');
+  // Which «where» column the register needs: فرقة + طليعة across the فوج, the
+  // طليعة inside a split فرقة, nothing inside one that is not split
+  const whereMode = currentBranch === 'leaders' ? 'none' : !currentBranch ? 'branch' : groups.length ? 'group' : 'none';
+
+  // The typed fields are reset directly too: within their 250ms the URL may not
+  // hold what is in the box yet, and clearing an unchanged URL would not reach them
+  const clearTyped = (keys) => {
+    if (keys.includes('q')) setQ('');
+    if (keys.includes('age_min')) setAgeMin('');
+    if (keys.includes('age_max')) setAgeMax('');
+    if (keys.includes('parent_phone')) setParentPhone('');
+    patch(Object.fromEntries(keys.map((k) => [k, ''])));
+  };
+  const clearAll = () => clearTyped(URL_KEYS.filter((k) => k !== 'branch'));
+  const clearAdvanced = () => clearTyped([...SERVER_FILTERS, 'status']);
+
+  // Every active filter as a removable chip — the value is what the قائد picked.
+  // `isolate`: a Latin value (O+, a school, a number) keeps its own direction in
+  // the Arabic chip; ranges stay in the line's flow so they read low-to-high.
+  const range = (a, b) => (a && b ? `${a} – ${b}` : a ? `≥ ${a}` : `≤ ${b}`);
+  const chips = [
+    status && {
+      key: 'status',
+      label: t('member.status'),
+      value: t(status === 'inactive' ? 'member.inactive' : 'member.statusAll'),
+      clear: () => patch({ status: '' }),
+    },
+    (f.age_min || f.age_max) && {
+      key: 'age',
+      label: t('member.ageRange'),
+      value: range(f.age_min, f.age_max),
+      clear: () => clearTyped(['age_min', 'age_max']),
+    },
+    f.blood && { key: 'blood', label: t('member.bloodType'), value: f.blood, isolate: true, clear: () => patch({ blood: '' }) },
+    f.school && { key: 'school', label: t('member.school'), value: f.school, isolate: true, clear: () => patch({ school: '' }) },
+    f.residence && {
+      key: 'residence',
+      label: t('member.residence'),
+      value: f.residence,
+      isolate: true,
+      clear: () => patch({ residence: '' }),
+    },
+    f.residence_lebanon && {
+      key: 'residence_lebanon',
+      label: t('member.addressLebanon'),
+      value: f.residence_lebanon,
+      isolate: true,
+      clear: () => patch({ residence_lebanon: '' }),
+    },
+    f.parent_phone.trim() && {
+      key: 'parent_phone',
+      label: t('member.parentPhone'),
+      value: f.parent_phone,
+      isolate: true,
+      clear: () => clearTyped(['parent_phone']),
+    },
+    (f.joined_from || f.joined_to) && {
+      key: 'joined',
+      label: t('member.joinDate'),
+      value: range(fmtDate(f.joined_from), fmtDate(f.joined_to)),
+      clear: () => patch({ joined_from: '', joined_to: '' }),
+    },
+  ].filter(Boolean);
+
+  // «Back» from a profile returns to the same row, not to the top of 200 names.
+  // The position is tracked while scrolling: by the time the list unmounts, the
+  // profile has already replaced it and the page may have clamped its height.
+  const lastY = useRef(0);
+  useEffect(() => {
+    const onScroll = () => (lastY.current = window.scrollY);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      try {
+        sessionStorage.setItem(SCROLL_KEY, String(lastY.current));
+      } catch {
+        /* private mode — the list simply opens at the top */
+      }
+    };
+  }, []);
+  const restored = useRef(false);
+  useLayoutEffect(() => {
+    if (restored.current || !loaded) return;
+    restored.current = true;
+    if (navType !== 'POP') return;
+    let y = 0;
+    try {
+      y = Number(sessionStorage.getItem(SCROLL_KEY)) || 0;
+    } catch {
+      /* ignore */
+    }
+    if (y) window.scrollTo({ top: y, behavior: 'instant' });
+  }, [loaded, navType]);
+
+  // Export: the same list as on screen — فرقة as the sheet's id, the rest as query
+  const exportQuery = new URLSearchParams(apiParams);
+  if (status !== 'all') exportQuery.set('status', status === 'inactive' ? 'inactive' : 'active');
+  if (currentGroup) exportQuery.set('group', currentGroup);
+
+  function afterSave() {
+    setFormFor(null);
     members.reload({ quiet: true });
     // A new مدرسة / مكان سكن must show up in the filters right away
     filterValues.reload({ quiet: true });
-    toast.success(t(editing === 'new' ? 'member.created' : 'member.updated'));
   }
+
+  const searching = !!(q.trim() || advancedCount || status);
+  const refreshing = members.loading && !!members.data;
 
   return (
     <div className="space-y-4">
-      <PageHeader title={t('member.title')} description={t('member.subtitle', { count: list.length })}>
-        {(() => {
-          const q = new URLSearchParams(params);
-          q.delete('branch');
-          return <ExportPdfButton kind="members-list" id={params.get('branch') || 0} query={q.toString()} />;
-        })()}
+      <PageHeader title={t('member.title')}>
+        {currentBranch === 'leaders' ? (
+          <ExportPdfButton kind="leaders-list" id={0} compact />
+        ) : (
+          <ExportPdfButton
+            kind="members-list"
+            id={branchObj ? branchObj.id : 0}
+            query={exportQuery.toString()}
+            compact
+          />
+        )}
         {canCreate && (
-          <Button variant="brand" onClick={() => setEditing('new')}>
+          <Button variant="brand" onClick={() => setFormFor('new')}>
             <IconPlus />
             {t('member.addMember')}
           </Button>
         )}
       </PageHeader>
 
-      {/* Filters — the three everyone uses stay in the bar; the rest live one click
-          away so the page does not open on a wall of dropdowns */}
-      <div className="space-y-2">
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <SearchInput
-            value={q}
-            onChange={setQ}
-            placeholder={t('member.searchAny')}
-            className="sm:min-w-64 sm:flex-1"
-          />
-          <div className="grid grid-cols-2 gap-2 sm:flex">
-            <FilterSelect
-              value={branch}
-              onChange={pickBranch}
-              allLabel={t('member.allBranches')}
-              ariaLabel={t('member.branch')}
-              className="sm:w-auto sm:min-w-40"
-              icon={<IconShield className="opacity-60" />}
-              options={[
-                ...branchList.map((b) => ({ value: b.id, label: branchName(b, i18n.language) })),
-                // Pseudo-branche : filtre client, jamais envoyée au serveur
-                ...(canSeeLeaders ? [{ value: 'leaders', label: t('branch.leaders') }] : []),
-              ]}
-            />
-            {/* فلتر المجموعة يتبع الفرقة: بلا فرقة مختارة تختلط أسماء المجموعات
-                بين الفرق، و الفرقة غير المقسَّمة لا مجموعات لها أصلًا */}
-            {filterGroups.length > 0 && (
-              <FilterSelect
-                value={group}
-                onChange={setGroup}
-                allLabel={t('member.allGroups')}
-                ariaLabel={t('member.group')}
-                className="sm:w-auto sm:min-w-36"
-                icon={<IconUsers className="opacity-60" />}
-                options={[
-                  { value: 'none', label: t('member.noGroup') },
-                  ...filterGroups.map((g) => ({ value: g.id, label: g.name })),
-                ]}
-              />
-            )}
-            <FilterSelect
-              value={status}
-              onChange={setStatus}
-              allLabel={t('member.allStatuses')}
-              ariaLabel={t('member.status')}
-              className="sm:w-auto sm:min-w-36"
-              options={[
-                { value: 'active', label: t('member.active') },
-                { value: 'inactive', label: t('member.inactive') },
-              ]}
-            />
+      <div className="space-y-3">
+        <UnderlineTabs
+          items={tabs}
+          value={currentBranch}
+          onChange={(id) => patch({ branch: id, group: '' })}
+          label={t('member.branch')}
+          idPrefix="members-tab"
+          panelId="members-panel"
+        />
+
+        {patrols && (
+          <div role="group" aria-label={t('member.groups')} className="flex flex-wrap items-center gap-1.5">
+            {patrols.map((c) => {
+              const on = c.id === currentGroup;
+              return (
+                <button
+                  key={c.id || 'all'}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => patch({ group: c.id })}
+                  className={cn(
+                    'focus-ring inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium transition-colors sm:h-8 sm:px-3 sm:text-xs',
+                    on
+                      ? 'border-primary/30 bg-accent text-accent-foreground'
+                      : 'border-border bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                  )}
+                >
+                  {c.label}
+                  <span className={cn('tabular-nums', !on && 'opacity-70')}>{c.count}</span>
+                </button>
+              );
+            })}
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant={showFilters ? 'secondary' : 'outline'}
-              onClick={() => setShowFilters((v) => !v)}
-              aria-expanded={showFilters}
-            >
-              <IconFilter />
-              {t('member.moreFilters')}
-              {advancedCount > 0 && <Badge variant="default">{advancedCount}</Badge>}
-            </Button>
-            <FilterSelect
-              value={sort}
-              onChange={setSort}
-              ariaLabel={t('member.sortBy')}
-              className="min-w-40 flex-1 sm:w-auto sm:min-w-48 sm:flex-none"
-              icon={<IconSort className="opacity-60" />}
-              options={[
-                { value: 'name', label: t('member.sortName') },
-                { value: 'age_desc', label: t('member.sortAgeDesc') },
-                { value: 'age_asc', label: t('member.sortAgeAsc') },
-                { value: 'attendance', label: t('member.sortAttendance') },
-                ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
-                ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
-              ]}
-            />
-            {filtering && (
-              <Button variant="ghost" size="sm" onClick={clearFilters}>
+        )}
+
+        <div className="flex items-center gap-2">
+          <SearchInput value={q} onChange={setQ} placeholder={t('member.searchAny')} className="min-w-0" />
+          <Button
+            variant={filtersOpen ? 'secondary' : 'outline'}
+            onClick={() => setFiltersOpen((v) => !v)}
+            aria-expanded={filtersOpen}
+            aria-controls="member-filters"
+            aria-label={t('member.moreFilters')}
+            className="shrink-0 px-3"
+          >
+            <IconFilter />
+            <span className="hidden min-[400px]:inline">{t('member.moreFilters')}</span>
+            {filterCount > 0 && (
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[0.6875rem] font-bold tabular-nums text-primary-foreground">
+                {filterCount}
+              </span>
+            )}
+          </Button>
+          <FilterSelect
+            value={sort}
+            onChange={setSort}
+            ariaLabel={t('member.sortBy')}
+            className="hidden w-auto min-w-52 sm:flex"
+            icon={<IconSort className="opacity-60" />}
+            options={[
+              { value: 'name', label: t('member.sortName') },
+              { value: 'age_desc', label: t('member.sortAgeDesc') },
+              { value: 'age_asc', label: t('member.sortAgeAsc') },
+              { value: 'attendance', label: t('member.sortAttendance') },
+              ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
+              ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
+            ]}
+          />
+        </div>
+
+        {filtersOpen && (
+          <div id="member-filters" className="rounded-2xl border border-border bg-card p-4 shadow-xs">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {/* On phones the sort moves in here, off the crowded toolbar */}
+              <div className="space-y-1.5 sm:hidden">
+                <Label>{t('member.sortBy')}</Label>
+                <FilterSelect
+                  value={sort}
+                  onChange={setSort}
+                  ariaLabel={t('member.sortBy')}
+                  icon={<IconSort className="opacity-60" />}
+                  options={[
+                    { value: 'name', label: t('member.sortName') },
+                    { value: 'age_desc', label: t('member.sortAgeDesc') },
+                    { value: 'age_asc', label: t('member.sortAgeAsc') },
+                    { value: 'attendance', label: t('member.sortAttendance') },
+                    ...(schools.length ? [{ value: 'school', label: t('member.sortSchool') }] : []),
+                    ...(residences.length ? [{ value: 'residence', label: t('member.sortResidence') }] : []),
+                  ]}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>{t('member.status')}</Label>
+                <SegmentedControl
+                  label={t('member.status')}
+                  size="sm"
+                  value={status || 'active'}
+                  onChange={(v) => patch({ status: v === 'active' ? '' : v })}
+                  className="flex w-full"
+                  options={[
+                    { value: 'active', label: t('member.active') },
+                    { value: 'inactive', label: t('member.inactive') },
+                    { value: 'all', label: t('member.statusAll') },
+                  ]}
+                />
+              </div>
+              {/* Age is a range, not a value: "les 12-14 ans" is the actual question */}
+              <div className="space-y-1.5">
+                <Label htmlFor="f_age_min">{t('member.ageRange')}</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="f_age_min"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    max="99"
+                    placeholder={t('member.ageMin')}
+                    aria-label={`${t('member.ageRange')} — ${t('member.ageMin')}`}
+                    value={ageMin}
+                    onChange={(e) => setAgeMin(e.target.value)}
+                  />
+                  <span className="text-sm text-muted-foreground">–</span>
+                  <Input
+                    id="f_age_max"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    max="99"
+                    placeholder={t('member.ageMax')}
+                    aria-label={`${t('member.ageRange')} — ${t('member.ageMax')}`}
+                    value={ageMax}
+                    onChange={(e) => setAgeMax(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>{t('member.bloodType')}</Label>
+                <FilterSelect
+                  value={f.blood}
+                  onChange={(v) => patch({ blood: v })}
+                  allLabel={t('member.allBloodTypes')}
+                  ariaLabel={t('member.bloodType')}
+                  options={bloodTypes.map((bt) => ({ value: bt, label: bt }))}
+                />
+              </div>
+              {/* Searchable: a فوج ends up with dozens of quartiers and schools */}
+              {schools.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label>{t('member.school')}</Label>
+                  <SearchSelect
+                    value={f.school}
+                    onChange={(e) => patch({ school: e.target.value })}
+                    options={schools}
+                    clearLabel={t('member.allSchools')}
+                    placeholder={t('member.allSchools')}
+                    searchPlaceholder={t('common.search')}
+                    emptyLabel={t('member.noListValue')}
+                    ariaLabel={t('member.school')}
+                    icon={<IconSchool className="opacity-60" />}
+                  />
+                </div>
+              )}
+              {residences.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label>{t('member.residence')}</Label>
+                  <SearchSelect
+                    value={f.residence}
+                    onChange={(e) => patch({ residence: e.target.value })}
+                    options={residences}
+                    clearLabel={t('member.allResidences')}
+                    placeholder={t('member.allResidences')}
+                    searchPlaceholder={t('common.search')}
+                    emptyLabel={t('member.noListValue')}
+                    ariaLabel={t('member.residence')}
+                    icon={<IconPin className="opacity-60" />}
+                  />
+                </div>
+              )}
+              {residencesLebanon.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label>{t('member.addressLebanon')}</Label>
+                  <SearchSelect
+                    value={f.residence_lebanon}
+                    onChange={(e) => patch({ residence_lebanon: e.target.value })}
+                    options={residencesLebanon}
+                    clearLabel={t('member.allResidencesLebanon')}
+                    placeholder={t('member.allResidencesLebanon')}
+                    searchPlaceholder={t('common.search')}
+                    emptyLabel={t('member.noListValue')}
+                    ariaLabel={t('member.addressLebanon')}
+                    icon={<IconPin className="opacity-60" />}
+                  />
+                </div>
+              )}
+              {/* The server ignores a phone filter from an account that may not read phones */}
+              {canContact && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="f_phone">{t('member.parentPhone')}</Label>
+                  <Input
+                    id="f_phone"
+                    type="tel"
+                    inputMode="tel"
+                    dir="ltr"
+                    placeholder={t('member.phoneFilterHint')}
+                    value={parentPhone}
+                    onChange={(e) => setParentPhone(e.target.value)}
+                  />
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label>{t('member.joinedBetween')}</Label>
+                <DateRangePicker
+                  value={{ from: f.joined_from, to: f.joined_to }}
+                  onChange={({ from, to }) => patch({ joined_from: from, joined_to: to })}
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-2 border-t border-border pt-3">
+              {filterCount > 0 ? (
+                <Button variant="ghost" size="sm" onClick={clearAdvanced} className="-ms-2">
+                  {t('common.clearFilters')}
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button variant="outline" size="sm" onClick={() => setFiltersOpen(false)}>
+                {t('common.done')}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {chips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {chips.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                onClick={c.clear}
+                aria-label={t('member.removeFilter', { label: `${c.label}: ${c.value}` })}
+                className="focus-ring inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:h-8"
+              >
+                <span className="max-w-56 truncate">
+                  <span className="opacity-75">{c.label}:</span> {c.isolate ? <bdi>{c.value}</bdi> : c.value}
+                </span>
+                <IconX className="h-3.5 w-3.5 opacity-70" />
+              </button>
+            ))}
+            {chips.length > 1 && (
+              <Button variant="ghost" size="sm" onClick={clearAdvanced}>
                 {t('common.clearFilters')}
               </Button>
             )}
-          </div>
-        </div>
-
-        {showFilters && (
-          <div className="grid gap-3 rounded-xl border border-border bg-card p-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="f_blood">{t('member.bloodType')}</Label>
-              <FilterSelect
-                value={blood}
-                onChange={setBlood}
-                allLabel={t('member.allBloodTypes')}
-                ariaLabel={t('member.bloodType')}
-                options={bloodTypes.map((bt) => ({ value: bt, label: bt }))}
-              />
-            </div>
-            {/* Age is a range, not a value: "les 12-14 ans" is the actual question */}
-            <div className="space-y-1.5">
-              <Label htmlFor="f_age_min">{t('member.ageRange')}</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id="f_age_min"
-                  type="number"
-                  inputMode="numeric"
-                  min="0"
-                  max="99"
-                  placeholder={t('member.ageMin')}
-                  value={ageMin}
-                  onChange={(e) => setAgeMin(e.target.value)}
-                />
-                <span className="text-sm text-muted-foreground">–</span>
-                <Input
-                  id="f_age_max"
-                  type="number"
-                  inputMode="numeric"
-                  min="0"
-                  max="99"
-                  placeholder={t('member.ageMax')}
-                  value={ageMax}
-                  onChange={(e) => setAgeMax(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="f_phone">{t('member.parentPhone')}</Label>
-              <Input
-                id="f_phone"
-                type="tel"
-                inputMode="tel"
-                dir="ltr"
-                placeholder={t('member.phoneFilterHint')}
-                value={parentPhone}
-                onChange={(e) => setParentPhone(e.target.value)}
-              />
-            </div>
-            {/* Searchable: a فوج ends up with dozens of quartiers and schools */}
-            {schools.length > 0 && (
-              <div className="space-y-1.5">
-                <Label>{t('member.school')}</Label>
-                <SearchSelect
-                  value={school}
-                  onChange={(e) => setSchool(e.target.value)}
-                  options={schools}
-                  clearLabel={t('member.allSchools')}
-                  placeholder={t('member.allSchools')}
-                  searchPlaceholder={t('common.search')}
-                  emptyLabel={t('member.noListValue')}
-                  ariaLabel={t('member.school')}
-                  icon={<IconSchool className="opacity-60" />}
-                />
-              </div>
-            )}
-            {residences.length > 0 && (
-              <div className="space-y-1.5">
-                <Label>{t('member.residence')}</Label>
-                <SearchSelect
-                  value={residence}
-                  onChange={(e) => setResidence(e.target.value)}
-                  options={residences}
-                  clearLabel={t('member.allResidences')}
-                  placeholder={t('member.allResidences')}
-                  searchPlaceholder={t('common.search')}
-                  emptyLabel={t('member.noListValue')}
-                  ariaLabel={t('member.residence')}
-                  icon={<IconPin className="opacity-60" />}
-                />
-              </div>
-            )}
-            {residencesLebanon.length > 0 && (
-              <div className="space-y-1.5">
-                <Label>{t('member.addressLebanon')}</Label>
-                <SearchSelect
-                  value={residenceLebanon}
-                  onChange={(e) => setResidenceLebanon(e.target.value)}
-                  options={residencesLebanon}
-                  clearLabel={t('member.allResidencesLebanon')}
-                  placeholder={t('member.allResidencesLebanon')}
-                  searchPlaceholder={t('common.search')}
-                  emptyLabel={t('member.noListValue')}
-                  ariaLabel={t('member.addressLebanon')}
-                  icon={<IconPin className="opacity-60" />}
-                />
-              </div>
-            )}
-            <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
-              <Label>{t('member.joinedBetween')}</Label>
-              <DateRangePicker value={joined} onChange={setJoined} />
-            </div>
           </div>
         )}
       </div>
 
       {members.error ? (
         <ErrorState message={t('error.loadFailed')} onRetry={members.reload} retryLabel={t('error.retry')} />
-      ) : members.loading ? (
-        <Card className="divide-y divide-border">
-          {Array.from({ length: 6 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3 p-3">
-              <Skeleton className="h-11 w-11 rounded-full md:h-9 md:w-9" />
-              <div className="flex-1 space-y-2">
-                <Skeleton className="h-3.5 w-2/5" />
-                <Skeleton className="h-3 w-24" />
-              </div>
-            </div>
-          ))}
-        </Card>
-      ) : list.length === 0 ? (
-        <Card>
-          <EmptyState
-            icon={<IconUsers className="h-6 w-6" />}
-            title={t(filtering ? 'common.noResults' : 'member.noMembers')}
-            action={
-              filtering ? (
-                <Button variant="outline" onClick={clearFilters}>
-                  {t('common.clearFilters')}
-                </Button>
-              ) : canCreate ? (
-                <Button variant="brand" onClick={() => setEditing('new')}>
-                  <IconPlus />
-                  {t('member.addMember')}
-                </Button>
-              ) : null
-            }
-          >
-            {t(filtering ? 'common.noResultsHint' : 'member.noMembersHint')}
-          </EmptyState>
-        </Card>
       ) : (
-        <>
-          {/* Mobile: cards. A 7-column table cannot be read on a 375px screen. */}
-          <Card className="md:hidden">
-            <ul className="divide-y divide-border">
-              {list.map((m) => (
-                // Un chef et un membre peuvent partager le même id numérique
-                <MemberCard
-                  key={`${m.kind || 'member'}-${m.id}`}
-                  m={m}
-                  lang={i18n.language}
-                  t={t}
-                  onEdit={canModify && m.kind !== 'leader' ? () => setEditing(m) : null}
-                />
-              ))}
-            </ul>
-          </Card>
+        <Card
+          id="members-panel"
+          role="tabpanel"
+          aria-labelledby={`members-tab-${currentBranch}`}
+          aria-busy={members.loading || undefined}
+          // relative: the sr-only labels inside are absolutely positioned, and
+          // must be clipped here rather than stretch the page
+          className="@container relative overflow-hidden"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-border px-4 py-3">
+            <h2 className="text-base font-semibold">{scopeTitle}</h2>
+            {loaded && list.length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">
+                  {[
+                    kids.length > 0 && t('member.rosterCount', { count: kids.length }),
+                    chefCount > 0 && t('member.rosterLeaders', { count: chefCount }),
+                  ]
+                    .filter(Boolean)
+                    .join(t('member.listSep'))}
+                </span>
+                {rosterRate !== null && (
+                  <>
+                    {' · '}
+                    {t('member.attendance')}{' '}
+                    <RateValue rate={rosterRate} />
+                  </>
+                )}
+                {followCount > 0 && (
+                  <>
+                    {' · '}
+                    <span className="font-medium text-destructive">
+                      {t('member.rosterFollow', { count: followCount })}
+                    </span>
+                  </>
+                )}
+              </p>
+            )}
+          </div>
 
-          {/* Desktop: table. Columns drop by the card's own width (container
-              queries), not the viewport's: with the sidebar open, a 1280px screen
-              leaves the table under 960px. Short columns stay on one line; the
-              name and phone columns take the wrapping. */}
-          <Card className="@container hidden overflow-hidden md:block">
-            <Table>
-              <thead className="border-b border-border bg-muted/40">
+          {!loaded ? (
+            <RosterSkeleton />
+          ) : list.length === 0 ? (
+            searching ? (
+              <EmptyState
+                icon={<IconUsers className="h-6 w-6" />}
+                title={t('common.noResults')}
+                action={
+                  <Button variant="outline" onClick={clearAll}>
+                    {t('common.clearFilters')}
+                  </Button>
+                }
+              >
+                {t('common.noResultsHint')}
+              </EmptyState>
+            ) : (
+              <EmptyState
+                icon={<IconUsers className="h-6 w-6" />}
+                title={branchObj ? t('member.emptyIn', { name: scopeTitle }) : t('member.noMembers')}
+                action={
+                  canCreate && currentBranch !== 'leaders' ? (
+                    <Button variant="brand" onClick={() => setFormFor('new')}>
+                      <IconPlus />
+                      {t('member.addMember')}
+                    </Button>
+                  ) : null
+                }
+              >
+                {/* «Register the first عنصر of the فوج» only when the فوج is empty */}
+                {currentBranch ? null : t('member.noMembersHint')}
+              </EmptyState>
+            )
+          ) : (
+            <table className={cn('w-full text-sm transition-opacity', refreshing && 'opacity-60')}>
+              <thead className="hidden border-b border-border bg-muted/40 @2xl:table-header-group">
                 <tr>
                   <Th className="ps-4">{t('member.name')}</Th>
                   <Th>{t('member.age')}</Th>
-                  <Th>{t('member.branch')}</Th>
-                  <Th className="hidden @3xl:table-cell">{t('member.attendance')}</Th>
+                  {whereMode !== 'none' && <Th>{t(whereMode === 'branch' ? 'member.branch' : 'member.group')}</Th>}
+                  <Th>{t('member.recentTitle')}</Th>
                   <Th className="hidden @4xl:table-cell">{t('member.phones')}</Th>
+                  <Th className="@4xl:hidden">
+                    <span className="sr-only">{t('member.call')}</span>
+                  </Th>
                   {canModify && (
-                    <Th className="pe-4 text-end">
+                    <Th className="pe-3">
                       <span className="sr-only">{t('common.actions')}</span>
                     </Th>
                   )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {list.map((m) => {
-                  const inactive = m.status !== 'active';
-                  return (
-                    // Un chef et un membre peuvent partager le même id numérique
-                    <tr
-                      key={`${m.kind || 'member'}-${m.id}`}
-                      className="group transition-colors hover:bg-accent/40"
-                    >
-                      <Td className="ps-4">
-                        <Link
-                          to={m.kind === 'leader' ? `/leaders/${m.id}` : `/members/${m.id}`}
-                          className="focus-ring flex items-center gap-3 rounded-md font-medium group-hover:text-primary"
-                        >
-                          <Avatar
-                            photo={m.photo}
-                            name={avatarName(m)}
-                            className={cn('h-9 w-9', inactive && 'opacity-60 grayscale')}
-                          />
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 leading-snug">
-                              <span className={cn(inactive && 'text-muted-foreground')}>{memberName(m)}</span>
-                              {/* Le statut ne s'affiche que quand il fait exception : une
-                                  colonne «Actif» répétée sur 200 lignes ne disait rien */}
-                              {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
-                            </div>
-                            <MemberSubline m={m} />
-                          </div>
-                        </Link>
-                      </Td>
-                      <Td className="whitespace-nowrap tabular-nums">
-                        <div className="flex items-center gap-2">
-                          {m.age != null ? `${m.age} ${t('common.years')}` : dash}
-                          {m.birth_date && <BirthdayBadge birthDate={m.birth_date} t={t} />}
-                        </div>
-                      </Td>
-                      <Td>
-                        <div className="flex items-center gap-1.5 whitespace-nowrap">
-                          <Badge>
-                            {m.kind === 'leader' ? t('branch.leaders') : branchName(m, i18n.language)}
-                          </Badge>
-                          {m.group_name && <Badge variant="outline">{m.group_name}</Badge>}
-                        </div>
-                      </Td>
-                      <Td className="hidden @3xl:table-cell">
-                        <Attendance a={m.attendance} t={t} />
-                      </Td>
-                      <Td className="hidden @4xl:table-cell">
-                        <ParentPhones m={m} t={t} />
-                      </Td>
-                      {canModify && (
-                        <Td className="pe-4 text-end">
-                          <div className="flex justify-end">
-                            {m.kind !== 'leader' && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className={ROW_ACTION}
-                                onClick={() => setEditing(m)}
-                                aria-label={t('common.edit')}
-                                title={t('common.edit')}
-                              >
-                                <IconPencil />
-                              </Button>
-                            )}
-                          </div>
-                        </Td>
-                      )}
-                    </tr>
-                  );
-                })}
+                {list.map((m) => (
+                  // Un chef et un membre peuvent partager le même id numérique
+                  <RosterRow
+                    key={`${m.kind || 'member'}-${m.id}`}
+                    m={m}
+                    lang={lang}
+                    t={t}
+                    whereMode={whereMode}
+                    canModify={canModify}
+                    onEdit={setFormFor}
+                    onOpen={navigate}
+                  />
+                ))}
               </tbody>
-            </Table>
-          </Card>
-        </>
+            </table>
+          )}
+
+          {loaded && hiddenInactive > 0 && (
+            <div className="flex flex-wrap items-center justify-center gap-x-2 border-t border-border px-4 py-2.5 text-sm text-muted-foreground">
+              {t('member.inactiveHidden', { count: hiddenInactive })}
+              <button
+                type="button"
+                onClick={() => patch({ status: 'all' })}
+                className="focus-ring min-h-11 cursor-pointer rounded px-1 font-medium text-primary hover:underline sm:min-h-0"
+              >
+                {t('member.showInactive')}
+              </button>
+            </div>
+          )}
+        </Card>
       )}
 
-      <Dialog
-        open={editing !== null}
-        onClose={() => setEditing(null)}
-        title={t(editing === 'new' ? 'member.addMember' : 'member.editMember')}
-      >
-        {editing !== null && (
-          <MemberForm
-            initial={
-              editing === 'new'
-                ? { ...EMPTY_FORM, branch_id: branchList[0]?.id || '' }
-                : {
-                    first_name: editing.first_name,
-                    last_name: editing.last_name,
-                    father_name: editing.father_name || '',
-                    mother_name: editing.mother_name || '',
-                    birth_date: editing.birth_date || '',
-                    birth_place: editing.birth_place || '',
-                    address_abidjan: editing.address_abidjan || '',
-                    address_lebanon: editing.address_lebanon || '',
-                    school: editing.school || '',
-                    blood_type: editing.blood_type || '',
-                    sex: editing.sex,
-                    branch_id: editing.branch_id,
-                    group_id: editing.group_id ?? '',
-                    member_phone: editing.member_phone || '',
-                    father_phone: editing.father_phone || '',
-                    mother_phone: editing.mother_phone || '',
-                    join_date: editing.join_date || '',
-                    photo: editing.photo,
-                    status: editing.status,
-                  }
-            }
-            originalBranchId={editing === 'new' ? null : editing.branch_id}
-            branches={branchList}
-            lookups={lookupLists}
-            onCreateLookup={createLookup}
-            onSave={save}
-            onCancel={() => setEditing(null)}
-          />
-        )}
-      </Dialog>
+      <MemberFormDialog
+        open={formFor !== null}
+        member={formFor === 'new' ? null : formFor}
+        // A registration from a فرقة tab lands in that فرقة (and طليعة)
+        defaults={{
+          ...(branchObj && { branch_id: branchObj.id }),
+          ...(branchObj && currentGroup && currentGroup !== 'none' && { group_id: currentGroup }),
+        }}
+        onClose={() => setFormFor(null)}
+        onSaved={afterSave}
+      />
     </div>
   );
 }

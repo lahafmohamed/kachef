@@ -2044,7 +2044,14 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
       // الحضور في الفرقة الحالية، محسوبًا كما في ملفّ العنصر: من توقّف عن المجيء
       // يظهر في القائمة نفسها، قبل أن يُفتح ملفّه
       const st = statsFromRows(attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id));
-      const attendance = { rate: st.rate, present: st.present, total: st.total, absences: st.consecutive_absences };
+      const attendance = {
+        rate: st.rate,
+        present: st.present,
+        total: st.total,
+        absences: st.consecutive_absences,
+        // آخر ثمانية أنشطة، الأحدث أولًا — شريط الحضور في القائمة، كخانات دفتر الحضور
+        recent: st.history.slice(0, 8).map((r) => ({ date: r.date, status: r.status })),
+      };
       return stripContact(req, { ...m, age: calcAge(m.birth_date), attendance });
     });
   // الحضور محسوب هنا لا في SQL، فترتيبه هنا: الأضعف أولًا، و من لم يُسجَّل له
@@ -2179,7 +2186,11 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   // Both the member's current فرقة and the one being assigned must be in scope
   if (!branchOk(req, existing.branch_id) || !branchOk(req, req.body.branch_id))
     return res.status(403).json({ error: 'forbidden' });
-  const b = req.body;
+  // بلا members.contact لم يصل الهاتف و السكن إلى النموذج أصلًا (stripContact)، فيعودان
+  // فارغين: حفظهما كما هما يمحو ما في القاعدة. تبقى القيم المسجّلة إذن.
+  const b = hasPerm(req, 'members.contact')
+    ? req.body
+    : { ...req.body, ...Object.fromEntries(CONTACT_FIELDS.map((f) => [f, existing[f]])) };
   // مجموعات الفرقة الجديدة وحدها مقبولة: نقل عنصر إلى فرقة أخرى يُخرجه من مجموعته
   // القديمة، إلا أن يكون الطلب نفسه قد اختار له مجموعة من الفرقة الجديدة.
   const groupId = resolveGroupId(b.group_id, b.branch_id);

@@ -332,6 +332,17 @@ export const IconDownload = (p) => (
     <path d="M12 15V3" />
   </Icon>
 );
+export const IconDroplet = (p) => (
+  <Icon {...p}>
+    <path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z" />
+  </Icon>
+);
+export const IconCamera = (p) => (
+  <Icon {...p}>
+    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+    <circle cx="12" cy="13" r="3" />
+  </Icon>
+);
 
 /* ============================================================
    Theme
@@ -794,8 +805,10 @@ let openOverlays = 0;
 /**
  * Accessible modal. Renders as a centered dialog on tablet+ and as a
  * bottom sheet on phones (thumb-reachable, native-feeling).
+ * `footer` stays pinned under the scrolling body — a long form keeps its save
+ * button in reach without scrolling to the end (buttons use `form="<id>"`).
  */
-export function Dialog({ open, onClose, title, description, children, size = 'md' }) {
+export function Dialog({ open, onClose, title, description, children, footer, size = 'md' }) {
   const { t } = useTranslation();
   const panelRef = useRef(null);
   const contentRef = useRef(null);
@@ -828,8 +841,8 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
   // and play the exit against that — the user watches the dialog they were
   // actually looking at leave.
   const lastFrame = useRef(null);
-  if (open) lastFrame.current = { title, description, children };
-  const frame = (open ? null : lastFrame.current) || { title, description, children };
+  if (open) lastFrame.current = { title, description, children, footer };
+  const frame = (open ? null : lastFrame.current) || { title, description, children, footer };
 
   useEffect(() => {
     if (!open) return;
@@ -925,9 +938,15 @@ export function Dialog({ open, onClose, title, description, children, size = 'md
             <IconX />
           </Button>
         </div>
-        <div ref={contentRef} className="safe-b flex-1 overflow-y-auto p-4 sm:p-5">
+        <div ref={contentRef} className={cn('flex-1 overflow-y-auto p-4 sm:p-5', !frame.footer && 'safe-b')}>
           {frame.children}
         </div>
+        {frame.footer && (
+          // max(): safe-b alone would zero the padding on phones without a home indicator
+          <div className="shrink-0 border-t border-border bg-card px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:rounded-b-2xl sm:px-5">
+            {frame.footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body
