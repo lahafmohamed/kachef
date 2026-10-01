@@ -1203,7 +1203,7 @@ export default function Sessions() {
           // نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل + عدد حضور القادة
           const groupCounts = isGroup && (
             <div className="space-y-1.5">
-              <Label className="block">{t('session.branchCounts')}</Label>
+              <Label>{t('session.branchCounts')}</Label>
               <div className="space-y-2 rounded-xl border border-border p-3">
                 {branchList.map((b) => (
                   <div key={b.id} className="flex items-center justify-between gap-3">

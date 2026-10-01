@@ -27,20 +27,24 @@ import {
   useToast,
   IconAlert,
   IconBack,
+  IconCalendar,
   IconCheckAll,
   IconClipboard,
   IconClock,
   IconCoins,
   IconPin,
   IconSearch,
+  IconTag,
   IconTrash,
   IconUsers,
 } from '../components/ui';
 
+// Absent is where every row starts, so it is selected quietly; présence — the
+// mark the leader actually makes — keeps the solid fill and stands out
 const MEMBER_STATUSES = [
-  { value: 'present', key: 'session.present', tone: 'success' },
-  { value: 'absent', key: 'session.absent', tone: 'destructive' },
-  { value: 'excused', key: 'session.excused', tone: 'warning' },
+  { value: 'present', key: 'session.present', tone: 'success', badge: 'success' },
+  { value: 'absent', key: 'session.absent', tone: 'destructive-soft', badge: 'destructive' },
+  { value: 'excused', key: 'session.excused', tone: 'warning-soft', badge: 'warning' },
 ];
 const ANIMATOR_STATUSES = MEMBER_STATUSES.filter((s) => s.value !== 'excused');
 
@@ -56,7 +60,7 @@ const attendanceError = (t, err) =>
 function StatusBadge({ status, t }) {
   const s = MEMBER_STATUSES.find((x) => x.value === status);
   if (!s) return <Badge variant="outline">{t('session.unmarked')}</Badge>;
-  return <Badge variant={s.tone}>{t(s.key)}</Badge>;
+  return <Badge variant={s.badge}>{t(s.key)}</Badge>;
 }
 
 /**
@@ -469,22 +473,35 @@ export default function SessionDetail() {
         </div>
       </div>
 
-      <div className="space-y-2">
+      {/* Three short lines instead of one long one: when and where, who it is
+          for, then who leads it and what it costs */}
+      <div className="space-y-3">
         <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{session.title}</h1>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <span className="tabular-nums">{fmtDate(session.date)}</span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5 tabular-nums">
+            <IconCalendar className="h-3.5 w-3.5" />
+            {fmtDate(session.date)}
+          </span>
           {session.start_time && (
-            <span className="flex items-center gap-1 tabular-nums">
+            <span className="flex items-center gap-1.5 tabular-nums">
               <IconClock className="h-3.5 w-3.5" />
               {fmtTime(session.start_time)}
             </span>
           )}
           {session.place && (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1.5">
               <IconPin className="h-3.5 w-3.5" />
               {session.place}
             </span>
           )}
+          {activityTypeKey(session.activity_type) && (
+            <span className="flex items-center gap-1.5">
+              <IconTag className="h-3.5 w-3.5" />
+              {t(activityTypeKey(session.activity_type))}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
           {session.branch_id ? (
             // النشاط المشترك يحمل شارة لكل فرقة يشملها
             sessionBranches.length > 1 ? (
@@ -506,36 +523,39 @@ export default function SessionDetail() {
               {g.name}
             </Badge>
           ))}
-          {activityTypeKey(session.activity_type) && (
-            <Badge variant="outline">{t(activityTypeKey(session.activity_type))}</Badge>
-          )}
-          {session.leader && (
-            <span>
-              {t('session.leader')} :{' '}
-              {session.leader_id ? (
-                <Link
-                  to={`/leaders/${session.leader_id}`}
-                  className="focus-ring rounded font-medium text-foreground hover:text-primary hover:underline"
-                >
-                  {session.leader}
-                </Link>
-              ) : (
-                session.leader
-              )}
-            </span>
-          )}
-          {session.fee !== null && (
-            <span>
-              {t('session.fee')} :{' '}
-              <span className="font-medium text-foreground tabular-nums">{fmtAmount(session.fee)}</span>
-            </span>
-          )}
           {session.matalib.length > 0 && (
             <Badge variant="warning">
               {t('session.requirementsShort')} : {session.matalib.join('، ')}
             </Badge>
           )}
         </div>
+        {(session.leader || session.fee !== null) && (
+          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            {session.leader && (
+              <div className="flex gap-1.5">
+                <dt className="text-muted-foreground">{t('session.leader')}</dt>
+                <dd>
+                  {session.leader_id ? (
+                    <Link
+                      to={`/leaders/${session.leader_id}`}
+                      className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                    >
+                      {session.leader}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">{session.leader}</span>
+                  )}
+                </dd>
+              </div>
+            )}
+            {session.fee !== null && (
+              <div className="flex gap-1.5">
+                <dt className="text-muted-foreground">{t('session.fee')}</dt>
+                <dd className="font-medium tabular-nums">{fmtAmount(session.fee)}</dd>
+              </div>
+            )}
+          </dl>
+        )}
       </div>
 
       {/* ---------- بطاقات التحضير المربوطة بهذا النشاط ---------- */}
@@ -571,10 +591,17 @@ export default function SessionDetail() {
               <div className="text-sm font-medium tabular-nums">
                 {t('session.marked', { marked, total: totalRoster })}
               </div>
+              {/* Named, not just coloured: the colour repeats the word */}
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="success">{counts.present}</Badge>
-                <Badge variant="destructive">{counts.absent}</Badge>
-                <Badge variant="warning">{counts.excused}</Badge>
+                <Badge variant="success">
+                  {t('session.tallyPresent')} <span className="tabular-nums">{counts.present}</span>
+                </Badge>
+                <Badge variant="destructive">
+                  {t('session.tallyAbsent')} <span className="tabular-nums">{counts.absent}</span>
+                </Badge>
+                <Badge variant="warning">
+                  {t('session.tallyExcused')} <span className="tabular-nums">{counts.excused}</span>
+                </Badge>
               </div>
             </div>
             <ProgressBar value={pct} label={t('session.attendance')} />
@@ -637,8 +664,12 @@ export default function SessionDetail() {
                 {t('session.marked', { marked: leaderMarked, total: leaderRoster.length })}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="success">{leaderCounts.present}</Badge>
-                <Badge variant="destructive">{leaderCounts.absent}</Badge>
+                <Badge variant="success">
+                  {t('session.tallyPresent')} <span className="tabular-nums">{leaderCounts.present}</span>
+                </Badge>
+                <Badge variant="destructive">
+                  {t('session.tallyAbsent')} <span className="tabular-nums">{leaderCounts.absent}</span>
+                </Badge>
               </div>
             </div>
             <ProgressBar
@@ -705,26 +736,31 @@ export default function SessionDetail() {
                       </div>
                     )}
                   </div>
-                  <div className="flex w-full items-center gap-1.5 sm:w-auto">
+                  <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
                     {editable ? (
                       <>
                         <SegmentedControl
-                          className="w-full sm:w-auto"
+                          className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
                           label={memberName(a)}
                           value={a.status}
                           onChange={(v) => markAnimator(a.leader_id, v)}
                           options={ANIMATOR_STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
                         />
-                        {!isLeadersSession && a.role === 'helper' && (
-                          <Button
-                            variant="destructive-ghost"
-                            size="icon"
-                            onClick={() => removeHelper(a)}
-                            aria-label={t('common.delete')}
-                          >
-                            <IconTrash />
-                          </Button>
-                        )}
+                        {!isLeadersSession &&
+                          (a.role === 'helper' ? (
+                            <Button
+                              variant="destructive-ghost"
+                              size="icon"
+                              onClick={() => removeHelper(a)}
+                              aria-label={`${t('common.delete')} — ${memberName(a)}`}
+                            >
+                              <IconTrash />
+                            </Button>
+                          ) : (
+                            // The main leader can't be removed: an empty slot of the
+                            // same width keeps every row's control in one column
+                            <span aria-hidden="true" className="w-11 shrink-0 sm:w-9" />
+                          ))}
                       </>
                     ) : (
                       <StatusBadge status={a.status} t={t} />
@@ -757,7 +793,7 @@ export default function SessionDetail() {
                 onChange={setRosterQuery}
                 autoFocusHotkey={false}
                 placeholder={t('session.searchMember')}
-                className="sm:w-56 sm:flex-none"
+                className="sm:w-72 sm:flex-none"
               />
               {rosterBranchIds.length > 1 && (
                 <Select
@@ -923,15 +959,17 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
               <IconCoins className="h-3 w-3" />
               {fmtAmount(m.paid)}
             </Badge>
-          ) : (
+          ) : m.status === 'present' ? (
             <Badge variant="outline">{t('session.notPaid')}</Badge>
-          )}
+          ) : null}
         </div>
       )}
-      <div className="w-full sm:w-auto">
+      {/* Natural width and one-line labels from sm up: squeezed, «غائب بعذر» wrapped
+          onto two lines. Phones keep the full-width control, where wrapping is the fallback */}
+      <div className="w-full sm:w-auto sm:shrink-0">
         {editable ? (
           <SegmentedControl
-            className="w-full sm:w-auto"
+            className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
             label={memberName(m)}
             value={m.status}
             onChange={(v) => mark(m.id, v)}
@@ -1004,6 +1042,22 @@ function PaidCell({ m, fee, t, onSave }) {
           }
         }}
       />
+    );
+
+  // Nothing paid by someone not marked present: still recordable, but a bare
+  // coin rather than forty «Non payé» buttons down a list of absences
+  if (!paid && m.status !== 'present')
+    return (
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={open}
+        className="text-muted-foreground"
+        aria-label={t('session.subscriptionOf', { name: memberName(m) })}
+        title={t('session.notPaid')}
+      >
+        <IconCoins className="h-4 w-4" />
+      </Button>
     );
 
   return (

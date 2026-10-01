@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
-import { Button, Card, CardContent, Dialog, Input, Label, IconLogout, useToast } from '../components/ui';
+import AuthLayout, { AuthHeader } from '../components/AuthLayout';
+import { Button, Dialog, Input, Label, IconLogout, useToast } from '../components/ui';
 
 export const MIN_PASSWORD_LENGTH = 10;
 
@@ -94,33 +95,28 @@ export function ChangePasswordForm({ onDone, submitLabel }) {
   );
 }
 
-/** Full-screen gate shown instead of the app while must_change_password is set. */
+/** Full-screen gate shown instead of the app while must_change_password is set.
+ *  It follows the sign-in screen directly, so it keeps the same frame. */
 export default function ChangePasswordGate() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
   const toast = useToast();
   return (
-    <main className="relative flex min-h-dvh items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        <CardContent className="space-y-5 p-6 sm:p-8">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <img src="/logo-mark.png" alt={t('app.name')} width={72} height={72} className="h-18 w-18" />
-            <h1 className="text-xl font-bold tracking-tight">{t('auth.firstLoginTitle')}</h1>
-            <p className="text-sm text-muted-foreground">
-              {t('auth.firstLoginBody', { name: user.display_name || user.username })}
-            </p>
-          </div>
-          <ChangePasswordForm
-            submitLabel={t('auth.setPassword')}
-            onDone={() => toast.success(t('auth.passwordChanged'))}
-          />
-          <Button variant="ghost" size="sm" onClick={() => logout(null)} className="w-full gap-2">
-            <IconLogout />
-            {t('auth.signOut')}
-          </Button>
-        </CardContent>
-      </Card>
-    </main>
+    <AuthLayout>
+      <div className="space-y-8">
+        <AuthHeader title={t('auth.firstLoginTitle')}>
+          {t('auth.firstLoginBody', { name: user.display_name || user.username })}
+        </AuthHeader>
+        <ChangePasswordForm
+          submitLabel={t('auth.setPassword')}
+          onDone={() => toast.success(t('auth.passwordChanged'))}
+        />
+        <Button variant="ghost" size="sm" onClick={() => logout(null)} className="w-full gap-2">
+          <IconLogout />
+          {t('auth.signOut')}
+        </Button>
+      </div>
+    </AuthLayout>
   );
 }
 

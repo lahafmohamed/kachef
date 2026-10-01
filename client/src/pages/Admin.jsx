@@ -328,7 +328,7 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
       </div>
       {form.role === 'user' && (
         <div className="space-y-1.5">
-          <Label className="block">{t('admin.allowedBranches')}</Label>
+          <Label>{t('admin.allowedBranches')}</Label>
           <div className="rounded-md border border-border p-1.5">
             {branches.map((b) => (
               <label
@@ -349,7 +349,7 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
       )}
       {form.role === 'user' && (
         <div className="space-y-1.5">
-          <Label className="block">{t('admin.allowedPages')}</Label>
+          <Label>{t('admin.allowedPages')}</Label>
           <div className="space-y-2">
             {PERM_GROUPS.map((g) => {
               const checkedCount = g.items.filter((i) => form.perms.includes(i.key)).length;

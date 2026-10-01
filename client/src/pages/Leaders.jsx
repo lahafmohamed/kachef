@@ -244,7 +244,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
 
       {/* الدورات التدريبية: قائد قد يكون خضع لأكثر من دورة، فهي تأشير لا اختيار واحد */}
       <div className="space-y-1.5">
-        <Label className="block">{t('leader.trainingLevel')}</Label>
+        <Label>{t('leader.trainingLevel')}</Label>
         <div className="grid gap-1 rounded-lg border border-border p-2 sm:grid-cols-2">
           {TRAINING_COURSES.map((c) => (
             <label
@@ -479,7 +479,7 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
         <Input id="y_year" required dir="ltr" value={year} onChange={(e) => setYear(e.target.value)} />
       </div>
       <div className="space-y-1.5">
-        <Label className="block">{t('leader.newYearContent')}</Label>
+        <Label>{t('leader.newYearContent')}</Label>
         <SegmentedControl
           className="w-full"
           options={modes}
@@ -613,7 +613,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
             <p className="text-xs text-muted-foreground">{t(`leader.presetHint_${form.preset}`)}</p>
           </div>
           <div className="space-y-1.5">
-            <Label className="block">{t('leader.accountBranches')}</Label>
+            <Label>{t('leader.accountBranches')}</Label>
             <div className="flex flex-wrap gap-2" role="group" aria-label={t('leader.accountBranches')}>
               {branches.map((b) => {
                 const on = form.branch_ids.includes(b.id);

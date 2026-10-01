@@ -193,40 +193,6 @@ function BottomNav() {
   );
 }
 
-/* Icon-only toggles for the mobile bar; the sidebar has them in AccountMenu. */
-function LangToggle() {
-  const { i18n, t } = useTranslation();
-  const isAr = i18n.language === 'ar';
-  return (
-    <Button
-      variant="outline"
-      size="icon"
-      onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}
-      aria-label={t('nav.switchLang')}
-      title={t('nav.switchLang')}
-    >
-      <IconLanguages />
-    </Button>
-  );
-}
-
-function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  const { t } = useTranslation();
-  const dark = theme === 'dark';
-  return (
-    <Button
-      variant="outline"
-      size="icon"
-      onClick={toggle}
-      aria-label={t(dark ? 'nav.lightMode' : 'nav.darkMode')}
-      title={t(dark ? 'nav.lightMode' : 'nav.darkMode')}
-    >
-      <IconSwap on={dark} onIcon={<IconSun />} offIcon={<IconMoon />} />
-    </Button>
-  );
-}
-
 // created_at is UTC "YYYY-MM-DD HH:MM:SS" — parse as such, show local, latin digits
 const notifTimeFormats = {};
 function fmtNotifTime(createdAt, lng) {
@@ -375,31 +341,6 @@ function Brand({ className }) {
   );
 }
 
-/** Password + the way out, icon-only, for the mobile bar. */
-function UserMenu() {
-  const { t } = useTranslation();
-  const { user, logout } = useAuth();
-  const [changing, setChanging] = useState(false);
-  if (!user) return null;
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={() => setChanging(true)}
-        aria-label={t('auth.changePassword')}
-        title={t('auth.changePassword')}
-      >
-        <IconKey />
-      </Button>
-      <Button variant="outline" size="icon" onClick={logout} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
-        <IconLogout />
-      </Button>
-      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
-    </>
-  );
-}
-
 function MenuItem({ icon, children, ...props }) {
   return (
     <button
@@ -413,6 +354,115 @@ function MenuItem({ icon, children, ...props }) {
   );
 }
 
+// Up/Down step through a popover's items the way a menu does; Tab keeps working too.
+function menuArrowKeys(e) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const items = [...e.currentTarget.querySelectorAll('button')];
+  const i = items.indexOf(document.activeElement);
+  const next = e.key === 'ArrowDown' ? i + 1 : (i === -1 ? items.length : i) - 1;
+  items[(next + items.length) % items.length]?.focus();
+}
+
+const initialsOf = (name) => name.slice(0, 2).toUpperCase();
+
+/** Password, language, theme and the way out: the account popover, sidebar and phone bar alike. */
+function AccountItems({ onChangePassword }) {
+  const { t, i18n } = useTranslation();
+  const { logout } = useAuth();
+  const { theme, toggle } = useTheme();
+  const isAr = i18n.language === 'ar';
+  const dark = theme === 'dark';
+  return (
+    <>
+      <MenuItem icon={<IconKey />} onClick={onChangePassword}>
+        {t('auth.changePassword')}
+      </MenuItem>
+      <MenuItem icon={<IconLanguages />} onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}>
+        {isAr ? 'Français' : 'العربية'}
+      </MenuItem>
+      <MenuItem icon={<IconSwap on={dark} onIcon={<IconSun />} offIcon={<IconMoon />} />} onClick={toggle}>
+        {t(dark ? 'nav.lightMode' : 'nav.darkMode')}
+      </MenuItem>
+      <div role="separator" className="-mx-1.5 my-1.5 h-px bg-border" />
+      <MenuItem icon={<IconLogout />} onClick={logout}>
+        {t('auth.signOut')}
+      </MenuItem>
+    </>
+  );
+}
+
+/** Opening and closing for an account popover, plus the password dialog it leads to. */
+function useAccountPopover() {
+  const [open, setOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const triggerRef = useRef(null);
+  function changePassword() {
+    // Park focus on the trigger before the dialog opens: the dialog hands focus
+    // back to whatever held it when it opened, and this item is about to unmount.
+    triggerRef.current?.focus();
+    setOpen(false);
+    setChanging(true);
+  }
+  const dialog = <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />;
+  return { open, setOpen, triggerRef, changePassword, dialog };
+}
+
+const popoverMotion =
+  'origin-(--radix-popover-content-transform-origin) p-1.5 data-[state=open]:animate-[dialog-in_var(--dur-base)_var(--ease-out-soft)] data-[state=closed]:animate-[dialog-out_var(--dur-fast)_ease-out_both]';
+
+/**
+ * Phone bar: the same account menu behind the signed-in user's initials. Five
+ * icon buttons left the app name a few letters wide; two leave it whole. The
+ * bell stays out of the menu for the same reason as in the sidebar.
+ */
+function AccountButton() {
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
+  if (!user) return null;
+  const name = user.display_name || user.username;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label={`${t('nav.account')} — ${name}`}
+          className="focus-ring group flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full"
+        >
+          <span
+            aria-hidden="true"
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-secondary text-xs font-semibold text-secondary-foreground transition-colors group-hover:bg-accent group-hover:text-accent-foreground group-data-[state=open]:bg-accent group-data-[state=open]:text-accent-foreground"
+          >
+            {initialsOf(name)}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="end"
+        sideOffset={6}
+        collisionPadding={12}
+        aria-label={t('nav.account')}
+        onKeyDown={menuArrowKeys}
+        className={cn('w-64', popoverMotion)}
+      >
+        {/* Who is signed in: the bar itself only shows the initials */}
+        <div className="px-2.5 pb-2 pt-1.5 text-sm">
+          <span className="block truncate font-medium">{name}</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {t(user.role === 'admin' ? 'admin.roleAdmin' : 'admin.roleUser')}
+          </span>
+        </div>
+        <div role="separator" className="-mx-1.5 mb-1.5 h-px bg-border" />
+        <AccountItems onChangePassword={changePassword} />
+      </PopoverContent>
+      {dialog}
+    </Popover>
+  );
+}
+
 /**
  * Sidebar footer: a single row saying who is signed in, with whatever is passed
  * as children (the bell) beside it. Password, language, theme and sign-out open
@@ -421,35 +471,12 @@ function MenuItem({ icon, children, ...props }) {
  * count hidden behind a click is a count nobody sees.
  */
 function AccountMenu({ children }) {
-  const { t, i18n } = useTranslation();
-  const { user, logout } = useAuth();
-  const { theme, toggle } = useTheme();
-  const [open, setOpen] = useState(false);
-  const [changing, setChanging] = useState(false);
-  const triggerRef = useRef(null);
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
   if (!user) return null;
 
   const name = user.display_name || user.username;
-  const isAr = i18n.language === 'ar';
-  const dark = theme === 'dark';
-
-  function changePassword() {
-    // Park focus on the trigger before the dialog opens: the dialog hands focus
-    // back to whatever held it when it opened, and this item is about to unmount.
-    triggerRef.current?.focus();
-    setOpen(false);
-    setChanging(true);
-  }
-
-  // Up/Down step through the items the way a menu does; Tab keeps working too.
-  function onKeyDown(e) {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
-    const items = [...e.currentTarget.querySelectorAll('button')];
-    const i = items.indexOf(document.activeElement);
-    const next = e.key === 'ArrowDown' ? i + 1 : (i === -1 ? items.length : i) - 1;
-    items[(next + items.length) % items.length]?.focus();
-  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -466,7 +493,7 @@ function AccountMenu({ children }) {
                 aria-hidden="true"
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground"
               >
-                {name.slice(0, 2).toUpperCase()}
+                {initialsOf(name)}
               </span>
               <span className="min-w-0 flex-1 text-sm">
                 <span className="block truncate font-medium">{name}</span>
@@ -485,24 +512,12 @@ function AccountMenu({ children }) {
         side="top"
         sideOffset={8}
         aria-label={t('nav.account')}
-        onKeyDown={onKeyDown}
-        className="w-(--radix-popover-trigger-width) origin-(--radix-popover-content-transform-origin) p-1.5 data-[state=open]:animate-[dialog-in_var(--dur-base)_var(--ease-out-soft)] data-[state=closed]:animate-[dialog-out_var(--dur-fast)_ease-out_both]"
+        onKeyDown={menuArrowKeys}
+        className={cn('w-(--radix-popover-trigger-width)', popoverMotion)}
       >
-        <MenuItem icon={<IconKey />} onClick={changePassword}>
-          {t('auth.changePassword')}
-        </MenuItem>
-        <MenuItem icon={<IconLanguages />} onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}>
-          {isAr ? 'Français' : 'العربية'}
-        </MenuItem>
-        <MenuItem icon={<IconSwap on={dark} onIcon={<IconSun />} offIcon={<IconMoon />} />} onClick={toggle}>
-          {t(dark ? 'nav.lightMode' : 'nav.darkMode')}
-        </MenuItem>
-        <div role="separator" className="-mx-1.5 my-1.5 h-px bg-border" />
-        <MenuItem icon={<IconLogout />} onClick={logout}>
-          {t('auth.signOut')}
-        </MenuItem>
+        <AccountItems onChangePassword={changePassword} />
       </PopoverContent>
-      <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />
+      {dialog}
     </Popover>
   );
 }
@@ -541,15 +556,14 @@ export default function Layout({ children }) {
       </aside>
 
       {/* ---------- Mobile top bar ---------- */}
-      {/* Slim (64px) so content owns the screen; the brand crop reads fine at 44px */}
+      {/* Slim (64px) so content owns the screen; the brand crop reads fine at 44px.
+          Bell and account menu only, so the app name is never cut short. */}
       <header className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
         <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
           <Brand className="min-w-0" />
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1.5">
             <NotificationsBell />
-            <ThemeToggle />
-            <LangToggle />
-            <UserMenu />
+            <AccountButton />
           </div>
         </div>
       </header>

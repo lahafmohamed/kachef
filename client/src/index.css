@@ -83,6 +83,20 @@
   --bottomnav-h: calc(4.25rem + env(safe-area-inset-bottom, 0px));
   --header-h: 4rem;
 
+  /* Sign-in scene — the emblem's own colours, sampled from logo.png. The one
+     place the full logo palette appears; the app itself stays teal + neutrals.
+     Sky is a shade deeper than the arch's field so the arch reads as lit. */
+  --scene-sky: #efdfb3;
+  --scene-field: #f7ecca;
+  --scene-sun: #fecf62;
+  --scene-peak: #925ca6;
+  --scene-shadow: #431f59;
+  --scene-lake: #10bccd;
+  --scene-line: #f7861f;
+  /* The logo's light keyline just inside the orange outline */
+  --scene-keyline: #fffbf2;
+  --scene-ink: #5e2f75;
+
   color-scheme: light;
 }
 
@@ -126,6 +140,17 @@
   --shadow-xl: 0 28px 56px -14px hsl(0 0% 0% / 0.75);
   --shadow-brand: 0 4px 14px -3px hsl(0 0% 0% / 0.5), 0 2px 5px -2px hsl(0 0% 0% / 0.35);
 
+  /* The same scene at night: plum sky, a dimmed sun, deeper water */
+  --scene-sky: #1b1124;
+  --scene-field: #261833;
+  --scene-sun: #dfae4f;
+  --scene-peak: #6b4482;
+  --scene-shadow: #35184a;
+  --scene-lake: #0f8d9c;
+  --scene-line: #e27a1f;
+  --scene-keyline: #1b1124;
+  --scene-ink: #eadbb8;
+
   color-scheme: dark;
 }
 
@@ -160,6 +185,9 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  --color-scene-sky: var(--scene-sky);
+  --color-scene-ink: var(--scene-ink);
 
   --radius-xs: var(--radius-xs);
   --radius-sm: var(--radius-sm);
@@ -284,6 +312,14 @@ input[type="radio"] {
   color: var(--accent-foreground);
 }
 
+/* Browsers repaint autofilled fields in their own blue/yellow. The sign-in
+   form is where saved credentials land, so keep its fields on the card surface. */
+[data-auth-form] input:-webkit-autofill {
+  -webkit-text-fill-color: var(--foreground);
+  caret-color: var(--foreground);
+  box-shadow: 0 0 0 1000px var(--card) inset, var(--shadow-xs);
+}
+
 /* Slim, themed scrollbars — desktop only, mobile keeps the native overlay */
 @media (pointer: fine) {
   * {
@@ -399,6 +435,12 @@ input[type="radio"] {
   45% { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
+/* Sign-in scene: the sun clears the hills once, on arrival. Units are the
+   SVG's own, so the distance scales with the drawing. */
+@keyframes sun-rise {
+  from { transform: translateY(48px); }
+  to { transform: none; }
+}
 
 /* Exits. An exit is softer and quicker than its enter: it moves a small fixed
    distance rather than retracing the whole entrance, so dismissing never feels
@@ -428,6 +470,7 @@ input[type="radio"] {
 .animate-toast-out { animation: toast-out var(--dur-fast) ease-out both; }
 .animate-fade-up { animation: fade-up var(--dur-slow) var(--ease-out-soft) both; }
 .animate-pop { animation: pop var(--dur-base) var(--ease-spring); }
+.animate-sun-rise { animation: sun-rise 1400ms var(--ease-out-soft) both; }
 .animate-spin-slow { animation: spin 900ms linear infinite; }
 
 /* Skeleton shimmer */

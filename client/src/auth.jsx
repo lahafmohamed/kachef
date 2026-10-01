@@ -31,9 +31,18 @@ export function AuthProvider({ children }) {
   });
   // Why the login screen is showing again: 'idle', 'session_expired' or null
   const [endedReason, setEndedReason] = useState(null);
+  // Who was signed in when the session lapsed on its own, so the login screen
+  // can take the same leader straight to the password. Memory only, and wiped
+  // by a deliberate sign-out: a phone handed over on purpose shows no name.
+  const [lastUsername, setLastUsername] = useState(null);
+  const userRef = useRef(user);
+  userRef.current = user;
 
   useEffect(() => {
     const onExpired = (e) => {
+      // Several requests can fail on the same dead token; a late one arrives
+      // after the user is already gone and must not erase the name.
+      setLastUsername((prev) => userRef.current?.username ?? prev);
       setUser(null);
       sessionStorage.removeItem(USER_KEY);
       setEndedReason(e.detail?.reason || 'session_expired');
@@ -59,6 +68,7 @@ export function AuthProvider({ children }) {
     setToken(token);
     sessionStorage.setItem(USER_KEY, JSON.stringify(u));
     setEndedReason(null);
+    setLastUsername(null);
     setUser(u);
   }
 
@@ -74,6 +84,7 @@ export function AuthProvider({ children }) {
     clearToken();
     sessionStorage.removeItem(USER_KEY);
     setEndedReason(why);
+    setLastUsername(why ? userRef.current?.username ?? null : null);
     setUser(null);
   }
 
@@ -84,7 +95,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, updateUser, endedReason }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser, endedReason, lastUsername }}>
       {children}
       <IdleGuard />
     </AuthContext.Provider>

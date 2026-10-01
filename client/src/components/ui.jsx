@@ -278,6 +278,26 @@ export const IconLock = (p) => (
     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
   </Icon>
 );
+export const IconTag = (p) => (
+  <Icon {...p}>
+    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
+    <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
+  </Icon>
+);
+export const IconEye = (p) => (
+  <Icon {...p}>
+    <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+    <circle cx="12" cy="12" r="3" />
+  </Icon>
+);
+export const IconEyeOff = (p) => (
+  <Icon {...p}>
+    <path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" />
+    <path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" />
+    <path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" />
+    <path d="m2 2 20 20" />
+  </Icon>
+);
 export const IconLink = (p) => (
   <Icon {...p}>
     <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
@@ -348,7 +368,12 @@ export const IconCamera = (p) => (
    Theme
    ============================================================ */
 
-const ThemeContext = createContext({ theme: 'light', setTheme: () => {}, toggle: () => {} });
+const ThemeContext = createContext({
+  theme: 'light',
+  setTheme: () => {},
+  toggle: () => {},
+  setChromeTint: () => {},
+});
 
 function initialTheme() {
   const saved = localStorage.getItem('theme');
@@ -358,18 +383,29 @@ function initialTheme() {
 
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(initialTheme);
+  // A screen whose top edge isn't the page background (the sign-in scene) can
+  // ask for the browser chrome to match it: the name of a CSS colour variable.
+  const [chromeTint, setChromeTint] = useState(null);
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
+    const root = document.documentElement;
+    root.classList.toggle('dark', theme === 'dark');
+    // Read after the class flips, so the tint resolves in the new theme
+    const tint = chromeTint && getComputedStyle(root).getPropertyValue(chromeTint).trim();
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
       'content',
-      theme === 'dark' ? '#120d17' : '#f8fbfc'
+      tint || (theme === 'dark' ? '#120d17' : '#f8fbfc')
     );
     localStorage.setItem('theme', theme);
-  }, [theme]);
+  }, [theme, chromeTint]);
 
   const value = useMemo(
-    () => ({ theme, setTheme, toggle: () => setTheme((v) => (v === 'dark' ? 'light' : 'dark')) }),
+    () => ({
+      theme,
+      setTheme,
+      toggle: () => setTheme((v) => (v === 'dark' ? 'light' : 'dark')),
+      setChromeTint,
+    }),
     [theme]
   );
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -650,10 +686,14 @@ export function Select({ className, children, value, onChange, id, name, require
   );
 }
 
+/* Block, not the native inline: forms space label and control with space-y-*,
+   whose margins an inline box ignores — the label then sat in its parent's
+   line box with the focus ring over its descenders. text-sm keeps its own
+   20px line height so a wrapped Arabic label isn't crushed to line-height 1. */
 export function Label({ className, ...props }) {
   return (
     <label
-      className={cn('text-sm font-medium leading-none text-foreground', className)}
+      className={cn('block text-sm font-medium text-foreground', className)}
       {...props}
     />
   );
@@ -1235,6 +1275,10 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
     success: 'bg-success text-success-foreground border-success',
     destructive: 'bg-destructive text-destructive-foreground border-destructive',
     warning: 'bg-warning text-warning-foreground border-warning',
+    // Selected but quiet: for a state most rows sit in by default, which a
+    // solid fill would turn into a wall of colour
+    'destructive-soft': 'bg-destructive/12 text-destructive border-destructive/25',
+    'warning-soft': 'bg-warning/15 text-warning border-warning/30',
     default: 'bg-primary text-primary-foreground border-primary',
   };
   /* min-h instead of h so long labels (Arabic/French) wrap instead of clipping */

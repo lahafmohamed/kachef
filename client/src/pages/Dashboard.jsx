@@ -299,6 +299,8 @@ function TodoRow({ todo }) {
   const single = !todo.followup && todo.items?.length === 1 ? todo.items[0] : null;
   const target = todo.to ? todo : single;
   const meta = single ? [bidi(single.label), single.meta].filter(Boolean).join(' · ') : todo.meta;
+  // A sub-list says how many it holds before it is opened
+  const count = todo.count ?? (!target && todo.items?.length > 1 ? todo.items.length : null);
   const { Icon } = todo;
 
   // Rows run edge to edge inside a clipped card: the focus ring is drawn inside them
@@ -313,14 +315,18 @@ function TodoRow({ todo }) {
         <Icon className="h-[1.1rem] w-[1.1rem]" />
       </span>
       <span className="min-w-0 flex-1 py-px">
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium [overflow-wrap:anywhere]">{todo.title}</span>
-          {todo.count != null && <Badge variant="secondary">{todo.count}</Badge>}
-        </span>
+        <span className="block font-medium [overflow-wrap:anywhere]">{todo.title}</span>
         {meta && (
           <span className="mt-0.5 block text-sm text-muted-foreground [overflow-wrap:anywhere]">{meta}</span>
         )}
       </span>
+      {/* Counts sit in their own column, level with the icon, so a long title
+          wraps on its own instead of pushing the number onto a line alone */}
+      {count != null && (
+        <Badge variant="secondary" className="mt-1.5 shrink-0">
+          {count}
+        </Badge>
+      )}
       {target ? (
         <IconArrow className="mt-2.5 text-muted-foreground rtl:rotate-180" />
       ) : (
@@ -697,7 +703,9 @@ function RecentList({ items }) {
 function Kpi({ label, value, context, spark, to }) {
   const body = (
     <Card interactive={!!to} className="flex h-full flex-col gap-1 p-4 sm:p-5">
-      <span className="text-sm text-muted-foreground">{label}</span>
+      {/* Two lines kept on phones: a label that wraps beside one that doesn't
+          would drop its number below its neighbour's */}
+      <span className="text-sm text-muted-foreground max-sm:min-h-[2lh]">{label}</span>
       <span className="text-3xl font-bold leading-tight tracking-tight">{value}</span>
       {context && <span className="text-xs text-muted-foreground">{context}</span>}
       {spark?.length > 1 && <Spark points={spark} className="mt-auto h-9 pt-2" />}
@@ -713,10 +721,11 @@ function Kpi({ label, value, context, spark, to }) {
 }
 
 /**
- * Tableau de bord — organised by figure and by فرقة. The key numbers lead,
- * présence and a فرقة-by-فرقة comparison fill the main column, and what asks for
- * an action rides in a side rail. On a phone the rail comes up right under the
- * figures, before the charts: it is the part that asks for something.
+ * Tableau de bord — organised by figure and by فرقة. The key numbers lead;
+ * présence, a فرقة-by-فرقة comparison and the latest activities fill the main
+ * column, and what asks for an action rides alone in a side rail. On a phone
+ * the rail comes up right under the figures, before the charts: it is the part
+ * that asks for something.
  * Each block is only there when the account may open the page it summarises —
  * the server leaves the rest out.
  */
@@ -752,13 +761,28 @@ export default function Dashboard() {
       context: d.leaders != null && t('dashboard.leadersExtra', { count: d.leaders }),
       to: '/members',
     },
-    d.month && {
-      key: 'rate',
-      label: t('dashboard.monthRate', { month }),
-      value: rateText(d.month.rate),
-      context: delta || t('dashboard.monthRateContext', { present: d.month.present, marked: d.month.marked }),
-      spark: d.trend,
-    },
+    // Early in a month nothing is marked yet: lead with the month just closed
+    // instead of a dash over «0 sur 0», and say why
+    d.month &&
+      (d.month.rate == null && d.month.prev_rate != null
+        ? {
+            key: 'rate',
+            label: t('dashboard.monthRate', { month: f.month(d.month.prev_month) }),
+            value: rateText(d.month.prev_rate),
+            context: t('dashboard.monthRateNone', { month }),
+            spark: d.trend,
+          }
+        : {
+            key: 'rate',
+            label: t('dashboard.monthRate', { month }),
+            value: rateText(d.month.rate),
+            context:
+              delta ||
+              (d.month.marked
+                ? t('dashboard.monthRateContext', { present: d.month.present, marked: d.month.marked })
+                : t('dashboard.monthRateNone', { month })),
+            spark: d.trend,
+          }),
     d.month && {
       key: 'activities',
       label: t('dashboard.monthActivities', { month }),
@@ -800,7 +824,7 @@ export default function Dashboard() {
     );
   const planCell = (b) =>
     b.plan.due ? (
-      <span className="block min-w-20">
+      <span className="block min-w-16">
         <span className="block text-xs tabular-nums">
           {t('dashboard.branches.planDone', { done: b.plan.due_done, due: b.plan.due })}
         </span>
@@ -827,17 +851,18 @@ export default function Dashboard() {
       />
 
       {kpis.length > 0 && (
-        <section aria-label={t('dashboard.figures')} className="stagger grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <section aria-label={t('dashboard.figures')} className="stagger grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
           {kpis.map(({ key, ...k }) => (
             <Kpi key={key} {...k} />
           ))}
         </section>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3 lg:items-start">
+      <div className="grid gap-4 xl:grid-cols-3 xl:items-start">
         {/* First in the source so a phone reaches it right after the figures;
-            placed in the end column from lg up */}
-        <aside className="space-y-4 lg:col-start-3 lg:row-start-1">
+            placed in the end column from xl up — any narrower and a third of
+            the width leaves its titles breaking mid-word */}
+        <aside className="space-y-4 xl:col-start-3 xl:row-start-1">
           <section aria-labelledby="dashboard-todo">
             <Card className="overflow-hidden">
               <CardHeader className="flex-row items-center justify-between gap-3">
@@ -858,25 +883,9 @@ export default function Dashboard() {
               )}
             </Card>
           </section>
-
-          {d.recent.length > 0 && (
-            <section aria-labelledby="dashboard-recent">
-              <Card>
-                <CardHeader className="flex-row items-baseline justify-between gap-3">
-                  <CardTitle id="dashboard-recent">{t('dashboard.recentSessions')}</CardTitle>
-                  <Link to="/sessions" className="focus-ring rounded text-sm font-medium text-primary hover:underline">
-                    {t('dashboard.seeAll')}
-                  </Link>
-                </CardHeader>
-                <CardContent className="pb-2 sm:pb-3">
-                  <RecentList items={d.recent} />
-                </CardContent>
-              </Card>
-            </section>
-          )}
         </aside>
 
-        <div className="space-y-4 lg:col-span-2 lg:col-start-1 lg:row-start-1">
+        <div className="space-y-4 xl:col-span-2 xl:col-start-1 xl:row-start-1">
           {hasSessions && (
             <section aria-labelledby="dashboard-trend">
               <Card>
@@ -893,15 +902,18 @@ export default function Dashboard() {
 
           {live.length > 0 && (
             <section aria-labelledby="dashboard-branches">
-              <Card className="overflow-hidden">
+              <Card className="@container overflow-hidden">
                 <CardHeader>
                   <CardTitle id="dashboard-branches">{t('dashboard.branches.title')}</CardTitle>
                 </CardHeader>
 
-                {/* md and up: one row per فرقة, columns to compare down */}
-                <Table className="hidden border-t border-border md:block">
+                {/* One row per فرقة, columns to compare down — once the card itself
+                    is wide enough. Keyed to the card, not the viewport: beside the
+                    rail on a laptop it is narrower than the same table on a tablet.
+                    Headers may wrap; they, not the figures, set the width. */}
+                <Table className="hidden border-t border-border @min-[37rem]:block">
                   <thead>
-                    <tr className="border-b border-border bg-muted/40">
+                    <tr className="border-b border-border bg-muted/40 [&>th]:h-auto [&>th]:py-2.5 [&>th]:leading-4 [&>th]:whitespace-normal">
                       <Th className="ps-5">{t('dashboard.branches.branch')}</Th>
                       <Th className="text-end">{t('dashboard.branches.members')}</Th>
                       {hasSessions && <Th>{t('dashboard.branches.seasonRate')}</Th>}
@@ -921,8 +933,14 @@ export default function Dashboard() {
                           >
                             {branchName(b, lng)}
                           </PrefLink>
+                          {/* One line: a wrapped name splits mid-name in a narrow column */}
                           {b.leader_name && (
-                            <span className="block text-xs text-muted-foreground">{b.leader_name}</span>
+                            <span
+                              className="block max-w-40 truncate text-xs text-muted-foreground"
+                              title={b.leader_name}
+                            >
+                              {b.leader_name}
+                            </span>
                           )}
                         </Td>
                         <Td className="text-end tabular-nums">{b.member_count ?? '—'}</Td>
@@ -930,7 +948,8 @@ export default function Dashboard() {
                           <Td>
                             <span className="flex items-center gap-3">
                               <span className="w-10 font-medium tabular-nums">{rateText(b.season?.rate)}</span>
-                              <Spark points={b.trend} className="h-6" />
+                              {/* Dropped first when the card is tight: the rate beside it says it */}
+                              <Spark points={b.trend} className="h-6 @max-[44rem]:hidden" />
                             </span>
                           </Td>
                         )}
@@ -942,8 +961,8 @@ export default function Dashboard() {
                   </tbody>
                 </Table>
 
-                {/* Phones: the same facts, one card per فرقة */}
-                <ul className="divide-y divide-border border-t border-border md:hidden">
+                {/* Narrow card: the same facts, one block per فرقة */}
+                <ul className="divide-y divide-border border-t border-border @min-[37rem]:hidden">
                   {live.map((b) => (
                     <li key={b.id} className="px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
@@ -997,6 +1016,24 @@ export default function Dashboard() {
                     })}
                   </p>
                 )}
+              </Card>
+            </section>
+          )}
+
+          {/* Context rather than a request, so it follows the figures in the main
+              column — the rail keeps only what asks for an action */}
+          {d.recent.length > 0 && (
+            <section aria-labelledby="dashboard-recent">
+              <Card>
+                <CardHeader className="flex-row items-baseline justify-between gap-3">
+                  <CardTitle id="dashboard-recent">{t('dashboard.recentSessions')}</CardTitle>
+                  <Link to="/sessions" className="focus-ring rounded text-sm font-medium text-primary hover:underline">
+                    {t('dashboard.seeAll')}
+                  </Link>
+                </CardHeader>
+                <CardContent className="pb-2 sm:pb-3">
+                  <RecentList items={d.recent} />
+                </CardContent>
               </Card>
             </section>
           )}
