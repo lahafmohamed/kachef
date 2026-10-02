@@ -6,6 +6,7 @@ import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
+import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
 import MemberFormDialog from '../components/MemberForm';
 import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, callLabel, contactsOf, telHref, waHref, whoLabel } from '../components/MemberParts';
@@ -46,7 +47,7 @@ const STATUS_BADGE = {
   excused: ['warning', 'session.excused'],
 };
 
-const TABS = ['attendance', 'matalib', 'profile', 'history'];
+const TABS = ['attendance', 'matalib', 'events', 'profile', 'history'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج uses — the same
 // headers as the activities journal. Latin digits, as everywhere else.
@@ -173,8 +174,11 @@ export default function MemberDetail() {
   // L'archivage se fait ici seulement, fiche ouverte : depuis une liste de 200
   // lignes, un clic de travers suffisait à sortir quelqu'un des activités.
   const canArchive = has('members.delete');
+  // المخيمات و الدورات: لمن يرى المخيمات
+  const canEvents = has('sessions.read');
   const [sp, setSp] = useSearchParams();
-  const tab = TABS.includes(sp.get('tab')) ? sp.get('tab') : 'attendance';
+  const tab =
+    TABS.includes(sp.get('tab')) && (sp.get('tab') !== 'events' || canEvents) ? sp.get('tab') : 'attendance';
   const setTab = (next) =>
     setSp(
       (prev) => {
@@ -191,6 +195,7 @@ export default function MemberDetail() {
   // '' | present | absent | excused — «which ones did he miss?» is the question parents ask
   const [historyStatus, setHistoryStatus] = useState('');
   const { data: member, setData: setMember, loading, error, reload } = useFetch(`/members/${id}`);
+  const events = useFetch(`/members/${id}/events`, { skip: !canEvents });
 
   // state: 'granted' | 'revoked' | 'auto' (auto drops the manual correction)
   async function setMatlab(number, state) {
@@ -469,6 +474,7 @@ export default function MemberDetail() {
           items={[
             { id: 'attendance', label: t('member.attendance') },
             { id: 'matalib', label: t('member.matalib') },
+            ...(canEvents ? [{ id: 'events', label: t('nav.events'), count: events.data?.length || null }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -665,6 +671,8 @@ export default function MemberDetail() {
               </FactGroup>
             </Card>
           )}
+
+          {tab === 'events' && canEvents && <EventParticipations state={events} feminine={member.sex === 'F'} />}
 
           {tab === 'history' && (
             <>

@@ -4340,6 +4340,8 @@ app.delete('/api/prep-cards/:id', requireAdmin, (req, res) => {
 
 const EVENT_KINDS = ['camp', 'course', 'trip', 'other'];
 const EXPENSE_CATEGORIES = ['transport', 'food', 'gear', 'venue', 'other'];
+// مسؤوليات الهيئة القيادية، بترتيب عرضها — قائد المخيم في events.leader_id
+const STAFF_ROLES = ['gathering', 'secretary', 'media', 'treasurer', 'gear', 'trainer', 'assistant', 'medic', 'other'];
 const EVENT_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 // نصّ اختياري مقصوص الأطراف: الفارغ NULL، و الأطول من الحدّ undefined (مرفوض)
@@ -4402,7 +4404,7 @@ function loadEvent(req, res) {
 // ما يُطلب من مشارك: مبلغه الخاص إن حُدّد (0 = معفى)، و إلا قيمة الاشتراك
 const eventDueOf = (p, ev) => p.amount_due ?? ev.fee ?? 0;
 
-// حساب المخيم كله، من خانات المشاركين و المصاريف عند القراءة — لا مجموع يُخزَّن فيشيخ.
+// حساب المخيم كله، من خانات المشاركين و التبرعات و المصاريف عند القراءة — لا مجموع يُخزَّن فيشيخ.
 // العدّ بالحال: معفى، دفع (كامل المطلوب أو أكثر)، جزئي، لم يدفع؛ مخيم مجّاني لا حال فيه.
 function eventSummary(ev) {
   const out = { participants: 0, expected: 0, collected: 0, outstanding: 0, paid: 0, partial: 0, unpaid: 0, exempt: 0 };
@@ -4419,10 +4421,18 @@ function eventSummary(ev) {
     else if (paid > 0) out.partial += 1;
     else out.unpaid += 1;
   }
-  const x = db
-    .prepare('SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM event_expenses WHERE event_id = ?')
-    .get(ev.id);
-  return { ...out, expenses: x.total, expense_count: x.n, balance: out.collected - x.total };
+  const sum = (table) =>
+    db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM ${table} WHERE event_id = ?`).get(ev.id);
+  const d = sum('event_donations');
+  const x = sum('event_expenses');
+  return {
+    ...out,
+    donations: d.total,
+    donation_count: d.n,
+    expenses: x.total,
+    expense_count: x.n,
+    balance: out.collected + d.total - x.total,
+  };
 }
 
 // المشارك بشكل واحد أيًّا كان: اسم العنصر أو القائد، أو اسم الضيف وحده
@@ -4450,6 +4460,23 @@ const expensesOf = (eventId) =>
     .prepare('SELECT * FROM event_expenses WHERE event_id = ? ORDER BY date IS NULL, date DESC, id DESC')
     .all(eventId);
 
+// الهيئة القيادية بترتيب المسؤوليات، ثم بترتيب التعيين
+const staffOf = (eventId) =>
+  db
+    .prepare(
+      `SELECT st.id, st.role, st.title, st.leader_id, st.name,
+         l.first_name, l.father_name, l.last_name, l.photo, l.status AS leader_status
+       FROM event_staff st LEFT JOIN leaders l ON l.id = st.leader_id
+       WHERE st.event_id = ? ORDER BY st.id`
+    )
+    .all(eventId)
+    .sort((a, b) => STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role));
+
+const donationsOf = (eventId) =>
+  db
+    .prepare('SELECT * FROM event_donations WHERE event_id = ? ORDER BY date IS NULL, date DESC, id DESC')
+    .all(eventId);
+
 // كل ما تعرضه صفحة المخيم في طلب واحد. عناصر الفرق الأخرى لا تصل الحساب المقيَّد —
 // كلائحة النشاط المشترك — و القادة و الضيوف يراهم كل من يرى المخيم.
 function eventPayload(req, ev) {
@@ -4470,6 +4497,7 @@ function eventPayload(req, ev) {
       ? db.prepare(`SELECT ${fullNameSQL('l')} AS name FROM leaders l WHERE l.id = ?`).get(ev.leader_id)?.name ?? null
       : null,
     branch_ids: eventBranchIds(ev.id),
+    staff: staffOf(ev.id),
     participants,
     // عدد المشاركين كلهم: الحساب المقيَّد يرى أسماء فرقه وحدها، و العدد يبقى عدد المخيم
     participant_total: db.prepare('SELECT COUNT(*) AS n FROM event_participants WHERE event_id = ?').get(ev.id).n,
@@ -4484,6 +4512,7 @@ function eventPayload(req, ev) {
       )
       .all(ev.id)
       .filter((a) => visible.has(a.participant_id)),
+    donations: canFees ? donationsOf(ev.id) : null,
     expenses: canFees ? expensesOf(ev.id) : null,
     summary: canFees ? eventSummary(ev) : null,
   };
@@ -4567,6 +4596,7 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
          FROM event_participants p WHERE p.event_id = e.id) AS expected,
       (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
          FROM event_participants p WHERE p.event_id = e.id) AS outstanding,
+      (SELECT COALESCE(SUM(d.amount), 0) FROM event_donations d WHERE d.event_id = e.id) AS donations,
       (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses
     FROM events e LEFT JOIN leaders l ON l.id = e.leader_id
     WHERE 1=1${eventScopeSQL(req)}`;
@@ -4580,7 +4610,7 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
     params.push(`%${req.query.q}%`, `%${req.query.q}%`, `%${req.query.q}%`);
   }
   sql += ' ORDER BY e.start_date DESC, e.id DESC';
-  const money = ['fee', 'collected', 'expected', 'outstanding', 'expenses'];
+  const money = ['fee', 'collected', 'expected', 'outstanding', 'donations', 'expenses'];
   res.json(
     db
       .prepare(sql)
@@ -4596,6 +4626,57 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
 app.get('/api/events/:id', requirePerm('sessions.read'), (req, res) => {
   const ev = loadEvent(req, res);
   if (ev) res.json(eventPayload(req, ev));
+});
+
+// مخيمات شخص واحد، لملفّه: ما شارك فيه، و للقائد ما كان مسؤوله و لو لم يكن مشاركًا.
+// حضوره من جلساته المسجَّلة، و دفعه لمن يرى المبالغ. نطاق المخيمات نفسه كلائحتها.
+function personEvents(req, column, id) {
+  const canFees = hasPerm(req, 'sessions.read.fees');
+  const asLeader = column === 'leader_id';
+  return db
+    .prepare(
+      `SELECT e.id, e.kind, e.title, e.start_date, e.end_date, e.place, e.fee, e.section,
+         p.id AS participant_id, p.amount_due, p.paid,
+         ${asLeader ? 'e.leader_id = @id' : '0'} AS is_responsible,
+         ${asLeader
+           ? `(SELECT json_group_array(json_object('role', st.role, 'title', st.title)) FROM event_staff st
+               WHERE st.event_id = e.id AND st.leader_id = @id)`
+           : "'[]'"} AS roles,
+         (SELECT COUNT(*) FROM event_sessions s WHERE s.event_id = e.id) AS session_count,
+         (SELECT COUNT(*) FROM event_attendance a WHERE a.participant_id = p.id) AS marked,
+         (SELECT COUNT(*) FROM event_attendance a WHERE a.participant_id = p.id AND a.status = 'present') AS present
+       FROM events e
+       LEFT JOIN event_participants p ON p.event_id = e.id AND p.${column} = @id
+       WHERE (p.id IS NOT NULL${
+         asLeader
+           ? ' OR e.leader_id = @id OR EXISTS (SELECT 1 FROM event_staff st WHERE st.event_id = e.id AND st.leader_id = @id)'
+           : ''
+       })${eventScopeSQL(req)}
+       ORDER BY e.start_date DESC, e.id DESC`
+    )
+    .all({ id })
+    .map((r) => ({
+      ...r,
+      is_responsible: !!r.is_responsible,
+      roles: JSON.parse(r.roles).sort((a, b) => STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role)),
+      fee: canFees ? r.fee : null,
+      amount_due: canFees ? r.amount_due : null,
+      paid: canFees ? r.paid : null,
+    }));
+}
+
+app.get('/api/members/:id/events', requirePerm('members.read'), requirePerm('sessions.read'), (req, res) => {
+  const m = db.prepare('SELECT id, branch_id FROM members WHERE id = ?').get(intOr(req.params.id));
+  if (!m) return res.status(404).json({ error: 'member not found' });
+  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  res.json(personEvents(req, 'member_id', m.id));
+});
+
+app.get('/api/leaders/:id/events', requirePerm('leaders.read'), requirePerm('sessions.read'), (req, res) => {
+  const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(intOr(req.params.id));
+  if (!l) return res.status(404).json({ error: 'leader not found' });
+  if (!leaderOk(req, l)) return res.status(403).json({ error: 'forbidden' });
+  res.json(personEvents(req, 'leader_id', l.id));
 });
 
 app.post('/api/events', requirePerm('sessions.create'), (req, res) => {
@@ -4949,6 +5030,134 @@ app.delete('/api/events/:id/expenses/:xid', ...requireEventMoney, (req, res) => 
   db.prepare('DELETE FROM event_expenses WHERE id = ?').run(x.id);
   auditEvent(req, 'delete', 'event_expense', x.id, x, null);
   res.json(expensesPayload(ev));
+});
+
+// ---------- الهيئة القيادية ----------
+// مسؤولية و صاحبها: قائد من قسم المخيم، أو اسم من خارج الفوج. القائد نفسه قد يجمع
+// مسؤوليتين (أمين السر و الصندوق)، و المسؤولية الواحدة قد تُعطى لأكثر من واحد (المدرّبون).
+function parseStaff(req, ev, existing = null) {
+  const b = req.body || {};
+  if (!STAFF_ROLES.includes(b.role)) return { error: 'invalid role' };
+  const title = b.role === 'other' ? optionalText(b.title, 80) : null;
+  if (title === undefined) return { error: 'text too long' };
+  if (b.role === 'other' && !title) return { error: 'invalid title' };
+  let leaderId = null;
+  let name = null;
+  if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
+    const l = db.prepare('SELECT id, status FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), ev.section);
+    // قائد أُرشف يبقى على مسؤوليته القديمة، و لا يُعيَّن لمسؤولية جديدة
+    if (!l || (l.status !== 'active' && l.id !== existing?.leader_id)) return { error: 'invalid leader_id' };
+    leaderId = l.id;
+  } else {
+    name = optionalText(b.name, 120);
+    if (name === undefined) return { error: 'text too long' };
+    if (!name) return { error: 'invalid name' };
+  }
+  if (leaderId) {
+    const twice = db
+      .prepare('SELECT id FROM event_staff WHERE event_id = ? AND role = ? AND leader_id = ? AND id != ?')
+      .get(ev.id, b.role, leaderId, existing?.id ?? -1);
+    if (twice && b.role !== 'other') return { error: 'staff_exists', status: 409 };
+  }
+  return { values: { role: b.role, title, leader_id: leaderId, name } };
+}
+
+const loadStaff = (req, res, ev) => {
+  const st = db.prepare('SELECT * FROM event_staff WHERE id = ? AND event_id = ?').get(intOr(req.params.sid), ev.id);
+  if (!st) res.status(404).json({ error: 'staff not found' });
+  return st || null;
+};
+
+app.post('/api/events/:id/staff', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseStaff(req, ev);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  const v = parsed.values;
+  const id = db
+    .prepare('INSERT INTO event_staff (event_id, role, title, leader_id, name) VALUES (?, ?, ?, ?, ?)')
+    .run(ev.id, v.role, v.title, v.leader_id, v.name).lastInsertRowid;
+  auditEvent(req, 'create', 'event_staff', id, null, db.prepare('SELECT * FROM event_staff WHERE id = ?').get(id));
+  res.status(201).json({ staff: staffOf(ev.id) });
+});
+
+app.put('/api/events/:id/staff/:sid', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const st = loadStaff(req, res, ev);
+  if (!st) return;
+  const parsed = parseStaff(req, ev, st);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  const v = parsed.values;
+  db.prepare('UPDATE event_staff SET role = ?, title = ?, leader_id = ?, name = ? WHERE id = ?').run(
+    v.role, v.title, v.leader_id, v.name, st.id
+  );
+  auditEvent(req, 'update', 'event_staff', st.id, st, db.prepare('SELECT * FROM event_staff WHERE id = ?').get(st.id));
+  res.json({ staff: staffOf(ev.id) });
+});
+
+app.delete('/api/events/:id/staff/:sid', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const st = loadStaff(req, res, ev);
+  if (!st) return;
+  db.prepare('DELETE FROM event_staff WHERE id = ?').run(st.id);
+  auditEvent(req, 'delete', 'event_staff', st.id, st, null);
+  res.json({ staff: staffOf(ev.id) });
+});
+
+// التبرعات: مبلغ و يوم و ملاحظة. لا اسم للمتبرّع — هكذا طُلبت.
+function parseDonation(req) {
+  const b = req.body || {};
+  const amount = parsePaid(b.amount);
+  if (!amount) return { error: 'invalid amount' };
+  const date = b.date === undefined || b.date === null || b.date === '' ? null : b.date;
+  if (date !== null && !validISODate(date)) return { error: 'invalid date' };
+  const note = optionalText(b.note, 200);
+  if (note === undefined) return { error: 'text too long' };
+  return { values: [amount, date, note] };
+}
+
+const loadDonation = (req, res, ev) => {
+  const d = db.prepare('SELECT * FROM event_donations WHERE id = ? AND event_id = ?').get(intOr(req.params.did), ev.id);
+  if (!d) res.status(404).json({ error: 'donation not found' });
+  return d || null;
+};
+
+const donationsPayload = (ev) => ({ donations: donationsOf(ev.id), summary: eventSummary(ev) });
+
+app.post('/api/events/:id/donations', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseDonation(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const id = db
+    .prepare('INSERT INTO event_donations (event_id, amount, date, note, created_by) VALUES (?, ?, ?, ?, ?)')
+    .run(ev.id, ...parsed.values, req.user.display_name || req.user.username).lastInsertRowid;
+  auditEvent(req, 'create', 'event_donation', id, null, db.prepare('SELECT * FROM event_donations WHERE id = ?').get(id));
+  res.status(201).json(donationsPayload(ev));
+});
+
+app.put('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const d = loadDonation(req, res, ev);
+  if (!d) return;
+  const parsed = parseDonation(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  db.prepare('UPDATE event_donations SET amount = ?, date = ?, note = ? WHERE id = ?').run(...parsed.values, d.id);
+  auditEvent(req, 'update', 'event_donation', d.id, d, db.prepare('SELECT * FROM event_donations WHERE id = ?').get(d.id));
+  res.json(donationsPayload(ev));
+});
+
+app.delete('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const d = loadDonation(req, res, ev);
+  if (!d) return;
+  db.prepare('DELETE FROM event_donations WHERE id = ?').run(d.id);
+  auditEvent(req, 'delete', 'event_donation', d.id, d, null);
+  res.json(donationsPayload(ev));
 });
 
 // ---------- Dashboard ----------

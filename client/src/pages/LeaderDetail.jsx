@@ -5,6 +5,7 @@ import { api } from '../api';
 import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
+import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { LeaderDuesCard } from '../components/LeaderDues';
 import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, phoneNumbers, telHref, waHref } from '../components/MemberParts';
@@ -30,7 +31,7 @@ import {
   IconShield,
 } from '../components/ui';
 
-const TABS = ['activities', 'card', 'dues', 'profile', 'history'];
+const TABS = ['activities', 'card', 'dues', 'events', 'profile', 'history'];
 
 // الدورات التدريبية، بترتيب تدرّجها — مطابقة لـ TRAINING_COURSES في الخادم
 const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
@@ -298,8 +299,10 @@ export default function LeaderDetail() {
   const [sp, setSp] = useSearchParams();
   // الاشتراك الشهري: لمن يملك صلاحيته، و للقائد نفسه في صفحته
   const canSeeDues = has('leaders.dues') || Number(user?.leader_id) === Number(id);
-  const tab =
-    TABS.includes(sp.get('tab')) && (sp.get('tab') !== 'dues' || canSeeDues) ? sp.get('tab') : 'activities';
+  // المخيمات و الدورات: لمن يرى المخيمات
+  const canEvents = has('sessions.read');
+  const allowed = (v) => (v !== 'dues' || canSeeDues) && (v !== 'events' || canEvents);
+  const tab = TABS.includes(sp.get('tab')) && allowed(sp.get('tab')) ? sp.get('tab') : 'activities';
   const setTab = (next) =>
     setSp(
       (prev) => {
@@ -316,6 +319,7 @@ export default function LeaderDetail() {
     error,
     reload,
   } = useFetch(`/leaders/${id}${cardYear ? `?year=${encodeURIComponent(cardYear)}` : ''}`);
+  const events = useFetch(`/leaders/${id}/events`, { skip: !canEvents });
 
   async function toggleMatlab(item) {
     try {
@@ -492,6 +496,7 @@ export default function LeaderDetail() {
             { id: 'activities', label: t('leader.colActivities'), count: leader.sessions.length + visits.length },
             { id: 'card', label: t('leader.colCard'), count: card.total ? `${card.done_count}/${card.total}` : null },
             ...(canSeeDues ? [{ id: 'dues', label: t('dues.tab') }] : []),
+            ...(canEvents ? [{ id: 'events', label: t('nav.events'), count: events.data?.length || null }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -596,6 +601,8 @@ export default function LeaderDetail() {
               </section>
             </Card>
           )}
+
+          {tab === 'events' && canEvents && <EventParticipations state={events} feminine={leader.section === 'F'} />}
 
           {tab === 'history' && (
             <>

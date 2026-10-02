@@ -5,7 +5,7 @@ import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { useSection } from '../section';
 import { branchName, memberName, todayISO } from '../utils';
-import { EVENT_KINDS } from '../lib/events';
+import { EVENT_KINDS, chiefLabel } from '../lib/events';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
 import SectionField from './SectionField';
@@ -232,7 +232,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
               </div>
             )}
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="ev_leader">{t('event.leader')}</Label>
+              <Label htmlFor="ev_leader">{chiefLabel(t, form.kind, formSection)}</Label>
               <SearchSelect
                 id="ev_leader"
                 value={form.leader_id}
@@ -242,7 +242,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
                 placeholder={t('event.noLeader')}
                 searchPlaceholder={t('session.searchLeader')}
                 emptyLabel={t('member.noListValue')}
-                ariaLabel={t('event.leader')}
+                ariaLabel={chiefLabel(t, form.kind, formSection)}
               />
             </div>
           </div>

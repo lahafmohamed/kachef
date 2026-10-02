@@ -9,6 +9,25 @@ import { toDate } from './date';
 export const EVENT_KINDS = ['camp', 'course', 'trip', 'other'];
 export const EXPENSE_CATEGORIES = ['transport', 'food', 'gear', 'venue', 'other'];
 
+/**
+ * الهيئة القيادية: the posts of a camp or course, in the order they are listed — as the
+ * association's own course team (المدرّبون، المعاونون، أمين الإعلام، أمين السر، قائد
+ * التجمع، أمين الصندوق). قائد المخيم himself is the event's leader_id. The first four
+ * show as empty slots until someone holds them; the others are added when needed.
+ */
+export const STAFF_ROLES = ['gathering', 'secretary', 'media', 'treasurer', 'gear', 'trainer', 'assistant', 'medic', 'other'];
+export const CORE_STAFF = ['gathering', 'secretary', 'media', 'treasurer'];
+
+// قسم الفتيات says it in the feminine (قائدة التجمع، أمينة السر); French falls back to the plain key
+const gendered = (t, key, section) => t(section === 'F' ? [`${key}F`, key] : key);
+
+/** «قائد المخيم», «قائد الدورة», «قائد الرحلة» — by the kind of event */
+export const chiefLabel = (t, kind, section) => gendered(t, `event.chief_${kind}`, section);
+
+/** A post's name: from the list, or its own title for «مسؤولية أخرى» */
+export const staffRoleLabel = (t, role, title, section) =>
+  role === 'other' ? title : gendered(t, `event.role_${role}`, section);
+
 // A tint per kind, so a دورة reads apart from a مخيم down the list
 export const KIND_BADGE = { camp: 'default', course: 'info', trip: 'warning', other: 'secondary' };
 
@@ -43,6 +62,10 @@ export function eventPhase(ev, today) {
  * Arabic reader starts.
  */
 export const fmtDateRange = (from, to) => (from === to ? fmtDate(from) : `${fmtDate(from)} – ${fmtDate(to)}`);
+
+// ar-LB: the Levantine month names (أيلول، تشرين…) the فوج uses, Latin digits
+export const fmtMonthShort = (iso, lng) =>
+  new Intl.DateTimeFormat(lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { month: 'short' }).format(toDate(iso));
 
 /** 1-based day of `iso` inside the event: its first day is day 1 */
 export const dayNumber = (ev, iso) => Math.round((toDate(iso) - toDate(ev.start_date)) / 86_400_000) + 1;

@@ -539,6 +539,35 @@ CREATE TABLE IF NOT EXISTS event_expenses (
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- الهيئة القيادية للمخيم أو الدورة: قائد التجمع، أمين السر، أمين الإعلام، أمين الصندوق،
+-- المدرّبون و المعاونون… — كهيئة التدريب في دورات الجمعية. قائد المخيم نفسه يبقى في
+-- events.leader_id. الشخص قائد من الفوج، أو اسم من خارجه (مدرّب من الجمعية) — واحد منهما.
+-- role: gathering | secretary | media | treasurer | gear | trainer | assistant | medic | other
+CREATE TABLE IF NOT EXISTS event_staff (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  -- اسم المسؤولية حين لا تكون في اللائحة (role = other)
+  title TEXT,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE CASCADE,
+  name TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((leader_id IS NOT NULL) + (name IS NOT NULL) = 1),
+  CHECK (role != 'other' OR title IS NOT NULL)
+);
+
+-- التبرعات: مبلغ وصل المخيم من فاعل خير. لا اسم للمتبرّع عن قصد — يُضاف إلى الرصيد فقط.
+CREATE TABLE IF NOT EXISTS event_donations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  amount REAL NOT NULL CHECK (amount > 0),
+  date TEXT,
+  -- ما يفيد الحساب: نقدًا، لشراء الخيم… — نصّ حرّ اختياري
+  note TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -1051,6 +1080,9 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_event_sessions_event_date ON event_sessions(event_id, date);
     CREATE INDEX IF NOT EXISTS idx_event_attendance_participant ON event_attendance(participant_id);
     CREATE INDEX IF NOT EXISTS idx_event_expenses_event ON event_expenses(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_donations_event ON event_donations(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_staff_event ON event_staff(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_staff_leader ON event_staff(leader_id);
   `);
 
   migrateBranchRoles();

@@ -5,8 +5,7 @@ import { usePerms } from '../auth';
 import { useFetch, useUrlField, useUrlFilters } from '../hooks';
 import { useSection } from '../section';
 import { branchName, fmtAmount, todayISO } from '../utils';
-import { toDate } from '../lib/date';
-import { EVENT_KINDS, KIND_BADGE, dayNumber, eventPhase, fmtDateRange, signed } from '../lib/events';
+import { EVENT_KINDS, KIND_BADGE, dayNumber, eventPhase, fmtDateRange, fmtMonthShort, signed } from '../lib/events';
 import EventFormDialog from '../components/EventForm';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
@@ -24,18 +23,15 @@ import {
   IconTent,
 } from '../components/ui';
 
-// ar-LB: the Levantine month names (أيلول، تشرين…) the فوج uses, Latin digits
-const fmtMonthShort = (iso, lng) =>
-  new Intl.DateTimeFormat(lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { month: 'short' }).format(toDate(iso));
-
 // Ongoing first, then what is coming (nearest first), then the archive (latest first)
 const PHASES = ['ongoing', 'upcoming', 'past'];
 
-/** The money of one event at a glance: collected against expected, then what is left once the expenses are paid. */
+/** The money of one event at a glance: collected against expected, then what is left with the donations, once the expenses are paid. */
 function MoneyMeter({ e, t }) {
-  if (!e.expected && !e.expenses && !e.collected)
+  if (!e.expected && !e.expenses && !e.collected && !e.donations)
     return <p className="text-xs text-muted-foreground">{t(e.fee ? 'event.noPaymentsYet' : 'event.free')}</p>;
   const pct = e.expected ? Math.min(100, Math.round((100 * e.collected) / e.expected)) : null;
+  const balance = e.collected + e.donations - e.expenses;
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
@@ -51,14 +47,11 @@ function MoneyMeter({ e, t }) {
           <span className="bg-success" style={{ width: `${pct}%` }} />
         </div>
       )}
-      {e.expenses > 0 && (
+      {(e.expenses > 0 || e.donations > 0) && (
         <p className="text-xs text-muted-foreground">
           {t('event.balance')}{' '}
-          <span
-            dir="ltr"
-            className={cn('font-medium tabular-nums', e.collected - e.expenses < 0 ? 'text-destructive' : 'text-success')}
-          >
-            {signed(e.collected - e.expenses)}
+          <span dir="ltr" className={cn('font-medium tabular-nums', balance < 0 ? 'text-destructive' : 'text-success')}>
+            {signed(balance)}
           </span>
         </p>
       )}

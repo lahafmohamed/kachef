@@ -7,8 +7,11 @@ import { useBack, useFetch } from '../hooks';
 import { avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
 import {
+  CORE_STAFF,
   EXPENSE_CATEGORIES,
   KIND_BADGE,
+  STAFF_ROLES,
+  chiefLabel,
   PAY_BADGE,
   dayNumber,
   dueOf,
@@ -18,12 +21,14 @@ import {
   participantName,
   payState,
   signed,
+  staffRoleLabel,
 } from '../lib/events';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import EventFormDialog from '../components/EventForm';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
+import SearchSelect from '../components/SearchSelect';
 import TimePicker from '../components/TimePicker';
 import { UnderlineTabs } from '../components/MemberParts';
 import {
@@ -52,6 +57,7 @@ import {
   IconCheckAll,
   IconClipboard,
   IconCoins,
+  IconHandHeart,
   IconPencil,
   IconPin,
   IconPlus,
@@ -62,7 +68,7 @@ import {
   IconX,
 } from '../components/ui';
 
-const TABS = ['program', 'participants', 'expenses'];
+const TABS = ['program', 'staff', 'participants', 'money'];
 
 // The same three marks as a نشاط; absence starts quiet, présence stands out
 const STATUSES = [
@@ -96,6 +102,7 @@ function errorText(t, err) {
     forbidden_branch: 'session.forbiddenBranch',
     date_outside_event: 'event.errDateOutside',
     sessions_outside_dates: 'event.errSessionsOutside',
+    staff_exists: 'event.errStaffExists',
   };
   return known[err.message] ? t(known[err.message]) : err.message;
 }
@@ -136,7 +143,7 @@ function ShareBar({ value, tone = 'primary' }) {
 
 /**
  * The event's numbers: who takes part, what came in against what is expected, what
- * went out, and what is left. Money only for who may see amounts.
+ * was given, what went out, and what is left. Money only for who may see amounts.
  */
 function EventFigures({ ev, t }) {
   const s = ev.summary;
@@ -159,7 +166,7 @@ function EventFigures({ ev, t }) {
     s.exempt && t('event.stateExemptCount', { count: s.exempt }),
   ].filter(Boolean);
   return (
-    <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border lg:grid-cols-4">
+    <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border lg:grid-cols-5">
       <Figure label={t('event.participants')}>
         <p className="text-2xl font-bold tabular-nums">{s.participants}</p>
         {/* Each state stays whole: a half-cut «لم / يدفعوا» across two lines reads as nothing */}
@@ -195,11 +202,17 @@ function EventFigures({ ev, t }) {
           )}
         </p>
       </Figure>
+      {/* What came in beside what went out: on a phone the two share a row */}
+      <Figure label={t('event.donations')}>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.donations)}</p>
+        <p className="text-xs text-muted-foreground">{t('event.donationCount', { count: s.donation_count })}</p>
+      </Figure>
       <Figure label={t('event.expenses')}>
         <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.expenses)}</p>
         <p className="text-xs text-muted-foreground">{t('event.expenseCount', { count: s.expense_count })}</p>
       </Figure>
-      <Figure label={t('event.balance')}>
+      {/* Fifth figure: the whole width on a phone, the bottom line of the account */}
+      <Figure label={t('event.balance')} className="col-span-2 lg:col-span-1">
         <p
           className={cn(
             'text-2xl font-bold tabular-nums',
@@ -211,7 +224,7 @@ function EventFigures({ ev, t }) {
         <p className="text-xs text-muted-foreground">
           {s.outstanding > 0 ? (
             <>
-              {t('event.projected')} <span dir="ltr" className="font-medium tabular-nums">{signed(s.expected - s.expenses)}</span>
+              {t('event.projected')} <span dir="ltr" className="font-medium tabular-nums">{signed(s.expected + s.donations - s.expenses)}</span>
             </>
           ) : (
             t(s.balance < 0 ? 'event.deficit' : 'event.surplus')
@@ -233,11 +246,11 @@ function StatusBadge({ status, t }) {
  * ضيف — then `extra` (his présence). The فرقة is left out when every عنصر is from the
  * same one: twelve «الكشافة» down a list say nothing.
  */
-function ParticipantLine({ p, t, lng, section, showBranch = true, extra = null }) {
+function ParticipantLine({ p, t, lng, section, showBranch = true, showGroup = true, extra = null }) {
   const kind = participantKind(p);
   const parts =
     kind === 'member'
-      ? [showBranch && branchName(p, lng), p.group_name]
+      ? [showBranch && branchName(p, lng), showGroup && p.group_name]
       : [t(kind === 'leader' ? (section === 'F' ? 'event.kindLeaderF' : 'event.kindLeader') : 'event.kindGuest')];
   if (p.status === 'inactive') parts.push(t('member.inactive'));
   if (extra) parts.push(extra);
@@ -587,13 +600,66 @@ function SessionDialog({ ev, session, open, onClose, onSaved, leaders, t, lng })
   );
 }
 
+/** One filter of the attendance list, as the Members page draws its طليعة chips */
+function FilterChip({ on, onClick, label, count }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={cn(
+        'focus-ring inline-flex h-10 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 text-sm font-medium transition-colors sm:h-8 sm:px-3 sm:text-xs',
+        on
+          ? 'border-primary/30 bg-accent text-accent-foreground'
+          : 'border-border bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+      )}
+    >
+      {label}
+      <span className={cn('tabular-nums', !on && 'opacity-70')}>{count}</span>
+    </button>
+  );
+}
+
+/** A row of chips: one line that scrolls sideways on a phone, wrapping on a wider screen */
+function ChipRow({ label, chips, value, onChange }) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
+    >
+      {chips.map((c) => (
+        <FilterChip key={c.value || 'all'} on={c.value === value} onClick={() => onChange(c.value)} label={c.label} count={c.count} />
+      ))}
+    </div>
+  );
+}
+
+// «who» filter values: '' everyone, 'b:<id>' the عناصر of a فرقة, the قادة, the ضيوف
+const whoMatch = (who) => (p) =>
+  !who ||
+  (who === 'leaders'
+    ? participantKind(p) === 'leader'
+    : who === 'guests'
+      ? participantKind(p) === 'guest'
+      : participantKind(p) === 'member' && `b:${p.branch_id}` === who);
+
+// «group» filter values: '' every طليعة, '<id>', 'none' = بلا طليعة. A طليعة is of عناصر only.
+const groupMatch = (group) => (p) =>
+  !group || (participantKind(p) === 'member' && (group === 'none' ? !p.group_id : String(p.group_id) === group));
+
 /**
  * حضور جلسة: the participants of the event, marked present / absent / excused. Tap
  * by tap, the screen goes first and the server follows (a refusal rolls it back).
+ * The list narrows to a فرقة, its طلائع, the قادة or the ضيوف; the bulk buttons then
+ * mark only what is shown.
  */
 function AttendanceDialog({ ev, session, open, onClose, onMark, canMark, onAddPeople, t, lng }) {
   const confirm = useConfirm();
   const [query, setQuery] = useState('');
+  // Kept from one جلسة to the next: a قائد marks his own فرقة, session after session
+  const [who, setWho] = useState('');
+  const [group, setGroup] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (open) setQuery('');
@@ -604,20 +670,65 @@ function AttendanceDialog({ ev, session, open, onClose, onMark, canMark, onAddPe
     ev.attendance.filter((a) => a.session_id === session.id).map((a) => [a.participant_id, a.status])
   );
   const people = ev.participants;
-  const showBranch = mixedBranches(ev);
-  const shown = people.filter(nameMatcher(query));
+  const members = people.filter((p) => participantKind(p) === 'member');
   const count = (st) => people.filter((p) => statusOf.get(p.id) === st).length;
   const marked = people.filter((p) => statusOf.has(p.id)).length;
+
+  // Who: each فرقة in the server's order, then the قادة and the ضيوف — only what is there
+  const branchRows = [...new Map(members.map((p) => [p.branch_id, p])).values()];
+  const whoOptions = [
+    ...branchRows.map((p) => ({ value: `b:${p.branch_id}`, label: branchName(p, lng) })),
+    { value: 'leaders', label: t(ev.section === 'F' ? 'event.group_leaderF' : 'event.group_leader') },
+    { value: 'guests', label: t('event.group_guest') },
+  ]
+    .map((o) => ({ ...o, count: people.filter(whoMatch(o.value)).length }))
+    .filter((o) => o.count > 0);
+  const whoNow = whoOptions.some((o) => o.value === who) ? who : '';
+  const whoChips = whoOptions.length > 1 ? [{ value: '', label: t('member.tabAll'), count: people.length }, ...whoOptions] : null;
+
+  // طلائع once the list is a single فرقة — the one picked, or the only one taking part.
+  // Across فرق they would pile up, and two «طليعة 1» could not be told apart.
+  const branchId = whoNow.startsWith('b:') ? Number(whoNow.slice(2)) : !whoNow && branchRows.length === 1 ? branchRows[0].branch_id : null;
+  const pool = branchId === null ? [] : members.filter((p) => p.branch_id === branchId);
+  const groups = [...new Map(pool.filter((p) => p.group_id).map((p) => [p.group_id, p.group_name])).entries()]
+    .map(([id, name]) => ({ value: String(id), label: name, count: pool.filter((p) => p.group_id === id).length }))
+    .sort((a, b) => a.label.localeCompare(b.label, lng));
+  const unassigned = pool.filter((p) => !p.group_id).length;
+  const groupChips = groups.length
+    ? [
+        { value: '', label: t('member.allGroups'), count: pool.length },
+        ...groups,
+        ...(unassigned ? [{ value: 'none', label: t('member.noGroup'), count: unassigned }] : []),
+      ]
+    : null;
+  const groupNow = groupChips?.some((c) => c.value === group) ? group : '';
+
+  const shown = people.filter((p) => whoMatch(whoNow)(p) && groupMatch(groupNow)(p) && nameMatcher(query)(p));
   const untouched = shown.filter((p) => !statusOf.has(p.id));
+  const filtered = !!(whoNow || groupNow || query.trim());
+  const showBranch = mixedBranches(ev) && !branchId;
+  const hasToolbar = people.length > 8 || whoChips || groupChips;
+
+  function pickWho(v) {
+    setWho(v);
+    setGroup('');
+  }
+  function clearFilters() {
+    setQuery('');
+    setWho('');
+    setGroup('');
+  }
 
   async function markRest(status) {
+    // The count, not «الجميع»: with a فرقة picked, «everyone» would read as the whole camp
+    const label = t(status === 'present' ? 'session.markRestPresent' : 'session.markRestAbsent', {
+      count: untouched.length,
+    });
     const ok = await confirm({
-      title: t(status === 'present' ? 'session.markAllPresent' : 'session.markRestAbsentTitle'),
-      message: t(status === 'present' ? 'session.markAllConfirm' : 'session.markAllAbsentConfirm', {
-        count: untouched.length,
-      }),
+      title: label,
+      message: t(status === 'present' ? 'event.markShownPresentConfirm' : 'event.markShownAbsentConfirm'),
       destructive: false,
-      confirmLabel: t(status === 'present' ? 'session.markAllPresent' : 'session.markRestAbsentTitle'),
+      confirmLabel: label,
     });
     if (!ok) return;
     setBusy(true);
@@ -655,8 +766,10 @@ function AttendanceDialog({ ev, session, open, onClose, onMark, canMark, onAddPe
           {t('event.attendanceNeedsPeople')}
         </EmptyState>
       ) : (
-        <div className="space-y-4">
-          <div className="space-y-3">
+        <>
+          {/* Each block above the list closes with its own full-width line, so the stuck
+              toolbar meets the header with one line and the rows with another */}
+          <div className="-mx-4 space-y-3 border-b border-border px-4 pb-4 sm:-mx-5 sm:px-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium tabular-nums">
                 {t('session.marked', { marked, total: people.length })}
@@ -674,65 +787,367 @@ function AttendanceDialog({ ev, session, open, onClose, onMark, canMark, onAddPe
               </div>
             </div>
             <ProgressBar value={(100 * marked) / people.length} label={t('session.attendance')} />
-            {canMark && untouched.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" loading={busy} onClick={() => markRest('present')}>
-                  <IconCheckAll />
-                  {t('session.markRestPresent', { count: untouched.length })}
-                </Button>
-                <Button variant="outline" size="sm" loading={busy} onClick={() => markRest('absent')}>
-                  {t('session.markRestAbsent', { count: untouched.length })}
-                </Button>
-              </div>
+          </div>
+
+          {/* Search and filters stay in sight while the list scrolls under them: with
+              forty names, going back up to switch فرقة would cost the whole list */}
+          {hasToolbar && (
+            <div className="sticky -top-4 z-10 -mx-4 space-y-2.5 border-b border-border bg-card px-4 py-3 sm:-top-5 sm:-mx-5 sm:px-5">
+              {people.length > 8 && (
+                <SearchInput
+                  value={query}
+                  onChange={setQuery}
+                  autoFocusHotkey={false}
+                  placeholder={t('event.searchParticipant')}
+                />
+              )}
+              {whoChips && <ChipRow label={t('event.filterPeople')} chips={whoChips} value={whoNow} onChange={pickWho} />}
+              {groupChips && (
+                <ChipRow label={t('session.filterByGroup')} chips={groupChips} value={groupNow} onChange={setGroup} />
+              )}
+            </div>
+          )}
+
+          {/* The bulk buttons say how many they touch: what the filters show, nothing hidden */}
+          {canMark && untouched.length > 0 && (
+            <div className="-mx-4 flex flex-wrap gap-2 border-b border-border px-4 py-3 sm:-mx-5 sm:px-5">
+              <Button variant="outline" size="sm" loading={busy} onClick={() => markRest('present')}>
+                <IconCheckAll />
+                {t('session.markRestPresent', { count: untouched.length })}
+              </Button>
+              <Button variant="outline" size="sm" loading={busy} onClick={() => markRest('absent')}>
+                {t('session.markRestAbsent', { count: untouched.length })}
+              </Button>
+            </div>
+          )}
+
+          {/* While narrowed, the list keeps its room: a dialog that shrank around one name
+              would re-centre and slide the next chip from under the finger */}
+          <div className={cn(filtered && 'min-h-[50dvh]')}>
+            {shown.length === 0 ? (
+              <EmptyState
+                icon={<IconSearch className="h-6 w-6" />}
+                title={t('common.noResults')}
+                action={
+                  filtered && (
+                    <Button variant="outline" onClick={clearFilters}>
+                      {t('common.clearFilters')}
+                    </Button>
+                  )
+                }
+              />
+            ) : (
+              <ul className="-mx-4 divide-y divide-border sm:-mx-5">
+                {shown.map((p) => {
+                  const status = statusOf.get(p.id) ?? null;
+                  return (
+                    <li
+                      key={p.id}
+                      className={cn(
+                        'flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors sm:px-5',
+                        !status && 'bg-warning/5'
+                      )}
+                    >
+                      <ParticipantAvatar p={p} />
+                      <div className="min-w-32 flex-1">
+                        <span className="block truncate font-medium">{participantName(p)}</span>
+                        <ParticipantLine
+                          p={p}
+                          t={t}
+                          lng={lng}
+                          section={ev.section}
+                          showBranch={showBranch}
+                          showGroup={!groupNow || groupNow === 'none'}
+                        />
+                      </div>
+                      <div className="w-full sm:w-auto sm:shrink-0">
+                        {canMark ? (
+                          <SegmentedControl
+                            className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
+                            label={participantName(p)}
+                            value={status}
+                            onChange={(v) => onMark(session.id, [{ participant_id: p.id, status: v }])}
+                            options={STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
+                          />
+                        ) : (
+                          <StatusBadge status={status} t={t} />
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
-          {people.length > 8 && (
-            <SearchInput
-              value={query}
-              onChange={setQuery}
-              autoFocusHotkey={false}
-              placeholder={t('event.searchParticipant')}
-            />
-          )}
-          {shown.length === 0 ? (
-            <EmptyState icon={<IconSearch className="h-6 w-6" />} title={t('common.noResults')} />
-          ) : (
-            <ul className="-mx-4 divide-y divide-border border-y border-border sm:-mx-5">
-              {shown.map((p) => {
-                const status = statusOf.get(p.id) ?? null;
-                return (
-                  <li
-                    key={p.id}
-                    className={cn(
-                      'flex flex-wrap items-center gap-3 px-4 py-2.5 sm:px-5',
-                      !status && 'bg-warning/5'
-                    )}
-                  >
-                    <ParticipantAvatar p={p} />
-                    <div className="min-w-32 flex-1">
-                      <span className="block truncate font-medium">{participantName(p)}</span>
-                      <ParticipantLine p={p} t={t} lng={lng} section={ev.section} showBranch={showBranch} />
-                    </div>
-                    <div className="w-full sm:w-auto sm:shrink-0">
-                      {canMark ? (
-                        <SegmentedControl
-                          className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
-                          label={participantName(p)}
-                          value={status}
-                          onChange={(v) => onMark(session.id, [{ participant_id: p.id, status: v }])}
-                          options={STATUSES.map((s) => ({ ...s, label: t(s.key) }))}
-                        />
-                      ) : (
-                        <StatusBadge status={status} t={t} />
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+        </>
       )}
+    </Dialog>
+  );
+}
+
+/* ============================================================
+   الهيئة القيادية
+   ============================================================ */
+
+/**
+ * Who holds what in the camp: قائد المخيم first, then each post. The usual posts stand
+ * as empty slots until someone holds them, so the قائد sees at a glance what is left
+ * to fill; the others appear once added.
+ */
+function StaffTab({ ev, t, canEdit, canLeaders, onAssign, onEdit, onEditChief }) {
+  const rows = [
+    {
+      key: 'chief',
+      label: chiefLabel(t, ev.kind, ev.section),
+      person: ev.leader_id ? { leader_id: ev.leader_id, name: ev.leader_name } : null,
+      edit: onEditChief,
+    },
+  ];
+  for (const role of STAFF_ROLES) {
+    const held = ev.staff.filter((st) => st.role === role);
+    for (const st of held)
+      rows.push({
+        key: st.id,
+        label: staffRoleLabel(t, st.role, st.title, ev.section),
+        person: { leader_id: st.leader_id, name: st.leader_id ? memberName(st) : st.name, photo: st.photo, outside: !st.leader_id },
+        edit: () => onEdit(st),
+      });
+    if (!held.length && CORE_STAFF.includes(role))
+      rows.push({ key: role, label: staffRoleLabel(t, role, null, ev.section), person: null, edit: () => onAssign(role) });
+  }
+
+  return (
+    <Card>
+      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <CardTitle>{t('event.tabStaff')}</CardTitle>
+        {canEdit && (
+          <Button size="sm" variant="outline" onClick={() => onAssign(null)} className="w-full sm:w-auto">
+            <IconPlus />
+            {t('event.addStaff')}
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="p-0 pb-2">
+        <ul className="divide-y divide-border border-t border-border">
+          {rows.map((r) => (
+            // The post on its own column from sm up, so the names line up and read as a roster
+            <li
+              key={r.key}
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)_auto] sm:px-5"
+            >
+              <span className="col-span-2 text-sm text-muted-foreground sm:col-span-1">{r.label}</span>
+              {r.person ? (
+                <span className="flex min-w-0 items-center gap-3">
+                  <Avatar photo={r.person.photo} name={r.person.name} className="h-8 w-8" />
+                  <span className="min-w-0">
+                    {r.person.leader_id && canLeaders ? (
+                      <Link
+                        to={`/leaders/${r.person.leader_id}`}
+                        className="focus-ring block truncate rounded font-medium hover:text-primary hover:underline"
+                      >
+                        {r.person.name}
+                      </Link>
+                    ) : (
+                      <span className="block truncate font-medium">{r.person.name}</span>
+                    )}
+                    {r.person.outside && <span className="block text-xs text-muted-foreground">{t('event.outside')}</span>}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-sm text-muted-foreground/80">{t('event.unassigned')}</span>
+              )}
+              {canEdit &&
+                (r.person ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={r.edit}
+                    aria-label={`${t('common.edit')} — ${r.label}`}
+                    className="text-muted-foreground"
+                  >
+                    <IconPencil />
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={r.edit}>
+                    {t('event.assign')}
+                  </Button>
+                ))}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function StaffDialog({ ev, staff, presetRole, open, onClose, onSaved, leaders, t }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const blank = { role: 'gathering', title: '', mode: 'leader', leader_id: '', name: '' };
+  const [form, setForm] = useState(blank);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const fem = ev.section === 'F';
+  const g = (key) => t(fem ? [`${key}F`, key] : key);
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    setForm(
+      staff
+        ? {
+            role: staff.role,
+            title: staff.title || '',
+            mode: staff.leader_id ? 'leader' : 'outside',
+            leader_id: staff.leader_id ? String(staff.leader_id) : '',
+            name: staff.name || '',
+          }
+        : { ...blank, role: presetRole || 'gathering' }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, staff, presetRole]);
+
+  // The قادة of the camp's قسم; an archived one stays on the post he already held
+  const leaderOptions = leaders
+    .filter((l) => l.section === ev.section && (l.status === 'active' || l.id === staff?.leader_id))
+    .map((l) => ({ value: l.id, label: memberName(l) }));
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    if (form.mode === 'leader' && !form.leader_id) return setError(g('event.pickLeader'));
+    setSaving(true);
+    try {
+      const body = {
+        role: form.role,
+        title: form.role === 'other' ? form.title : null,
+        leader_id: form.mode === 'leader' ? Number(form.leader_id) : null,
+        name: form.mode === 'outside' ? form.name : null,
+      };
+      const res = staff
+        ? await api.put(`/events/${ev.id}/staff/${staff.id}`, body)
+        : await api.post(`/events/${ev.id}/staff`, body);
+      onSaved(res, 'event.staffSaved');
+    } catch (err) {
+      setError(errorText(t, err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    const role = staffRoleLabel(t, staff.role, staff.title, ev.section);
+    if (
+      !(await confirm({
+        title: t('event.removeStaff'),
+        message: t('event.removeStaffConfirm', { name: staff.leader_id ? memberName(staff) : staff.name, role }),
+        confirmLabel: t('event.removeStaff'),
+      }))
+    )
+      return;
+    try {
+      onSaved(await api.del(`/events/${ev.id}/staff/${staff.id}`), 'event.staffRemoved');
+    } catch (err) {
+      toast.error(errorText(t, err));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      // Named after the post being filled — «تعيين أمين الإعلام» — and following the pick
+      title={
+        staff
+          ? t('event.editStaff')
+          : form.role === 'other'
+            ? t('event.addStaff')
+            : t('event.assignRole', { role: staffRoleLabel(t, form.role, null, ev.section) })
+      }
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          {staff ? (
+            <Button variant="destructive-ghost" onClick={remove}>
+              <IconTrash />
+              {t('event.removeStaff')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="event-staff-form" loading={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="event-staff-form" onSubmit={save} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="st_role">{t('event.staffRole')}</Label>
+          <Select id="st_role" value={form.role} onChange={set('role')}>
+            {STAFF_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {r === 'other' ? t('event.role_other') : staffRoleLabel(t, r, null, ev.section)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        {form.role === 'other' && (
+          <div className="space-y-1.5">
+            <Label htmlFor="st_title">{t('event.staffTitle')}</Label>
+            <Input
+              id="st_title"
+              required
+              maxLength={80}
+              autoComplete="off"
+              placeholder={t('event.staffTitleHint')}
+              value={form.title}
+              onChange={set('title')}
+            />
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <Label>{t('event.staffWho')}</Label>
+          <SegmentedControl
+            className="w-full"
+            label={t('event.staffWho')}
+            value={form.mode}
+            onChange={(v) => setForm((f) => ({ ...f, mode: v }))}
+            options={[
+              { value: 'leader', label: g('event.personLeader') },
+              { value: 'outside', label: t('event.personOutside') },
+            ]}
+          />
+        </div>
+        {form.mode === 'leader' ? (
+          <SearchSelect
+            id="st_leader"
+            value={form.leader_id}
+            onChange={set('leader_id')}
+            options={leaderOptions}
+            placeholder={g('event.pickLeader')}
+            searchPlaceholder={t('session.searchLeader')}
+            emptyLabel={t('member.noListValue')}
+            ariaLabel={g('event.pickLeader')}
+          />
+        ) : (
+          <div className="space-y-1.5">
+            <Label htmlFor="st_name">{t('event.staffName')}</Label>
+            <Input id="st_name" required maxLength={120} autoComplete="off" value={form.name} onChange={set('name')} />
+            <p className="text-xs text-muted-foreground">{t('event.staffOutsideHint')}</p>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
     </Dialog>
   );
 }
@@ -1544,12 +1959,198 @@ function ExpenseDialog({ ev, expense, open, onClose, onSaved, t }) {
 }
 
 /* ============================================================
+   التبرعات
+   ============================================================ */
+
+/** Anonymous on purpose: an amount, a day, a note — never who gave it. */
+function DonationsCard({ ev, t, canWrite, onAdd, onEdit }) {
+  const list = ev.donations || [];
+  const total = list.reduce((n, d) => n + d.amount, 0);
+  return (
+    <Card>
+      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <CardTitle>
+            {t('event.donations')}
+            {list.length > 0 && (
+              <span className="ms-2 font-normal tabular-nums text-muted-foreground">{fmtAmount(total)}</span>
+            )}
+          </CardTitle>
+          {list.length === 0 && <p className="mt-1 text-sm text-muted-foreground">{t('event.noDonations')}</p>}
+        </div>
+        {canWrite && (
+          <Button size="sm" variant="outline" onClick={onAdd} className="w-full sm:w-auto">
+            <IconPlus />
+            {t('event.addDonation')}
+          </Button>
+        )}
+      </CardHeader>
+      {list.length > 0 && (
+        <CardContent className="p-0 pb-2">
+          <ul className="divide-y divide-border border-t border-border">
+            {list.map((d) => {
+              const title = d.note || t('event.donation');
+              const body = (
+                <>
+                  <IconHandHeart className="text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{title}</span>
+                    {d.date && <span className="block text-xs text-muted-foreground">{fmtDate(d.date)}</span>}
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums">{fmtAmount(d.amount)}</span>
+                </>
+              );
+              return (
+                <li key={d.id}>
+                  {canWrite ? (
+                    <button
+                      type="button"
+                      onClick={() => onEdit(d)}
+                      aria-label={`${t('common.edit')} — ${title} ${fmtAmount(d.amount)}`}
+                      className="focus-ring flex w-full items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]! sm:px-5"
+                    >
+                      {body}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-3 px-4 py-3 sm:px-5">{body}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function DonationDialog({ ev, donation, open, onClose, onSaved, t }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [form, setForm] = useState({ amount: '', date: '', note: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    setForm(
+      donation
+        ? { amount: String(donation.amount), date: donation.date || '', note: donation.note || '' }
+        : { amount: '', date: todayISO(), note: '' }
+    );
+  }, [open, donation]);
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const body = { amount: Number(form.amount), date: form.date || null, note: form.note || null };
+      const res = donation
+        ? await api.put(`/events/${ev.id}/donations/${donation.id}`, body)
+        : await api.post(`/events/${ev.id}/donations`, body);
+      onSaved(res, donation ? 'event.donationUpdated' : 'event.donationAdded');
+    } catch (err) {
+      setError(errorText(t, err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (
+      !(await confirm({
+        title: t('event.deleteDonation'),
+        message: t('event.deleteDonationConfirm', { amount: fmtAmount(donation.amount) }),
+        confirmLabel: t('common.delete'),
+      }))
+    )
+      return;
+    try {
+      onSaved(await api.del(`/events/${ev.id}/donations/${donation.id}`), 'event.donationDeleted');
+    } catch (err) {
+      toast.error(errorText(t, err));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t(donation ? 'event.editDonation' : 'event.addDonation')}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          {donation ? (
+            <Button variant="destructive-ghost" onClick={remove}>
+              <IconTrash />
+              {t('common.delete')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="event-donation-form" loading={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="event-donation-form" onSubmit={save} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="dn_amount">{t('event.amount')}</Label>
+            <Input
+              id="dn_amount"
+              required
+              type="number"
+              min="0"
+              step="any"
+              inputMode="decimal"
+              className="tabular-nums"
+              value={form.amount}
+              onChange={set('amount')}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="dn_date">{t('common.date')}</Label>
+            <DatePicker id="dn_date" value={form.date} onChange={set('date')} />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="dn_note">{t('event.donationNote')}</Label>
+          <Input
+            id="dn_note"
+            maxLength={200}
+            autoComplete="off"
+            placeholder={t('event.donationNoteHint')}
+            value={form.note}
+            onChange={set('note')}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">{t('event.donationAnon')}</p>
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/* ============================================================
    الصفحة
    ============================================================ */
 
 /**
  * مخيم أو دورة: الترويسة و أرقامه، ثم ثلاث لوحات — البرنامج (جلسات يومًا يومًا، و
- * حضور كل جلسة من لائحة المشاركين نفسها)، المشاركون و دفعهم، و المصاريف.
+ * حضور كل جلسة من لائحة المشاركين نفسها)، المشاركون و دفعهم، و المالية (المصاريف و التبرعات).
  */
 export default function EventDetail() {
   const { id } = useParams();
@@ -1572,8 +2173,9 @@ export default function EventDetail() {
   const leaders = useFetch('/leader-options', { skip: !canEdit });
 
   const [sp, setSp] = useSearchParams();
-  const wanted = sp.get('tab');
-  const tab = TABS.includes(wanted) && (wanted !== 'expenses' || canFees) ? wanted : 'program';
+  // «expenses» was the money tab's name before the donations joined it
+  const wanted = sp.get('tab') === 'expenses' ? 'money' : sp.get('tab');
+  const tab = TABS.includes(wanted) && (wanted !== 'money' || canFees) ? wanted : 'program';
   const setTab = (v) =>
     setSp(
       (prev) => {
@@ -1591,6 +2193,9 @@ export default function EventDetail() {
   const [adding, setAdding] = useState(false);
   const [paying, setPaying] = useState(null);
   const [expenseDialog, setExpenseDialog] = useState(null);
+  const [donationDialog, setDonationDialog] = useState(null);
+  // { staff, role } — null = closed; staff null = a new post, role = the slot it fills
+  const [staffDialog, setStaffDialog] = useState(null);
 
   if (loading) return <SkeletonPage rows={5} />;
   if (error)
@@ -1664,8 +2269,11 @@ export default function EventDetail() {
 
   const tabs = [
     { id: 'program', label: t('event.tabProgram'), count: ev.sessions.length },
+    { id: 'staff', label: t('event.tabStaff'), count: ev.staff.length + (ev.leader_id ? 1 : 0) },
     { id: 'participants', label: t('event.tabParticipants'), count: ev.participants.length },
-    ...(canFees ? [{ id: 'expenses', label: t('event.tabExpenses'), count: ev.expenses.length }] : []),
+    ...(canFees
+      ? [{ id: 'money', label: t('event.tabMoney'), count: ev.expenses.length + ev.donations.length }]
+      : []),
   ];
   const openSession = attendanceFor ? ev.sessions.find((s) => s.id === attendanceFor) : null;
 
@@ -1776,6 +2384,17 @@ export default function EventDetail() {
             onEditPlan={() => setEditing(true)}
           />
         )}
+        {tab === 'staff' && (
+          <StaffTab
+            ev={ev}
+            t={t}
+            canEdit={canEdit}
+            canLeaders={has('leaders.read')}
+            onAssign={(role) => setStaffDialog({ staff: null, role })}
+            onEdit={(st) => setStaffDialog({ staff: st, role: null })}
+            onEditChief={() => setEditing(true)}
+          />
+        )}
         {tab === 'participants' && (
           <ParticipantsTab
             ev={ev}
@@ -1790,14 +2409,23 @@ export default function EventDetail() {
             onRemove={removeParticipant}
           />
         )}
-        {tab === 'expenses' && canFees && (
-          <ExpensesTab
-            ev={ev}
-            t={t}
-            canWrite={canEdit}
-            onAdd={() => setExpenseDialog({ expense: null })}
-            onEdit={(x) => setExpenseDialog({ expense: x })}
-          />
+        {tab === 'money' && canFees && (
+          <div className="space-y-4">
+            <ExpensesTab
+              ev={ev}
+              t={t}
+              canWrite={canEdit}
+              onAdd={() => setExpenseDialog({ expense: null })}
+              onEdit={(x) => setExpenseDialog({ expense: x })}
+            />
+            <DonationsCard
+              ev={ev}
+              t={t}
+              canWrite={canEdit}
+              onAdd={() => setDonationDialog({ donation: null })}
+              onEdit={(d) => setDonationDialog({ donation: d })}
+            />
+          </div>
         )}
       </div>
 
@@ -1885,6 +2513,38 @@ export default function EventDetail() {
           onSaved={({ expenses, summary }, msg) => {
             setExpenseDialog(null);
             setEv((e) => ({ ...e, expenses, summary }));
+            toast.success(t(msg));
+          }}
+          t={t}
+        />
+      )}
+
+      {canEdit && (
+        <StaffDialog
+          ev={ev}
+          staff={staffDialog?.staff ?? null}
+          presetRole={staffDialog?.role ?? null}
+          open={!!staffDialog}
+          onClose={() => setStaffDialog(null)}
+          onSaved={({ staff }, msg) => {
+            setStaffDialog(null);
+            setEv((e) => ({ ...e, staff }));
+            toast.success(t(msg));
+          }}
+          leaders={leaders.data || []}
+          t={t}
+        />
+      )}
+
+      {canFees && (
+        <DonationDialog
+          ev={ev}
+          donation={donationDialog?.donation ?? null}
+          open={!!donationDialog}
+          onClose={() => setDonationDialog(null)}
+          onSaved={({ donations, summary }, msg) => {
+            setDonationDialog(null);
+            setEv((e) => ({ ...e, donations, summary }));
             toast.success(t(msg));
           }}
           t={t}
