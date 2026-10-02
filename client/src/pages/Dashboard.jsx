@@ -2,6 +2,8 @@ import { useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
+import { useAuth } from '../auth';
+import { LeaderDuesCard } from '../components/LeaderDues';
 import { avatarName, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import {
   cn,
@@ -154,7 +156,8 @@ function buildTodos(d, t, f, lng) {
         key: u.session_id,
         label: u.title,
         meta: t('dashboard.todo.unmarkedMeta', { date: f.date(u.date), count: u.count }),
-        to: `/sessions/${u.session_id}`,
+        // Straight to the rows still to mark
+        to: `/sessions/${u.session_id}?status=unmarked`,
       })),
     });
 
@@ -221,7 +224,8 @@ function buildTodos(d, t, f, lng) {
         key: u.session_id,
         label: u.title,
         meta: t('dashboard.todo.unpaidMeta', { date: f.date(u.date), present: u.present, unpaid: u.unpaid }),
-        to: `/sessions/${u.session_id}`,
+        // Straight to who came without paying
+        to: `/sessions/${u.session_id}?status=unpaid`,
       })),
     });
 
@@ -473,14 +477,14 @@ function FollowUpList({ items, initial = 5 }) {
             {all ? t('dashboard.followup.showLess') : t('dashboard.followup.showAll', { count: items.length })}
           </Button>
         )}
-        <PrefLink
-          to="/members"
-          pref={['members.sort', 'attendance']}
+        {/* The same عناصر as a filtered list: cut by فرقة, exported as a calling sheet */}
+        <Link
+          to="/members?follow=1"
           className="focus-ring inline-flex min-h-11 items-center gap-1 rounded text-sm font-medium text-primary hover:underline sm:min-h-0"
         >
           {t('dashboard.followup.openMembers')}
           <IconArrow className="h-3.5 w-3.5 rtl:rotate-180" />
-        </PrefLink>
+        </Link>
       </div>
     </div>
   );
@@ -732,6 +736,7 @@ function Kpi({ label, value, context, spark, to }) {
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const f = useFmt();
+  const { user } = useAuth();
   const res = useFetch('/dashboard');
   const d = res.data;
   const todos = useMemo(() => (d ? buildTodos(d, t, f, i18n.language) : []), [d, t, f, i18n.language]);
@@ -849,6 +854,9 @@ export default function Dashboard() {
         title={t('dashboard.title')}
         description={[t('dashboard.season', { year: d.year }), f.dayCap(d.today)].join(' · ')}
       />
+
+      {/* Le قائد voit tout de suite ce qu'il a payé et ce qu'il doit encore */}
+      {user?.leader_id && <LeaderDuesCard endpoint="/me/dues" compact />}
 
       {kpis.length > 0 && (
         <section aria-label={t('dashboard.figures')} className="stagger grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">

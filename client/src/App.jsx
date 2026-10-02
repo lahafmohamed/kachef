@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { DirectionProvider } from '@radix-ui/react-direction';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth, usePerms } from './auth';
+import { SectionProvider, useSection } from './section';
 import Login from './pages/Login';
 import Admin from './pages/Admin';
 import Dashboard from './pages/Dashboard';
@@ -101,6 +102,8 @@ function Shell() {
   // Mirrors the server rule; the server enforces it again on every request
   const { can } = usePerms();
   const location = useLocation();
+  // Switching قسم remounts the pages, so every list and figure is fetched again for it
+  const { view } = useSection();
 
   // No session → nothing but the login screen, whatever the URL says
   if (!user) return <Login />;
@@ -125,7 +128,7 @@ function Shell() {
   return (
     <Layout>
       <ScrollToTop />
-      <ErrorBoundary title={t('error.crashTitle')} retryLabel={t('error.reload')}>
+      <ErrorBoundary key={view || 'all'} title={t('error.crashTitle')} retryLabel={t('error.reload')}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           {can('branches.read') && <Route path="/branches" element={<Branches />} />}
@@ -170,7 +173,9 @@ export default function App() {
         }}
       >
         <AuthProvider>
-          <Shell />
+          <SectionProvider>
+            <Shell />
+          </SectionProvider>
         </AuthProvider>
       </ConfirmProvider>
     </ToastProvider>

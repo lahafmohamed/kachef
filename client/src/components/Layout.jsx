@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, NavLink, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
+import { useSection } from '../section';
 import { branchName } from '../utils';
 import { ChangePasswordDialog } from '../pages/ChangePassword';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './shadcn/popover';
@@ -11,6 +12,7 @@ import {
   Button,
   Dialog,
   EmptyState,
+  SegmentedControl,
   Skeleton,
   useTheme,
   IconAward,
@@ -323,7 +325,8 @@ function NotificationsBell({ variant = 'outline' }) {
   );
 }
 
-function Brand({ className }) {
+/** `sub` names the قسم on screen under the app name, when there is one to name. */
+function Brand({ className, sub }) {
   const { t } = useTranslation();
   return (
     <div className={cn('flex items-center gap-2.5', className)}>
@@ -334,10 +337,44 @@ function Brand({ className }) {
         height={90}
         className="h-11 w-11 shrink-0 lg:h-[90px] lg:w-[90px]"
       />
-      <span className="truncate text-base font-bold tracking-tight text-primary">
-        {t('app.name')}
+      <span className="min-w-0">
+        <span className="block truncate text-base font-bold tracking-tight text-primary">{t('app.name')}</span>
+        {sub && <span className="block truncate text-xs font-medium text-muted-foreground">{sub}</span>}
       </span>
     </div>
+  );
+}
+
+/**
+ * الكل / الفتيان / الفتيات — for an admin, or an account open on both أقسام. App
+ * remounts every page on a new pick, so it all loads again for that قسم. A detail
+ * page or a filtered list of the old قسم would only answer «forbidden» or nothing,
+ * so the switch lands on the list page of the same tab.
+ */
+function SectionSwitcher({ onSwitched }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const { canSwitch, view, setView } = useSection();
+  if (!canSwitch) return null;
+  return (
+    <SegmentedControl
+      size="sm"
+      label={t('section.label')}
+      value={view}
+      onChange={(v) => {
+        if (v === view) return;
+        setView(v);
+        navigate(`/${pathname.split('/')[1] || ''}`);
+        onSwitched?.();
+      }}
+      className="flex w-full"
+      options={[
+        { value: '', label: t('section.all') },
+        { value: 'M', label: t('section.M') },
+        { value: 'F', label: t('section.F') },
+      ]}
+    />
   );
 }
 
@@ -416,9 +453,23 @@ const popoverMotion =
  * icon buttons left the app name a few letters wide; two leave it whole. The
  * bell stays out of the menu for the same reason as in the sidebar.
  */
+/** «قائد · قسم الفتيات»: the role, and the قسم an account is locked into. */
+function useRoleLine() {
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const { fixed } = useSection();
+  // حساب في قسم الفتيات حسابُ قائدة
+  const role = t(
+    user?.role === 'admin' ? 'admin.roleAdmin' : fixed === 'F' ? 'section.roleUserF' : 'admin.roleUser'
+  );
+  return fixed ? `${role} · ${t(`section.name${fixed}`)}` : role;
+}
+
 function AccountButton() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const { canSwitch } = useSection();
+  const roleLine = useRoleLine();
   const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
   if (!user) return null;
   const name = user.display_name || user.username;
@@ -451,11 +502,19 @@ function AccountButton() {
         {/* Who is signed in: the bar itself only shows the initials */}
         <div className="px-2.5 pb-2 pt-1.5 text-sm">
           <span className="block truncate font-medium">{name}</span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {t(user.role === 'admin' ? 'admin.roleAdmin' : 'admin.roleUser')}
-          </span>
+          <span className="block truncate text-xs text-muted-foreground">{roleLine}</span>
         </div>
         <div role="separator" className="-mx-1.5 mb-1.5 h-px bg-border" />
+        {/* No sidebar on a phone: the قسم switcher lives here, the bar names the pick */}
+        {canSwitch && (
+          <>
+            <div className="space-y-1.5 px-1 pb-2 pt-0.5">
+              <span className="block px-1.5 text-xs font-medium text-muted-foreground">{t('section.label')}</span>
+              <SectionSwitcher onSwitched={() => setOpen(false)} />
+            </div>
+            <div role="separator" className="-mx-1.5 mb-1.5 h-px bg-border" />
+          </>
+        )}
         <AccountItems onChangePassword={changePassword} />
       </PopoverContent>
       {dialog}
@@ -473,6 +532,7 @@ function AccountButton() {
 function AccountMenu({ children }) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const roleLine = useRoleLine();
   const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
   if (!user) return null;
 
@@ -497,9 +557,7 @@ function AccountMenu({ children }) {
               </span>
               <span className="min-w-0 flex-1 text-sm">
                 <span className="block truncate font-medium">{name}</span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {t(user.role === 'admin' ? 'admin.roleAdmin' : 'admin.roleUser')}
-                </span>
+                <span className="block truncate text-xs text-muted-foreground">{roleLine}</span>
               </span>
               {/* Points up while closed: the panel opens above the row */}
               <IconChevronDown className="rotate-180 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-0" />
@@ -530,6 +588,11 @@ export default function Layout({ children }) {
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const wide = WIDE_PAGES.includes(pathname);
+  const { fixed, canSwitch, section } = useSection();
+  // Under the app name: always the قسم an account is locked into; on a phone also the
+  // admin's pick, since the switcher itself sits behind the account button there
+  const lockedName = fixed ? t(`section.name${fixed}`) : null;
+  const pickedName = section ? t(`section.name${section}`) : null;
 
   return (
     <div className="min-h-dvh">
@@ -543,8 +606,14 @@ export default function Layout({ children }) {
       {/* ---------- Desktop sidebar ---------- */}
       <aside className="fixed inset-y-0 start-0 z-40 hidden w-64 flex-col border-e border-border bg-card lg:flex">
         <div className="flex h-[106px] items-center border-b border-border px-5">
-          <Brand />
+          <Brand sub={lockedName} />
         </div>
+        {canSwitch && (
+          <div className="space-y-1.5 border-b border-border px-3 pb-3 pt-2.5">
+            <span className="block px-1 text-xs font-medium text-muted-foreground">{t('section.label')}</span>
+            <SectionSwitcher />
+          </div>
+        )}
         <nav aria-label={t('nav.primary')} className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
           <SidebarNav />
         </nav>
@@ -560,7 +629,7 @@ export default function Layout({ children }) {
           Bell and account menu only, so the app name is never cut short. */}
       <header className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
         <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
-          <Brand className="min-w-0" />
+          <Brand className="min-w-0" sub={pickedName} />
           <div className="flex shrink-0 items-center gap-1.5">
             <NotificationsBell />
             <AccountButton />

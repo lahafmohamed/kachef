@@ -94,6 +94,41 @@ export const memberName = (m) =>
 // «ع م» بدل «ع أ» و ضاع الحرف الذي يدلّ على العائلة.
 export const avatarName = (m) => (m ? `${m.first_name || ''} ${m.last_name || ''}`.trim() : '');
 
+// The القادة list's filters, named as the page URL names them. Its PDF sheet gets the
+// same query and runs the same function, so the file lists what the screen showed.
+export const LEADER_FILTER_KEYS = ['q', 'role', 'course', 'account', 'status'];
+
+/**
+ * - role: '' | a فرقة id | 'amana' (الأمانات) | 'none' (بلا مسؤولية هذه السنة)
+ * - course: '' | a training course | 'none' (no course at all)
+ * - account: '' | 'with' | 'without' — only an admin receives the account fields, so
+ *   for anyone else the filter has nothing to read and is ignored
+ * - status: '' = فعّال | 'inactive' | 'all', as on the عناصر list
+ * - q: a name, an مسؤولية, or 3+ digits of a phone number
+ */
+export function filterLeaders(leaders, f) {
+  const q = (f.q || '').trim().toLowerCase();
+  const qDigits = q.replace(/\D/g, '');
+  return leaders.filter((l) => {
+    const statusOk = f.status === 'all' ? true : f.status === 'inactive' ? l.status !== 'active' : l.status === 'active';
+    if (!statusOk) return false;
+    const roles = l.roles || [];
+    if (f.role === 'amana' && !roles.some((r) => r.role_type === 'amana')) return false;
+    if (f.role === 'none' && roles.length > 0) return false;
+    if (f.role && f.role !== 'amana' && f.role !== 'none' && !roles.some((r) => String(r.branch_id) === f.role))
+      return false;
+    const courses = l.training_level || [];
+    if (f.course === 'none' ? courses.length > 0 : f.course && !courses.includes(f.course)) return false;
+    if (f.account && 'account_user_id' in l && (f.account === 'with') !== !!l.account_user_id) return false;
+    if (!q) return true;
+    return (
+      memberName(l).toLowerCase().includes(q) ||
+      roles.some((r) => r.title.toLowerCase().includes(q)) ||
+      (qDigits.length >= 3 && String(l.phone || '').replace(/\D/g, '').includes(qDigits))
+    );
+  });
+}
+
 // Works for objects carrying either name_fr/name_ar or branch_name_fr/branch_name_ar
 export function branchName(obj, lng) {
   if (!obj) return '';

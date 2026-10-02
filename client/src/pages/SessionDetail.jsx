@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
@@ -33,6 +33,7 @@ import {
   IconClock,
   IconCoins,
   IconPin,
+  IconPlus,
   IconSearch,
   IconTag,
   IconTrash,
@@ -47,6 +48,14 @@ const MEMBER_STATUSES = [
   { value: 'excused', key: 'session.excused', tone: 'warning-soft', badge: 'warning' },
 ];
 const ANIMATOR_STATUSES = MEMBER_STATUSES.filter((s) => s.value !== 'excused');
+
+// What the roster can be narrowed to: each mark, nobody marked yet, and — on a paid
+// نشاط — who came without paying
+const ROSTER_FILTERS = ['present', 'absent', 'excused', 'unmarked', 'unpaid'];
+const isPaid = (m) => m.paid !== null && m.paid !== undefined;
+const matchStatus = (m, f) =>
+  !f ||
+  (f === 'unmarked' ? !m.status : f === 'unpaid' ? m.status === 'present' && !isPaid(m) : m.status === f);
 
 // رفض السيرفر لفرقة ليست للمستخدم يُقرأ كرسالة، لا كرمز خام
 const attendanceError = (t, err) =>
@@ -77,7 +86,8 @@ function GroupCountsCard({ session, editable, onSaved }) {
   const [leadersCount, setLeadersCount] = useState(session.leaders_count ?? '');
   const [saving, setSaving] = useState(false);
 
-  const list = branches.data || [];
+  // The نشاط's own قسم: its counts are for its فرق only
+  const list = (branches.data || []).filter((b) => b.section === session.section);
   const membersTotal = Object.values(counts).reduce((n, v) => n + (Number(v) || 0), 0);
 
   async function save() {
@@ -166,6 +176,97 @@ function GroupCountsCard({ session, editable, onSaved }) {
   );
 }
 
+/**
+ * ضيوف نشاط القادة: أسماء حرّة لمن حضر من خارج البرنامج. لا حالة حضور لهم —
+ * وجود الاسم هو الحضور — و لا يدخلون أي معدّل.
+ */
+function GuestsCard({ session, editable, onChange }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const guests = session.guests || [];
+
+  async function add(e) {
+    e.preventDefault();
+    const clean = name.trim();
+    if (!clean) return;
+    setSaving(true);
+    try {
+      const r = await api.post(`/sessions/${session.id}/guests`, { name: clean });
+      onChange(r.guests);
+      setName('');
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(g) {
+    if (!(await confirm(t('session.confirmRemoveGuest', { name: g.name })))) return;
+    try {
+      const r = await api.del(`/sessions/${session.id}/guests/${g.id}`);
+      onChange(r.guests);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="gap-1">
+        <CardTitle>
+          {t('session.guests')}
+          <span className="ms-2 font-normal tabular-nums text-muted-foreground">{guests.length}</span>
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">{t('session.guestsHint')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {editable && (
+          <form onSubmit={add} className="flex gap-2">
+            <Input
+              autoComplete="off"
+              maxLength={120}
+              aria-label={t('session.guestPlaceholder')}
+              placeholder={t('session.guestPlaceholder')}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <Button type="submit" variant="outline" loading={saving} disabled={!name.trim()}>
+              <IconPlus />
+              {t('session.addGuest')}
+            </Button>
+          </form>
+        )}
+        {guests.length === 0 ? (
+          !editable && <p className="text-sm text-muted-foreground">{t('session.noGuests')}</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-lg border border-border">
+            {guests.map((g) => (
+              <li key={g.id} className="flex min-h-11 items-center gap-3 px-3 py-1.5">
+                <span className="min-w-0 flex-1 truncate font-medium">{g.name}</span>
+                <Badge variant="outline">{t('session.guest')}</Badge>
+                {editable && (
+                  <Button
+                    variant="destructive-ghost"
+                    size="icon"
+                    onClick={() => remove(g)}
+                    aria-label={`${t('common.delete')} — ${g.name}`}
+                  >
+                    <IconTrash />
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function SessionDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
@@ -192,6 +293,19 @@ export default function SessionDetail() {
   const [filterGroup, setFilterGroup] = useState('');
   // بحث بالاسم داخل اللائحة: اللوائح الطويلة تُطال بالكتابة لا بالتمرير
   const [rosterQuery, setRosterQuery] = useState('');
+  // حالة الحضور: من غاب (للاتصال بأهله)، من لم يُؤشَّر بعد، من حضر و لم يدفع (للتحصيل).
+  // في الرابط، فتفتح لوحة القيادة النشاطَ على ما يُطلب فيه مباشرة.
+  const [sp, setSp] = useSearchParams();
+  const statusFilter = ROSTER_FILTERS.includes(sp.get('status')) ? sp.get('status') : '';
+  const setStatusFilter = (v) =>
+    setSp(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        v ? n.set('status', v) : n.delete('status');
+        return n;
+      },
+      { replace: true }
+    );
 
   /**
    * Attendance is the hot path — a leader taps through 20+ children in a row.
@@ -416,8 +530,12 @@ export default function SessionDetail() {
     present: leaderRoster.filter((a) => a.status === 'present').length,
     absent: leaderRoster.filter((a) => a.status === 'absent').length,
   };
+  // قادة قسم النشاط وحدهم: قائدة لا تُضاف إلى نشاط الفتيان، و العكس
   const availableHelpers = (leaders.data || []).filter(
-    (l) => l.status === 'active' && !session.animators?.some((a) => a.leader_id === l.id)
+    (l) =>
+      l.status === 'active' &&
+      l.section === session.section &&
+      !session.animators?.some((a) => a.leader_id === l.id)
   );
   // فرق النشاط بأسمائها، و الفرق التي تظهر فعلًا في اللائحة (فرق المستخدم منها)
   const branchList = branches.data || [];
@@ -443,9 +561,26 @@ export default function SessionDetail() {
     const name = memberName(m).toLowerCase();
     return queryWords.every((w) => name.includes(w));
   };
+  // Each status says how many it holds. An empty one is left out — unless it is the
+  // one asked for (a dashboard link to a نشاط everyone has since paid for), so the
+  // empty list still shows which filter emptied it.
+  const statusOptions = [
+    { value: 'present', label: t('session.tallyPresent') },
+    { value: 'absent', label: t('session.tallyAbsent') },
+    { value: 'excused', label: t('session.tallyExcused') },
+    { value: 'unmarked', label: t('session.tallyUnmarked') },
+    // Only where an amount is asked, and for who may see amounts
+    ...(canSeeFees && session.fee > 0 ? [{ value: 'unpaid', label: t('session.tallyUnpaid') }] : []),
+  ]
+    .map((o) => ({ ...o, count: session.roster.filter((m) => matchStatus(m, o.value)).length }))
+    .filter((o) => o.count > 0 || o.value === statusFilter);
+  // A زيارة has no status control, so a status carried in its address is ignored
+  const rosterStatus =
+    session.kind !== 'visit' && statusOptions.some((o) => o.value === statusFilter) ? statusFilter : '';
   const matchFilters = (m) =>
     (!filterBranch || m.branch_id === Number(filterBranch)) &&
     (!filterGroup || m.group_id === Number(filterGroup)) &&
+    matchStatus(m, rosterStatus) &&
     matchQuery(m);
   const branchIdsToShow = filterBranch ? [Number(filterBranch)] : rosterBranchIds;
   // ما تُظهره اللائحة بعد الفلاتر و البحث — يميّز «لا نتائج» من لائحة فارغة،
@@ -454,6 +589,80 @@ export default function SessionDetail() {
   const visibleRoster = visible.length;
   const visibleLeft = visible.filter((m) => !m.status || m.status === 'absent').length;
   const visibleUntouched = visible.filter((m) => !m.status).length;
+
+  // تقدّم الحضور و أزرار الجملة. في نشاط القادة يأتي بعد القادة، فوق لائحة الفرق المدعوّة.
+  const rosterProgress = totalRoster > 0 && (
+    <Card>
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        {/* À côté du compteur des قادة, celui-ci doit dire de qui il parle */}
+        {isLeadersSession && <p className="text-sm font-semibold">{t('session.invitedRoster')}</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-medium tabular-nums">
+            {t('session.marked', { marked, total: totalRoster })}
+          </div>
+          {/* Named, not just coloured: the colour repeats the word */}
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant="success">
+              {t('session.tallyPresent')} <span className="tabular-nums">{counts.present}</span>
+            </Badge>
+            <Badge variant="destructive">
+              {t('session.tallyAbsent')} <span className="tabular-nums">{counts.absent}</span>
+            </Badge>
+            <Badge variant="warning">
+              {t('session.tallyExcused')} <span className="tabular-nums">{counts.excused}</span>
+            </Badge>
+          </div>
+        </div>
+        <ProgressBar value={pct} label={t('session.attendance')} />
+        {/* ---------- حصيلة الاشتراكات، محسوبة تلقائيًا من خانات اللائحة ---------- */}
+        {canSeeFees && (
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border pt-3">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <IconCoins className="h-4 w-4 text-muted-foreground" />
+              {t('session.subscriptions')}
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={collected > 0 ? 'success' : 'outline'}>{fmtAmount(collected)}</Badge>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {t('session.paidCount', { paid: payers.length, total: totalRoster })}
+              </span>
+              {session.fee > 0 && (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  · {t('session.expectedTotal', { amount: fmtAmount(session.fee * totalRoster) })}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        {/* اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ الجامع هنا يصير تكرارًا */}
+        {editable && !splitRoster && visibleLeft > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              loading={bulkBusy}
+              onClick={() => markAllPresent(matchFilters)}
+              className="w-full sm:w-auto"
+            >
+              <IconCheckAll />
+              {t('session.markRestPresent', { count: visibleLeft })}
+            </Button>
+            {visibleUntouched > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                loading={bulkBusy}
+                onClick={() => markAllAbsent(matchFilters)}
+                className="w-full sm:w-auto"
+              >
+                {t('session.markRestAbsent', { count: visibleUntouched })}
+              </Button>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 
   return (
     <div className="space-y-4">
@@ -512,9 +721,17 @@ export default function SessionDetail() {
               <Badge>{branchName(sessionBranches[0] || session, i18n.language)}</Badge>
             )
           ) : (
-            <Badge variant="secondary">
-              {t(session.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
-            </Badge>
+            <>
+              <Badge variant="secondary">
+                {t(session.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
+              </Badge>
+              {/* نشاط القادة: فرقه المدعوّة بعد نوعه */}
+              {sessionBranches.map((b) => (
+                <Badge key={b.id} variant="outline">
+                  {branchName(b, i18n.language)}
+                </Badge>
+              ))}
+            </>
           )}
           {/* النشاط المحصور بمجموعات: أسماؤها بعد الفرقة، فاللائحة أقصر من الفرقة
               كاملةً و القائد يعرف لِمَ */}
@@ -584,76 +801,7 @@ export default function SessionDetail() {
       )}
 
       {/* ---------- Attendance progress + bulk action ---------- */}
-      {totalRoster > 0 && (
-        <Card>
-          <CardContent className="space-y-3 p-4 sm:p-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-medium tabular-nums">
-                {t('session.marked', { marked, total: totalRoster })}
-              </div>
-              {/* Named, not just coloured: the colour repeats the word */}
-              <div className="flex flex-wrap gap-1.5">
-                <Badge variant="success">
-                  {t('session.tallyPresent')} <span className="tabular-nums">{counts.present}</span>
-                </Badge>
-                <Badge variant="destructive">
-                  {t('session.tallyAbsent')} <span className="tabular-nums">{counts.absent}</span>
-                </Badge>
-                <Badge variant="warning">
-                  {t('session.tallyExcused')} <span className="tabular-nums">{counts.excused}</span>
-                </Badge>
-              </div>
-            </div>
-            <ProgressBar value={pct} label={t('session.attendance')} />
-            {/* ---------- حصيلة الاشتراكات، محسوبة تلقائيًا من خانات اللائحة ---------- */}
-            {canSeeFees && (
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border pt-3">
-                <span className="flex items-center gap-1.5 text-sm font-medium">
-                  <IconCoins className="h-4 w-4 text-muted-foreground" />
-                  {t('session.subscriptions')}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={collected > 0 ? 'success' : 'outline'}>{fmtAmount(collected)}</Badge>
-                  <span className="text-xs text-muted-foreground tabular-nums">
-                    {t('session.paidCount', { paid: payers.length, total: totalRoster })}
-                  </span>
-                  {session.fee > 0 && (
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      · {t('session.expectedTotal', { amount: fmtAmount(session.fee * totalRoster) })}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-            {/* اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ الجامع هنا يصير تكرارًا */}
-            {editable && !splitRoster && visibleLeft > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  loading={bulkBusy}
-                  onClick={() => markAllPresent(matchFilters)}
-                  className="w-full sm:w-auto"
-                >
-                  <IconCheckAll />
-                  {t('session.markRestPresent', { count: visibleLeft })}
-                </Button>
-                {visibleUntouched > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    loading={bulkBusy}
-                    onClick={() => markAllAbsent(matchFilters)}
-                    className="w-full sm:w-auto"
-                  >
-                    {t('session.markRestAbsent', { count: visibleUntouched })}
-                  </Button>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {!isLeadersSession && rosterProgress}
 
       {/* ---------- تقدّم حضور القادة في نشاط قادة ---------- */}
       {isLeadersSession && leaderRoster.length > 0 && (
@@ -773,17 +921,35 @@ export default function SessionDetail() {
         </CardContent>
       </Card>
 
+      {/* ---------- ضيوف نشاط القادة ---------- */}
+      {isLeadersSession && (
+        <GuestsCard
+          session={session}
+          editable={editable}
+          onChange={(guests) => setSession((s) => ({ ...s, guests }))}
+        />
+      )}
+
+      {isLeadersSession && rosterProgress}
+
       {/* ---------- Roster ---------- */}
-      {/* نشاط قادة has no عناصر at all (présence is marked on the animators card above),
-          and a نشاط عام للفوج counts its حضور instead of listing names */}
-      {!['leaders', 'group'].includes(session.kind) && (
+      {/* نشاط قادة lists only the عناصر of its invited فرق (présence of the قادة is on
+          the animators card above), and a نشاط عام للفوج counts its حضور instead of
+          listing names */}
+      {session.kind !== 'group' && (!isLeadersSession || totalRoster > 0) && (
       <Card>
         {/* الترويسة تلتصق أثناء التمرير: لائحة من ستين عنصرًا تدفع البحث خارج الشاشة،
             فيعود القائد للأعلى ليكتب اسمًا. الإزاحة هي ارتفاع شريط الهاتف
             مع حافة الشاشة (safe-t)، و lg:top-0 على الشاشات التي لا شريط فيها */}
         <CardHeader className="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-10 gap-3 rounded-t-2xl border-b border-border bg-card pb-3 sm:flex-row sm:items-center sm:justify-between sm:pb-3 lg:top-0">
           <CardTitle>
-            {t(session.kind === 'visit' ? 'session.visitedMembers' : 'session.roster')}
+            {t(
+              session.kind === 'visit'
+                ? 'session.visitedMembers'
+                : isLeadersSession
+                  ? 'session.invitedRoster'
+                  : 'session.roster'
+            )}
           </CardTitle>
           {/* البحث بالاسم دائمًا، ثم الفلاتر: بالفرقة إن تعدّدت، و بالمجموعة الفرعية إن وُجدت */}
           {totalRoster > 0 && (
@@ -824,6 +990,22 @@ export default function SessionDetail() {
                   {rosterGroups.map((g) => (
                     <option key={g.id} value={g.id}>
                       {g.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              {/* A زيارة lists who was visited, not marks: nothing to narrow there */}
+              {session.kind !== 'visit' && statusOptions.length > 0 && (
+                <Select
+                  className="sm:w-auto"
+                  value={rosterStatus}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  aria-label={t('member.status')}
+                >
+                  <option value="">{t('member.allStatuses')}</option>
+                  {statusOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {`${o.label} · ${o.count}`}
                     </option>
                   ))}
                 </Select>

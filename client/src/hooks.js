@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api';
 
 /**
@@ -7,7 +7,7 @@ import { api } from './api';
  * Every page used to `.catch(console.error)`, which left users staring at
  * "Loading…" forever when the request failed. This surfaces the failure.
  */
-export function useFetch(path, { skip = false } = {}) {
+export function useFetch(path, { skip = false, section } = {}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(!skip);
@@ -26,7 +26,8 @@ export function useFetch(path, { skip = false } = {}) {
       if (!quiet) setLoading(true);
       setError(null);
       try {
-        const res = await api.get(path);
+        // `section` overrides the قسم switcher for this one list ('' = both أقسام)
+        const res = await api.get(path, { section });
         if (alive.current) setData(res);
       } catch (err) {
         if (alive.current) setError(err.message || 'error');
@@ -34,7 +35,7 @@ export function useFetch(path, { skip = false } = {}) {
         if (alive.current) setLoading(false);
       }
     },
-    [path, skip]
+    [path, skip, section]
   );
 
   useEffect(() => {
@@ -66,6 +67,50 @@ export function useBack(fallback = '/') {
     if (location.key !== 'default') navigate(-1);
     else navigate(fallback, { replace: true });
   }, [navigate, location.key, fallback]);
+}
+
+/**
+ * A list's filters, kept in its URL: «back» from a detail page lands on the same
+ * list, and a link (the dashboard, an export) can open it already filtered.
+ * `patch` builds on the live address, not the router's snapshot: two writes in the
+ * same tick (two debounced fields landing together) would otherwise each start
+ * from the same URL, and the second would drop the first's change. '' removes a key.
+ */
+export function useUrlFilters() {
+  const [sp, setSp] = useSearchParams();
+  const patch = useCallback(
+    (changes) => {
+      const next = new URLSearchParams(window.location.search);
+      for (const [k, v] of Object.entries(changes)) v === '' || v == null ? next.delete(k) : next.set(k, String(v));
+      setSp(next, { replace: true });
+    },
+    [setSp]
+  );
+  return [sp, patch];
+}
+
+/**
+ * A text field mirrored into the URL. Typing stays on local state — the router
+ * applies URL changes in a transition, and a controlled input fed from there
+ * drops keystrokes — and the URL follows 250ms later. A change made elsewhere
+ * (a chip, «clear») flows back into the field.
+ */
+export function useUrlField(sp, patch, key) {
+  const fromUrl = sp.get(key) || '';
+  const [value, setValue] = useState(fromUrl);
+  const pushed = useRef(fromUrl);
+  const debounced = useDebounced(value, 250);
+  useEffect(() => {
+    if (debounced === pushed.current) return;
+    pushed.current = debounced;
+    patch({ [key]: debounced });
+  }, [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (fromUrl === pushed.current) return; // our own write coming back
+    pushed.current = fromUrl;
+    setValue(fromUrl);
+  }, [fromUrl]);
+  return [value, setValue];
 }
 
 /** Persist simple UI preferences (filters, view mode) across visits. */

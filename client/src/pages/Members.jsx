@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useNavigationType } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
-import { useDebounced, useFetch, useLocalStorage } from '../hooks';
+import { useDebounced, useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
 import { avatarName, birthdayWhen, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
 import ExportPdfButton from '../components/ExportPdfButton';
+import FilterChips from '../components/FilterChips';
 import FilterSelect from '../components/FilterSelect';
 import MemberFormDialog from '../components/MemberForm';
 import {
@@ -43,7 +44,6 @@ import {
   IconSchool,
   IconSort,
   IconUsers,
-  IconX,
 } from '../components/ui';
 
 // Filters the server applies, named as the API names them: the page URL and the
@@ -58,36 +58,27 @@ const SERVER_FILTERS = [
   'parent_phone',
   'joined_from',
   'joined_to',
+  // ما ينقص الملفّ: 'any' (ما يعدّه الملفّ «بيانات ناقصة») أو حقل بعينه
+  'missing',
+  // '1' = للمتابعة: ثلاث غيابات متتالية أو أكثر
+  'follow',
 ];
 // Everything the page keeps in its URL — so «back» from a profile lands on the
 // same فرقة, طليعة and search instead of the whole فوج.
 const URL_KEYS = ['branch', 'group', 'status', 'q', ...SERVER_FILTERS];
 
-const SCROLL_KEY = 'members.scroll';
+// The fields a قائد goes looking for when completing files: the profile's own
+// «بيانات ناقصة» list, then فصيلة الدم. Contact fields only for who may read them.
+const MISSING_FIELDS = [
+  { value: 'birth_date', key: 'member.birthDate' },
+  { value: 'father_name', key: 'member.fatherName' },
+  { value: 'school', key: 'member.school' },
+  { value: 'parent_phone', key: 'member.parentPhone', contact: true },
+  { value: 'residence', key: 'member.residence', contact: true },
+  { value: 'blood', key: 'member.bloodType' },
+];
 
-/**
- * A text field mirrored into the URL. Typing stays on local state — the router
- * applies URL changes in a transition, and a controlled input fed from there
- * drops keystrokes — and the URL follows 250ms later. A change made elsewhere
- * (a chip, «clear») flows back into the field.
- */
-function useUrlField(sp, patch, key) {
-  const fromUrl = sp.get(key) || '';
-  const [value, setValue] = useState(fromUrl);
-  const pushed = useRef(fromUrl);
-  const debounced = useDebounced(value, 250);
-  useEffect(() => {
-    if (debounced === pushed.current) return;
-    pushed.current = debounced;
-    patch({ [key]: debounced });
-  }, [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (fromUrl === pushed.current) return; // our own write coming back
-    pushed.current = fromUrl;
-    setValue(fromUrl);
-  }, [fromUrl]);
-  return [value, setValue];
-}
+const SCROLL_KEY = 'members.scroll';
 
 // The leaders endpoint has no age; the list sorts and shows one
 const yearsSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null);
@@ -312,16 +303,8 @@ export default function Members() {
   // Les chefs s'affichent dans la liste comme une branche à part entière
   const canSeeLeaders = has('leaders.read');
 
-  const [sp, setSp] = useSearchParams();
+  const [sp, patch] = useUrlFilters();
   const param = (k) => sp.get(k) || '';
-  // Built on the live address, not the router's snapshot of it: two writes in the
-  // same tick (two debounced fields landing together) would otherwise each start
-  // from the same URL, and the second would drop the first's change.
-  const patch = (changes) => {
-    const next = new URLSearchParams(window.location.search);
-    for (const [k, v] of Object.entries(changes)) v === '' || v == null ? next.delete(k) : next.set(k, String(v));
-    setSp(next, { replace: true });
-  };
 
   const branch = param('branch'); // '' | فرقة id | 'leaders'
   const group = param('group'); // '' | طليعة id | 'none'
@@ -336,6 +319,14 @@ export default function Members() {
     age_max: ageMax,
     parent_phone: parentPhone,
   };
+  const missingOptions = [
+    { value: 'any', label: t('member.missingAny') },
+    ...MISSING_FIELDS.filter((o) => !o.contact || canContact).map((o) => ({ value: o.value, label: t(o.key) })),
+  ];
+  // A link carrying a field this account may not read would filter nothing on the
+  // server while its chip claimed otherwise: it is dropped here as well
+  if (!missingOptions.some((o) => o.value === f.missing)) f.missing = '';
+  if (f.follow !== '1') f.follow = '';
   // Sorting is a preference, not a filter: it survives from one visit to the next
   // (and the dashboard presets it before sending a قائد here)
   const [sort, setSort] = useLocalStorage('members.sort', 'name');
@@ -388,6 +379,8 @@ export default function Members() {
     f.age_min || f.age_max,
     f.parent_phone.trim(),
     f.joined_from || f.joined_to,
+    f.missing,
+    f.follow,
   ].filter(Boolean).length;
   const filterCount = advancedCount + (status ? 1 : 0);
 
@@ -520,6 +513,18 @@ export default function Members() {
       label: t('member.status'),
       value: t(status === 'inactive' ? 'member.inactive' : 'member.statusAll'),
       clear: () => patch({ status: '' }),
+    },
+    f.follow && {
+      key: 'follow',
+      label: t('member.attendance'),
+      value: t('member.followOnly'),
+      clear: () => patch({ follow: '' }),
+    },
+    f.missing && {
+      key: 'missing',
+      label: t('member.missingFilter'),
+      value: missingOptions.find((o) => o.value === f.missing)?.label,
+      clear: () => patch({ missing: '' }),
     },
     (f.age_min || f.age_max) && {
       key: 'age',
@@ -730,6 +735,34 @@ export default function Members() {
                   ]}
                 />
               </div>
+              {/* The dashboard's follow-up as a list: the same three-in-a-row streak,
+                  so it can be cut by فرقة and exported as a calling sheet */}
+              <div className="space-y-1.5">
+                <Label>{t('member.attendance')}</Label>
+                <SegmentedControl
+                  label={t('member.attendance')}
+                  size="sm"
+                  value={f.follow ? 'follow' : 'all'}
+                  onChange={(v) => patch({ follow: v === 'follow' ? '1' : '' })}
+                  className="flex w-full"
+                  options={[
+                    { value: 'all', label: t('member.statusAll') },
+                    { value: 'follow', label: t('member.followOnly') },
+                  ]}
+                />
+                <p className="text-xs text-muted-foreground">{t('member.followHint')}</p>
+              </div>
+              {/* Files still to complete: what the profile counts as missing, field by field */}
+              <div className="space-y-1.5">
+                <Label>{t('member.missingFilter')}</Label>
+                <FilterSelect
+                  value={f.missing}
+                  onChange={(v) => patch({ missing: v })}
+                  allLabel={t('member.missingNone')}
+                  ariaLabel={t('member.missingFilter')}
+                  options={missingOptions}
+                />
+              </div>
               {/* Age is a range, not a value: "les 12-14 ans" is the actual question */}
               <div className="space-y-1.5">
                 <Label htmlFor="f_age_min">{t('member.ageRange')}</Label>
@@ -856,29 +889,7 @@ export default function Members() {
           </div>
         )}
 
-        {chips.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {chips.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                onClick={c.clear}
-                aria-label={t('member.removeFilter', { label: `${c.label}: ${c.value}` })}
-                className="focus-ring inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:h-8"
-              >
-                <span className="max-w-56 truncate">
-                  <span className="opacity-75">{c.label}:</span> {c.isolate ? <bdi>{c.value}</bdi> : c.value}
-                </span>
-                <IconX className="h-3.5 w-3.5 opacity-70" />
-              </button>
-            ))}
-            {chips.length > 1 && (
-              <Button variant="ghost" size="sm" onClick={clearAdvanced}>
-                {t('common.clearFilters')}
-              </Button>
-            )}
-          </div>
-        )}
+        <FilterChips chips={chips} onClearAll={clearAdvanced} />
       </div>
 
       {members.error ? (
@@ -912,12 +923,19 @@ export default function Members() {
                     <RateValue rate={rosterRate} />
                   </>
                 )}
+                {/* The count is also the way in: one tap lists exactly those عناصر */}
                 {followCount > 0 && (
                   <>
                     {' · '}
-                    <span className="font-medium text-destructive">
+                    <button
+                      type="button"
+                      aria-pressed={!!f.follow}
+                      title={t('member.followHint')}
+                      onClick={() => patch({ follow: f.follow ? '' : '1' })}
+                      className="focus-ring inline-flex min-h-11 cursor-pointer items-center rounded-sm font-medium text-destructive underline-offset-2 hover:underline sm:min-h-0"
+                    >
                       {t('member.rosterFollow', { count: followCount })}
-                    </span>
+                    </button>
                   </>
                 )}
               </p>

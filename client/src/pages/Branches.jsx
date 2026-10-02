@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
+import { useSection } from '../section';
 import { toDate, toISO } from '../lib/date';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import SearchInput from '../components/SearchInput';
@@ -1856,6 +1857,7 @@ export default function Branches() {
   // lose their mark.
   const plans = useFetch('/plans/overview');
   const [selectedId, setSelectedId] = useLocalStorage('branches.selected', null);
+  const { view: onScreen, setView } = useSection();
   const [storedTab, setTab] = useLocalStorage('branches.tab', 'plan');
   const tab = TABS.includes(storedTab) ? storedTab : 'plan';
   // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
@@ -1885,6 +1887,17 @@ export default function Branches() {
       onClose={() => setCreating(false)}
       onCreated={(created) => {
         setCreating(false);
+        // Made for the other قسم than the one on screen: follow it there. Switching
+        // remounts this page, so the pick goes straight to storage for the new one.
+        if (onScreen && created.section !== onScreen) {
+          try {
+            localStorage.setItem('branches.selected', JSON.stringify(created.id));
+          } catch {
+            /* the new page just opens on its first فرقة */
+          }
+          setView(created.section);
+          return;
+        }
         // Opens on the new فرقة: it is the one about to be set up
         setSelectedId(created.id);
         res.reload({ quiet: true });

@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS branches (
   sort_order INTEGER NOT NULL,
   total_requirements INTEGER NOT NULL DEFAULT 0,
   -- فرقة خاصة لكل الأعمار (الفرنكوفونية): خارج سلّم السنّ، لا ترفيع منها و لا إليها
-  all_ages INTEGER NOT NULL DEFAULT 0
+  all_ages INTEGER NOT NULL DEFAULT 0,
+  -- القسم: 'M' الفتيان، 'F' الفتيات. حساب مقيَّد بقسم لا يرى فرق القسم الآخر و لا
+  -- عناصرها، و الترفيع يصعد في سلّم قسمه وحده.
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
 );
 
 -- مجموعات الفرقة: الفرقة الكبيرة تُقسَّم إلى مجموعات، لأن الحصّة الواحدة لا تسع
@@ -107,12 +110,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- SET NULL: حذف بند من الخطة لا يحذف النشاط، يفكّ الربط فقط.
   plan_item_id INTEGER REFERENCES annual_plan(id) ON DELETE SET NULL,
   -- 'activity' = نشاط فرقة, 'visit' = زيارة الأهل (présence = who was visited),
-  -- 'leaders' = نشاط قادة (no عناصر, présence is the قادة themselves),
+  -- 'leaders' = نشاط قادة (présence is the قادة themselves; فرق مدعوّة اختيارية في
+  --   session_branches تضيف عناصرها إلى اللائحة، و الضيوف في session_guests),
   -- 'group' = نشاط عام للفوج (حضور مسجّل بالعدد لكل فرقة, لا بالأسماء)
   kind TEXT NOT NULL DEFAULT 'activity' CHECK (kind IN ('activity', 'visit', 'leaders', 'group')),
   attendance_finalized_at TEXT,
   attendance_finalized_by TEXT,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- قسم النشاط: قسم فرقه، أو القسم الذي أُنشئ فيه نشاط القادة / النشاط العام بلا فرق
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
 );
 
 -- نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل
@@ -133,6 +139,17 @@ CREATE TABLE IF NOT EXISTS session_branches (
   branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   PRIMARY KEY (session_id, branch_id)
 );
+
+-- ضيوف نشاط القادة: أسماء حرّة لمن حضر من خارج البرنامج (قائد من فوج آخر، مدرّب،
+-- وليّ أمر...). لا ملفّ لهم و لا يدخلون أي معدّل: الاسم وحده يُحفظ، و وجوده يعني الحضور.
+CREATE TABLE IF NOT EXISTS session_guests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_guests_session ON session_guests(session_id);
 
 -- مجموعات الفرقة التي تشارك في نشاط. الفرقة التي لها صف هنا لا يشارك منها إلا
 -- عناصر تلك المجموعات؛ و الفرقة التي لا صف لها تشارك كاملةً — و هي الحالة الوحيدة
@@ -181,7 +198,9 @@ CREATE TABLE IF NOT EXISTS leaders (
   photo TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   archived_at TEXT,
-  archived_by TEXT
+  archived_by TEXT,
+  -- قسم القائد (القائدة في قسم الفتيات): القائد بلا فرقة، فقسمه هو ما يحصره في قسمه
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
 );
 
 -- فرقة القادة: the مطالب list a قائد is followed on. Its content is agreed with
@@ -191,6 +210,18 @@ CREATE TABLE IF NOT EXISTS leader_matalib (
   number INTEGER NOT NULL,
   label TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- اشتراك القادة الشهري: صفّ = شهر دفعه قائد. غياب الصف = لم يدفع ذلك الشهر.
+-- month = 'YYYY-MM'؛ السنة الكشفية من أيلول إلى آب، فتُستخرج من الشهر و لا تُخزَّن.
+-- amount يُحفظ مع كل دفعة: تغيّر قيمة الاشتراك لاحقًا لا يغيّر ما دُفع قبلها.
+CREATE TABLE IF NOT EXISTS leader_dues (
+  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  month TEXT NOT NULL,
+  amount REAL NOT NULL,
+  paid_at TEXT NOT NULL DEFAULT (datetime('now')),
+  recorded_by TEXT,
+  PRIMARY KEY (leader_id, month)
 );
 
 -- بطاقة تقدم القائد: one row = one مطلب this قائد achieved in that سنة.
@@ -222,7 +253,9 @@ CREATE TABLE IF NOT EXISTS assignments (
   -- حذف الأمين يُفرِّغه يدويًا في نقطة الحذف، فيعود المساعد توصيفًا مستقلًّا.
   parent_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
   role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
-  sort_order INTEGER NOT NULL DEFAULT 0
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  -- قسم التوصيف: قسم فرقته إن كان توصيف فرقة (يتبعها إن تغيّر)، و إلا فقسم الأمانة
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
 );
 
 -- قفل التشكيلة: while a row exists for a year, that year's assignments are frozen.
@@ -267,7 +300,9 @@ CREATE TABLE IF NOT EXISTS users (
   -- يدويًا في نقطة الحذف و يُبقي الحساب — قرار حذفه للأدمن.
   leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))
+  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
+  -- القسم الذي يُحصر فيه الحساب ('M' الفتيان، 'F' الفتيات)؛ NULL = القسمان. الأدمن يتجاهله.
+  section TEXT CHECK (section IN ('M', 'F'))
 );
 
 -- One row per active login; deleting it logs the device out
@@ -447,23 +482,34 @@ const BRANCH_ROLES_TEMPLATE = [
   (b) => `مساعد قائد ${b}`,
 ];
 
-// [{ title, branch_id, role_type, sort_order }] — الأمانات first, then فرقة by فرقة in age order.
+// فرق قسم الفتيات تقودها قائدات: التوصيفان نفسهما بصيغة المؤنث
+const BRANCH_ROLES_TEMPLATE_F = [
+  (b) => `قائدة ${b}`,
+  (b) => `مساعدة قائدة ${b}`,
+];
+
+// [{ title, branch_id, role_type, sort_order, section }] — الأمانات first, then فرقة by فرقة in age order.
 // Branch slots start at 100 so أمانات always sort ahead of them and a whole فرقة keeps its block.
-function tachkilaTemplate() {
-  const rows = AMANAT_TEMPLATE.map((title, i) => ({
+// The أمانات template is the فوج's own, i.e. قسم الفتيان: قسم الفتيات builds its أمانات by hand.
+// `section` keeps one قسم only; the sort orders stay those of the full template either way.
+function tachkilaTemplate(section = null) {
+  const rows = (section === 'F' ? [] : AMANAT_TEMPLATE).map((title, i) => ({
     title,
     branch_id: null,
     role_type: 'amana',
     sort_order: i,
+    section: 'M',
   }));
-  const branches = db.prepare('SELECT id, name_ar FROM branches ORDER BY sort_order, id').all();
+  const branches = db.prepare('SELECT id, name_ar, section FROM branches ORDER BY sort_order, id').all();
   branches.forEach((b, bi) => {
-    BRANCH_ROLES_TEMPLATE.forEach((makeTitle, ri) => {
+    if (section && b.section !== section) return;
+    (b.section === 'F' ? BRANCH_ROLES_TEMPLATE_F : BRANCH_ROLES_TEMPLATE).forEach((makeTitle, ri) => {
       rows.push({
         title: makeTitle(b.name_ar),
         branch_id: b.id,
         role_type: 'branch',
         sort_order: 100 + bi * 10 + ri,
+        section: b.section,
       });
     });
   });
@@ -652,7 +698,7 @@ function migrateMemberOptionalDates() {
 // و «مساعد قائد الفرقة» يُستكمل حيث ينقص. صفٌّ قديم عُيّن فيه قائد لا يُمسّ:
 // نقله قرار أدمن لا قرار كود. آمنة التكرار، فتُنفَّذ عند كل إقلاع.
 function migrateBranchRoles() {
-  const branches = db.prepare('SELECT id, name_ar FROM branches').all();
+  const branches = db.prepare('SELECT id, name_ar, section FROM branches').all();
   const rename = db.prepare('UPDATE assignments SET title = ? WHERE branch_id = ? AND title = ?');
   const removeEmpty = db.prepare(
     'DELETE FROM assignments WHERE branch_id = ? AND title = ? AND leader_id IS NULL'
@@ -679,8 +725,8 @@ function migrateBranchRoles() {
           .get(y, b.id, `مساعد قائد ${b.name_ar}`);
         if (!helper)
           db.prepare(
-            "INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, NULL, ?, ?, 'branch', ?)"
-          ).run(y, `مساعد قائد ${b.name_ar}`, b.id, head.sort_order + 1);
+            "INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order, section) VALUES (?, NULL, ?, ?, 'branch', ?, ?)"
+          ).run(y, `مساعد قائد ${b.name_ar}`, b.id, head.sort_order + 1, b.section);
       }
     }
   })();
@@ -699,17 +745,19 @@ function migrateAmanaHelpers() {
     ['تجهيزات', 'أمين التجهيزات'],
   ];
   const years = db.prepare('SELECT DISTINCT year FROM assignments').all().map((r) => r.year);
+  // داخل القسم الواحد: أمانة في قسم الفتيات لا تتبع أمينًا من قسم الفتيان بتشابه الاسم
   const find = db.prepare(
-    "SELECT id, parent_id FROM assignments WHERE year = ? AND title = ? AND role_type = 'amana'"
+    "SELECT id, parent_id FROM assignments WHERE year = ? AND title = ? AND role_type = 'amana' AND section = ?"
   );
   db.transaction(() => {
     for (const y of years)
-      for (const [child, parent] of PAIRS) {
-        const c = find.get(y, child);
-        const a = find.get(y, parent);
-        if (c && a && c.parent_id === null)
-          db.prepare('UPDATE assignments SET parent_id = ? WHERE id = ?').run(a.id, c.id);
-      }
+      for (const section of ['M', 'F'])
+        for (const [child, parent] of PAIRS) {
+          const c = find.get(y, child, section);
+          const a = find.get(y, parent, section);
+          if (c && a && c.parent_id === null)
+            db.prepare('UPDATE assignments SET parent_id = ? WHERE id = ?').run(a.id, c.id);
+        }
   })();
 }
 
@@ -717,6 +765,9 @@ function migrateAmanaHelpers() {
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
   ensureColumn('branches', 'all_ages', 'all_ages INTEGER NOT NULL DEFAULT 0');
+  // قسم الفتيات جاء بعد الفوج كله: كل ما وُجد قبله من فرق و قادة و أنشطة و توصيفات
+  // هو قسم الفتيان، فالقيمة الافتراضية 'M' هي الهجرة نفسها
+  ensureColumn('branches', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
   // Idle-timeout bookkeeping. ALTER TABLE cannot take datetime('now') as a default,
   // so the column lands nullable and old rows inherit their creation time.
   ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
@@ -749,6 +800,8 @@ function migrate() {
   ensureColumn('sessions', 'attendance_finalized_by', 'attendance_finalized_by TEXT');
   ensureColumn('sessions', 'updated_at', 'updated_at TEXT');
   db.exec("UPDATE sessions SET updated_at = datetime('now') WHERE updated_at IS NULL");
+  // After migrateSessions on purpose: its rebuild only knows the older column set
+  ensureColumn('sessions', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
   migrateAttendanceRoster();
   // الاشتراك المدفوع لكل عنصر في كل نشاط — بعد إعادة بناء الجدول أعلاه، فالبناء
   // ينسخ الأعمدة التي يعرفها وحدها و كان ليسقط هذا العمود لو زِيد قبله
@@ -782,6 +835,8 @@ function migrate() {
   // Added after migrateAssignments on purpose: its rebuild only knows the older column set
   ensureColumn('assignments', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
   ensureColumn('assignments', 'parent_id', 'parent_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL');
+  // Before migrateAmanaHelpers, which pairs a أمانة with its أمين inside one قسم
+  ensureColumn('assignments', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
   migrateAmanaHelpers();
   // Registration form fields added after the first release — all nullable so old rows stay valid
   ensureColumn('members', 'father_name', 'father_name TEXT');
@@ -842,11 +897,18 @@ function migrate() {
     ensureColumn('leaders', col, ddl);
   ensureColumn('leaders', 'archived_at', 'archived_at TEXT');
   ensureColumn('leaders', 'archived_by', 'archived_by TEXT');
+  ensureColumn('leaders', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
 
   ensureColumn('users', 'perms', 'perms TEXT');
   ensureColumn('users', 'leader_id', 'leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL');
   ensureColumn('users', 'active', 'active INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'must_change_password', 'must_change_password INTEGER NOT NULL DEFAULT 0');
+  // The accounts that exist when the قسم arrives are قادة of the فوج as it was, i.e. of
+  // قسم الفتيان. Left NULL (both sections) they would see the first قائدات and their
+  // أنشطة — so they are pinned to it, once, on the boot that adds the column.
+  const usersHadSection = db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'section');
+  ensureColumn('users', 'section', "section TEXT CHECK (section IN ('M', 'F'))");
+  if (!usersHadSection) db.exec("UPDATE users SET section = 'M' WHERE role != 'admin'");
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -921,10 +983,11 @@ function seedLeaders() {
   if (count > 0) return;
 
   const insertAssignment = db.prepare(
-    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order) VALUES (?, NULL, ?, ?, ?, ?)'
+    'INSERT INTO assignments (year, leader_id, title, branch_id, role_type, sort_order, section) VALUES (?, NULL, ?, ?, ?, ?, ?)'
   );
   const run = db.transaction(() => {
-    for (const r of tachkilaTemplate()) insertAssignment.run(year, r.title, r.branch_id, r.role_type, r.sort_order);
+    for (const r of tachkilaTemplate())
+      insertAssignment.run(year, r.title, r.branch_id, r.role_type, r.sort_order, r.section);
   });
   run();
   // الصفوف وُلدت للتوّ مسطّحة: الربط بالأمين يجري الآن لا في الإقلاع القادم

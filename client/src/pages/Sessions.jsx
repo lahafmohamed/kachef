@@ -4,12 +4,15 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
-import { useDebounced, useFetch, useLocalStorage } from '../hooks';
+import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
+import { useSection } from '../section';
+import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
+import FilterChips from '../components/FilterChips';
 import FilterSelect from '../components/FilterSelect';
 import TimePicker from '../components/TimePicker';
 import SearchInput from '../components/SearchInput';
@@ -39,6 +42,9 @@ import {
   IconX,
 } from '../components/ui';
 
+// The journal's filters, as the URL and the API both name them
+const FILTER_KEYS = ['q', 'branch', 'group', 'from', 'to', 'leader', 'activity_type', 'kind'];
+
 const EMPTY = {
   kind: 'activity',
   // بند الخطة السنوية الذي ينفّذه النشاط — '' يعني نشاط خارج الخطة
@@ -64,10 +70,14 @@ const EMPTY = {
   // نشاط عام للفوج: { [branch_id]: عدد الحضور } as typed, plus عدد القادة
   branch_counts: {},
   leaders_count: '',
+  // نشاط قادة: ضيوف من خارج البرنامج، بأسمائهم فقط
+  guest_names: [],
+  // القسم، حين يُرى القسمان معًا — '' = لم يُختر بعد (الفتيان). فرق النشاط تغلبه متى اختيرت.
+  section: '',
 };
 
 /** فرق النشاط — واحدة أو أكثر — أو نوعه حين يكون نشاطًا فوجيًا بلا فرقة */
-function ScopeBadge({ s, lang, t, branchList = [] }) {
+function ScopeBadge({ s, lang, t, branchList = [], bothSections = false }) {
   if (s.branch_id) {
     // النشاط المشترك يعرض كل فرقه: القائد يعرف من حضر الحصّة معه
     const ids = s.branch_ids?.length ? s.branch_ids : [s.branch_id];
@@ -92,10 +102,21 @@ function ScopeBadge({ s, lang, t, branchList = [] }) {
       </>
     );
   }
+  // نشاط قادة يبقى للفوج، و فرقه المدعوّة تُذكر بعده
+  const invited = (s.branch_ids || []).map((id) => branchList.find((b) => b.id === id)).filter(Boolean);
   return (
-    <Badge variant="secondary">
-      {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
-    </Badge>
+    <>
+      <Badge variant="secondary">
+        {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
+      </Badge>
+      {/* No فرقة to tell them apart: with both أقسام listed, the نشاط names its own */}
+      {bothSections && <Badge variant={s.section === 'F' ? 'info' : 'outline'}>{t(`section.${s.section}`)}</Badge>}
+      {invited.map((b) => (
+        <Badge key={b.id} variant="outline">
+          {branchName(b, lang)}
+        </Badge>
+      ))}
+    </>
   );
 }
 
@@ -193,7 +214,7 @@ const KIND_TAG = {
  * One line of the journal. The date block shows only on the first نشاط of a day,
  * so two حصص on the same Saturday read as one day with two entries.
  */
-function SessionRow({ s, showDate, ranked, lang, t, branchList }) {
+function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) {
   const tag = KIND_TAG[s.kind];
   const meta = [
     fmtTime(s.start_time),
@@ -228,8 +249,11 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList }) {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-1.5">
-            <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} />
+            <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} bothSections={bothSections} />
             {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
+            {s.guest_count > 0 && (
+              <Badge variant="outline">{t('session.guestCount', { count: s.guest_count })}</Badge>
+            )}
             {s.matalib.length > 0 && (
               <Badge variant="outline">
                 {s.matalib.length} {t('session.requirementsShort')}
@@ -247,6 +271,7 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList }) {
 }
 
 function SessionList({ rows, ranked, lang, t, branchList }) {
+  const { section } = useSection();
   return (
     <Card className="overflow-hidden">
       <ul className="divide-y divide-border">
@@ -260,6 +285,7 @@ function SessionList({ rows, ranked, lang, t, branchList }) {
             lang={lang}
             t={t}
             branchList={branchList}
+            bothSections={!section}
           />
         ))}
       </ul>
@@ -274,26 +300,26 @@ export default function Sessions() {
   const { has } = usePerms();
   const editable = has('sessions.create');
 
-  const [q, setQ] = useState('');
-  const [branch, setBranch] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [leaderFilter, setLeaderFilter] = useState('');
-  const [activityType, setActivityType] = useState('');
-  const [kindFilter, setKindFilter] = useState('');
+  // The filters live in the URL: «back» from a نشاط lands on the same journal, and
+  // a link (the dashboard, a فرقة) can open it already filtered. Named as the API
+  // names them, so the request and the PDF export take the address as is.
+  const [sp, patch] = useUrlFilters();
+  const param = (k) => sp.get(k) || '';
+  const [q, setQ] = useUrlField(sp, patch, 'q');
+  const branch = param('branch');
+  // طليعة: only offered once a فرقة divided into طلائع is picked
+  const groupFilter = param('group');
+  const from = param('from');
+  const to = param('to');
+  const leaderFilter = param('leader');
+  const activityType = param('activity_type');
+  const kindFilter = param('kind');
   // Sorting is a preference, not a filter: it survives from one visit to the next
   const [sort, setSort] = useLocalStorage('sessions.sort', 'date_desc');
   const [showFilters, setShowFilters] = useState(false);
 
-  const dq = useDebounced(q, 250);
   const params = new URLSearchParams();
-  if (dq) params.set('q', dq);
-  if (branch) params.set('branch', branch);
-  if (from) params.set('from', from);
-  if (to) params.set('to', to);
-  if (leaderFilter) params.set('leader', leaderFilter);
-  if (activityType) params.set('activity_type', activityType);
-  if (kindFilter) params.set('kind', kindFilter);
+  for (const k of FILTER_KEYS) if (param(k)) params.set(k, param(k));
   if (sort && sort !== 'date_desc') params.set('sort', sort);
 
   const sessions = useFetch(`/sessions?${params}`);
@@ -302,7 +328,7 @@ export default function Sessions() {
   // Visit picker needs the roster; without members.read the fetch would 403
   const members = useFetch('/members', { skip: !has('members.read') });
 
-  const activeFilters = [branch, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
+  const activeFilters = [branch, groupFilter, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;
   // What hides behind الفلاتر — the badge on the button counts only these
   const moreFilters =
@@ -310,12 +336,7 @@ export default function Sessions() {
 
   function clearFilters() {
     setQ('');
-    setBranch('');
-    setFrom('');
-    setTo('');
-    setLeaderFilter('');
-    setActivityType('');
-    setKindFilter('');
+    patch(Object.fromEntries(FILTER_KEYS.map((k) => [k, ''])));
   }
 
   const [creating, setCreating] = useState(false);
@@ -323,6 +344,7 @@ export default function Sessions() {
   // النموذج على ثلاث خطوات: الأساسي ثم التفاصيل ثم المشاركون
   const [step, setStep] = useState(0);
   const [helperQuery, setHelperQuery] = useState('');
+  const [guestInput, setGuestInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState(null);
@@ -337,7 +359,7 @@ export default function Sessions() {
   useEffect(() => {
     const card = location.state?.prepCard;
     if (!card) return;
-    navigate(location.pathname, { replace: true, state: null });
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
     setForm({
       ...EMPTY,
       kind: 'activity',
@@ -375,7 +397,16 @@ export default function Sessions() {
   const branchList = branches.data || [];
   const leaderList = leaders.data || [];
   const list = sessions.data || [];
+  // قسم النشاط: القسم المعروض، و إلا فقسم فرقته الأولى، و إلا فما اختير في الخطوة
+  // الأولى. فرقه و قادته من هذا القسم وحده — الخادم يرفض الخلط على أي حال.
+  const { section: onScreen } = useSection();
+  const firstBranchSection = branchList.find((b) => b.id === Number(form.branch_ids[0]))?.section;
+  const formSection = onScreen || firstBranchSection || form.section || 'M';
+  const sectionBranches = branchList.filter((b) => b.section === formSection);
+  const sectionLeaders = leaderList.filter((l) => l.section === formSection);
   const selectedBranch = branchList.find((b) => b.id === Number(primaryBranchId));
+  // طلائع of the فرقة the journal is filtered on — the طليعة filter exists only then
+  const filterGroups = branchList.find((b) => String(b.id) === branch)?.groups || [];
 
   function toggleMatalib(n) {
     setForm((f) => ({
@@ -436,7 +467,22 @@ export default function Sessions() {
       fee: kind === 'visit' || kind === 'group' ? '' : f.fee,
       branch_counts: kind === 'group' ? f.branch_counts : {},
       leaders_count: kind === 'group' ? f.leaders_count : '',
+      // فرق نشاط القادة مدعوّة لا صاحبة النشاط: الاختيار لا يعبر بين المعنيين
+      branch_ids: (kind === 'leaders') === (f.kind === 'leaders') ? f.branch_ids : [],
+      guest_names: kind === 'leaders' ? f.guest_names : [],
     }));
+  }
+
+  // الضيف يُكتب اسمه كما هو؛ الاسم المكرّر لا يُضاف مرّتين
+  function addGuest() {
+    const name = guestInput.trim().replace(/\s+/g, ' ');
+    if (!name) return;
+    setForm((f) => (f.guest_names.includes(name) ? f : { ...f, guest_names: [...f.guest_names, name] }));
+    setGuestInput('');
+  }
+
+  function removeGuest(name) {
+    setForm((f) => ({ ...f, guest_names: f.guest_names.filter((g) => g !== name) }));
   }
 
   // إضافة مجموعة أو إزالتها. نزع آخر مجموعة من فرقة يعيدها إلى المشاركة كاملةً،
@@ -452,6 +498,25 @@ export default function Sessions() {
 
   function setBranchCount(branchId, value) {
     setForm((f) => ({ ...f, branch_counts: { ...f.branch_counts, [branchId]: value } }));
+  }
+
+  // Another قسم: everything picked from the old one goes — its فرق, their عناصر,
+  // طلائع, plan and card, and its قادة
+  function pickSection(s) {
+    if (s === formSection) return;
+    setForm((f) => ({
+      ...f,
+      section: s,
+      branch_ids: [],
+      group_ids: [],
+      member_ids: [],
+      plan_item_id: '',
+      prep_card_id: '',
+      matalib: [],
+      branch_counts: {},
+      leader_id: '',
+      helper_ids: [],
+    }));
   }
 
   function toggleVisited(id) {
@@ -500,7 +565,13 @@ export default function Sessions() {
     try {
       const s = await api.post('/sessions', {
         ...form,
-        branch_ids: ['leaders', 'group'].includes(form.kind) ? [] : form.branch_ids.map(Number),
+        // نشاط القادة يرسل فرقه المدعوّة — قد لا تكون أيّ فرقة
+        branch_ids: form.kind === 'group' ? [] : form.branch_ids.map(Number),
+        // اسمٌ كُتب و لم يُضَف بعد يُحفظ معهم، فلا يضيع بنقرة «حفظ» مباشرة
+        guest_names:
+          form.kind === 'leaders'
+            ? [...new Set([...form.guest_names, guestInput.trim().replace(/\s+/g, ' ')].filter(Boolean))]
+            : [],
         group_ids: form.kind === 'activity' ? form.group_ids.map(Number) : [],
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
@@ -512,6 +583,8 @@ export default function Sessions() {
         activity_type: form.activity_type || null,
         start_time: form.start_time || null,
         place: form.place || null,
+        // Read by the server only when the نشاط has no فرقة to take it from
+        section: formSection,
         // Only فرق the قائد actually typed a number for are recorded
         branch_counts:
           form.kind === 'group'
@@ -523,10 +596,11 @@ export default function Sessions() {
       });
       setCreating(false);
       setForm({ ...EMPTY, date: todayISO() });
+      setGuestInput('');
       toast.success(t('session.created'));
       navigate(`/sessions/${s.id}`);
     } catch (err) {
-      setError(err.message);
+      setError(err.message === 'mixed_sections' ? t('section.mixed') : err.message);
     } finally {
       setSaving(false);
     }
@@ -536,7 +610,7 @@ export default function Sessions() {
   const groupedBranches = branchList.filter(
     (b) => form.branch_ids.includes(b.id) && (b.groups || []).length > 0
   );
-  const availableHelpers = leaderList.filter(
+  const availableHelpers = sectionLeaders.filter(
     (l) => l.status === 'active' && l.id !== Number(form.leader_id)
   );
   const isVisit = form.kind === 'visit';
@@ -608,28 +682,36 @@ export default function Sessions() {
     { value: 'group', label: t('session.kindGroup') },
   ];
   const labelOf = (options, v) => options.find((o) => String(o.value) === String(v))?.label;
-  // Every active filter as a removable chip — the label is what the قائد picked
+  // Every active filter as a removable chip — the value is what the قائد picked
   const chips = [
     branch && {
       key: 'branch',
-      label: branchName(branchList.find((b) => String(b.id) === String(branch)) || {}, i18n.language),
-      clear: () => setBranch(''),
+      value: branchName(branchList.find((b) => String(b.id) === String(branch)) || {}, i18n.language),
+      clear: () => patch({ branch: '', group: '' }),
+    },
+    groupFilter && {
+      key: 'group',
+      value: branchList.flatMap((b) => b.groups || []).find((g) => String(g.id) === groupFilter)?.name,
+      isolate: true,
+      clear: () => patch({ group: '' }),
     },
     (from || to) && {
       key: 'period',
-      label: [fmtDate(from), fmtDate(to)].filter(Boolean).join(' – '),
-      clear: () => {
-        setFrom('');
-        setTo('');
-      },
+      value:
+        from && to
+          ? `${fmtDate(from)} – ${fmtDate(to)}`
+          : from
+            ? `${t('session.dateFrom')} ${fmtDate(from)}`
+            : `${t('session.dateTo')} ${fmtDate(to)}`,
+      clear: () => patch({ from: '', to: '' }),
     },
     leaderFilter && {
       key: 'leader',
-      label: memberName(leaderList.find((l) => String(l.id) === String(leaderFilter)) || {}),
-      clear: () => setLeaderFilter(''),
+      value: memberName(leaderList.find((l) => String(l.id) === String(leaderFilter)) || {}),
+      clear: () => patch({ leader: '' }),
     },
-    activityType && { key: 'nature', label: labelOf(natureOptions, activityType), clear: () => setActivityType('') },
-    kindFilter && { key: 'kind', label: labelOf(kindOptions, kindFilter), clear: () => setKindFilter('') },
+    activityType && { key: 'nature', value: labelOf(natureOptions, activityType), clear: () => patch({ activity_type: '' }) },
+    kindFilter && { key: 'kind', value: labelOf(kindOptions, kindFilter), clear: () => patch({ kind: '' }) },
   ].filter(Boolean);
 
   // Month headers only make sense in date order; a ranking by attendance is one flat list
@@ -672,7 +754,8 @@ export default function Sessions() {
           <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
             <FilterSelect
               value={branch}
-              onChange={setBranch}
+              // A طليعة belongs to its فرقة: changing the فرقة drops it
+              onChange={(v) => patch({ branch: v, group: '' })}
               allLabel={t('member.allBranches')}
               ariaLabel={t('member.branch')}
               className="w-full sm:w-auto sm:min-w-44"
@@ -683,13 +766,24 @@ export default function Sessions() {
               }))}
             />
           </div>
+          {/* A فرقة split into طلائع runs some حصص for one طليعة only: this narrows the
+              journal to what that طليعة took part in, whole-فرقة أنشطة included */}
+          {filterGroups.length > 0 && (
+            <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
+              <FilterSelect
+                value={groupFilter}
+                onChange={(v) => patch({ group: v })}
+                allLabel={t('session.allGroups')}
+                ariaLabel={t('session.filterByGroup')}
+                className="w-full sm:w-auto sm:min-w-40"
+                options={filterGroups.map((g) => ({ value: g.id, label: g.name }))}
+              />
+            </div>
+          )}
           <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
             <DateRangePicker
               value={{ from, to }}
-              onChange={({ from: f, to: tt }) => {
-                setFrom(f);
-                setTo(tt);
-              }}
+              onChange={({ from: f, to: tt }) => patch({ from: f, to: tt })}
             />
           </div>
           <Button
@@ -715,7 +809,7 @@ export default function Sessions() {
                 he actually run this year" question — it matches مساعدين too. */}
             <SearchSelect
               value={leaderFilter}
-              onChange={(e) => setLeaderFilter(e.target.value)}
+              onChange={(e) => patch({ leader: e.target.value })}
               options={leaderList.map((l) => ({ value: l.id, label: memberName(l) }))}
               clearLabel={t('session.allAnimators')}
               placeholder={t('session.allAnimators')}
@@ -726,7 +820,7 @@ export default function Sessions() {
             />
             <FilterSelect
               value={activityType}
-              onChange={setActivityType}
+              onChange={(v) => patch({ activity_type: v })}
               allLabel={t('session.allNatures')}
               ariaLabel={t('session.nature')}
               className="sm:w-auto sm:min-w-44"
@@ -734,7 +828,7 @@ export default function Sessions() {
             />
             <FilterSelect
               value={kindFilter}
-              onChange={setKindFilter}
+              onChange={(v) => patch({ kind: v })}
               allLabel={t('session.allKinds')}
               ariaLabel={t('session.kind')}
               className="sm:w-auto sm:min-w-40"
@@ -761,25 +855,7 @@ export default function Sessions() {
         )}
 
         {/* What is narrowing the list, each removable on its own */}
-        {chips.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {chips.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                onClick={c.clear}
-                aria-label={t('session.removeFilter', { label: c.label })}
-                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
-              >
-                <span className="max-w-48 truncate">{c.label}</span>
-                <IconX className="h-3.5 w-3.5 opacity-70" />
-              </button>
-            ))}
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              {t('common.clearFilters')}
-            </Button>
-          </div>
-        )}
+        <FilterChips chips={chips} onClearAll={clearFilters} />
       </div>
 
       {sessions.error ? (
@@ -1008,13 +1084,15 @@ export default function Sessions() {
                 <p className="text-xs text-muted-foreground">{t('session.feeHint')}</p>
               </div>
           );
-          const branchesField = !isLeadersOnly && !isGroup && (
+          // نشاط القادة: الفرق اختيارية، مدعوّة لا صاحبة النشاط — لا رئيسية بينها
+          const branchesLabel = t(isLeadersOnly ? 'session.invitedBranches' : 'session.branches');
+          const branchesField = !isGroup && (
               <div className="space-y-1.5 sm:col-span-2">
-                <Label>{t('session.branches')}</Label>
+                <Label>{branchesLabel}</Label>
                 {/* حصّة واحدة قد تجمع فرقتين: تُختار كل فرقة معنيّة، و تبقى واحدة
                     على الأقل. الأولى المختارة هي الرئيسية (الخطة و المطالب). */}
-                <div className="flex flex-wrap gap-2" role="group" aria-label={t('session.branches')}>
-                  {branchList.map((b) => {
+                <div className="flex flex-wrap gap-2" role="group" aria-label={branchesLabel}>
+                  {sectionBranches.map((b) => {
                     const on = form.branch_ids.includes(b.id);
                     const primary = form.branch_ids[0] === b.id;
                     return (
@@ -1037,7 +1115,7 @@ export default function Sessions() {
                           collapse
                         />
                         {branchName(b, i18n.language)}
-                        {primary && form.branch_ids.length > 1 && (
+                        {primary && !isLeadersOnly && form.branch_ids.length > 1 && (
                           <span className="text-xs uppercase opacity-70">
                             {t('session.branchPrimary')}
                           </span>
@@ -1046,8 +1124,12 @@ export default function Sessions() {
                     );
                   })}
                 </div>
-                {form.branch_ids.length > 1 && (
-                  <p className="text-xs text-muted-foreground">{t('session.branchesHint')}</p>
+                {isLeadersOnly ? (
+                  <p className="text-xs text-muted-foreground">{t('session.invitedBranchesHint')}</p>
+                ) : (
+                  form.branch_ids.length > 1 && (
+                    <p className="text-xs text-muted-foreground">{t('session.branchesHint')}</p>
+                  )
                 )}
               </div>
           );
@@ -1112,7 +1194,7 @@ export default function Sessions() {
                 required
                 value={form.leader_id}
                 onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
-                options={leaderList
+                options={sectionLeaders
                   .filter((l) => l.status === 'active' || l.id === Number(form.leader_id))
                   .map((l) => ({ value: l.id, label: memberName(l) }))}
                 placeholder={t('leader.selectLeader')}
@@ -1205,7 +1287,7 @@ export default function Sessions() {
             <div className="space-y-1.5">
               <Label>{t('session.branchCounts')}</Label>
               <div className="space-y-2 rounded-xl border border-border p-3">
-                {branchList.map((b) => (
+                {sectionBranches.map((b) => (
                   <div key={b.id} className="flex items-center justify-between gap-3">
                     <Label htmlFor={`s_count_${b.id}`} className="flex-1">
                       {branchName(b, i18n.language)}
@@ -1300,6 +1382,63 @@ export default function Sessions() {
           </div>
           );
 
+          // ضيوف نشاط القادة: من ليس في البرنامج يُكتب اسمه فقط — Enter يضيفه دون إرسال النموذج
+          const guestsField = isLeadersOnly && (
+            <div className="space-y-1.5">
+              <Label htmlFor="s_guest">
+                {t('session.guests')}
+                {form.guest_names.length > 0 && (
+                  <span className="ms-2 font-normal tabular-nums text-muted-foreground">
+                    {form.guest_names.length}
+                  </span>
+                )}
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="s_guest"
+                  autoComplete="off"
+                  maxLength={120}
+                  placeholder={t('session.guestPlaceholder')}
+                  value={guestInput}
+                  onChange={(e) => setGuestInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addGuest();
+                    }
+                  }}
+                />
+                <Button variant="outline" onClick={addGuest} disabled={!guestInput.trim()}>
+                  <IconPlus />
+                  {t('session.addGuest')}
+                </Button>
+              </div>
+              {form.guest_names.length > 0 ? (
+                <ul className="flex flex-wrap gap-2">
+                  {form.guest_names.map((name) => (
+                    <li
+                      key={name}
+                      className="inline-flex min-h-9 items-center gap-1 rounded-full border border-border bg-card ps-3 text-sm"
+                    >
+                      {name}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-full text-muted-foreground"
+                        onClick={() => removeGuest(name)}
+                        aria-label={`${t('common.delete')} — ${name}`}
+                      >
+                        <IconX className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-muted-foreground">{t('session.guestsHint')}</p>
+              )}
+            </div>
+          );
+
           const matalibField = !isVisit && !isLeadersOnly && !isGroup && selectedBranch?.total_requirements > 0 && (
             <div className="space-y-1.5">
               <Label>
@@ -1358,6 +1497,9 @@ export default function Sessions() {
                 </ol>
                 {step === 0 && (
                   <div className="space-y-4">
+                    {/* Both أقسام on screen: the first thing to settle, since it decides
+                        which فرق and قادة the next steps offer */}
+                    {!onScreen && <SectionField value={formSection} onChange={pickSection} />}
                     {kindField}
                     {titleField}
                     {planLinked}
@@ -1386,6 +1528,7 @@ export default function Sessions() {
                     {visitPicker}
                     {groupCounts}
                     {helpersPicker}
+                    {guestsField}
                     {matalibField}
                   </div>
                 )}
@@ -1403,12 +1546,15 @@ export default function Sessions() {
                   >
                     {t(step === 0 ? 'common.cancel' : 'common.back')}
                   </Button>
+                  {/* Distinct keys: React would otherwise reuse the «التالي» button and
+                      flip it to type=submit mid-click, so the browser submits the form
+                      on step two and the مطالب step is never seen */}
                   {step < 2 ? (
-                    <Button type="button" onClick={nextStep}>
+                    <Button key="next" type="button" onClick={nextStep}>
                       {t('common.next')}
                     </Button>
                   ) : (
-                    <Button type="submit" loading={saving}>
+                    <Button key="save" type="submit" loading={saving}>
                       {t('common.save')}
                     </Button>
                   )}

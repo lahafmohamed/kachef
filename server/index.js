@@ -57,6 +57,9 @@ const PERM_GROUPS = {
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
   leaders: ['leaders.read', 'leaders.progress.self', 'leaders.progress.manage'],
+  // اشتراك القادة: يُمنح يدويًا لأشخاص بعينهم. مجموعة مستقلة كي لا يرثه من كانت
+  // له صفحة القادة كاملة في صيغة الصلاحيات القديمة.
+  dues: ['leaders.dues'],
 };
 const ALL_PERMS = Object.values(PERM_GROUPS).flat();
 
@@ -77,6 +80,7 @@ const PERM_DEPENDENCIES = {
   'promotions.apply': ['promotions.read', 'members.read'],
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
+  'leaders.dues': ['leaders.read'],
 };
 
 function expandPerms(keys) {
@@ -243,6 +247,8 @@ const publicUser = (u) => ({
   // القائد صاحب الحساب إن وُلّد من صفحة القادة
   leader_id: u.leader_id ?? null,
   leader_name: u.leader_name ?? null,
+  // 'M' | 'F' = محصور في قسم الفتيان / الفتيات؛ null = القسمان (و الأدمن دائمًا)
+  section: u.role === 'admin' ? null : (u.section ?? null),
   active: u.active === undefined ? true : !!u.active,
   must_change_password: !!u.must_change_password,
 });
@@ -446,9 +452,47 @@ app.use('/api', (req, res, next) => {
 const requireAdmin = (req, res, next) =>
   req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin_only' });
 
-// null = unrestricted; otherwise the Set of allowed branch ids
-const allowedBranches = (req) =>
-  req.user.role === 'admin' || !req.user.branches ? null : new Set(req.user.branches);
+// ---------- القسمان: الفتيان و الفتيات ----------
+// كل فرقة و كل قائد و كل نشاط و كل توصيف من قسم واحد: 'M' الفتيان، 'F' الفتيات. الحساب
+// المحصور في قسم لا يرى من القسم الآخر شيئًا — لا عناصره و لا قادته و لا أنشطته و لا
+// تشكيلته. الأدمن (و الحساب الذي لا قسم له) يرى القسمين، و مبدّل القسم في الواجهة
+// يحصر عرضه في أحدهما بترويسة X-Section.
+const SECTIONS = ['M', 'F'];
+const parseSection = (v) => (SECTIONS.includes(v) ? v : null);
+
+// قسم الطلب، أو null للقسمين معًا. قسم الحساب يغلب الترويسة دائمًا: حساب في قسم
+// الفتيات لا يوسّع نطاقه بإرسال ترويسة أخرى.
+function activeSection(req) {
+  if (req.user.role !== 'admin' && req.user.section) return req.user.section;
+  return parseSection(req.get('X-Section'));
+}
+
+const sectionOfBranch = (id) => db.prepare('SELECT section FROM branches WHERE id = ?').get(id)?.section ?? null;
+
+// null = unrestricted; otherwise the Set of allowed branch ids: the account's فرق, cut
+// down to the فرق of the request's قسم. Computed once per request — branchOk runs in loops.
+function allowedBranches(req) {
+  if (req.branchScope !== undefined) return req.branchScope;
+  const own = req.user.role === 'admin' || !req.user.branches ? null : new Set(req.user.branches);
+  const section = activeSection(req);
+  let scope = own;
+  if (section) {
+    const ids = db.prepare('SELECT id FROM branches WHERE section = ?').all(section).map((r) => r.id);
+    scope = new Set(own ? ids.filter((id) => own.has(id)) : ids);
+  }
+  req.branchScope = scope;
+  return scope;
+}
+
+// القادة لا فرقة لهم، فيُحصرون بقسمهم هم. `section` مُتحقَّق منه، فدمجه في النص آمن.
+const leaderScopeSQL = (req, alias = 'l') => {
+  const section = activeSection(req);
+  return section ? ` AND ${alias}.section = '${section}'` : '';
+};
+const leaderOk = (req, leader) => {
+  const section = activeSection(req);
+  return !section || leader.section === section;
+};
 
 // Is this branch (or a branch-less نشاط قادة, id = null) visible to the caller?
 function branchOk(req, branchId) {
@@ -501,18 +545,26 @@ const attendanceInBranchSQL = (branchId, sAlias = 's', aAlias = 'a') => {
           (SELECT m2.branch_id FROM members m2 WHERE m2.id = ${aAlias}.member_id)) = ${id}))`;
 };
 
-// SQL fragment limiting أنشطة to the caller's فرق — نشاط بلا فرقة (قادة / فوج) يمرّ
+// SQL fragment limiting أنشطة to the caller's قسم and فرق — نشاط بلا فرقة (قادة / فوج)
+// يمرّ إن كان من قسمه
 function sessionScopeSQL(req, alias = 's') {
+  const section = activeSection(req);
+  const bySection = section ? ` AND ${alias}.section = '${section}'` : '';
   const scope = allowedBranches(req);
-  if (!scope) return '';
+  if (!scope) return bySection;
   const ids = [...scope].map(Number).filter(Number.isInteger);
   const list = ids.length ? ids.join(',') : -1;
-  return ` AND (${alias}.branch_id IS NULL OR EXISTS (
+  return `${bySection} AND (${alias}.branch_id IS NULL OR EXISTS (
       SELECT 1 FROM session_branches sb WHERE sb.session_id = ${alias}.id AND sb.branch_id IN (${list})))`;
 }
 
-// هل يرى المستخدم هذا النشاط؟ تكفي فرقة واحدة مشتركة بينه و بين فرق النشاط
+// هل يرى المستخدم هذا النشاط؟ من قسمه أولًا، ثم تكفي فرقة واحدة مشتركة بينه و بين فرق النشاط
 function sessionOk(req, session) {
+  const section = activeSection(req);
+  if (section) {
+    const own = session.section ?? db.prepare('SELECT section FROM sessions WHERE id = ?').get(session.id)?.section;
+    if (own !== section) return false;
+  }
   const scope = allowedBranches(req);
   if (!scope) return true;
   if (session.branch_id === null || session.branch_id === undefined) return true;
@@ -598,6 +650,19 @@ function parseBranchList(v) {
   return JSON.stringify(ids);
 }
 
+// قسم الحساب كما يُرسَل: 'M' | 'F'، أو null للقسمين. undefined = قيمة فاسدة.
+function parseUserSection(v) {
+  if (v === null || v === '') return null;
+  return parseSection(v) ?? undefined;
+}
+
+// فرق الحساب من قسمه وحده: حساب الفتيات المقيَّد بفرقة من الفتيان لا يرى شيئًا،
+// و ذاك خطأ في النموذج لا نيّة — يُرفض بدل أن يُحفظ حسابٌ فارغ
+function branchesFitSection(branchesJson, section) {
+  if (!section || !branchesJson) return true;
+  return JSON.parse(branchesJson).every((id) => sectionOfBranch(id) === section);
+}
+
 // Same contract as parseBranchList: null = unrestricted, undefined = invalid input.
 // Accepts every historical shape; stores the granular key array.
 function parsePermList(v) {
@@ -660,14 +725,28 @@ app.post('/api/users', requireAdmin, (req, res) => {
   if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
   const perms = parsePermList(req.body.perms);
   if (perms === undefined) return res.status(400).json({ error: 'invalid perms' });
+  // A request that says nothing lands in قسم الفتيان, the narrower choice: seeing both
+  // sections has to be asked for (section: null)
+  const section =
+    role === 'admin' ? null : req.body.section === undefined ? 'M' : parseUserSection(req.body.section);
+  if (section === undefined) return res.status(400).json({ error: 'invalid section' });
+  if (!branchesFitSection(branches, section)) return res.status(400).json({ error: 'branch_outside_section' });
   try {
     const info = db
       .prepare(
         `INSERT INTO users
-          (username, password_hash, display_name, role, branches, perms, active, must_change_password)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 1)`
+          (username, password_hash, display_name, role, branches, perms, section, active, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)`
       )
-      .run(username, hashPassword(password), String(display_name || '').trim() || null, role || 'user', branches, perms);
+      .run(
+        username,
+        hashPassword(password),
+        String(display_name || '').trim() || null,
+        role || 'user',
+        branches,
+        perms,
+        section
+      );
     const created = userById(info.lastInsertRowid);
     auditEvent(req, 'create', 'user', created.id, null, publicUser(created));
     res.status(201).json({ ...publicUser(created), ...(generated ? { password } : {}) });
@@ -702,6 +781,10 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   const perms = req.body.perms === undefined ? u.perms : parsePermList(req.body.perms);
   if (perms === undefined && req.body.perms !== undefined)
     return res.status(400).json({ error: 'invalid perms' });
+  const section =
+    role === 'admin' ? null : req.body.section === undefined ? u.section : parseUserSection(req.body.section);
+  if (section === undefined) return res.status(400).json({ error: 'invalid section' });
+  if (!branchesFitSection(branches, section)) return res.status(400).json({ error: 'branch_outside_section' });
   let password_hash = u.password_hash;
   let mustChange = u.must_change_password || 0;
   // reset_password: a fresh generated one, shown once in the response
@@ -716,14 +799,15 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   }
   try {
     db.prepare(
-      `UPDATE users SET username = ?, display_name = ?, role = ?, branches = ?, perms = ?, password_hash = ?,
-         active = ?, must_change_password = ? WHERE id = ?`
+      `UPDATE users SET username = ?, display_name = ?, role = ?, branches = ?, perms = ?, section = ?,
+         password_hash = ?, active = ?, must_change_password = ? WHERE id = ?`
     ).run(
       username,
       req.body.display_name === undefined ? u.display_name : String(req.body.display_name || '').trim() || null,
       role,
       branches,
       perms,
+      section,
       password_hash,
       active ? 1 : 0,
       mustChange,
@@ -794,6 +878,9 @@ function pendingPromotions() {
   // عنصرٌ فيها يسقط أدناه عند !cur.
   const branches = getBranches().filter((b) => !b.all_ages);
   const byId = Object.fromEntries(branches.map((b) => [b.id, b]));
+  // لكل قسم سلّمه: فتاةٌ في فرقة من الفتيات تُرفَّع إلى الفرقة التالية من الفتيات، لا
+  // إلى فرقة الفتيان التي في سنّها
+  const ladders = Object.fromEntries(SECTIONS.map((s) => [s, branches.filter((b) => b.section === s)]));
   // موقع كل فرقة في الفوج — الترقية تصعد فقط، و المقارنة بالموقع لا بالسنّ
   const rank = new Map(branches.map((b, i) => [b.id, i]));
   const members = db.prepare("SELECT * FROM members WHERE status = 'active'").all();
@@ -807,7 +894,7 @@ function pendingPromotions() {
     // حدود الفرق متقاطعة قصدًا (الكشافة ١٢–١٤، الجوالة ١٤–١٨): ابن الأربعة عشر
     // بلغ أدنى سنّ الجوالة و هو بعدُ في سنّ الكشافة. فالترقية تُقترح ببلوغ الفرقة
     // الأعلى لا بتجاوز أقصى سنّ فرقته — و إلا ظلّ المتقاطعون بلا ترقية أبدًا.
-    const target = targetBranchFor(age, branches);
+    const target = targetBranchFor(age, ladders[cur.section] || []);
     // فرقة أدنى تعني عنصرًا وُضع فوق سنّه: ذاك تصحيح يدوي لا ترقية
     if (!target || rank.get(target.id) <= rank.get(cur.id)) continue;
     out.push({
@@ -846,10 +933,11 @@ function upcomingBirthdays() {
     )
     .all(md(now), md(tomorrow));
   // القادة أعضاء أيضًا: عيد ميلادهم يُذكَر مثل أي عنصر. بلا فرقة، فيمرّون من
-  // فلترة الفرق لكل المستخدمين، و kind يُوجّه الرابط إلى ملف القائد.
+  // فلترة الفرق لكل المستخدمين — و يُفرزون بقسمهم (section) — و kind يُوجّه الرابط
+  // إلى ملف القائد.
   const leaders = db
     .prepare(
-      `SELECT l.id, l.first_name, l.father_name, l.last_name, l.photo, l.birth_date,
+      `SELECT l.id, l.first_name, l.father_name, l.last_name, l.photo, l.birth_date, l.section,
               NULL AS branch_id, NULL AS branch_name_fr, NULL AS branch_name_ar
          FROM leaders l
         WHERE l.status = 'active' AND substr(l.birth_date, 6, 5) IN (?, ?)`
@@ -1039,7 +1127,7 @@ app.get('/api/branches', (req, res) => {
           WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
             AND a.leader_id IS NOT NULL
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_id
-       FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY b.sort_order`
+       FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY b.section = 'F', b.sort_order`
     )
     .all();
   // مجموعات كل فرقة تُرسل مع الفرقة نفسها: نموذج إنشاء النشاط يحتاجها فورًا ليعرض
@@ -1053,7 +1141,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
   const ym = todayISO().slice(0, 7);
   const year = latestYear();
   const branches = db
-    .prepare(`SELECT * FROM branches WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY sort_order, id`)
+    .prepare(`SELECT * FROM branches WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY section = 'F', sort_order, id`)
     .all();
 
   const membersStmt = db.prepare(
@@ -1553,7 +1641,7 @@ app.get('/api/plans/overview', requirePerm('branches.read'), (req, res) => {
   const wanted = normYear(req.query.year);
   const year = scoutYearRange(wanted) ? wanted : currentScoutYear();
   const branches = db
-    .prepare('SELECT id, name_fr, name_ar FROM branches ORDER BY sort_order, id')
+    .prepare("SELECT id, name_fr, name_ar, section FROM branches ORDER BY section = 'F', sort_order, id")
     .all()
     .filter((b) => branchOk(req, b.id));
   res.json({
@@ -1741,10 +1829,14 @@ app.post('/api/branches', requireAdmin, (req, res) => {
   if (err) return res.status(400).json({ error: err });
   const { name_fr, name_ar, min_age, max_age, total_requirements } = req.body;
   const allAges = !!req.body.all_ages;
+  if (req.body.section !== undefined && !parseSection(req.body.section))
+    return res.status(400).json({ error: 'invalid section' });
+  // Said explicitly, or the قسم the admin is looking at, or قسم الفتيان as before
+  const section = parseSection(req.body.section) || activeSection(req) || 'M';
   // sort_order mirrors min_age so branches always list in age order
   const info = db
     .prepare(
-      'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages, section) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .run(
       name_fr.trim(),
@@ -1753,7 +1845,8 @@ app.post('/api/branches', requireAdmin, (req, res) => {
       allAges ? null : (max_age ?? null),
       allAges ? ALL_AGES_SORT_ORDER : min_age,
       total_requirements,
-      allAges ? 1 : 0
+      allAges ? 1 : 0,
+      section
     );
   res.status(201).json(db.prepare('SELECT * FROM branches WHERE id = ?').get(info.lastInsertRowid));
 });
@@ -1769,20 +1862,39 @@ app.put('/api/branches/:id', requireAdmin, (req, res) => {
   const usedMax = maxRequirementUsed(existing.id);
   if (total_requirements < usedMax)
     return res.status(409).json({ error: 'requirements_in_use', minimum: usedMax });
-  db.prepare(
-    `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?,
-       all_ages = ?
-     WHERE id = ?`
-  ).run(
-    name_fr !== undefined ? name_fr.trim() : existing.name_fr,
-    name_ar !== undefined ? name_ar.trim() : existing.name_ar,
-    allAges ? 0 : min_age,
-    allAges ? null : (max_age ?? null),
-    allAges ? ALL_AGES_SORT_ORDER : min_age,
-    total_requirements,
-    allAges ? 1 : 0,
-    req.params.id
-  );
+  const section = req.body.section === undefined ? existing.section : parseSection(req.body.section);
+  if (!section) return res.status(400).json({ error: 'invalid section' });
+  // A فرقة changes قسم only while nothing personal hangs on it: its عناصر, أنشطة and
+  // بطاقات تحضير would otherwise cross over with it, and a قائد already placed in one
+  // of its توصيفات would end up in the other قسم's تشكيلة.
+  if (section !== existing.section) {
+    const inUse =
+      db.prepare('SELECT COUNT(*) AS n FROM members WHERE branch_id = ?').get(existing.id).n +
+      db.prepare('SELECT COUNT(*) AS n FROM session_branches WHERE branch_id = ?').get(existing.id).n +
+      db.prepare('SELECT COUNT(*) AS n FROM prep_cards WHERE branch_id = ?').get(existing.id).n +
+      db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE branch_id = ? AND leader_id IS NOT NULL').get(existing.id).n;
+    if (inUse > 0) return res.status(409).json({ error: 'branch_section_in_use' });
+  }
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?,
+         all_ages = ?, section = ?
+       WHERE id = ?`
+    ).run(
+      name_fr !== undefined ? name_fr.trim() : existing.name_fr,
+      name_ar !== undefined ? name_ar.trim() : existing.name_ar,
+      allAges ? 0 : min_age,
+      allAges ? null : (max_age ?? null),
+      allAges ? ALL_AGES_SORT_ORDER : min_age,
+      total_requirements,
+      allAges ? 1 : 0,
+      section,
+      req.params.id
+    );
+    // توصيفات الفرقة (و هي فارغة هنا) تتبعها إلى قسمها الجديد
+    if (section !== existing.section)
+      db.prepare('UPDATE assignments SET section = ? WHERE branch_id = ?').run(section, existing.id);
+  })();
   res.json(db.prepare('SELECT * FROM branches WHERE id = ?').get(req.params.id));
 });
 
@@ -1933,6 +2045,12 @@ function validateMember(body) {
   return null;
 }
 
+// جنس العنصر من قسم الطلب: حساب الفتيات لا يسجّل ذكرًا، و حساب الفتيان لا يسجّل أنثى.
+const sexOutsideSection = (req) => {
+  const section = activeSection(req);
+  return !!section && req.body.sex !== section;
+};
+
 // Age is derived from birth_date, so sorting by age is sorting by birth_date:
 // the oldest عنصر is the one born first.
 const MEMBER_SORTS = {
@@ -1956,6 +2074,26 @@ function isoYearsAgo(years) {
 const phoneDigits = (col) =>
   `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col}, ' ', ''), '-', ''), '.', ''), '(', ''), ')', ''), '+', '')`;
 
+// ملفّ ناقص: what a list can ask for "who still lacks X". The keys of «any» are the
+// fields the member's profile counts in its «champs non renseignés» banner, so the
+// list and the banner agree; فصيلة الدم comes on top, since a camp needs it. Contact
+// fields are left out for an account that may not read them.
+const blankSQL = (col) => `COALESCE(TRIM(${col}), '') = ''`;
+const MEMBER_MISSING = {
+  birth_date: () => blankSQL('m.birth_date'),
+  father_name: () => blankSQL('m.father_name'),
+  school: () => blankSQL('m.school'),
+  parent_phone: (contact) => contact && `(${blankSQL('m.father_phone')} AND ${blankSQL('m.mother_phone')})`,
+  residence: (contact) => contact && blankSQL('m.address_abidjan'),
+  blood: () => blankSQL('m.blood_type'),
+};
+const PROFILE_FIELDS = ['birth_date', 'father_name', 'school', 'parent_phone', 'residence'];
+
+function memberMissingSQL(key, canContact) {
+  if (key === 'any') return `(${PROFILE_FIELDS.map((k) => MEMBER_MISSING[k](canContact)).filter(Boolean).join(' OR ')})`;
+  return Object.hasOwn(MEMBER_MISSING, key) ? MEMBER_MISSING[key](canContact) || null : null;
+}
+
 app.get('/api/members', requirePerm('members.read'), (req, res) => {
   const {
     branch, q, status, school, residence,
@@ -1963,6 +2101,7 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     blood, age_min: ageMin, age_max: ageMax,
     parent_phone: parentPhone,
     joined_from: joinedFrom, joined_to: joinedTo,
+    missing, follow,
   } = req.query;
   const canContact = hasPerm(req, 'members.contact');
   let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
@@ -1998,6 +2137,10 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
       sql += ` AND (${phoneDigits('m.father_phone')} LIKE ? OR ${phoneDigits('m.mother_phone')} LIKE ?)`;
       params.push(`%${digits}%`, `%${digits}%`);
     }
+  }
+  if (missing) {
+    const blank = memberMissingSQL(String(missing), canContact);
+    if (blank) sql += ` AND ${blank}`;
   }
   if (q) {
     // One box for every way a قائد recognises a عنصر: name, school, quartier,
@@ -2058,7 +2201,10 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
   // نشاط بعدُ في الآخر. الترتيب ثابت، فالأسماء تبقى أبجدية داخل النسبة الواحدة.
   if (req.query.sort === 'attendance')
     rows.sort((a, b) => (a.attendance.rate ?? 101) - (b.attendance.rate ?? 101));
-  res.json(rows);
+  // «للمتابعة»: absent from their last three activities or more — the dashboard's
+  // follow-up and the red mark in the list, as a filter. The streak is only known
+  // once attendance is computed, so it is cut here rather than in SQL.
+  res.json(follow ? rows.filter((m) => m.status === 'active' && m.attendance.absences >= FOLLOW_UP_STREAK) : rows);
 });
 
 // Values actually present in the base, to fill the المدرسة / مكان السكن filters.
@@ -2146,17 +2292,20 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   const err = validateMember(req.body);
   if (err) return res.status(400).json({ error: err });
   if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  if (sexOutsideSection(req)) return res.status(403).json({ error: 'sex_outside_section' });
   const b = req.body;
   // IS, not =: two entries with the same name and no birth date are the same عنصر
-  // registered twice — the date is what tells real homonyms apart
+  // registered twice — the date is what tells real homonyms apart. Looked for in the
+  // new عنصر's own قسم only: the answer names a record, and the other قسم's stay unseen.
   const duplicate = db
     .prepare(
       `SELECT id FROM members
        WHERE lower(trim(first_name)) = lower(trim(?))
          AND lower(trim(last_name)) = lower(trim(?)) AND birth_date IS ?
+         AND branch_id IN (SELECT id FROM branches WHERE section = ?)
        LIMIT 1`
     )
-    .get(b.first_name, b.last_name, b.birth_date || null);
+    .get(b.first_name, b.last_name, b.birth_date || null, sectionOfBranch(b.branch_id));
   if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
@@ -2186,6 +2335,7 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   // Both the member's current فرقة and the one being assigned must be in scope
   if (!branchOk(req, existing.branch_id) || !branchOk(req, req.body.branch_id))
     return res.status(403).json({ error: 'forbidden' });
+  if (sexOutsideSection(req)) return res.status(403).json({ error: 'sex_outside_section' });
   // بلا members.contact لم يصل الهاتف و السكن إلى النموذج أصلًا (stripContact)، فيعودان
   // فارغين: حفظهما كما هما يمحو ما في القاعدة. تبقى القيم المسجّلة إذن.
   const b = hasPerm(req, 'members.contact')
@@ -2445,9 +2595,9 @@ const latestYear = () =>
   db.prepare('SELECT MAX(year) AS y FROM assignments').get().y ||
   null;
 
-// Assignments (with leader + branch names) for a given تشكيلة year.
+// Assignments (with leader + branch names) for a given تشكيلة year, of one قسم or both.
 // LEFT JOIN on leaders: a توصيف with no قائد yet is a real row, it just shows up unassigned.
-function assignmentsForYear(year) {
+function assignmentsForYear(year, section = null) {
   if (!year) return [];
   return db
     .prepare(
@@ -2457,10 +2607,10 @@ function assignmentsForYear(year) {
        LEFT JOIN leaders l ON l.id = a.leader_id
        LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN branch_groups g ON g.id = a.group_id
-       WHERE a.year = ?
-       ORDER BY a.role_type = 'amana', COALESCE(b.sort_order, 999), a.sort_order, a.id`
+       WHERE a.year = ?${section ? ' AND a.section = ?' : ''}
+       ORDER BY a.section = 'F', a.role_type = 'amana', COALESCE(b.sort_order, 999), a.sort_order, a.id`
     )
-    .all(year);
+    .all(...(section ? [year, section] : [year]));
 }
 
 // ---------- فرقة القادة: بطاقة تقدم القائد ----------
@@ -2607,6 +2757,9 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'invalid preset' });
   const branches = parseBranchList(req.body?.branches);
   if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
+  // حساب القائد في قسم القائد نفسه، دائمًا: قائدة لا يُولَّد لها حساب يرى الفتيان
+  if (!branchesFitSection(branches, leader.section))
+    return res.status(400).json({ error: 'branch_outside_section' });
   const password = generatePassword();
   const perms = ACCOUNT_PRESETS[preset];
   const permsJson = perms ? JSON.stringify(perms) : null;
@@ -2615,17 +2768,18 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
     if (existing) {
       db.prepare(
         `UPDATE users SET username = ?, password_hash = ?, display_name = ?, role = 'user', branches = ?,
-           perms = ?, active = 1, must_change_password = 1 WHERE id = ?`
-      ).run(username, hashPassword(password), leaderName, branches, permsJson, existing.id);
+           perms = ?, section = ?, active = 1, must_change_password = 1 WHERE id = ?`
+      ).run(username, hashPassword(password), leaderName, branches, permsJson, leader.section, existing.id);
       id = existing.id;
     } else {
       id = db
         .prepare(
           `INSERT INTO users
-            (username, password_hash, display_name, role, branches, perms, leader_id, active, must_change_password)
-           VALUES (?, ?, ?, 'user', ?, ?, ?, 1, 1)`
+            (username, password_hash, display_name, role, branches, perms, section, leader_id, active, must_change_password)
+           VALUES (?, ?, ?, 'user', ?, ?, ?, ?, 1, 1)`
         )
-        .run(username, hashPassword(password), leaderName, branches, permsJson, leader.id).lastInsertRowid;
+        .run(username, hashPassword(password), leaderName, branches, permsJson, leader.section, leader.id)
+        .lastInsertRowid;
     }
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'username_taken' });
@@ -2638,8 +2792,9 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
 });
 
 app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) => {
-  const l = db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.params.id);
+  const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'leader not found' });
+  if (!leaderOk(req, l)) return res.status(403).json({ error: 'forbidden' });
   const self = Number(req.user.leader_id) === Number(l.id) && hasPerm(req, 'leaders.progress.self');
   if (req.user.role !== 'admin' && !self && !hasPerm(req, 'leaders.progress.manage'))
     return res.status(403).json({ error: 'forbidden' });
@@ -2663,15 +2818,16 @@ app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) =>
 });
 
 // Minimal names for session/preparation forms. This intentionally excludes addresses,
-// phones, account usernames, training and attendance history.
+// phones, account usernames, training and attendance history. `section` lets a form
+// opened on both أقسام offer only the قادة of the نشاط's own قسم.
 app.get(
   '/api/leader-options',
   requireAnyPerm('sessions.read', 'sessions.create', 'sessions.attendance'),
   (req, res) => {
     res.json(
       db.prepare(
-        `SELECT id, first_name, father_name, last_name, photo, status
-         FROM leaders ORDER BY status != 'active', last_name, first_name`
+        `SELECT id, first_name, father_name, last_name, photo, status, section
+         FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY status != 'active', last_name, first_name`
       ).all()
     );
   }
@@ -2690,7 +2846,7 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
           WHERE sl.leader_id = l.id AND sl.status = 'absent' AND s.kind != 'visit') AS absent_count,
         (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
           WHERE sl.leader_id = l.id AND s.kind = 'visit') AS visits_count
-       FROM leaders l ORDER BY l.last_name, l.first_name`
+       FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY l.last_name, l.first_name`
     )
     .all();
   const year = latestYear();
@@ -2730,6 +2886,7 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
 app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
   const l = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'leader not found' });
+  if (!leaderOk(req, l)) return res.status(403).json({ error: 'forbidden' });
   const assignments = db
     .prepare(
       `SELECT a.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
@@ -2888,15 +3045,159 @@ app.post('/api/leaders', requireAdmin, (req, res) => {
   const err = validateLeader(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
+  if (b.section !== undefined && !parseSection(b.section))
+    return res.status(400).json({ error: 'invalid section' });
+  // Said explicitly, or the قسم the admin is looking at, or قسم الفتيان as before
+  const section = parseSection(b.section) || activeSection(req) || 'M';
   const info = db
     .prepare(
-      `INSERT INTO leaders (${LEADER_COLUMNS.join(', ')})
-       VALUES (${LEADER_COLUMNS.map(() => '?').join(', ')})`
+      `INSERT INTO leaders (${LEADER_COLUMNS.join(', ')}, section)
+       VALUES (${LEADER_COLUMNS.map(() => '?').join(', ')}, ?)`
     )
-    .run(...leaderValues(b));
+    .run(...leaderValues(b), section);
   const created = db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'leader', created.id, null, publicLeader(created));
   res.status(201).json(publicLeader(created));
+});
+
+// ---------- اشتراك القادة الشهري ----------
+// كل قائد يدفع قيمة ثابتة كل شهر، بالسنة الميلادية (كانون الثاني ← كانون الأول).
+// صفّ في leader_dues = شهر مدفوع؛ غيابه = غير مدفوع. الشهر يُستحقّ متى حلّ، ابتداءً
+// من DUES_START — ما قبله لا يُطالَب به أحد.
+// التسجيل لمن مُنح leaders.dues وحده؛ و كل قائد يرى اشتراكه هو من /api/me/dues.
+
+const LEADER_DUE_MONTHLY = 5000;
+const DUES_START = '2026-01';
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const YEAR_RE = /^\d{4}$/;
+
+// '2026' -> ['2026-01', ..., '2026-12']
+const yearMonths = (year) => Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+const currentMonth = () => todayISO().slice(0, 7);
+// مستحقّ = حلّ و ليس قبل بدء الاشتراك
+const monthOwed = (month) => month >= DUES_START && month <= currentMonth();
+
+// السنوات المعروضة: من سنة البدء إلى ما بعد الحالية بسنتين، و أبعد إن سُجّل دفع مقدَّم
+function duesYears() {
+  const first = Number(DUES_START.slice(0, 4));
+  const lastPaid = db.prepare('SELECT MAX(month) AS m FROM leader_dues').get().m;
+  const last = Math.max(Number(currentMonth().slice(0, 4)) + 2, lastPaid ? Number(lastPaid.slice(0, 4)) : 0);
+  return Array.from({ length: last - first + 1 }, (_, i) => String(first + i));
+}
+
+function duesYearParam(req) {
+  const y = req.query.year ? String(req.query.year).trim() : currentMonth().slice(0, 4);
+  return YEAR_RE.test(y) ? y : null;
+}
+
+const duesOfLeader = (leaderId, months) =>
+  Object.fromEntries(
+    db
+      .prepare(
+        `SELECT month, amount, paid_at, recorded_by FROM leader_dues
+         WHERE leader_id = ? AND month >= ? AND month <= ?`
+      )
+      .all(leaderId, months[0], months[months.length - 1])
+      .map((r) => [r.month, { amount: r.amount, paid_at: r.paid_at, recorded_by: r.recorded_by }])
+  );
+
+// حصيلة قائد على كل السنوات: ما دفعه، و الأشهر التي حلّت و لم يدفعها
+function duesSummary(leaderId) {
+  const paidMonths = new Set(
+    db.prepare('SELECT month FROM leader_dues WHERE leader_id = ?').all(leaderId).map((r) => r.month)
+  );
+  const unpaid = [];
+  for (const y of duesYears())
+    for (const m of yearMonths(y)) if (monthOwed(m) && !paidMonths.has(m)) unpaid.push(m);
+  const paidTotal =
+    db.prepare('SELECT COALESCE(SUM(amount), 0) AS n FROM leader_dues WHERE leader_id = ?').get(leaderId).n;
+  return { paid_total: paidTotal, unpaid_months: unpaid, owed_total: unpaid.length * LEADER_DUE_MONTHLY };
+}
+
+const duesMeta = (year) => ({
+  year,
+  years: duesYears(),
+  months: yearMonths(year),
+  monthly: LEADER_DUE_MONTHLY,
+  start_month: DUES_START,
+  current_month: currentMonth(),
+});
+
+app.get('/api/leader-dues', requirePerm('leaders.dues'), (req, res) => {
+  const year = duesYearParam(req);
+  if (!year) return res.status(400).json({ error: 'invalid year' });
+  const months = yearMonths(year);
+  // القادة الفعّالون، و من أُرشف منهم و قد دفع شيئًا في هذه السنة — دفعه لا يختفي من الجدول
+  const leaders = db
+    .prepare(
+      `SELECT l.id, l.first_name, l.father_name, l.last_name, l.photo, l.status, l.section
+       FROM leaders l
+       WHERE (l.status = 'active' OR EXISTS (
+               SELECT 1 FROM leader_dues d WHERE d.leader_id = l.id AND d.month >= ? AND d.month <= ?))
+         ${leaderScopeSQL(req)}
+       ORDER BY l.status != 'active', l.first_name, l.last_name`
+    )
+    .all(months[0], months[11])
+    .map((l) => ({ ...l, paid: duesOfLeader(l.id, months) }));
+  res.json({ ...duesMeta(year), leaders });
+});
+
+function sendLeaderDues(req, res, leaderId) {
+  const year = duesYearParam(req);
+  if (!year) return res.status(400).json({ error: 'invalid year' });
+  res.json({
+    ...duesMeta(year),
+    leader_id: leaderId,
+    paid: duesOfLeader(leaderId, yearMonths(year)),
+    summary: duesSummary(leaderId),
+    can_edit: hasPerm(req, 'leaders.dues'),
+  });
+}
+
+// اشتراك القائد صاحب الحساب — بلا أي صلاحية: كل قائد يعرف ما دفعه و ما بقي عليه
+app.get('/api/me/dues', (req, res) => {
+  const l = req.user.leader_id
+    ? db.prepare('SELECT id FROM leaders WHERE id = ?').get(req.user.leader_id)
+    : null;
+  if (!l) return res.json(null);
+  sendLeaderDues(req, res, l.id);
+});
+
+// اشتراك قائد واحد، في ملفّه — لمن يسجّل الاشتراكات، و للقائد نفسه
+app.get('/api/leaders/:id/dues', (req, res) => {
+  const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(req.params.id);
+  const self = l && Number(req.user.leader_id) === l.id;
+  if (!l || (!self && !leaderOk(req, l))) return res.status(404).json({ error: 'leader not found' });
+  if (!self && !hasPerm(req, 'leaders.dues')) return res.status(403).json({ error: 'forbidden' });
+  sendLeaderDues(req, res, l.id);
+});
+
+// paid: true يسجّل الشهر مدفوعًا بالقيمة الحالية، false يمحوه
+app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues'), (req, res) => {
+  const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(req.params.id);
+  if (!l || !leaderOk(req, l)) return res.status(404).json({ error: 'leader not found' });
+  const month = req.params.month;
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'invalid month' });
+  if (typeof req.body?.paid !== 'boolean') return res.status(400).json({ error: 'invalid paid' });
+  const before = db.prepare('SELECT * FROM leader_dues WHERE leader_id = ? AND month = ?').get(l.id, month) || null;
+  if (req.body.paid) {
+    if (!before)
+      db.prepare('INSERT INTO leader_dues (leader_id, month, amount, recorded_by) VALUES (?, ?, ?, ?)').run(
+        l.id,
+        month,
+        LEADER_DUE_MONTHLY,
+        req.user.display_name || req.user.username
+      );
+  } else {
+    db.prepare('DELETE FROM leader_dues WHERE leader_id = ? AND month = ?').run(l.id, month);
+  }
+  const after = db.prepare('SELECT * FROM leader_dues WHERE leader_id = ? AND month = ?').get(l.id, month) || null;
+  if (!!before !== !!after) auditEvent(req, 'update', 'leader_due', `${l.id}:${month}`, before, after);
+  res.json({
+    month,
+    paid: after ? { amount: after.amount, paid_at: after.paid_at, recorded_by: after.recorded_by } : null,
+    summary: duesSummary(l.id),
+  });
 });
 
 app.put('/api/leaders/:id', requireAdmin, (req, res) => {
@@ -2905,9 +3206,24 @@ app.put('/api/leaders/:id', requireAdmin, (req, res) => {
   const err = validateLeader(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
-  db.prepare(
-    `UPDATE leaders SET ${LEADER_COLUMNS.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`
-  ).run(...leaderValues(b), req.params.id);
+  const section = b.section === undefined ? existing.section : parseSection(b.section);
+  if (!section) return res.status(400).json({ error: 'invalid section' });
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE leaders SET ${LEADER_COLUMNS.map((c) => `${c} = ?`).join(', ')}, section = ? WHERE id = ?`
+    ).run(...leaderValues(b), section, req.params.id);
+    // A قائد moved to the other قسم takes his account with him: left behind, it would
+    // keep reading the قسم he no longer belongs to. فرق of the old قسم drop out of
+    // its list — an emptied list sees no فرقة until the admin grants the new ones.
+    if (section !== existing.section) {
+      for (const u of db.prepare("SELECT id, branches FROM users WHERE leader_id = ? AND role != 'admin'").all(existing.id)) {
+        const kept = u.branches
+          ? JSON.stringify(JSON.parse(u.branches).filter((id) => sectionOfBranch(id) === section))
+          : null;
+        db.prepare('UPDATE users SET section = ?, branches = ? WHERE id = ?').run(section, kept, u.id);
+      }
+    }
+  })();
   if ((b.status || 'active') === 'active')
     db.prepare('UPDATE leaders SET archived_at = NULL, archived_by = NULL WHERE id = ?').run(req.params.id);
   // Refresh the name snapshot on sessions this leader animated — الاسم الثلاثي حين
@@ -2985,7 +3301,10 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
     .all()
     .map((r) => r.year);
   const year = req.query.year || years[0] || null;
-  const template = tachkilaTemplate();
+  // The year is the فوج's, its توصيفات are each قسم's: a قسم reads its own rows and
+  // its own part of the template
+  const section = activeSection(req);
+  const template = tachkilaTemplate(section);
   const titles = new Set(
     (year ? db.prepare('SELECT title FROM assignments WHERE year = ?').all(year) : []).map((r) => r.title.trim())
   );
@@ -2998,7 +3317,7 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
     locked_at: lock?.locked_at || null,
     locked_by: lock?.locked_by || null,
     locked_years: db.prepare('SELECT year FROM tachkila_locks').all().map((r) => r.year),
-    assignments: assignmentsForYear(year),
+    assignments: assignmentsForYear(year, section),
     // Standard titles, plus how many of them this year is still missing (offer to fill them in)
     template: template.map((r) => r.title),
     missing_count: year ? template.filter((r) => !titles.has(r.title)).length : template.length,
@@ -3008,17 +3327,28 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
 // '' from an unselected <select> means "no one assigned yet", not an invalid id
 const optionalId = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
-function validateAssignment(body, selfId = null) {
+// قسم التوصيف: قسم فرقته إن كان توصيف فرقة، و إلا فما طُلب، أو القسم المعروض، أو
+// قسم التوصيف الحالي عند التعديل، أو الفتيان
+function assignmentSection(req, body, existing = null) {
+  const branchId = optionalId(body.branch_id);
+  if (branchId !== null) return sectionOfBranch(branchId);
+  return parseSection(req.body?.section) || existing?.section || activeSection(req) || 'M';
+}
+
+function validateAssignment(body, selfId = null, section = 'M') {
   if (!scoutYearRange(String(body.year || '').trim())) return 'invalid year';
   if (!body.title || !String(body.title).trim()) return 'title required';
   const leaderId = optionalId(body.leader_id);
   if (leaderId !== null) {
-    const leader = db.prepare('SELECT id, status FROM leaders WHERE id = ?').get(leaderId);
+    const leader = db.prepare('SELECT id, status, section FROM leaders WHERE id = ?').get(leaderId);
     const currentLeaderId = selfId
       ? db.prepare('SELECT leader_id FROM assignments WHERE id = ?').get(selfId)?.leader_id
       : null;
     if (!leader || (leader.status !== 'active' && Number(currentLeaderId) !== Number(leaderId)))
       return 'invalid leader_id';
+    // قائد في توصيف من القسم الآخر يُظهر اسمه في تشكيلة ليست له (section null = فرقة
+    // غير موجودة، يرفضها الفحص التالي)
+    if (section && leader.section !== section) return 'leader_outside_section';
   }
   const branchId = optionalId(body.branch_id);
   if (branchId !== null && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
@@ -3032,13 +3362,14 @@ function validateAssignment(body, selfId = null) {
     if (branchId !== null) return 'invalid parent_id';
     if (selfId !== null && Number(selfId) === parentId) return 'invalid parent_id';
     const parent = db
-      .prepare('SELECT year, role_type, parent_id FROM assignments WHERE id = ?')
+      .prepare('SELECT year, role_type, parent_id, section FROM assignments WHERE id = ?')
       .get(parentId);
     if (
       !parent ||
       parent.role_type !== 'amana' ||
       parent.parent_id !== null ||
-      parent.year !== String(body.year).trim()
+      parent.year !== String(body.year).trim() ||
+      parent.section !== section
     )
       return 'invalid parent_id';
   }
@@ -3046,7 +3377,10 @@ function validateAssignment(body, selfId = null) {
 }
 
 app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
-  const err = validateAssignment(req.body);
+  if (req.body?.section !== undefined && !parseSection(req.body.section))
+    return res.status(400).json({ error: 'invalid section' });
+  const section = assignmentSection(req, req.body);
+  const err = validateAssignment(req.body, null, section);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
   db.prepare('INSERT OR IGNORE INTO tachkila_years (year, created_by) VALUES (?, ?)').run(
@@ -3056,7 +3390,7 @@ app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (
   const branchId = optionalId(b.branch_id);
   const info = db
     .prepare(
-      'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order, section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .run(
       String(b.year).trim(),
@@ -3066,7 +3400,8 @@ app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (
       resolveGroupId(b.group_id, branchId) ?? null,
       branchId ? null : optionalId(b.parent_id),
       branchId ? 'branch' : 'amana',
-      Number.isInteger(b.sort_order) ? b.sort_order : 0
+      Number.isInteger(b.sort_order) ? b.sort_order : 0,
+      section
     );
   res.status(201).json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(info.lastInsertRowid));
 });
@@ -3078,8 +3413,11 @@ app.put(
   (req, res) => {
     const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'assignment not found' });
+    if (req.body?.section !== undefined && !parseSection(req.body.section))
+      return res.status(400).json({ error: 'invalid section' });
     const body = { ...existing, ...req.body };
-    const err = validateAssignment(body, req.params.id);
+    const section = assignmentSection(req, body, existing);
+    const err = validateAssignment(body, req.params.id, section);
     if (err) return res.status(400).json({ error: err });
     const branchId = optionalId(body.branch_id);
     const parentId = branchId ? null : optionalId(body.parent_id);
@@ -3090,7 +3428,8 @@ app.put(
     )
       return res.status(400).json({ error: 'invalid parent_id' });
     db.prepare(
-      `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, group_id = ?, parent_id = ?, role_type = ?, sort_order = ?
+      `UPDATE assignments SET year = ?, leader_id = ?, title = ?, branch_id = ?, group_id = ?, parent_id = ?, role_type = ?, sort_order = ?,
+         section = ?
        WHERE id = ?`
     ).run(
       String(body.year).trim(),
@@ -3101,6 +3440,7 @@ app.put(
       parentId,
       branchId ? 'branch' : 'amana',
       Number.isInteger(body.sort_order) ? body.sort_order : existing.sort_order,
+      section,
       req.params.id
     );
     res.json(db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id));
@@ -3120,7 +3460,7 @@ app.delete('/api/tachkila/:id', requireAdmin, rejectLocked(assignmentYear), (req
 
 const insertAssignmentRow = () =>
   db.prepare(
-    'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO assignments (year, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order, section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
 
 // New تشكيلة year. `mode` decides what it starts with:
@@ -3140,7 +3480,7 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
     if (!from_year) return res.status(400).json({ error: 'from_year required' });
     rows = db
       .prepare(
-        'SELECT id, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order FROM assignments WHERE year = ? ORDER BY sort_order, id'
+        'SELECT id, leader_id, title, branch_id, group_id, parent_id, role_type, sort_order, section FROM assignments WHERE year = ? ORDER BY sort_order, id'
       )
       .all(from_year);
     if (rows.length === 0) return res.status(404).json({ error: 'source_year_empty' });
@@ -3160,7 +3500,7 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
     for (const r of rows) {
       const info = insert.run(
         target, r.leader_id ?? null, r.title, r.branch_id, r.group_id ?? null, null,
-        r.role_type, r.sort_order ?? 0
+        r.role_type, r.sort_order ?? 0, r.section
       );
       if (r.id !== undefined) idMap.set(r.id, info.lastInsertRowid);
     }
@@ -3187,10 +3527,12 @@ app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.yea
   const titles = new Set(
     db.prepare('SELECT title FROM assignments WHERE year = ?').all(year).map((r) => r.title.trim())
   );
-  const missing = tachkilaTemplate().filter((r) => !titles.has(r.title));
+  // The قسم on screen fills its own part of the template; both when both are shown
+  const missing = tachkilaTemplate(activeSection(req)).filter((r) => !titles.has(r.title));
   const insert = insertAssignmentRow();
   const run = db.transaction(() => {
-    for (const r of missing) insert.run(year, null, r.title, r.branch_id, null, null, r.role_type, r.sort_order);
+    for (const r of missing)
+      insert.run(year, null, r.title, r.branch_id, null, null, r.role_type, r.sort_order, r.section);
   });
   run();
   migrateAmanaHelpers();
@@ -3289,6 +3631,24 @@ function parseBranchCounts(v) {
   return out;
 }
 
+// ضيوف نشاط القادة: أسماء حرّة، مقصوصة الأطراف، بلا فراغ و بلا تكرار. null = طلب فاسد.
+const GUEST_NAME_MAX = 120;
+function parseGuestName(v) {
+  if (typeof v !== 'string') return null;
+  const name = v.trim().replace(/\s+/g, ' ');
+  return name && name.length <= GUEST_NAME_MAX ? name : null;
+}
+function parseGuestNames(v) {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > 200) return null;
+  const names = v.map(parseGuestName);
+  if (names.includes(null)) return null;
+  return [...new Set(names)];
+}
+const insertGuest = db.prepare('INSERT INTO session_guests (session_id, name, created_by) VALUES (?, ?, ?)');
+const guestsOf = (sessionId) =>
+  db.prepare('SELECT id, name FROM session_guests WHERE session_id = ? ORDER BY id').all(sessionId);
+
 const saveBranchCounts = db.transaction((sessionId, counts) => {
   db.prepare('DELETE FROM session_branch_counts WHERE session_id = ?').run(sessionId);
   const insert = db.prepare(
@@ -3311,32 +3671,47 @@ const SESSION_SORTS = {
 };
 
 app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
-  const { q, branch, from, to, leader, activity_type: activityType, kind } = req.query;
+  const { q, branch, from, to, leader, activity_type: activityType, kind, group } = req.query;
   let sql = `SELECT s.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
         COALESCE(${fullNameSQL('l')}, s.leader) AS leader,
         (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS branch_ids,
         (SELECT GROUP_CONCAT(sg.group_id) FROM session_groups sg WHERE sg.session_id = s.id) AS group_ids,
         (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id) AS branch_counts_total,
-        -- حضور نشاط القادة يسكن session_leaders لا attendance، فالأعداد تتبع النوع
-        (CASE WHEN s.kind = 'leaders'
-          THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'present')
-          ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') END) AS present_count,
-        (CASE WHEN s.kind = 'leaders'
-          THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
-          ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent') END) AS absent_count,
+        -- حضور نشاط القادة يسكن session_leaders، و عناصر فرقه المدعوّة في attendance:
+        -- الأعداد تجمع الاثنين، و ما سواه من الأنواع لا صفوف له في session_leaders تُعدّ
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present')
+          + (CASE WHEN s.kind = 'leaders'
+              THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'present')
+              ELSE 0 END) AS present_count,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'absent')
+          + (CASE WHEN s.kind = 'leaders'
+              THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
+              ELSE 0 END) AS absent_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count,
-        (CASE WHEN s.kind = 'leaders'
-          THEN (SELECT ROUND(100.0 * SUM(sl.status = 'present') / NULLIF(COUNT(sl.status), 0))
-                  FROM session_leaders sl WHERE sl.session_id = s.id)
-          ELSE (SELECT ROUND(100.0 * SUM(a.status = 'present') /
-                    NULLIF(SUM(a.status IN ('present', 'absent', 'excused')), 0))
-                  FROM attendance a WHERE a.session_id = s.id) END) AS rate
+        (SELECT ROUND(100.0 * SUM(m.status = 'present') / NULLIF(COUNT(*), 0)) FROM (
+           SELECT a.status FROM attendance a
+            WHERE a.session_id = s.id AND a.status IN ('present', 'absent', 'excused')
+           UNION ALL
+           SELECT sl.status FROM session_leaders sl
+            WHERE sl.session_id = s.id AND s.kind = 'leaders' AND sl.status IS NOT NULL) m) AS rate,
+        (SELECT COUNT(*) FROM session_guests g WHERE g.session_id = s.id) AS guest_count
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
        WHERE 1=1${sessionScopeSQL(req)}`;
   const params = [];
   // فلترة بفرقة: النشاط المشترك يظهر في قائمة كل فرقة يشملها، لا في الرئيسية وحدها
   if (branch) sql += ` AND ${sessionInBranchSQL(branch)}`;
+  // فلترة بطليعة: الأنشطة التي شاركت فيها — نشاط فرقتها المفتوح للفرقة كلها، و النشاط
+  // المحصور ببعض طلائعها إن كانت منها. حصّة طليعة أخرى من الفرقة نفسها تخرج.
+  if (group) {
+    const g = db.prepare('SELECT id, branch_id FROM branch_groups WHERE id = ?').get(intOr(group));
+    if (!g) sql += ' AND 0';
+    else
+      sql += ` AND ${sessionInBranchSQL(g.branch_id)} AND (
+          EXISTS (SELECT 1 FROM session_groups sg WHERE sg.session_id = s.id AND sg.group_id = ${g.id})
+          OR NOT EXISTS (SELECT 1 FROM session_groups sg JOIN branch_groups bg ON bg.id = sg.group_id
+                         WHERE sg.session_id = s.id AND bg.branch_id = ${g.branch_id}))`;
+  }
   // Dates are stored as YYYY-MM-DD, so plain string comparison sorts correctly
   if (from) { sql += ' AND s.date >= ?'; params.push(from); }
   if (to) { sql += ' AND s.date <= ?'; params.push(to); }
@@ -3353,8 +3728,9 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
     sql += ` AND (s.title LIKE ? OR COALESCE(${fullNameSQL('l')}, s.leader) LIKE ?
                   OR s.place LIKE ?
                   OR EXISTS (SELECT 1 FROM session_leaders sl JOIN leaders l2 ON l2.id = sl.leader_id
-                             WHERE sl.session_id = s.id AND (${fullNameSQL('l2')}) LIKE ?))`;
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+                             WHERE sl.session_id = s.id AND (${fullNameSQL('l2')}) LIKE ?)
+                  OR EXISTS (SELECT 1 FROM session_guests g WHERE g.session_id = s.id AND g.name LIKE ?))`;
+    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
   }
   sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
   const rows = db
@@ -3378,10 +3754,12 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   const branchless = kind === 'leaders' || kind === 'group';
   // نفس الحصّة قد تُعطى لفرقتين معًا: الطلب يرسل branch_ids، و branch_id القديم يبقى
   // مقبولًا. الأولى في القائمة هي الفرقة الرئيسية المخزّنة في sessions.branch_id.
+  // نشاط القادة يقبلها أيضًا، اختياريةً: فرق مدعوّة يُضاف عناصرها إلى لائحته، و هو
+  // يبقى للفوج (branch_id NULL) فلا يُحسب نشاطًا لتلك الفرق و لا يمسّ معدّلاتها.
   const rawBranchIds = Array.isArray(req.body.branch_ids)
     ? req.body.branch_ids
     : [branch_id].filter((v) => v !== undefined && v !== null && v !== '');
-  const branchIds = branchless ? [] : [...new Set(rawBranchIds.map(Number))];
+  const branchIds = kind === 'group' ? [] : [...new Set(rawBranchIds.map(Number))];
   const branchId = branchless ? null : (branchIds[0] ?? null);
   if (!title || !String(title).trim() || !validISODate(date))
     return res.status(400).json({ error: 'invalid title or date' });
@@ -3407,6 +3785,16 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(b))
       return res.status(400).json({ error: 'invalid branch_id' });
   }
+  // قسم النشاط: قسم فرقه، و كلها من قسم واحد — نشاط يجمع الفتيان و الفتيات لا يُرى
+  // كاملًا من أي من القسمين. بلا فرق (نشاط قادة، نشاط عام): قسم المستخدم، أو القسم
+  // الذي اختاره الأدمن في النموذج، أو الفتيان كما كان الفوج.
+  if (req.body.section !== undefined && req.body.section !== null && !parseSection(req.body.section))
+    return res.status(400).json({ error: 'invalid section' });
+  const branchSections = [...new Set(branchIds.map(sectionOfBranch))];
+  if (branchSections.length > 1) return res.status(400).json({ error: 'mixed_sections' });
+  const section = branchSections[0] || activeSection(req) || parseSection(req.body.section) || 'M';
+  if (branchCounts.some((c) => sectionOfBranch(c.branch_id) !== section))
+    return res.status(400).json({ error: 'invalid branch_counts' });
   // مجموعات النشاط — نشاط فرقة فقط. الفرقة التي اختيرت لها مجموعة أو أكثر لا يشارك
   // منها إلا عناصرها؛ و التي لم تُختر لها مجموعة تشارك كاملةً. لا اختيار = كل الفرق كاملةً.
   const rawGroupIds = kind === 'activity' && Array.isArray(req.body.group_ids) ? req.body.group_ids : [];
@@ -3429,16 +3817,19 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   }
   if (fee !== undefined && fee !== null && (typeof fee !== 'number' || fee < 0))
     return res.status(400).json({ error: 'invalid fee' });
+  // قادة النشاط من قسمه وحده
   let leaderRow = null;
   if (leader_id !== undefined && leader_id !== null) {
-    leaderRow = db.prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active'").get(leader_id);
+    leaderRow = db
+      .prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active' AND section = ?")
+      .get(leader_id, section);
     if (!leaderRow) return res.status(400).json({ error: 'invalid leader_id' });
   }
   const helpers = helper_ids === undefined || helper_ids === null ? [] : helper_ids;
   if (!Array.isArray(helpers) || !helpers.every((h) => Number.isInteger(h)))
     return res.status(400).json({ error: 'invalid helper_ids' });
   for (const h of helpers) {
-    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active'").get(h))
+    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active' AND section = ?").get(h, section))
       return res.status(400).json({ error: 'invalid helper_ids' });
   }
   // زيارة الأهل: the visited عناصر are marked present straight away, so the visit
@@ -3471,6 +3862,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       return res.status(400).json({ error: 'invalid prep_card_id' });
     if (!branchOk(req, card.branch_id)) return res.status(403).json({ error: 'forbidden' });
   }
+  // ضيوف نشاط القادة: أسماء حرّة لمن ليس في البرنامج
+  const guestNames = kind === 'leaders' ? parseGuestNames(req.body.guest_names) : [];
+  if (guestNames === null) return res.status(400).json({ error: 'invalid guest_names' });
   // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
   const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leader || null;
   const insertAnimator = db.prepare(
@@ -3487,8 +3881,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     sessionId = db
       .prepare(
         `INSERT INTO sessions
-          (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind, plan_item_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind,
+           plan_item_id, section)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         String(title).trim(),
@@ -3503,7 +3898,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         activityType,
         leadersCount,
         kind,
-        planItemId
+        planItemId,
+        section
       )
       .lastInsertRowid;
     if (leaderRow) insertAnimator.run(sessionId, leaderRow.id, 'main');
@@ -3522,7 +3918,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     // كل عناصر النشاط غائبون افتراضيًا: القائد يقلب الحاضرين وحدهم. المعدّلات لا
     // تحسب إلا الأنشطة التي حلّ تاريخها، فنشاطٌ مقبل لا يضرّ أحدًا. (After the group inserts —
     // the group-scope SQL reads session_groups for this very session.)
-    if (kind === 'activity') {
+    // نشاط القادة يبني لائحة فرقه المدعوّة بالطريقة نفسها؛ بلا فرق مدعوّة لا لائحة.
+    if (kind === 'activity' || (kind === 'leaders' && branchIds.length > 0)) {
       const rosterBranches = branchIds.map(intOr).join(',') || -1;
       db.prepare(
         `INSERT OR IGNORE INTO attendance (session_id, member_id, status, branch_id, group_id)
@@ -3551,6 +3948,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     if (prepCardId !== null)
       db.prepare("UPDATE prep_cards SET session_id = ?, updated_at = datetime('now') WHERE id = ?")
         .run(sessionId, prepCardId);
+    for (const name of guestNames) insertGuest.run(sessionId, name, req.user.display_name || req.user.username);
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   notifyAdmins(req, 'session_create', row);
@@ -3594,10 +3992,11 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   const rosterList = myBranchIds.map(intOr).join(',') || -1;
   // A نشاط lists the whole فرقة to be marked; a زيارة الأهل concerns only the
   // عناصر actually visited, so the rest of the فرقة has no row here. A نشاط قادة
-  // and a نشاط عام للفوج have no عناصر roster at all.
+  // lists the عناصر of its invited فرق only (none invited = no rows), and a نشاط
+  // عام للفوج has no عناصر roster at all.
   // النشاط المحصور بمجموعات لا يعرض إلا عناصرها: الفرقة كبيرة و الحصّة لا تسعها،
   // فالقائد يضع حضور مجموعته وحدها بدل التنقيب عن أسمائها في قائمة الفرقة كلها.
-  const roster = ['leaders', 'group'].includes(s.kind) ? [] : db
+  const roster = s.kind === 'group' ? [] : db
     .prepare(
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
               COALESCE(a.branch_id, m.branch_id) AS branch_id,
@@ -3619,21 +4018,26 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
             .get(m.id).d || null,
       }).consecutive_absences,
     }));
-  // نشاط قادة: حضوره هو القادة أنفسهم، فاللائحة كل قائد نشيط — لا المنشّطون
-  // المضافون يدًا وحدهم. قائد غير نشيط سُجّل حضوره من قبل يبقى ظاهرًا.
-  const animators = db
-    .prepare(
-      s.kind === 'leaders'
-        ? `SELECT l.id AS leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
-           FROM leaders l LEFT JOIN session_leaders sl ON sl.leader_id = l.id AND sl.session_id = ?
-           WHERE l.status = 'active' OR sl.status IS NOT NULL
-           ORDER BY sl.role = 'main' DESC, l.last_name, l.first_name`
-        : `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
-           FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
-           WHERE sl.session_id = ?
-           ORDER BY sl.role = 'helper', l.last_name, l.first_name`
-    )
-    .all(s.id);
+  // نشاط قادة: حضوره هو القادة أنفسهم، فاللائحة كل قائد نشيط من قسم النشاط — لا
+  // المنشّطون المضافون يدًا وحدهم. قائد غير نشيط سُجّل حضوره من قبل يبقى ظاهرًا.
+  const animators =
+    s.kind === 'leaders'
+      ? db
+          .prepare(
+            `SELECT l.id AS leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+             FROM leaders l LEFT JOIN session_leaders sl ON sl.leader_id = l.id AND sl.session_id = ?
+             WHERE l.section = ? AND (l.status = 'active' OR sl.status IS NOT NULL)
+             ORDER BY sl.role = 'main' DESC, l.last_name, l.first_name`
+          )
+          .all(s.id, s.section)
+      : db
+          .prepare(
+            `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+             FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
+             WHERE sl.session_id = ?
+             ORDER BY sl.role = 'helper', l.last_name, l.first_name`
+          )
+          .all(s.id);
   // الأجرة و مبالغ الاشتراكات تسقط معًا عمّن لا يملك صلاحية رؤية المبالغ
   const payload = stripFee(req, {
     ...s,
@@ -3644,6 +4048,8 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     subscriptions: sessionSubscriptions(s.id),
     branch_counts: branchCountsOf(s.id),
     branch_ids: branchIds,
+    // ضيوف نشاط القادة — أسماء حرّة من خارج البرنامج
+    guests: guestsOf(s.id),
     // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها
     prep_cards: db
       .prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id')
@@ -3666,11 +4072,14 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
 // عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,
 // the same way présence is marked on the other kinds of نشاط.
 app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db.prepare('SELECT id, title, branch_id, kind, section FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   if (s.kind !== 'group') return res.status(400).json({ error: 'not_a_group_activity' });
   const counts = parseBranchCounts(req.body?.branch_counts);
-  if (counts === null) return res.status(400).json({ error: 'invalid branch_counts' });
+  // الأعداد لفرق قسم النشاط وحدها
+  if (counts === null || counts.some((c) => sectionOfBranch(c.branch_id) !== s.section))
+    return res.status(400).json({ error: 'invalid branch_counts' });
   const raw = req.body?.leaders_count;
   const leadersCount = raw === undefined || raw === null || raw === '' ? null : Number(raw);
   if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
@@ -3685,11 +4094,12 @@ app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, r
 
 // Add / remove helpers and mark animator présence on a session
 app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db.prepare('SELECT id, title, branch_id, kind, section FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   const { leader_id, status, remove } = req.body;
-  if (!db.prepare('SELECT id FROM leaders WHERE id = ?').get(leader_id))
+  // منشّطو النشاط من قسمه وحده
+  if (!db.prepare('SELECT id FROM leaders WHERE id = ? AND section = ?').get(leader_id, s.section))
     return res.status(400).json({ error: 'invalid leader_id' });
   if (remove) {
     db.prepare("DELETE FROM session_leaders WHERE session_id = ? AND leader_id = ? AND role = 'helper'")
@@ -3705,6 +4115,31 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
   ).run(s.id, leader_id, status ?? null);
   notifyAdmins(req, 'animators', s);
   res.json({ ok: true });
+});
+
+// ضيوف نشاط القادة: يُضافون و يُحذفون بعد الإنشاء أيضًا — الضيف يُعرف غالبًا يوم النشاط
+app.post('/api/sessions/:id/guests', requirePerm('sessions.attendance'), (req, res) => {
+  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  if (s.kind !== 'leaders') return res.status(400).json({ error: 'not_a_leaders_activity' });
+  const name = parseGuestName(req.body?.name);
+  if (name === null) return res.status(400).json({ error: 'invalid name' });
+  insertGuest.run(s.id, name, req.user.display_name || req.user.username);
+  notifyAdmins(req, 'animators', s);
+  res.status(201).json({ guests: guestsOf(s.id) });
+});
+
+app.delete('/api/sessions/:id/guests/:guestId', requirePerm('sessions.attendance'), (req, res) => {
+  const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  const r = db
+    .prepare('DELETE FROM session_guests WHERE id = ? AND session_id = ?')
+    .run(intOr(req.params.guestId), s.id);
+  if (r.changes === 0) return res.status(404).json({ error: 'guest not found' });
+  notifyAdmins(req, 'animators', s);
+  res.json({ guests: guestsOf(s.id) });
 });
 
 app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (req, res) => {
@@ -3788,9 +4223,12 @@ function parsePrepCard(req) {
     return { error: 'invalid matalib' };
   const total = db.prepare('SELECT total_requirements FROM branches WHERE id = ?').get(branchId).total_requirements;
   if (nums.some((n) => n > total)) return { error: 'invalid matalib' };
+  // القائد الذي أعدّها من قسم فرقتها
   let leaderRow = null;
   if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
-    leaderRow = db.prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active'").get(b.leader_id);
+    leaderRow = db
+      .prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active' AND section = ?")
+      .get(b.leader_id, sectionOfBranch(branchId));
     if (!leaderRow) return { error: 'invalid leader_id' };
   }
   // النشاط الذي حُضِّرت له — اختياري: البطاقة تُكتب قبل أن يوجد النشاط غالبًا،
@@ -3978,7 +4416,10 @@ app.get('/api/dashboard', (req, res) => {
     'SELECT id, date FROM prep_cards WHERE branch_id = ? AND date >= ? ORDER BY date, id LIMIT 3'
   );
   const branches = db
-    .prepare(`SELECT id, name_fr, name_ar FROM branches WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY sort_order, id`)
+    .prepare(
+      `SELECT id, name_fr, name_ar, section FROM branches
+        WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY section = 'F', sort_order, id`
+    )
     .all()
     .map((b) => {
       const out = {
@@ -4101,13 +4542,16 @@ app.get('/api/dashboard', (req, res) => {
         .prepare(
           `SELECT s.id, s.title, s.date, s.kind, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
              (SELECT COUNT(*) FROM session_branches sb WHERE sb.session_id = s.id) AS branch_count,
+             -- نشاط القادة: القادة أنفسهم + عناصر فرقه المدعوّة
              (CASE WHEN s.kind = 'leaders'
                 THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'present')
+                   + (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present')
                 WHEN s.kind = 'group'
                 THEN (SELECT COALESCE(SUM(c.count), 0) FROM session_branch_counts c WHERE c.session_id = s.id)
                 ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') END) AS present_count,
              (CASE WHEN s.kind = 'leaders'
                 THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
+                   + (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status IN ('absent', 'excused'))
                 ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status IN ('absent', 'excused')) END) AS absent_count,
              (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'unmarked') AS unmarked_count
            FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
@@ -4138,7 +4582,7 @@ app.get('/api/dashboard', (req, res) => {
           .get().n
       : null,
     leaders: hasPerm(req, 'leaders.read')
-      ? db.prepare("SELECT COUNT(*) AS n FROM leaders WHERE status = 'active'").get().n
+      ? db.prepare(`SELECT COUNT(*) AS n FROM leaders l WHERE status = 'active'${leaderScopeSQL(req)}`).get().n
       : null,
     month,
     trend,
@@ -4148,10 +4592,10 @@ app.get('/api/dashboard', (req, res) => {
     unpaid,
     recent,
     promotions,
-    birthdays: upcomingBirthdays().filter(
-      (b) =>
-        branchOk(req, b.branch_id) &&
-        (b.kind === 'leader' ? hasPerm(req, 'leaders.read') : hasPerm(req, 'members.read'))
+    birthdays: upcomingBirthdays().filter((b) =>
+      b.kind === 'leader'
+        ? leaderOk(req, b) && hasPerm(req, 'leaders.read')
+        : branchOk(req, b.branch_id) && hasPerm(req, 'members.read')
     ),
   });
 });
@@ -4203,6 +4647,9 @@ app.get('/api/export/:kind/:id.pdf', async (req, res) => {
       url: `${clientBaseUrl()}/print/${req.params.kind}/${req.params.id}${printQuery(req.query)}`,
       token: req.token,
       lang,
+      // The sheet reads the same قسم the admin is looking at (a restricted account's
+      // own قسم wins on the server anyway)
+      section: activeSection(req),
     });
     // The tab title ("Fiche du membre — Ali Ahmad") names the file
     const name = `${(title || 'export')

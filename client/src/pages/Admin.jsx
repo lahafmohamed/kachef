@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
+import { useSection } from '../section';
 import { branchName } from '../utils';
 import Credentials from '../components/Credentials';
+import SectionField from '../components/SectionField';
 import {
   Badge,
   Button,
@@ -76,6 +78,7 @@ const PERM_GROUPS = [
       { key: 'leaders.read', label: 'admin.permLeadersRead' },
       { key: 'leaders.progress.self', label: 'admin.permLeadersProgressSelf' },
       { key: 'leaders.progress.manage', label: 'admin.permLeadersProgress' },
+      { key: 'leaders.dues', label: 'admin.permLeadersDues' },
     ],
   },
 ];
@@ -92,6 +95,8 @@ const EMPTY_USER = {
   role: 'user',
   branches: [],
   perms: [...ALL_PERM_KEYS],
+  // 'M' | 'F' | '' (both أقسام) — the form opens on the قسم being looked at
+  section: 'M',
 };
 
 // The server sends perms normalized to the granular array; null = full access
@@ -204,6 +209,15 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
     }));
   }
 
+  // فرق an account may be limited to: those of its قسم. Changing the قسم drops the
+  // ticks of the other one — the server would refuse them anyway.
+  const branchesOfSection = (s) => (s ? branches.filter((b) => b.section === s) : branches);
+  const visibleBranches = branchesOfSection(form.section);
+  function setSection(s) {
+    const keep = new Set(branchesOfSection(s).map((b) => b.id));
+    setForm((f) => ({ ...f, section: s, branches: f.branches.filter((id) => keep.has(id)) }));
+  }
+
   function togglePerm(key) {
     setForm((f) => ({
       ...f,
@@ -228,6 +242,7 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
       last_admin: t('admin.lastAdmin'),
       cannot_edit_self: t('admin.cannotEditSelf'),
       'password too short': t('admin.passwordTooShort'),
+      branch_outside_section: t('section.branchOutside'),
     };
     return map[err.message] || err.message;
   }
@@ -242,9 +257,11 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
       username: form.username,
       display_name: form.display_name.trim(),
       role: form.role,
-      // Empty branch selection = every فرقة; the server stores the complete set as null
+      // Empty branch selection = every فرقة (of its قسم); the server stores the complete set as null
       branches: form.branches.length ? form.branches : null,
       perms: form.perms,
+      // '' = both أقسام; an admin always sees both, the server ignores it there
+      section: form.role === 'admin' ? null : form.section || null,
     };
     try {
       if (isEdit) {
@@ -327,10 +344,18 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
         <p className="text-xs text-muted-foreground">{t(isSelf ? 'admin.cannotEditSelf' : 'admin.roleHint')}</p>
       </div>
       {form.role === 'user' && (
+        <SectionField
+          allowBoth
+          value={form.section}
+          onChange={setSection}
+          hint={t(form.section ? 'section.accountHint' : 'section.accountBothHint')}
+        />
+      )}
+      {form.role === 'user' && (
         <div className="space-y-1.5">
           <Label>{t('admin.allowedBranches')}</Label>
           <div className="rounded-md border border-border p-1.5">
-            {branches.map((b) => (
+            {visibleBranches.map((b) => (
               <label
                 key={b.id}
                 className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
@@ -341,6 +366,10 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
                   onChange={() => toggleBranch(b.id)}
                 />
                 {branchName(b, i18n.language)}
+                {/* Both أقسام listed together: say which one each فرقة belongs to */}
+                {!form.section && (
+                  <span className="text-xs text-muted-foreground">· {t(`section.${b.section}`)}</span>
+                )}
               </label>
             ))}
           </div>
@@ -454,6 +483,9 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
           </Badge>
         ) : (
           <>
+            <Badge variant={u.section === 'F' ? 'info' : 'outline'}>
+              {t(u.section ? `section.name${u.section}` : 'section.both')}
+            </Badge>
             {u.branches === null ? (
               <Badge variant="outline">{t('admin.allBranches')}</Badge>
             ) : (
@@ -503,8 +535,11 @@ export default function Admin() {
   const toast = useToast();
   const confirm = useConfirm();
   const { user: me } = useAuth();
+  const { view } = useSection();
   const users = useFetch('/users');
-  const branches = useFetch('/branches');
+  // Every فرقة of both أقسام, whatever the switcher says: an account of the other قسم
+  // must still be editable from here
+  const branches = useFetch('/branches', { section: '' });
   const [editing, setEditing] = useState(null);
   // { username, password } right after a creation or a reset — shown exactly once
   const [credentials, setCredentials] = useState(null);
@@ -513,7 +548,11 @@ export default function Admin() {
   if (users.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={users.reload} retryLabel={t('error.retry')} />;
 
-  const list = users.data || [];
+  // The switcher narrows the list too: the accounts of that قسم, plus the admins and
+  // the accounts open on both, which belong to either
+  const list = (users.data || []).filter(
+    (u) => !view || u.role === 'admin' || !u.section || u.section === view
+  );
   const activeUsers = list.filter((u) => u.active);
   const inactiveUsers = list.filter((u) => !u.active);
   const branchList = branches.data || [];
@@ -580,6 +619,7 @@ export default function Admin() {
       display_name: u.display_name || '',
       branches: u.branches || [],
       perms: normalizePerms(u.perms),
+      section: u.section || '',
     });
 
   const rowProps = { me, nameOf, onEdit: edit, onDeactivate: deactivate, onReactivate: reactivate, onDelete: remove };
@@ -587,7 +627,7 @@ export default function Admin() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('admin.title')} description={t('admin.subtitle')}>
-        <Button variant="brand" onClick={() => setEditing(EMPTY_USER)}>
+        <Button variant="brand" onClick={() => setEditing({ ...EMPTY_USER, section: view || 'M' })}>
           <IconPlus />
           {t('admin.addUser')}
         </Button>

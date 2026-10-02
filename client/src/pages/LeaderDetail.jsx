@@ -6,6 +6,7 @@ import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
 import ExportPdfButton from '../components/ExportPdfButton';
+import { LeaderDuesCard } from '../components/LeaderDues';
 import { AttendanceStrip, RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import {
@@ -29,7 +30,7 @@ import {
   IconShield,
 } from '../components/ui';
 
-const TABS = ['activities', 'card', 'profile', 'history'];
+const TABS = ['activities', 'card', 'dues', 'profile', 'history'];
 
 // الدورات التدريبية، بترتيب تدرّجها — مطابقة لـ TRAINING_COURSES في الخادم
 const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
@@ -295,7 +296,10 @@ export default function LeaderDetail() {
   // '' = the year the server picks (the latest تشكيلة year)
   const [cardYear, setCardYear] = useState('');
   const [sp, setSp] = useSearchParams();
-  const tab = TABS.includes(sp.get('tab')) ? sp.get('tab') : 'activities';
+  // الاشتراك الشهري: لمن يملك صلاحيته، و للقائد نفسه في صفحته
+  const canSeeDues = has('leaders.dues') || Number(user?.leader_id) === Number(id);
+  const tab =
+    TABS.includes(sp.get('tab')) && (sp.get('tab') !== 'dues' || canSeeDues) ? sp.get('tab') : 'activities';
   const setTab = (next) =>
     setSp(
       (prev) => {
@@ -486,6 +490,7 @@ export default function LeaderDetail() {
           items={[
             { id: 'activities', label: t('leader.colActivities'), count: leader.sessions.length + visits.length },
             { id: 'card', label: t('leader.colCard'), count: card.total ? `${card.done_count}/${card.total}` : null },
+            ...(canSeeDues ? [{ id: 'dues', label: t('dues.tab') }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -497,6 +502,7 @@ export default function LeaderDetail() {
         />
 
         <div id="leader-panel" role="tabpanel" aria-labelledby={`leader-tab-${tab}`} className="space-y-4">
+          {tab === 'dues' && <LeaderDuesCard endpoint={`/leaders/${leader.id}/dues`} />}
           {tab === 'activities' && (
             <>
               <Card className="overflow-hidden">

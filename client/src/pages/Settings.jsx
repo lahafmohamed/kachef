@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
 import NewBranchDialog, { AllAgesToggle } from '../components/NewBranchDialog';
+import SectionField from '../components/SectionField';
 import {
   cn,
   Badge,
@@ -402,13 +403,14 @@ export default function Settings() {
           max_age: b.max_age === '' || b.max_age === null ? null : Number(b.max_age),
           total_requirements: Number(b.total_requirements) || 0,
           all_ages: !!b.all_ages,
+          section: b.section,
         });
       }
       setDirty(false);
       reload({ quiet: true });
       toast.success(t('common.saved'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(err.message === 'branch_section_in_use' ? t('section.branchInUse') : err.message);
     } finally {
       setSaving(false);
     }
@@ -579,6 +581,11 @@ export default function Settings() {
                     />
                   </div>
                 </div>
+                <SectionField
+                  value={b.section}
+                  onChange={(v) => setField(b.id, 'section', v)}
+                  hint={t('section.branchHint')}
+                />
                 <AllAgesToggle
                   checked={!!b.all_ages}
                   onChange={(v) => setField(b.id, 'all_ages', v ? 1 : 0)}

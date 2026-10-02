@@ -8,12 +8,48 @@ export const getToken = () => sessionStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => sessionStorage.setItem(TOKEN_KEY, t);
 export const clearToken = () => sessionStorage.removeItem(TOKEN_KEY);
 
-async function request(path, options = {}) {
+// القسمان: 'M' الفتيان، 'F' الفتيات (see section.jsx)
+export const SECTIONS = ['M', 'F'];
+const VIEW_KEY = 'view.section';
+
+/** The قسم picked in the switcher, or '' for both. Tab-scoped, like the session token. */
+export function getViewSection() {
+  try {
+    const v = sessionStorage.getItem(VIEW_KEY);
+    return SECTIONS.includes(v) ? v : '';
+  } catch {
+    return '';
+  }
+}
+
+export function setViewSection(v) {
+  try {
+    if (SECTIONS.includes(v)) sessionStorage.setItem(VIEW_KEY, v);
+    else sessionStorage.removeItem(VIEW_KEY);
+  } catch {
+    /* private mode — the pick just lasts until the next reload */
+  }
+}
+
+/**
+ * Token, plus the قسم the screen is narrowed to. `section` overrides the switcher
+ * for one call — '' asks for both أقسام, which a form choosing between them needs
+ * (the server ignores the header for an account locked into one قسم anyway).
+ */
+function authHeaders(section) {
   const token = getToken();
+  const s = section === undefined ? getViewSection() : section;
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(s ? { 'X-Section': s } : {}),
+  };
+}
+
+async function request(path, { section, ...options } = {}) {
   const res = await fetch(BASE + path, {
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeaders(section),
     },
     ...options,
   });
@@ -41,10 +77,7 @@ async function failure(res, path) {
 
 /** GET a file (PDF export) with the session token: { blob, filename }. */
 async function download(path) {
-  const token = getToken();
-  const res = await fetch(BASE + path, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const res = await fetch(BASE + path, { headers: authHeaders() });
   if (!res.ok) throw await failure(res, path);
   const disposition = res.headers.get('Content-Disposition') || '';
   const m = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
@@ -52,7 +85,7 @@ async function download(path) {
 }
 
 export const api = {
-  get: (path) => request(path),
+  get: (path, opts) => request(path, opts),
   post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => request(path, { method: 'PUT', body: JSON.stringify(body) }),
   del: (path) => request(path, { method: 'DELETE' }),

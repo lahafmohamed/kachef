@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { useSection } from '../section';
+import SectionField from './SectionField';
 import { Button, Dialog, Input, Label, useToast } from './ui';
 
 const EMPTY_BRANCH = {
@@ -40,6 +42,10 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
   const [form, setForm] = useState(EMPTY_BRANCH);
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
+  // القسم: the one on screen until the admin picks another for this فرقة
+  const { section: onScreen } = useSection();
+  const [sectionPick, setSectionPick] = useState(null);
+  const section = sectionPick || onScreen || 'M';
 
   const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
@@ -61,8 +67,10 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
         max_age: form.all_ages || form.max_age === '' ? null : Number(form.max_age),
         total_requirements: Number(form.total_requirements) || 0,
         all_ages: form.all_ages,
+        section,
       });
       setForm(EMPTY_BRANCH);
+      setSectionPick(null);
       toast.success(t('settings.branchCreated'));
       onCreated(created);
     } catch (err) {
@@ -85,6 +93,7 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
             <Input id="nb_ar" dir="rtl" required value={form.name_ar} onChange={set('name_ar')} />
           </div>
         </div>
+        <SectionField value={section} onChange={setSectionPick} hint={t('section.branchHint')} />
         <AllAgesToggle checked={form.all_ages} onChange={(v) => setForm((f) => ({ ...f, all_ages: v }))} />
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4">
           {/* Unmounted, not hidden: a hidden required field would block the submit */}

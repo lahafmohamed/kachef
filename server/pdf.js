@@ -64,20 +64,22 @@ function chromiumMissing(err) {
  * Resolves to { pdf: Buffer, title } — title is the tab title the page set,
  * which names the downloaded file.
  */
-async function renderPdf({ url, token, lang = 'fr', timeoutMs = 45000 }) {
+async function renderPdf({ url, token, lang = 'fr', section = null, timeoutMs = 45000 }) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    // The app reads its session token from sessionStorage and its language from
-    // localStorage; both must exist before the first script runs.
+    // The app reads its session token and the قسم on screen from sessionStorage and
+    // its language from localStorage; all must exist before the first script runs.
     await page.evaluateOnNewDocument(
-      (tok, lng) => {
+      (tok, lng, sec) => {
         sessionStorage.setItem('auth.token', tok);
+        if (sec) sessionStorage.setItem('view.section', sec);
         localStorage.setItem('lang', lng);
         localStorage.setItem('theme', 'light');
       },
       token,
-      lang
+      lang,
+      section
     );
     await page.emulateMediaType('print');
     await page.goto(url, { waitUntil: 'networkidle0', timeout: timeoutMs });

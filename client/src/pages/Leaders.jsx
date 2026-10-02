@@ -3,11 +3,23 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { useAuth } from '../auth';
-import { useFetch, useLocalStorage } from '../hooks';
-import { avatarName, branchName, fileToDataUrl, fmtPhone, memberName } from '../utils';
+import { useAuth, usePerms } from '../auth';
+import LeaderDues from '../components/LeaderDues';
+import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
+import { SECTIONS, useSection } from '../section';
+import SectionField from '../components/SectionField';
+import {
+  LEADER_FILTER_KEYS,
+  avatarName,
+  branchName,
+  fileToDataUrl,
+  filterLeaders,
+  fmtPhone,
+  memberName,
+} from '../utils';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
+import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
 import Credentials from '../components/Credentials';
@@ -83,7 +95,9 @@ const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqi
 
 function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
   const { t } = useTranslation();
-  const [form, setForm] = useState(initial);
+  const { section: onScreen } = useSection();
+  // A new قائد joins the قسم on screen; the admin can still place them in the other
+  const [form, setForm] = useState(() => ({ ...initial, section: initial.section || onScreen || 'M' }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -146,6 +160,12 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
           </Select>
         </div>
       </div>
+
+      <SectionField
+        value={form.section}
+        onChange={(v) => setForm((f) => ({ ...f, section: v }))}
+        hint={t(initial.id && initial.section !== form.section ? 'section.leaderMoveHint' : 'section.leaderHint')}
+      />
 
       {/* نفس القوائم المنسَّقة التي يُسجَّل بها العناصر: حيّ واحد يُكتب بطريقتين
           يفرّق أهله على فلترين */}
@@ -314,11 +334,21 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
 
 function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots = [], onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
-  const [form, setForm] = useState(initial);
+  const { section: onScreen } = useSection();
+  const [form, setForm] = useState(() => ({ ...initial, section: initial.section || onScreen || 'M' }));
+  const formBranch = branches.find((b) => String(b.id) === String(form.branch_id));
+  // قسم التوصيف: قسم فرقته، و إلا فقسم الأمانة. قادته و أمينه من هذا القسم وحده.
+  const section = formBranch?.section || form.section;
   // مجموعات الفرقة المختارة — /branches يرسلها مع كل فرقة
-  const formGroups = branches.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
+  const formGroups = formBranch?.groups || [];
   // الأمانات الجذور التي يمكن أن يتبعها هذا التوصيف — لا نفسه، و لا تابعٌ لغيره
-  const parentOptions = amanaRoots.filter((a) => a.id !== initial.id);
+  const parentOptions = amanaRoots.filter((a) => a.id !== initial.id && a.section === section);
+  const leaderOptions = leaders.filter(
+    (l) => (l.status === 'active' && l.section === section) || String(l.id) === String(initial.leader_id)
+  );
+  // A new أمانة while both أقسام are on screen: say which one it belongs to (an
+  // assistant added from a card already sits in its أمين's)
+  const askSection = !initial.id && !initial.parent_id && !onScreen && form.branch_id === '';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -335,19 +365,33 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
       group_id: form.group_id === '' || form.group_id == null ? null : Number(form.group_id),
       parent_id: form.parent_id === '' || form.parent_id == null ? null : Number(form.parent_id),
       sort_order: Number(form.sort_order) || 0,
+      // A فرقة's توصيف follows the فرقة; a أمانة keeps the قسم it was made in
+      ...(form.branch_id === '' ? { section } : {}),
     };
     try {
       if (initial.id) await api.put(`/tachkila/${initial.id}`, body);
       else await api.post('/tachkila', body);
       onSaved();
     } catch (err) {
-      setError(err.message);
+      setError(err.message === 'leader_outside_section' ? t('section.leaderOutside') : err.message);
       setSaving(false);
     }
   }
 
+  // Picking the other قسم (or a فرقة of it) lets go of a قائد and a أمين of this one
+  function setSlotSection(next, patch = {}) {
+    setForm((f) => {
+      const keepLeader = leaders.find((l) => String(l.id) === String(f.leader_id))?.section === next;
+      const parentId = 'parent_id' in patch ? patch.parent_id : next === section ? f.parent_id : '';
+      return { ...f, ...patch, leader_id: keepLeader ? f.leader_id : '', parent_id: parentId };
+    });
+  }
+
   return (
     <form onSubmit={submit} className="space-y-4">
+      {askSection && (
+        <SectionField value={form.section} onChange={(v) => setSlotSection(v, { section: v })} />
+      )}
       <div className="space-y-1.5">
         <Label htmlFor="a_leader">{t('leader.selectLeader')}</Label>
         {/* 39 قائدًا: une liste déroulante simple ne se parcourt plus, il faut chercher */}
@@ -355,7 +399,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
           id="a_leader"
           value={form.leader_id ?? ''}
           onChange={(e) => setForm((f) => ({ ...f, leader_id: e.target.value }))}
-          options={leaders.map((l) => ({ value: l.id, label: memberName(l) }))}
+          options={leaderOptions.map((l) => ({ value: l.id, label: memberName(l) }))}
           clearLabel={t('leader.unassigned')}
           placeholder={t('leader.unassigned')}
           searchPlaceholder={t('common.search')}
@@ -371,7 +415,11 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
           onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
           options={[
             ...template,
-            ...branches.map((b) => `${t('leader.branchLeader')} ${branchName(b, i18n.language)}`),
+            // فرق الفتيات تقودها قائدات: «قائدة المرشدات»
+            ...branches.map(
+              (b) =>
+                `${t(b.section === 'F' ? 'leader.branchLeaderF' : 'leader.branchLeader')} ${branchName(b, i18n.language)}`
+            ),
           ]}
         />
       </div>
@@ -380,10 +428,15 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
         <Select
           id="a_branch"
           value={form.branch_id ?? ''}
-          onChange={(e) =>
+          onChange={(e) => {
             // المجموعة تخصّ فرقتها و التبعية تخصّ الأمانات: تغيير الفرقة يُسقط الاثنين
-            setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '', parent_id: e.target.value ? '' : f.parent_id }))
-          }
+            const next = branches.find((b) => String(b.id) === e.target.value);
+            setSlotSection(next?.section || form.section, {
+              branch_id: e.target.value,
+              group_id: '',
+              ...(e.target.value ? { parent_id: '' } : {}),
+            });
+          }}
         >
           <option value="">{t('leader.noBranch')}</option>
           {branches.map((b) => (
@@ -512,11 +565,19 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
   const [error, setError] = useState(null);
   // كلمة السرّ بعد الإنشاء — وجودها يقلب الحوار إلى شاشة العرض الوحيد
   const [result, setResult] = useState(null);
+  // The account lives in the قائد's own قسم: only its فرق can be granted
+  const ownBranches = branches.filter((b) => b.section === leader.section);
   const [form, setForm] = useState(() => ({
     username: '',
     preset: 'branch',
     // فرق توصيفاته الحالية مؤشَّرة سلفًا؛ لا تأشير = كل الفرق
-    branch_ids: [...new Set((leader.roles || []).filter((r) => r.branch_id).map((r) => r.branch_id))],
+    branch_ids: [
+      ...new Set(
+        (leader.roles || [])
+          .filter((r) => r.branch_id && ownBranches.some((b) => b.id === r.branch_id))
+          .map((r) => r.branch_id)
+      ),
+    ],
   }));
   const usernameInvalid = form.username !== '' && !USERNAME_RE.test(form.username);
 
@@ -559,6 +620,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
         username_taken: t('leader.accountTaken'),
         invalid_username: t('admin.usernameInvalid'),
         account_exists: t('leader.accountExists'),
+        branch_outside_section: t('section.branchOutside'),
       };
       setError(map[err.message] || err.message);
     } finally {
@@ -615,7 +677,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
           <div className="space-y-1.5">
             <Label>{t('leader.accountBranches')}</Label>
             <div className="flex flex-wrap gap-2" role="group" aria-label={t('leader.accountBranches')}>
-              {branches.map((b) => {
+              {ownBranches.map((b) => {
                 const on = form.branch_ids.includes(b.id);
                 return (
                   <button
@@ -824,9 +886,10 @@ function Holder({ a, page, strong = false }) {
           '-ms-2 inline-flex h-auto min-h-9 w-auto max-w-full gap-1.5 border-transparent bg-transparent px-2 py-1 shadow-none hover:border-border hover:bg-accent sm:h-auto',
           size
         )}
-        // An archived قائد stays on the slot they hold, but is not offered anew
+        // An archived قائد stays on the slot they hold, but is not offered anew; and a
+        // slot of one قسم only ever takes a قائد of that قسم
         options={leaders
-          .filter((l) => l.status === 'active' || l.id === a.leader_id)
+          .filter((l) => (l.status === 'active' && l.section === a.section) || l.id === a.leader_id)
           .map((l) => ({ value: l.id, label: memberName(l) }))}
         clearLabel={t('leader.unassigned')}
         placeholder={t('leader.vacant')}
@@ -938,7 +1001,7 @@ function Section({ title, count, children }) {
  * التشكيلة وحدةً وحدة: قيادة الفوج، ثم الأمانات، ثم الفرق. كل وحدة بطاقة، و البطاقات
  * أعمدة تتراصّ — أمانة من ثمانية قادة بجانب أمانة من قائد واحد لا تترك فراغًا.
  */
-function TachkilaCards({ assignments, branches, page }) {
+function TachkilaCards({ assignments, branches, page, headLabel }) {
   const { t, lng } = page;
   const { head, deputy, secretariats, orphans, helpersOf } = amanaTeams(assignments);
   const units = branchUnits(assignments, branches);
@@ -946,7 +1009,7 @@ function TachkilaCards({ assignments, branches, page }) {
   return (
     <div className="space-y-8">
       {top.length > 0 && (
-        <Section title={t('leader.sectionHead')}>
+        <Section title={headLabel || t('leader.sectionHead')}>
           <div className="grid gap-4 sm:grid-cols-2 [&>*]:mb-0">
             {top.map((a) => (
               <TeamCard key={a.id} title={a.title} lead={a} rest={helpersOf(a.id)} page={page} />
@@ -1141,7 +1204,7 @@ const Dash = () => <span className="text-muted-foreground">—</span>;
  * card's width, not the viewport's — the same register as the عناصر page.
  */
 function LeaderRow({ l, page, onOpen }) {
-  const { t, isAdmin, revokeAccount, setAccountFor, setEditingLeader, removeLeader } = page;
+  const { t, isAdmin, bothSections, revokeAccount, setAccountFor, setEditingLeader, removeLeader } = page;
   const name = memberName(l);
   const href = `/leaders/${l.id}`;
   const inactive = l.status !== 'active';
@@ -1193,6 +1256,8 @@ function LeaderRow({ l, page, onOpen }) {
                 </span>
               )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+              {/* Both أقسام in one register: the قائدات say so */}
+              {bothSections && l.section === 'F' && <Badge variant="info">{t('section.F')}</Badge>}
             </div>
             <div className="mt-0.5 truncate text-xs text-muted-foreground">
               {roles.length ? <Parts parts={roles} sep={t('member.listSep')} /> : t('leader.noRole')}
@@ -1337,10 +1402,10 @@ function RegisterSkeleton() {
    Page
    ============================================================ */
 
-const TABS = ['tachkila', 'leaders'];
+const TABS = ['tachkila', 'leaders', 'dues'];
 
 /** The numbers of the الهيئة القيادية: who, how much of the تشكيلة is held, and the training ladder. */
-function LeadersFigures({ leaders, tachkila, loading, isAdmin }) {
+function LeadersFigures({ leaders, tachkila, loading, isAdmin, onCourse }) {
   const { t } = useTranslation();
   if (loading) return <Skeleton className="h-[7.5rem] rounded-2xl" />;
   const active = leaders.filter((l) => l.status === 'active');
@@ -1366,16 +1431,25 @@ function LeadersFigures({ leaders, tachkila, loading, isAdmin }) {
           {total - filled > 0 ? t('leader.vacantCount', { count: total - filled }) : t('leader.allFilled')}
         </p>
       </Stat>
-      {/* The ladder: how many قادة hold each course, lowest to highest */}
+      {/* The ladder: how many قادة hold each course, lowest to highest. Each count
+          is also the way to those قادة: it opens the list filtered on that course */}
       <Stat label={t('leader.figTraining')} className="col-span-2">
         <ul className="grid grid-cols-5 gap-3">
           {TRAINING_COURSES.map((c) => {
             const n = active.filter((l) => l.training_level.includes(c)).length;
+            const course = t(`leader.courseShort.${c}`);
             return (
-              <li key={c} className="min-w-0 space-y-1.5">
-                <p className="text-xl font-bold leading-none tabular-nums">{n}</p>
-                <ShareBar value={active.length ? (n / active.length) * 100 : 0} className="h-1" />
-                <p className="text-xs leading-tight text-muted-foreground">{t(`leader.courseShort.${c}`)}</p>
+              <li key={c} className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => onCourse(c)}
+                  aria-label={t('leader.showCourse', { course, count: n })}
+                  className="focus-ring group -m-1.5 block w-[calc(100%+0.75rem)] space-y-1.5 rounded-lg p-1.5 text-start transition-colors hover:bg-accent/60"
+                >
+                  <span className="block text-xl font-bold leading-none tabular-nums group-hover:text-primary">{n}</span>
+                  <ShareBar value={active.length ? (n / active.length) * 100 : 0} className="h-1" />
+                  <span className="block text-xs leading-tight text-muted-foreground">{course}</span>
+                </button>
               </li>
             );
           })}
@@ -1392,11 +1466,19 @@ export default function Leaders() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  // اشتراك القادة: تبويب لمن يملك صلاحيته وحده
+  const canDues = usePerms().has('leaders.dues');
 
   const [year, setYear] = useState(null);
-  // '' = all, 'amana' = الأمانات, 'none' = بلا مسؤولية, otherwise a branch id (string)
-  const [filter, setFilter] = useLocalStorage('leaders.branchFilter', '');
-  const [query, setQuery] = useState('');
+  // The القادة list's filters live in the URL (LEADER_FILTER_KEYS): «back» from a
+  // profile keeps them, and the PDF export receives the same query
+  const [sp, patch] = useUrlFilters();
+  const [query, setQuery] = useUrlField(sp, patch, 'q');
+  const lf = Object.fromEntries(LEADER_FILTER_KEYS.map((k) => [k, sp.get(k) || '']));
+  // A hand-edited or stale address falls back to the default rather than an empty list
+  if (!['inactive', 'all'].includes(lf.status)) lf.status = '';
+  if (lf.course && lf.course !== 'none' && !TRAINING_COURSES.includes(lf.course)) lf.course = '';
+  if (!isAdmin || !['with', 'without'].includes(lf.account)) lf.account = '';
   // 'list' = بطاقات الوحدات، 'tree' = الهيكلية. تفضيل يبقى من زيارة لأخرى.
   const [view, setView] = useLocalStorage('leaders.tachkilaView', 'list');
   // Which section the page shows — kept from one visit to the next, like the view
@@ -1409,6 +1491,9 @@ export default function Leaders() {
 
   const leadersRes = useFetch('/leaders');
   const branchesRes = useFetch('/branches');
+  // null = both أقسام on screen (an admin who has not narrowed the app to one)
+  const { section: onScreen } = useSection();
+  const bothSections = !onScreen;
   // Les listes de quartiers / regions ne servent qu'au formulaire, reserve aux admins
   const lookupsRes = useFetch('/lookups', { skip: !isAdmin });
   const tachkilaRes = useFetch(year ? `/tachkila?year=${encodeURIComponent(year)}` : '/tachkila');
@@ -1455,7 +1540,12 @@ export default function Leaders() {
   const canEdit = isAdmin && !locked;
 
   // The server answers 423 { error: 'year_locked' } if the freeze was set from another device
-  const errMsg = (err) => (err.message === 'year_locked' ? t('leader.lockedError') : err.message);
+  const errMsg = (err) =>
+    err.message === 'year_locked'
+      ? t('leader.lockedError')
+      : err.message === 'leader_outside_section'
+        ? t('section.leaderOutside')
+        : err.message;
 
   function reloadAll() {
     leadersRes.reload({ quiet: true });
@@ -1539,6 +1629,8 @@ export default function Leaders() {
       // مساعد أمانةٍ يتبعها؛ و إن كان التوصيف نفسه تابعًا فالمساعد الجديد يتبع أمينه هو
       parent_id: a.branch_id ? '' : (a.parent_id ?? a.id ?? ''),
       sort_order: a.sort_order ?? 0,
+      // في قسم من يساعده
+      section: a.section,
     });
   }
 
@@ -1554,21 +1646,29 @@ export default function Leaders() {
 
   const amanat = tachkila.assignments.filter((a) => a.role_type === 'amana');
 
-  // Search reaches what a قائد would type: a name, an مسؤولية, a phone number
-  const q = query.trim().toLowerCase();
-  const qDigits = q.replace(/\D/g, '');
-  const filteredLeaders = leaders.filter((l) => {
-    if (filter === 'amana' && !l.roles.some((r) => r.role_type === 'amana')) return false;
-    if (filter === 'none' && l.roles.length > 0) return false;
-    if (filter && filter !== 'amana' && filter !== 'none' && !l.roles.some((r) => String(r.branch_id) === filter))
-      return false;
-    if (!q) return true;
-    return (
-      memberName(l).toLowerCase().includes(q) ||
-      l.roles.some((r) => r.title.toLowerCase().includes(q)) ||
-      (qDigits.length >= 3 && String(l.phone || '').replace(/\D/g, '').includes(qDigits))
-    );
-  });
+  // Search reaches what a قائد would type: a name, an مسؤولية, a phone number. The
+  // typed text filters at once; the URL catches up a moment later.
+  const filteredLeaders = filterLeaders(leaders, { ...lf, q: query });
+  // The list's whole population under the current status — what «x of y» counts against
+  const inStatus = filterLeaders(leaders, { status: lf.status });
+  // قادة the default view leaves out (archived), among those the other filters keep
+  const hiddenInactive = lf.status ? 0 : filterLeaders(leaders, { ...lf, q: query, status: 'inactive' }).length;
+  const hasInactive = leaders.some((l) => l.status !== 'active');
+  const filtering = !!(query.trim() || lf.role || lf.course || lf.account || lf.status);
+  function clearLeaderFilters() {
+    setQuery('');
+    patch(Object.fromEntries(LEADER_FILTER_KEYS.map((k) => [k, ''])));
+  }
+  // From a figure of the training ladder: exactly the قادة that number counts
+  function showCourse(course) {
+    setQuery('');
+    patch({ ...Object.fromEntries(LEADER_FILTER_KEYS.map((k) => [k, ''])), course });
+    setTab('leaders');
+  }
+  // The export lists what the القادة tab shows; from the تشكيلة tab, every active قائد
+  const exportQuery = new URLSearchParams(
+    Object.entries({ ...lf, q: sp.get('q') || '' }).filter(([, v]) => v)
+  ).toString();
 
   // What the rows and cards need from the page
   const page = {
@@ -1577,6 +1677,7 @@ export default function Leaders() {
     locked,
     canEdit,
     isAdmin,
+    bothSections,
     leaders,
     quickAssign,
     addAssistant,
@@ -1587,15 +1688,36 @@ export default function Leaders() {
     setEditingLeader,
     removeLeader,
   };
-  const current = TABS.includes(tab) ? tab : 'tachkila';
+  const current = TABS.includes(tab) && (tab !== 'dues' || canDues) ? tab : 'tachkila';
   const filled = tachkila.assignments.filter((a) => a.leader_id).length;
   const total = tachkila.assignments.length;
   const tachkilaEmpty = tachkila.assignments.length === 0;
+  // Each قسم has its own تشكيلة — its own head, أمانات and فرق. Shown together, they
+  // stay two organigrams one under the other instead of one that mixes them.
+  const tachkilaParts = bothSections
+    ? SECTIONS.map((s) => ({ section: s, list: tachkila.assignments.filter((a) => a.section === s) })).filter(
+        (p) => p.list.length > 0
+      )
+    : [{ section: null, list: tachkila.assignments }];
+  // قسم الفتيات تقوده مسؤولته لا عميد الفوج: رأس تشكيلته «قيادة القسم»
+  const renderTachkila = (list, section) =>
+    view === 'tree' ? (
+      <Card className="p-4 sm:p-6">
+        <OrgTree assignments={list} branches={branches} page={page} />
+      </Card>
+    ) : (
+      <TachkilaCards
+        assignments={list}
+        branches={branches}
+        page={page}
+        headLabel={(section || onScreen) === 'F' ? t('section.head') : null}
+      />
+    );
 
   return (
     <div className="space-y-6">
       <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
-        <ExportPdfButton kind="leaders-list" id={0} />
+        <ExportPdfButton kind="leaders-list" id={0} query={current === 'leaders' ? exportQuery : ''} />
         {isAdmin && (
           <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
             <IconPlus />
@@ -1612,6 +1734,7 @@ export default function Leaders() {
           tachkila={tachkila}
           loading={leadersRes.loading || tachkilaRes.loading}
           isAdmin={isAdmin}
+          onCourse={showCourse}
         />
       )}
 
@@ -1619,7 +1742,8 @@ export default function Leaders() {
         <UnderlineTabs
           items={[
             { id: 'tachkila', label: t('leader.tachkila'), count: total ? `${filled}/${total}` : null },
-            { id: 'leaders', label: t('leader.leadersList'), count: leadersRes.data ? leaders.length : null },
+            { id: 'leaders', label: t('leader.leadersList'), count: leadersRes.data ? inStatus.length : null },
+            ...(canDues ? [{ id: 'dues', label: t('dues.tab') }] : []),
           ]}
           value={current}
           onChange={setTab}
@@ -1629,7 +1753,9 @@ export default function Leaders() {
         />
 
         <div role="tabpanel" id="leaders-tabpanel" aria-labelledby={`leaders-tab-${current}`}>
-          {current === 'tachkila' ? (
+          {current === 'dues' ? (
+            <LeaderDues />
+          ) : current === 'tachkila' ? (
             /* ---------- التشكيلة ---------- */
             <div className="space-y-5">
               {locked && (
@@ -1731,12 +1857,19 @@ export default function Leaders() {
                     }
                   />
                 </Card>
-              ) : view === 'tree' ? (
-                <Card className="p-4 sm:p-6">
-                  <OrgTree assignments={tachkila.assignments} branches={branches} page={page} />
-                </Card>
+              ) : tachkilaParts.length === 1 ? (
+                renderTachkila(tachkilaParts[0].list, tachkilaParts[0].section)
               ) : (
-                <TachkilaCards assignments={tachkila.assignments} branches={branches} page={page} />
+                <div className="space-y-10">
+                  {tachkilaParts.map((p) => (
+                    <section key={p.section} className="space-y-4" aria-labelledby={`tachkila-${p.section}`}>
+                      <h2 id={`tachkila-${p.section}`} className="text-base font-semibold">
+                        {t(`section.name${p.section}`)}
+                      </h2>
+                      {renderTachkila(p.list, p.section)}
+                    </section>
+                  ))}
+                </div>
               )}
             </div>
           ) : (
@@ -1744,50 +1877,96 @@ export default function Leaders() {
             // relative: the sr-only labels inside are absolutely positioned, and must
             // be clipped here rather than stretch the page
             <Card className="@container relative overflow-hidden">
-              <div className="flex flex-wrap items-center gap-2 border-b border-border p-3 sm:px-4">
-                <SearchInput
-                  value={query}
-                  onChange={setQuery}
-                  placeholder={t('leader.searchPlaceholder')}
-                  className="min-w-52 flex-1"
-                />
-                <Select
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  aria-label={t('member.branch')}
-                  className="w-auto min-w-36"
-                >
-                  <option value="">{t('leader.allLeaders')}</option>
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {branchName(b, i18n.language)}
-                    </option>
-                  ))}
-                  <option value="amana">{t('leader.amanat')}</option>
-                  <option value="none">{t('leader.noRole')}</option>
-                </Select>
-                {(q || filter) && leadersRes.data && (
-                  <span className="whitespace-nowrap px-1 text-sm text-muted-foreground">
-                    {t('leader.shownOf', { shown: filteredLeaders.length, total: leaders.length })}
-                  </span>
+              {/* Search, then the questions the register gets asked: whose فرقة or
+                  أمانة, which course (the training ladder: 7 قادة still have none),
+                  and — for whoever hands out access — who has an account yet */}
+              <div className="space-y-2 border-b border-border p-3 sm:px-4">
+                {/* Search keeps a row of its own until the screen can hold it beside
+                    the filters; on phones the filters pair up in a grid */}
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+                  <SearchInput
+                    value={query}
+                    onChange={setQuery}
+                    placeholder={t('leader.searchPlaceholder')}
+                    className="lg:min-w-64"
+                  />
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center [&>*:last-child:nth-child(odd)]:col-span-2">
+                    <FilterSelect
+                      value={lf.role}
+                      onChange={(v) => patch({ role: v })}
+                      allLabel={t('leader.allLeaders')}
+                      ariaLabel={t('leader.role')}
+                      className="w-full sm:w-auto sm:min-w-40"
+                      icon={<IconShield className="opacity-60" />}
+                      options={[
+                        ...branches.map((b) => ({ value: b.id, label: branchName(b, i18n.language) })),
+                        { value: 'amana', label: t('leader.amanat') },
+                        { value: 'none', label: t('leader.noRole') },
+                      ]}
+                    />
+                    <FilterSelect
+                      value={lf.course}
+                      onChange={(v) => patch({ course: v })}
+                      allLabel={t('leader.allCourses')}
+                      ariaLabel={t('leader.colTraining')}
+                      className="w-full sm:w-auto sm:min-w-40"
+                      options={[
+                        ...TRAINING_COURSES.map((c) => ({ value: c, label: t(`leader.courseShort.${c}`) })),
+                        { value: 'none', label: t('leader.noCourse') },
+                      ]}
+                    />
+                    {isAdmin && (
+                      <FilterSelect
+                        value={lf.account}
+                        onChange={(v) => patch({ account: v })}
+                        allLabel={t('leader.accountAll')}
+                        ariaLabel={t('leader.colAccount')}
+                        className="w-full sm:w-auto sm:min-w-40"
+                        icon={<IconKey className="opacity-60" />}
+                        options={[
+                          { value: 'with', label: t('leader.accountWith') },
+                          { value: 'without', label: t('leader.accountWithout') },
+                        ]}
+                      />
+                    )}
+                    {/* Archived قادة leave the default view, as عناصر do: the choice
+                        appears once there is someone to bring back */}
+                    {(hasInactive || lf.status) && (
+                      <FilterSelect
+                        value={lf.status}
+                        onChange={(v) => patch({ status: v })}
+                        allLabel={t('leader.statusActive')}
+                        ariaLabel={t('member.status')}
+                        className="w-full sm:w-auto sm:min-w-40"
+                        options={[
+                          { value: 'inactive', label: t('leader.statusInactive') },
+                          { value: 'all', label: t('leader.statusBoth') },
+                        ]}
+                      />
+                    )}
+                  </div>
+                </div>
+                {filtering && leadersRes.data && (
+                  <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+                    <span className="tabular-nums">
+                      {t('leader.shownOf', { shown: filteredLeaders.length, total: inStatus.length })}
+                    </span>
+                    <Button variant="ghost" size="sm" onClick={clearLeaderFilters} className="-me-2">
+                      {t('common.clearFilters')}
+                    </Button>
+                  </div>
                 )}
               </div>
 
               {leadersRes.loading ? (
                 <RegisterSkeleton />
               ) : filteredLeaders.length === 0 ? (
-                q || filter ? (
+                filtering ? (
                   <EmptyState
                     icon={<IconUsers className="h-6 w-6" />}
                     title={t('common.noResults')}
                     action={
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          setQuery('');
-                          setFilter('');
-                        }}
-                      >
+                      <Button variant="outline" onClick={clearLeaderFilters}>
                         {t('common.clearFilters')}
                       </Button>
                     }
@@ -1835,6 +2014,19 @@ export default function Leaders() {
                     ))}
                   </tbody>
                 </table>
+              )}
+
+              {!leadersRes.loading && hiddenInactive > 0 && (
+                <div className="flex flex-wrap items-center justify-center gap-x-2 border-t border-border px-4 py-2.5 text-sm text-muted-foreground">
+                  {t('leader.inactiveHidden', { count: hiddenInactive })}
+                  <button
+                    type="button"
+                    onClick={() => patch({ status: 'all' })}
+                    className="focus-ring min-h-11 cursor-pointer rounded px-1 font-medium text-primary hover:underline sm:min-h-0"
+                  >
+                    {t('member.showInactive')}
+                  </button>
+                </div>
               )}
             </Card>
           )}

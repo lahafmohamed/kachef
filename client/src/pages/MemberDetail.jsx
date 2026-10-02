@@ -19,6 +19,7 @@ import {
   ErrorState,
   ProgressBar,
   RequirementGrid,
+  Select,
   SkeletonPage,
   cn,
   useConfirm,
@@ -187,6 +188,8 @@ export default function MemberDetail() {
   const [restoring, setRestoring] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
+  // '' | present | absent | excused — «which ones did he miss?» is the question parents ask
+  const [historyStatus, setHistoryStatus] = useState('');
   const { data: member, setData: setMember, loading, error, reload } = useFetch(`/members/${id}`);
 
   // state: 'granted' | 'revoked' | 'auto' (auto drops the manual correction)
@@ -254,9 +257,15 @@ export default function MemberDetail() {
 
   // Search the présence log by نشاط title or date (typing "06/2026" narrows to a month)
   const hq = historyQuery.trim().toLowerCase();
-  const history = hq
-    ? stats.history.filter((h) => [h.title, h.date, fmtDate(h.date)].some((v) => String(v || '').toLowerCase().includes(hq)))
-    : stats.history;
+  const history = stats.history.filter(
+    (h) =>
+      (!historyStatus || h.status === historyStatus) &&
+      (!hq || [h.title, h.date, fmtDate(h.date)].some((v) => String(v || '').toLowerCase().includes(hq)))
+  );
+  // Each mark with its count; a mark he never got is not offered
+  const historyStatuses = ['present', 'absent', 'excused']
+    .map((s) => ({ value: s, count: stats.history.filter((h) => h.status === s).length }))
+    .filter((s) => s.count > 0);
   const former = (member.former_attendance || []).filter((f) => f.total > 0);
 
   const statCount = 1 + (total > 0 ? 1 : 0) + (subs ? 1 : 0);
@@ -482,13 +491,30 @@ export default function MemberDetail() {
                         {t('member.sessionsAttended', { present: stats.present, total: stats.total })}
                       </p>
                       {stats.history.length > 8 && (
-                        <SearchInput
-                          value={historyQuery}
-                          onChange={setHistoryQuery}
-                          autoFocusHotkey={false}
-                          placeholder={t('member.searchHistory')}
-                          className="w-full flex-none sm:w-72"
-                        />
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                          <SearchInput
+                            value={historyQuery}
+                            onChange={setHistoryQuery}
+                            autoFocusHotkey={false}
+                            placeholder={t('member.searchHistory')}
+                            className="w-full flex-none sm:w-72"
+                          />
+                          {historyStatuses.length > 1 && (
+                            <Select
+                              className="sm:w-auto"
+                              value={historyStatus}
+                              onChange={(e) => setHistoryStatus(e.target.value)}
+                              aria-label={t('member.status')}
+                            >
+                              <option value="">{t('member.allStatuses')}</option>
+                              {historyStatuses.map((s) => (
+                                <option key={s.value} value={s.value}>
+                                  {`${t(STATUS_BADGE[s.value][1])} · ${s.count}`}
+                                </option>
+                              ))}
+                            </Select>
+                          )}
+                        </div>
                       )}
                     </div>
                     {history.length === 0 ? (

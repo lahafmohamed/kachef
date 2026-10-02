@@ -6,9 +6,11 @@ import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { phoneNumbers } from '../components/MemberParts';
 import {
+  LEADER_FILTER_KEYS,
   activityTypeKey,
   avatarName,
   branchName,
+  filterLeaders,
   fmtAmount,
   fmtDate,
   fmtPhone,
@@ -338,6 +340,9 @@ function SessionReport({ id, onReady, kindLabel }) {
   const roster = session.roster || [];
   const animators = session.animators || [];
   const counts = countStatuses(isLeaders ? animators : roster);
+  // نشاط القادة قد يدعو فرقًا: لائحتها تُعدّ على حدة، فلا تختلط بحضور القادة
+  const rosterCounts = isLeaders ? countStatuses(roster) : counts;
+  const guests = session.guests || [];
   const rosterBranchIds = [...new Set(roster.map((m) => m.branch_id))];
   const branchCounts = session.branch_counts || [];
   const groupTotal = branchCounts.reduce((n, c) => n + (Number(c.count) || 0), 0);
@@ -417,6 +422,13 @@ function SessionReport({ id, onReady, kindLabel }) {
               <Tag key={b.id ?? i}>{branchName(b, lng)}</Tag>
             ))
           : kindKey && <Tag>{t(kindKey)}</Tag>}
+        {/* نشاط القادة: فرقه المدعوّة بعد نوعه */}
+        {!session.branch_id &&
+          sessionBranches.map((b) => (
+            <Tag key={b.id} tone="neutral">
+              {branchName(b, lng)}
+            </Tag>
+          ))}
         {session.branch_id && kindKey && <Tag tone="warning">{t(kindKey)}</Tag>}
         {(session.groups || []).map((g) => (
           <Tag key={g.id} tone="neutral">
@@ -507,11 +519,26 @@ function SessionReport({ id, onReady, kindLabel }) {
         </>
       )}
 
-      {/* ---------- لائحة العناصر ---------- */}
-      {!isLeaders && !isGroup && (
+      {/* ---------- ضيوف نشاط القادة ---------- */}
+      {isLeaders && guests.length > 0 && (
         <>
-          <H2 aside={t('session.marked', { marked: counts.marked, total: roster.length })}>
-            {t(isVisit ? 'session.visitedMembers' : 'session.roster')}
+          <H2 aside={guests.length}>{t('session.guests')}</H2>
+          <Table head={['#', t('member.name')]}>
+            {guests.map((g, i) => (
+              <tr key={g.id}>
+                <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+                <td className={cn(td, 'font-medium')}>{g.name}</td>
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      {/* ---------- لائحة العناصر — في نشاط القادة: عناصر الفرق المدعوّة ---------- */}
+      {!isGroup && (!isLeaders || roster.length > 0) && (
+        <>
+          <H2 aside={t('session.marked', { marked: rosterCounts.marked, total: roster.length })}>
+            {t(isVisit ? 'session.visitedMembers' : isLeaders ? 'session.invitedRoster' : 'session.roster')}
           </H2>
           {roster.length === 0 ? (
             <p className="text-muted-foreground">{t('session.emptyRoster')}</p>
@@ -1447,6 +1474,7 @@ function MembersListReport({ id, onReady, kindLabel }) {
 function LeadersListReport({ onReady, kindLabel }) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
+  const [sp] = useSearchParams();
   const res = useFetch('/leaders');
   const title = t('leader.leadersList');
   useEffect(() => {
@@ -1456,7 +1484,8 @@ function LeadersListReport({ onReady, kindLabel }) {
   if (res.loading) return <SkeletonPage rows={6} />;
   if (res.error) return <LoadError onRetry={res.reload} />;
 
-  const list = res.data || [];
+  // The page's filters came along in the query: the sheet keeps the same قادة
+  const list = filterLeaders(res.data || [], Object.fromEntries(LEADER_FILTER_KEYS.map((k) => [k, sp.get(k) || ''])));
   return (
     <ListSheet
       kindLabel={kindLabel}

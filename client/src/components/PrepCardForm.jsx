@@ -86,9 +86,14 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
     }));
   }, [initial, branchList, form.branch_id, user]);
 
-  // تغيير الفرقة يُسقط المطالب و النشاط المربوط: كلاهما يخصّ فرقة بعينها
+  // تغيير الفرقة يُسقط المطالب و النشاط المربوط: كلاهما يخصّ فرقة بعينها. و فرقة
+  // من القسم الآخر تُسقط القائد أيضًا: من يعدّ البطاقة من قسم فرقتها
   function pickBranch(id) {
-    setForm((f) => ({ ...f, branch_id: id, matalib: [], session_id: '' }));
+    const next = branchList.find((b) => b.id === Number(id))?.section;
+    setForm((f) => {
+      const keepLeader = leaderList.find((l) => l.id === Number(f.leader_id))?.section === next;
+      return { ...f, branch_id: id, matalib: [], session_id: '', leader_id: keepLeader ? f.leader_id : '' };
+    });
   }
 
   function toggleMatlab(n) {
@@ -189,7 +194,11 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
               {t('leader.selectLeader')}
             </option>
             {leaderList
-              .filter((l) => l.status === 'active' || l.id === Number(form.leader_id))
+              .filter(
+                (l) =>
+                  (l.status === 'active' && (!selectedBranch || l.section === selectedBranch.section)) ||
+                  l.id === Number(form.leader_id)
+              )
               .map((l) => (
                 <option key={l.id} value={l.id}>
                   {memberName(l)}

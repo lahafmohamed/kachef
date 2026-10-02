@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
+import { useSection } from '../section';
 import { branchName, fileToDataUrl, memberName, todayISO } from '../utils';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
@@ -142,7 +143,13 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   const branches = useFetch('/branches');
   const lookups = useFetch('/lookups');
   const editing = !!member;
-  const [form, setForm] = useState(() => (editing ? memberToForm(member) : { ...emptyForm(), ...defaults }));
+  // حساب محصور في قسم (أو عرض محصور فيه) لا يسجّل إلا من جنس هذا القسم: حساب
+  // الفتيات لا يختار «ذكر»، و حساب الفتيان لا يختار «أنثى». الخادم يرفض الآخر أيضًا.
+  const { section } = useSection();
+  const [form, setForm] = useState(() => {
+    const f = editing ? memberToForm(member) : { ...emptyForm(), ...defaults };
+    return section ? { ...f, sex: section } : f;
+  });
   const [error, setError] = useState(null);
   const errorRef = useRef(null);
 
@@ -153,6 +160,15 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   useEffect(() => {
     if (!form.branch_id && branchList.length) setForm((f) => ({ ...f, branch_id: branchList[0].id }));
   }, [branchList, form.branch_id]);
+
+  // A new عنصر's الجنس follows the قسم of the فرقة picked — a فرقة of الفتيات takes
+  // girls — until it is set by hand
+  const sexTouched = useRef(false);
+  const branchSection = branchList.find((b) => String(b.id) === String(form.branch_id))?.section;
+  useEffect(() => {
+    if (editing || sexTouched.current || !branchSection) return;
+    setForm((f) => (f.sex === branchSection ? f : { ...f, sex: branchSection }));
+  }, [editing, branchSection]);
 
   // The saved-with-error message can sit below the fold of a long form
   useEffect(() => {
@@ -297,12 +313,15 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
             <SegmentedControl
               label={t('member.sex')}
               value={form.sex}
-              onChange={(v) => setForm((f) => ({ ...f, sex: v }))}
+              onChange={(v) => {
+                sexTouched.current = true;
+                setForm((f) => ({ ...f, sex: v }));
+              }}
               className="flex w-full"
               options={[
                 { value: 'M', label: t('member.male') },
                 { value: 'F', label: t('member.female') },
-              ]}
+              ].filter((o) => !section || o.value === section)}
             />
           </div>
           <Field id="birth_date" label={t('member.birthDate')}>
