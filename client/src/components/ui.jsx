@@ -89,6 +89,15 @@ export const IconCalendar = (p) => (
     <line x1="3" y1="10" x2="21" y2="10" />
   </Icon>
 );
+/** المخيمات و الدورات — lucide «tent» */
+export const IconTent = (p) => (
+  <Icon {...p}>
+    <path d="M3.5 21 14 3" />
+    <path d="M20.5 21 10 3" />
+    <path d="M15.5 21 12 15l-3.5 6" />
+    <path d="M2 21h20" />
+  </Icon>
+);
 export const IconTrendingUp = (p) => (
   <Icon {...p}>
     <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
@@ -207,6 +216,12 @@ export const IconPhone = (p) => (
   <Icon {...p}>
     <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z" />
   </Icon>
+);
+/** WhatsApp's own glyph, filled — the outline set has no shape people recognise as it. */
+export const IconWhatsApp = ({ className }) => (
+  <svg className={cn('h-4 w-4 shrink-0', className)} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+    <path d="M17.47 14.38c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48 0 1.46 1.07 2.88 1.21 3.07.15.2 2.1 3.2 5.08 4.49.71.31 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.76-.72 2.01-1.41.25-.69.25-1.29.17-1.41-.07-.13-.27-.2-.57-.35ZM12.05 21.5h-.01a9.4 9.4 0 0 1-4.79-1.31l-.34-.2-3.56.93.95-3.47-.22-.36a9.4 9.4 0 0 1-1.44-5.01c0-5.2 4.23-9.43 9.44-9.43 2.52 0 4.89.98 6.67 2.77a9.37 9.37 0 0 1 2.76 6.67c0 5.2-4.24 9.43-9.44 9.43Zm8.03-17.46A11.27 11.27 0 0 0 12.05.72C5.79.72.7 5.8.7 12.06c0 2 .52 3.95 1.52 5.67L.6 23.28l5.68-1.49a11.33 11.33 0 0 0 5.77 1.47h.01c6.25 0 11.34-5.09 11.34-11.34 0-3.03-1.18-5.88-3.32-8.02Z" />
+  </svg>
 );
 export const IconChevronDown = (p) => (
   <Icon {...p}>
@@ -847,8 +862,10 @@ let openOverlays = 0;
  * bottom sheet on phones (thumb-reachable, native-feeling).
  * `footer` stays pinned under the scrolling body — a long form keeps its save
  * button in reach without scrolling to the end (buttons use `form="<id>"`).
+ * `autoFocus={false}` parks focus on the panel instead of the first field: a list
+ * whose first control is a search box would otherwise pop the phone keyboard open.
  */
-export function Dialog({ open, onClose, title, description, children, footer, size = 'md' }) {
+export function Dialog({ open, onClose, title, description, children, footer, size = 'md', autoFocus = true }) {
   const { t } = useTranslation();
   const panelRef = useRef(null);
   const contentRef = useRef(null);
@@ -892,7 +909,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
 
     const panel = panelRef.current;
     // Focus the first field, not the close button, so keyboards land on content.
-    const first = contentRef.current?.querySelector(FOCUSABLE);
+    const first = autoFocus ? contentRef.current?.querySelector(FOCUSABLE) : null;
     (first || panel)?.focus({ preventScroll: true });
 
     function onKeyDown(e) {

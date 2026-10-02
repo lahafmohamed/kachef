@@ -8,7 +8,7 @@ import { toDate } from '../lib/date';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import ExportPdfButton from '../components/ExportPdfButton';
 import MemberFormDialog from '../components/MemberForm';
-import { AttendanceStrip, RateValue, UnderlineTabs, callLabel, contactsOf, telHref, whoLabel } from '../components/MemberParts';
+import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, callLabel, contactsOf, telHref, waHref, whoLabel } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
 import {
   Avatar,
@@ -380,11 +380,11 @@ export default function MemberDetail() {
           <ul className="grid gap-2 sm:flex sm:flex-wrap">
             {contacts.flatMap((c) =>
               c.numbers.map((n, i) => (
-                <li key={`${c.who}-${i}`} className="min-w-0">
+                <li key={`${c.who}-${i}`} className="flex min-w-0 gap-2">
                   <a
                     href={telHref(n)}
                     aria-label={`${callLabel(t, c.who, member.first_name)} — ${fmtPhone(n)}`}
-                    className="focus-ring flex min-h-12 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
+                    className="focus-ring flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
                   >
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                       <IconPhone className="h-4 w-4" />
@@ -396,6 +396,7 @@ export default function MemberDetail() {
                       </span>
                     </span>
                   </a>
+                  <WhatsAppTile href={waHref(n)} label={`${t('member.whatsapp')} — ${fmtPhone(n)}`} />
                 </li>
               ))
             )}

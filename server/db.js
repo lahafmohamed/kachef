@@ -449,6 +449,96 @@ CREATE TABLE IF NOT EXISTS lookup_values (
   sort_order INTEGER NOT NULL DEFAULT 0,
   UNIQUE(kind, label)
 );
+
+-- المخيمات و الدورات: نشاط يمتدّ يومًا أو أيامًا و فيه جلسات عدّة، لمجموعة ثابتة من
+-- المشاركين، بأجرة اشتراك و مصاريف. مستقلّ عن جدول الأنشطة عمدًا: المشاركة فيه
+-- اختيارية و مدفوعة، فجلساته لا تدخل في معدّلات حضور الفرق، و لائحته من سُجِّل فيه
+-- لا عناصر الفرقة كلهم. kind و فئة المصروف بلا CHECK: قائمتان قد تطولان، و توسيع
+-- CHECK في SQLite يعني إعادة بناء الجدول — التحقّق في الخادم.
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- 'camp' مخيم، 'course' دورة، 'trip' رحلة، 'other' غير ذلك
+  kind TEXT NOT NULL DEFAULT 'camp',
+  title TEXT NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  place TEXT,
+  -- قيمة الاشتراك المطلوبة من كل مشارك؛ NULL = مجّاني
+  fee REAL,
+  -- الخطة: الأهداف و البرنامج العام نصًّا حرًّا. الجلسات بتفاصيلها في event_sessions
+  plan TEXT,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  -- قسم المخيم: قسم فرقه، أو القسم الذي أُنشئ فيه. لا يتغيّر بعد الإنشاء: مشاركوه منه
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- الفرق المعنية بالمخيم؛ لا صف = الفوج كله. تحصر من يُختار من العناصر، و تحصر رؤية
+-- المخيم على الحساب المقيَّد بفرق — كفرق النشاط تمامًا.
+CREATE TABLE IF NOT EXISTS event_branches (
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  PRIMARY KEY (event_id, branch_id)
+);
+
+-- المشاركون: عنصر، أو قائد، أو ضيف من خارج البرنامج (اسمه فقط) — واحد من الثلاثة.
+-- paid تراكمي: كل ما دفعه حتى الآن، NULL = لم يدفع شيئًا. amount_due ما يُطلب منه إن
+-- خالف قيمة الاشتراك (0 = معفى، NULL = القيمة نفسها). «دفع» و «جزئي» لا يُخزَّنان:
+-- يُستخرجان من المبلغين، فتصحيح قيمة الاشتراك يصحّح حال الجميع.
+CREATE TABLE IF NOT EXISTS event_participants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  member_id INTEGER REFERENCES members(id) ON DELETE CASCADE,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE CASCADE,
+  guest_name TEXT,
+  amount_due REAL,
+  paid REAL,
+  paid_at TEXT,
+  recorded_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((member_id IS NOT NULL) + (leader_id IS NOT NULL) + (guest_name IS NOT NULL) = 1),
+  UNIQUE(event_id, member_id),
+  UNIQUE(event_id, leader_id)
+);
+
+-- البرنامج: جلسات المخيم أو الدورة بيومها و ساعتها. يومها داخل أيام المخيم.
+CREATE TABLE IF NOT EXISTS event_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  -- من يقدّمها: قائد، أو مدرّب من خارج الفوج في دورة — فالاسم نصّ حرّ
+  responsible TEXT,
+  -- مضمونها: الفقرات، الوسائل، الملاحظات
+  notes TEXT
+);
+
+-- حضور المشاركين في كل جلسة. لا صف = لم يُسجَّل بعد.
+CREATE TABLE IF NOT EXISTS event_attendance (
+  session_id INTEGER NOT NULL REFERENCES event_sessions(id) ON DELETE CASCADE,
+  participant_id INTEGER NOT NULL REFERENCES event_participants(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'excused')),
+  PRIMARY KEY (session_id, participant_id)
+);
+
+-- المصاريف: كل صف مبلغ صُرف على المخيم. الرصيد = المحصَّل من المشاركين ناقص مجموعها.
+CREATE TABLE IF NOT EXISTS event_expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount >= 0),
+  -- transport | food | gear | venue | other
+  category TEXT NOT NULL DEFAULT 'other',
+  date TEXT,
+  -- من دفعها: الصندوق، أو قائد سلّف المبلغ — نصّ حرّ
+  paid_by TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -956,6 +1046,11 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_assignments_leader_year ON assignments(leader_id, year);
     CREATE INDEX IF NOT EXISTS idx_prep_cards_branch_date ON prep_cards(branch_id, date);
     CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_date);
+    CREATE INDEX IF NOT EXISTS idx_event_participants_event ON event_participants(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_sessions_event_date ON event_sessions(event_id, date);
+    CREATE INDEX IF NOT EXISTS idx_event_attendance_participant ON event_attendance(participant_id);
+    CREATE INDEX IF NOT EXISTS idx_event_expenses_event ON event_expenses(event_id);
   `);
 
   migrateBranchRoles();

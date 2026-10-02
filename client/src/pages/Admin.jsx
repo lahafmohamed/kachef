@@ -18,16 +18,19 @@ import {
   Input,
   Label,
   PageHeader,
-  Select,
+  SegmentedControl,
   SkeletonPage,
+  cn,
   useConfirm,
   useToast,
   IconAlert,
+  IconCheck,
   IconKey,
   IconPencil,
   IconPlus,
   IconRefresh,
   IconShield,
+  IconSwap,
   IconTrash,
   IconUserCheck,
   IconUsers,
@@ -48,6 +51,8 @@ const PERM_GROUPS = [
   },
   {
     page: 'nav.sessions',
+    // المخيمات و الدورات ride on these same keys
+    note: 'admin.permSessionsNote',
     items: [
       { key: 'sessions.read', label: 'admin.permAccess' },
       { key: 'sessions.read.fees', label: 'admin.permSessionsFees' },
@@ -84,6 +89,49 @@ const PERM_GROUPS = [
 ];
 
 const ALL_PERM_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
+
+// What each permission builds on — mirrors the server's PERM_DEPENDENCIES, which adds
+// the missing ones on save anyway. The ticks follow it, so the form never shows a set
+// the server would not keep: ticking one ticks its prerequisites, unticking one unticks
+// what needs it.
+const PERM_DEPENDENCIES = {
+  'members.create': ['members.read'],
+  'members.edit': ['members.read'],
+  'members.delete': ['members.read'],
+  'members.contact': ['members.read'],
+  'members.matalib': ['members.read'],
+  'sessions.create': ['sessions.read'],
+  'sessions.attendance': ['sessions.read'],
+  'sessions.read.fees': ['sessions.read'],
+  'branches.plan': ['branches.read'],
+  'branches.groups': ['branches.read'],
+  'promotions.apply': ['promotions.read', 'members.read'],
+  'leaders.progress.self': ['leaders.read'],
+  'leaders.progress.manage': ['leaders.read'],
+  'leaders.dues': ['leaders.read'],
+};
+
+function withPerm(perms, key) {
+  const out = new Set(perms);
+  const add = (k) => {
+    if (out.has(k)) return;
+    out.add(k);
+    (PERM_DEPENDENCIES[k] || []).forEach(add);
+  };
+  out.delete(key);
+  add(key);
+  return [...out];
+}
+
+function withoutPerm(perms, key) {
+  const out = new Set(perms);
+  const drop = (k) => {
+    if (!out.delete(k)) return;
+    for (const [dependent, needs] of Object.entries(PERM_DEPENDENCIES)) if (needs.includes(k)) drop(dependent);
+  };
+  drop(key);
+  return [...out];
+}
 
 // Mirrors the server's USERNAME_RE: what a login name may look like
 export const USERNAME_RE = /^[a-z][a-z0-9._-]{2,31}$/;
@@ -193,13 +241,15 @@ function UsernameField({ form, setForm, isEdit, exceptId, original }) {
   );
 }
 
-function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel }) {
+/**
+ * The account form. Its save and cancel live in the dialog's pinned footer (the form
+ * is long), so `saving` and the error are the page's: this form only sets them.
+ */
+function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onCredentials }) {
   const { t, i18n } = useTranslation();
   const confirm = useConfirm();
   const [form, setForm] = useState(initial);
-  const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [error, setError] = useState(null);
   const isEdit = !!initial.id;
 
   function toggleBranch(id) {
@@ -219,20 +269,16 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
   }
 
   function togglePerm(key) {
-    setForm((f) => ({
-      ...f,
-      perms: f.perms.includes(key) ? f.perms.filter((x) => x !== key) : [...f.perms, key],
-    }));
+    setForm((f) => ({ ...f, perms: f.perms.includes(key) ? withoutPerm(f.perms, key) : withPerm(f.perms, key) }));
   }
 
   // Group header checkbox: everything of the page on, or everything off
   function toggleGroup(group) {
     const keys = group.items.map((i) => i.key);
-    const all = keys.every((k) => form.perms.includes(k));
-    setForm((f) => ({
-      ...f,
-      perms: all ? f.perms.filter((k) => !keys.includes(k)) : [...new Set([...f.perms, ...keys])],
-    }));
+    setForm((f) => {
+      const all = keys.every((k) => f.perms.includes(k));
+      return { ...f, perms: all ? keys.reduce(withoutPerm, f.perms) : keys.reduce(withPerm, f.perms) };
+    });
   }
 
   function describe(err) {
@@ -298,13 +344,13 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
+    <form id="user-form" onSubmit={submit} className="space-y-5">
+      {/* ---------- Who: the name, the login, the password ---------- */}
       <div className="space-y-1.5">
         <Label htmlFor="u_display">{t('admin.displayName')}</Label>
         <Input
           id="u_display"
           required
-          autoFocus={!isEdit}
           autoComplete="off"
           value={form.display_name || ''}
           onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))}
@@ -316,7 +362,7 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
 
       {isEdit ? (
         !isSelf && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
             <span className="text-sm">{t('auth.password')}</span>
             <Button variant="outline" size="sm" loading={resetting} onClick={resetPassword}>
               <IconKey />
@@ -325,94 +371,123 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
           </div>
         )
       ) : (
-        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <p className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <IconKey className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           {t('admin.passwordGenerated')}
         </p>
       )}
 
-      <div className="space-y-1.5">
-        <Label htmlFor="u_role">{t('admin.role')}</Label>
-        <Select
-          id="u_role"
-          value={form.role}
-          disabled={isSelf}
-          onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-        >
-          <option value="user">{t('admin.roleUser')}</option>
-          <option value="admin">{t('admin.roleAdmin')}</option>
-        </Select>
-        <p className="text-xs text-muted-foreground">{t(isSelf ? 'admin.cannotEditSelf' : 'admin.roleHint')}</p>
-      </div>
-      {form.role === 'user' && (
-        <SectionField
-          allowBoth
-          value={form.section}
-          onChange={setSection}
-          hint={t(form.section ? 'section.accountHint' : 'section.accountBothHint')}
-        />
-      )}
-      {form.role === 'user' && (
+      {/* ---------- What the account reaches: its role, قسم and فرق ---------- */}
+      <div className="space-y-5 border-t border-border pt-5">
         <div className="space-y-1.5">
-          <Label>{t('admin.allowedBranches')}</Label>
-          <div className="rounded-md border border-border p-1.5">
-            {visibleBranches.map((b) => (
-              <label
-                key={b.id}
-                className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm hover:bg-accent/60 sm:min-h-9"
-              >
-                <input
-                  type="checkbox"
-                  checked={form.branches.includes(b.id)}
-                  onChange={() => toggleBranch(b.id)}
-                />
-                {branchName(b, i18n.language)}
-                {/* Both أقسام listed together: say which one each فرقة belongs to */}
-                {!form.section && (
-                  <span className="text-xs text-muted-foreground">· {t(`section.${b.section}`)}</span>
-                )}
-              </label>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">{t('admin.branchesHint')}</p>
+          <Label>{t('admin.role')}</Label>
+          {/* Two choices, side by side like the قسم under it. An admin cannot demote
+              himself: the server refuses it, so the control is not offered */}
+          <fieldset disabled={isSelf} className="min-w-0 disabled:pointer-events-none disabled:opacity-60">
+            <SegmentedControl
+              label={t('admin.role')}
+              value={form.role}
+              onChange={(v) => setForm((f) => ({ ...f, role: v }))}
+              className="flex w-full"
+              options={[
+                // حساب في قسم الفتيات حسابُ قائدة
+                { value: 'user', label: t(form.section === 'F' ? 'section.roleUserF' : 'admin.roleUser') },
+                { value: 'admin', label: t('admin.roleAdmin') },
+              ]}
+            />
+          </fieldset>
+          <p className="text-xs text-muted-foreground">{t(isSelf ? 'admin.cannotEditSelf' : 'admin.roleHint')}</p>
         </div>
-      )}
+
+        {form.role === 'user' && (
+          <SectionField
+            allowBoth
+            value={form.section}
+            onChange={setSection}
+            hint={t(form.section ? 'section.accountHint' : 'section.accountBothHint')}
+          />
+        )}
+
+        {form.role === 'user' && (
+          <div className="space-y-1.5">
+            <Label>{t('admin.allowedBranches')}</Label>
+            {/* The same toggle chips as the فرق of a نشاط */}
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t('admin.allowedBranches')}>
+              {visibleBranches.map((b) => {
+                const on = form.branches.includes(b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleBranch(b.id)}
+                    className={cn(
+                      'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                      on
+                        ? 'border-primary bg-primary/10 font-medium text-primary'
+                        : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                    )}
+                  >
+                    <IconSwap on={on} onIcon={<IconCheck className="h-3.5 w-3.5" />} className="h-3.5 w-3.5" collapse />
+                    {branchName(b, i18n.language)}
+                    {/* Both أقسام listed together: say which one each فرقة belongs to */}
+                    {!form.section && <span className="text-xs opacity-70">· {t(`section.${b.section}`)}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">{t('admin.branchesHint')}</p>
+          </div>
+        )}
+      </div>
+
+      {/* ---------- What the account may do, page by page ---------- */}
       {form.role === 'user' && (
-        <div className="space-y-1.5">
-          <Label>{t('admin.allowedPages')}</Label>
-          <div className="space-y-2">
+        <div className="space-y-2 border-t border-border pt-5">
+          <div className="space-y-0.5">
+            <Label>{t('admin.allowedPages')}</Label>
+            <p className="text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
+          </div>
+          <div className="space-y-2.5">
             {PERM_GROUPS.map((g) => {
               const checkedCount = g.items.filter((i) => form.perms.includes(i.key)).length;
               return (
-                <div key={g.page} className="overflow-hidden rounded-md border border-border">
-                  <label className="flex min-h-10 cursor-pointer items-center gap-2.5 bg-muted/40 px-3 text-sm font-semibold hover:bg-muted/60">
+                <div key={g.page} className="overflow-hidden rounded-xl border border-border">
+                  <label className="flex min-h-11 cursor-pointer items-center gap-2.5 bg-muted/40 px-3 text-sm font-semibold transition-colors hover:bg-muted/70 sm:min-h-10">
                     <input
                       type="checkbox"
                       checked={checkedCount === g.items.length}
                       ref={(el) => el && (el.indeterminate = checkedCount > 0 && checkedCount < g.items.length)}
                       onChange={() => toggleGroup(g)}
                     />
-                    {t(g.page)}
-                    <span className="text-xs font-normal text-muted-foreground">
+                    <span className="min-w-0 flex-1">
+                      {t(g.page)}
+                      {g.note && <span className="ms-1.5 text-xs font-normal text-muted-foreground">· {t(g.note)}</span>}
+                    </span>
+                    <span
+                      className={cn(
+                        'text-xs font-medium tabular-nums',
+                        checkedCount ? 'text-primary' : 'text-muted-foreground'
+                      )}
+                    >
                       {checkedCount}/{g.items.length}
                     </span>
                   </label>
-                  <div className="divide-y divide-border">
+                  {/* One line per right, two columns from sm up. The key itself stays
+                      out of sight — a hover title for whoever needs it */}
+                  <div className="grid gap-0.5 border-t border-border p-1.5 sm:grid-cols-2">
                     {g.items.map((i) => (
                       <label
                         key={i.key}
-                        className="flex min-h-11 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-sm hover:bg-accent/60 sm:min-h-10"
+                        title={i.key}
+                        className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60 sm:min-h-9"
                       >
                         <input
                           type="checkbox"
                           checked={form.perms.includes(i.key)}
                           onChange={() => togglePerm(i.key)}
                         />
-                        <span className="flex-1">
-                          <span className="block">{t(i.label)}</span>
-                          <span className="block font-mono text-xs text-muted-foreground" dir="ltr">
-                            {i.key}
-                          </span>
-                        </span>
+                        <span className="min-w-0 flex-1 leading-snug">{t(i.label)}</span>
                       </label>
                     ))}
                   </div>
@@ -420,41 +495,36 @@ function UserForm({ initial, branches, isSelf, onSaved, onCredentials, onCancel 
               );
             })}
           </div>
-          <p className="text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
         </div>
       )}
-      {error && (
-        <p role="alert" className="text-sm font-medium text-destructive">
-          {error}
-        </p>
-      )}
-      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" onClick={onCancel}>
-          {t('common.cancel')}
-        </Button>
-        <Button type="submit" loading={saving}>
-          {t(isEdit ? 'common.save' : 'admin.createUser')}
-        </Button>
-      </div>
     </form>
   );
 }
 
+/**
+ * One account. Phones: name and actions on the first line, the badges under the name.
+ * From sm up: the badges move inline, between the name and the actions.
+ */
 function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }) {
   const { t } = useTranslation();
   const isSelf = u.id === me.id;
   return (
-    <li className={`flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5 ${u.active ? '' : 'opacity-70'}`}>
+    <li
+      className={cn(
+        'grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto_auto] sm:px-5',
+        !u.active && 'opacity-70'
+      )}
+    >
       <span
         aria-hidden="true"
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-semibold text-secondary-foreground"
+        className="row-span-2 flex h-10 w-10 shrink-0 items-center justify-center self-start rounded-full bg-secondary text-sm font-semibold text-secondary-foreground sm:row-span-1 sm:self-center"
       >
         {initials(u)}
       </span>
-      <div className="min-w-40 flex-1">
-        <div className="font-medium">
+      <div className="min-w-0">
+        <div className="truncate font-medium">
           {u.display_name || u.username}
-          {isSelf && <span className="ms-2 text-xs text-muted-foreground">{t('admin.you')}</span>}
+          {isSelf && <span className="ms-2 text-xs font-normal text-muted-foreground">{t('admin.you')}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span className="font-mono" dir="ltr">
@@ -474,7 +544,8 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
           )}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+      {/* Phones: under the name and the actions both — the badges get the full width */}
+      <div className="col-span-2 col-start-2 row-start-2 flex flex-wrap items-center gap-1.5 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:justify-end">
         {!u.active && <Badge variant="destructive">{t('admin.inactive')}</Badge>}
         {u.role === 'admin' ? (
           <Badge variant="warning">
@@ -500,7 +571,7 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
           </Badge>
         )}
       </div>
-      <div className="flex gap-0.5">
+      <div className="col-start-3 row-start-1 flex gap-0.5 sm:col-start-4">
         {!u.active && (
           <Button
             variant="ghost"
@@ -541,6 +612,9 @@ export default function Admin() {
   // must still be editable from here
   const branches = useFetch('/branches', { section: '' });
   const [editing, setEditing] = useState(null);
+  // The account form's save state, here because its buttons sit in the dialog footer
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState(null);
   // { username, password } right after a creation or a reset — shown exactly once
   const [credentials, setCredentials] = useState(null);
 
@@ -613,8 +687,15 @@ export default function Admin() {
     }
   }
 
+  // Every opening starts clean: no error or spinner left over from the last account
+  function openForm(u) {
+    setFormError(null);
+    setSaving(false);
+    setEditing(u);
+  }
+
   const edit = (u) =>
-    setEditing({
+    openForm({
       ...u,
       display_name: u.display_name || '',
       branches: u.branches || [],
@@ -627,7 +708,7 @@ export default function Admin() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('admin.title')} description={t('admin.subtitle')}>
-        <Button variant="brand" onClick={() => setEditing({ ...EMPTY_USER, section: view || 'M' })}>
+        <Button variant="brand" onClick={() => openForm({ ...EMPTY_USER, section: view || 'M' })}>
           <IconPlus />
           {t('admin.addUser')}
         </Button>
@@ -667,23 +748,48 @@ export default function Admin() {
         </section>
       )}
 
+      {/* Wide enough for the rights in two columns; save stays pinned under the
+          scrolling form. An edit opens on the panel, not in the name field: on a phone
+          the keyboard would otherwise cover the account being looked at. */}
       <Dialog
         open={!!editing}
         onClose={() => setEditing(null)}
-        title={t(editing?.id ? 'admin.editUser' : 'admin.addUser')}
+        title={editing?.id ? `${t('admin.editUser')} — ${label(editing)}` : t('admin.addUser')}
+        size="lg"
+        autoFocus={!editing?.id}
+        footer={
+          <div className="space-y-2">
+            {formError && (
+              <p role="alert" className="text-sm font-medium text-destructive">
+                {formError}
+              </p>
+            )}
+            {/* Side by side even on a phone: a pinned footer twice as tall steals the form */}
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+              <Button variant="outline" onClick={() => setEditing(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" form="user-form" loading={saving}>
+                {t(editing?.id ? 'common.save' : 'admin.createUser')}
+              </Button>
+            </div>
+          </div>
+        }
       >
         {editing && (
           <UserForm
+            key={editing.id ?? 'new'}
             initial={editing}
             branches={branchList}
             isSelf={editing.id === me.id}
+            setSaving={setSaving}
+            setError={setFormError}
             onSaved={({ quietToast } = {}) => {
               setEditing(null);
               users.reload({ quiet: true });
               if (!quietToast) toast.success(t('common.saved'));
             }}
             onCredentials={setCredentials}
-            onCancel={() => setEditing(null)}
           />
         )}
       </Dialog>

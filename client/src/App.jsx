@@ -15,6 +15,8 @@ import Sessions from './pages/Sessions';
 import SessionDetail from './pages/SessionDetail';
 import PrepCards from './pages/PrepCards';
 import PrepCardDetail from './pages/PrepCardDetail';
+import Events from './pages/Events';
+import EventDetail from './pages/EventDetail';
 import Promotions from './pages/Promotions';
 import Leaders from './pages/Leaders';
 import LeaderDetail from './pages/LeaderDetail';
@@ -138,6 +140,8 @@ function Shell() {
           {can('sessions.read') && <Route path="/sessions/:id" element={<SessionDetail />} />}
           {can('sessions.read') && <Route path="/prep-cards" element={<PrepCards />} />}
           {can('sessions.read') && <Route path="/prep-cards/:id" element={<PrepCardDetail />} />}
+          {can('sessions.read') && <Route path="/events" element={<Events />} />}
+          {can('sessions.read') && <Route path="/events/:id" element={<EventDetail />} />}
           {can('promotions.read') && <Route path="/promotions" element={<Promotions />} />}
           {can('leaders.read') && <Route path="/leaders" element={<Leaders />} />}
           <Route path="/leaders/:id" element={<LeaderDetail />} />

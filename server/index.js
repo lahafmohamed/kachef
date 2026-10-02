@@ -4331,6 +4331,626 @@ app.delete('/api/prep-cards/:id', requireAdmin, (req, res) => {
   res.status(204).end();
 });
 
+// ---------- المخيمات و الدورات ----------
+// مخيم أو دورة أو رحلة: يوم أو أيام فيها جلسات عدّة، لمجموعة ثابتة من المشاركين، بقيمة
+// اشتراك و مصاريف. صلاحياتها صلاحيات الأنشطة: sessions.read لرؤيتها، sessions.create
+// لإنشائها و تعديل برنامجها و مشاركيها و مصاريفها، sessions.attendance لحضور جلساتها و
+// تسجيل الدفع، و sessions.read.fees للمال كله — من لا يراه لا تصله أرقامه أصلًا، و لا
+// يكتبها. الحذف للأدمن وحده، كالأنشطة.
+
+const EVENT_KINDS = ['camp', 'course', 'trip', 'other'];
+const EXPENSE_CATEGORIES = ['transport', 'food', 'gear', 'venue', 'other'];
+const EVENT_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// نصّ اختياري مقصوص الأطراف: الفارغ NULL، و الأطول من الحدّ undefined (مرفوض)
+function optionalText(v, max) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return s.length <= max ? s : undefined;
+}
+
+// [ids] صحيحة موجبة بلا تكرار؛ null = طلب فاسد
+const positiveIds = (v) =>
+  v === undefined || v === null
+    ? []
+    : Array.isArray(v) && v.length <= 500 && v.every((n) => Number.isInteger(n) && n > 0)
+      ? [...new Set(v)]
+      : null;
+
+const eventBranchIds = (eventId) =>
+  db
+    .prepare('SELECT branch_id FROM event_branches WHERE event_id = ? ORDER BY branch_id')
+    .all(eventId)
+    .map((r) => r.branch_id);
+
+// كنطاق الأنشطة: قسم الطلب أولًا، ثم فرق الحساب المقيَّد — مخيم بلا فرق (الفوج كله) يمرّ
+function eventScopeSQL(req, alias = 'e') {
+  const section = activeSection(req);
+  const bySection = section ? ` AND ${alias}.section = '${section}'` : '';
+  const scope = allowedBranches(req);
+  if (!scope) return bySection;
+  const ids = [...scope].map(Number).filter(Number.isInteger);
+  return `${bySection} AND (NOT EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = ${alias}.id)
+      OR EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = ${alias}.id
+                 AND eb.branch_id IN (${ids.length ? ids.join(',') : -1})))`;
+}
+
+function eventOk(req, ev) {
+  const section = activeSection(req);
+  if (section && ev.section !== section) return false;
+  const scope = allowedBranches(req);
+  if (!scope) return true;
+  const ids = eventBranchIds(ev.id);
+  return ids.length === 0 || ids.some((b) => scope.has(b));
+}
+
+// المخيم المطلوب بعد التحقّق من نطاقه، أو null بعد ردّ 404 / 403
+function loadEvent(req, res) {
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(intOr(req.params.id));
+  if (!ev) {
+    res.status(404).json({ error: 'event not found' });
+    return null;
+  }
+  if (!eventOk(req, ev)) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return ev;
+}
+
+// ما يُطلب من مشارك: مبلغه الخاص إن حُدّد (0 = معفى)، و إلا قيمة الاشتراك
+const eventDueOf = (p, ev) => p.amount_due ?? ev.fee ?? 0;
+
+// حساب المخيم كله، من خانات المشاركين و المصاريف عند القراءة — لا مجموع يُخزَّن فيشيخ.
+// العدّ بالحال: معفى، دفع (كامل المطلوب أو أكثر)، جزئي، لم يدفع؛ مخيم مجّاني لا حال فيه.
+function eventSummary(ev) {
+  const out = { participants: 0, expected: 0, collected: 0, outstanding: 0, paid: 0, partial: 0, unpaid: 0, exempt: 0 };
+  for (const p of db.prepare('SELECT amount_due, paid FROM event_participants WHERE event_id = ?').all(ev.id)) {
+    const due = eventDueOf(p, ev);
+    const paid = p.paid ?? 0;
+    out.participants += 1;
+    out.expected += due;
+    out.collected += paid;
+    out.outstanding += Math.max(due - paid, 0);
+    if (p.amount_due === 0) out.exempt += 1;
+    else if (due === 0) out.paid += paid > 0 ? 1 : 0;
+    else if (paid >= due) out.paid += 1;
+    else if (paid > 0) out.partial += 1;
+    else out.unpaid += 1;
+  }
+  const x = db
+    .prepare('SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM event_expenses WHERE event_id = ?')
+    .get(ev.id);
+  return { ...out, expenses: x.total, expense_count: x.n, balance: out.collected - x.total };
+}
+
+// المشارك بشكل واحد أيًّا كان: اسم العنصر أو القائد، أو اسم الضيف وحده
+const EVENT_PARTICIPANT_SQL = `
+  SELECT p.id, p.member_id, p.leader_id, p.guest_name, p.amount_due, p.paid, p.paid_at, p.recorded_by,
+    COALESCE(m.first_name, l.first_name) AS first_name,
+    COALESCE(m.father_name, l.father_name) AS father_name,
+    COALESCE(m.last_name, l.last_name) AS last_name,
+    COALESCE(m.photo, l.photo) AS photo,
+    COALESCE(m.status, l.status) AS status,
+    m.branch_id, m.group_id, g.name AS group_name,
+    b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+  FROM event_participants p
+  LEFT JOIN members m ON m.id = p.member_id
+  LEFT JOIN branches b ON b.id = m.branch_id
+  LEFT JOIN branch_groups g ON g.id = m.group_id
+  LEFT JOIN leaders l ON l.id = p.leader_id
+  WHERE p.event_id = ?`;
+
+const stripParticipantFees = (req, p) =>
+  hasPerm(req, 'sessions.read.fees') ? p : { ...p, amount_due: null, paid: null, paid_at: null, recorded_by: null };
+
+const expensesOf = (eventId) =>
+  db
+    .prepare('SELECT * FROM event_expenses WHERE event_id = ? ORDER BY date IS NULL, date DESC, id DESC')
+    .all(eventId);
+
+// كل ما تعرضه صفحة المخيم في طلب واحد. عناصر الفرق الأخرى لا تصل الحساب المقيَّد —
+// كلائحة النشاط المشترك — و القادة و الضيوف يراهم كل من يرى المخيم.
+function eventPayload(req, ev) {
+  const canFees = hasPerm(req, 'sessions.read.fees');
+  const participants = db
+    .prepare(
+      `${EVENT_PARTICIPANT_SQL}${branchFilterSQL(req, 'm.branch_id')}
+       ORDER BY CASE WHEN p.member_id IS NOT NULL THEN 0 WHEN p.leader_id IS NOT NULL THEN 1 ELSE 2 END,
+         b.sort_order, last_name, first_name, p.guest_name, p.id`
+    )
+    .all(ev.id)
+    .map((p) => stripParticipantFees(req, p));
+  const visible = new Set(participants.map((p) => p.id));
+  return {
+    ...ev,
+    fee: canFees ? ev.fee : null,
+    leader_name: ev.leader_id
+      ? db.prepare(`SELECT ${fullNameSQL('l')} AS name FROM leaders l WHERE l.id = ?`).get(ev.leader_id)?.name ?? null
+      : null,
+    branch_ids: eventBranchIds(ev.id),
+    participants,
+    // عدد المشاركين كلهم: الحساب المقيَّد يرى أسماء فرقه وحدها، و العدد يبقى عدد المخيم
+    participant_total: db.prepare('SELECT COUNT(*) AS n FROM event_participants WHERE event_id = ?').get(ev.id).n,
+    // جلسة بلا ساعة تأتي بعد جلسات يومها المؤقّتة
+    sessions: db
+      .prepare("SELECT * FROM event_sessions WHERE event_id = ? ORDER BY date, COALESCE(start_time, '24:00'), id")
+      .all(ev.id),
+    attendance: db
+      .prepare(
+        `SELECT a.session_id, a.participant_id, a.status FROM event_attendance a
+         JOIN event_sessions s ON s.id = a.session_id WHERE s.event_id = ?`
+      )
+      .all(ev.id)
+      .filter((a) => visible.has(a.participant_id)),
+    expenses: canFees ? expensesOf(ev.id) : null,
+    summary: canFees ? eventSummary(ev) : null,
+  };
+}
+
+// Validates the body shared by INSERT and UPDATE; `existing` is the event being edited.
+function parseEvent(req, existing = null) {
+  const b = req.body || {};
+  const kind = b.kind === undefined ? (existing?.kind ?? 'camp') : b.kind;
+  if (!EVENT_KINDS.includes(kind)) return { error: 'invalid kind' };
+  const title = optionalText(b.title, 200);
+  if (!title) return { error: 'invalid title' };
+  if (!validISODate(b.start_date) || !validISODate(b.end_date) || b.end_date < b.start_date)
+    return { error: 'invalid dates' };
+  const place = optionalText(b.place, 200);
+  const plan = optionalText(b.plan, 10000);
+  if (place === undefined || plan === undefined) return { error: 'text too long' };
+  // قيمة الاشتراك مال: من لا يراها لا يكتبها، و تعديله للمخيم لا يمحوها
+  let fee = existing ? existing.fee : null;
+  if (hasPerm(req, 'sessions.read.fees') && 'fee' in b) {
+    fee = parsePaid(b.fee);
+    if (fee === undefined) return { error: 'invalid fee' };
+  }
+  // الفرق المعنية. كل فرقة تُضاف من فرق المستخدم؛ و ما في المخيم من فرق لا يراها
+  // (النموذج لم يعرضها له) يبقى كما كان، فلا يُسقطها حفظٌ لم يقصدها.
+  const raw = Array.isArray(b.branch_ids) ? b.branch_ids : [];
+  const picked = [...new Set(raw.map(Number))];
+  const before = existing ? eventBranchIds(existing.id) : [];
+  for (const id of picked) {
+    if (!Number.isInteger(id) || !db.prepare('SELECT id FROM branches WHERE id = ?').get(id))
+      return { error: 'invalid branch_ids' };
+    if (!before.includes(id) && !branchOk(req, id)) return { error: 'forbidden', status: 403 };
+  }
+  const scope = allowedBranches(req);
+  const branchIds = [...new Set([...picked, ...(scope ? before.filter((id) => !scope.has(id)) : [])])].sort(
+    (x, y) => x - y
+  );
+  // لا يحفظ حسابٌ مقيَّد مخيمًا لم يعد يراه
+  if (scope && branchIds.length && !branchIds.some((id) => scope.has(id))) return { error: 'forbidden', status: 403 };
+  // قسم المخيم: قسم فرقه، و إلا قسم الطلب، و إلا ما اختير في النموذج. ثابت بعد الإنشاء.
+  if (b.section !== undefined && b.section !== null && b.section !== '' && !parseSection(b.section))
+    return { error: 'invalid section' };
+  const sections = [...new Set(branchIds.map(sectionOfBranch))];
+  if (sections.length > 1) return { error: 'mixed_sections' };
+  const section = existing ? existing.section : sections[0] || activeSection(req) || parseSection(b.section) || 'M';
+  if (sections[0] && sections[0] !== section) return { error: 'mixed_sections' };
+  let leaderId = null;
+  if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
+    const l = db.prepare('SELECT id, status FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), section);
+    // قائد أُرشف يبقى على المخيم الذي قاده، و لا يُختار لمخيم جديد
+    if (!l || (l.status !== 'active' && l.id !== existing?.leader_id)) return { error: 'invalid leader_id' };
+    leaderId = l.id;
+  }
+  // أيام المخيم تبقى تسع برنامجه: لا تُقصَّر فتخرج منها جلسة مبرمجة
+  if (existing) {
+    const outside = db
+      .prepare('SELECT COUNT(*) AS n FROM event_sessions WHERE event_id = ? AND (date < ? OR date > ?)')
+      .get(existing.id, b.start_date, b.end_date).n;
+    if (outside) return { error: 'sessions_outside_dates' };
+  }
+  return {
+    values: { kind, title, start_date: b.start_date, end_date: b.end_date, place, fee, plan, leader_id: leaderId, section },
+    branchIds,
+  };
+}
+
+const setEventBranches = (eventId, branchIds) => {
+  db.prepare('DELETE FROM event_branches WHERE event_id = ?').run(eventId);
+  const insert = db.prepare('INSERT INTO event_branches (event_id, branch_id) VALUES (?, ?)');
+  for (const b of branchIds) insert.run(eventId, b);
+};
+
+app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
+  const canFees = hasPerm(req, 'sessions.read.fees');
+  let sql = `SELECT e.*, ${fullNameSQL('l')} AS leader_name,
+      (SELECT GROUP_CONCAT(eb.branch_id) FROM event_branches eb WHERE eb.event_id = e.id) AS branch_ids,
+      (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id) AS participant_count,
+      (SELECT COUNT(*) FROM event_sessions s WHERE s.event_id = e.id) AS session_count,
+      (SELECT COALESCE(SUM(p.paid), 0) FROM event_participants p WHERE p.event_id = e.id) AS collected,
+      (SELECT COALESCE(SUM(COALESCE(p.amount_due, e.fee, 0)), 0)
+         FROM event_participants p WHERE p.event_id = e.id) AS expected,
+      (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
+         FROM event_participants p WHERE p.event_id = e.id) AS outstanding,
+      (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses
+    FROM events e LEFT JOIN leaders l ON l.id = e.leader_id
+    WHERE 1=1${eventScopeSQL(req)}`;
+  const params = [];
+  if (EVENT_KINDS.includes(req.query.kind)) {
+    sql += ' AND e.kind = ?';
+    params.push(req.query.kind);
+  }
+  if (req.query.q) {
+    sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR ${fullNameSQL('l')} LIKE ?)`;
+    params.push(`%${req.query.q}%`, `%${req.query.q}%`, `%${req.query.q}%`);
+  }
+  sql += ' ORDER BY e.start_date DESC, e.id DESC';
+  const money = ['fee', 'collected', 'expected', 'outstanding', 'expenses'];
+  res.json(
+    db
+      .prepare(sql)
+      .all(...params)
+      .map((r) => {
+        const out = { ...r, branch_ids: parseIdList(r.branch_ids) };
+        if (!canFees) for (const k of money) out[k] = null;
+        return out;
+      })
+  );
+});
+
+app.get('/api/events/:id', requirePerm('sessions.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (ev) res.json(eventPayload(req, ev));
+});
+
+app.post('/api/events', requirePerm('sessions.create'), (req, res) => {
+  const parsed = parseEvent(req);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  const v = parsed.values;
+  let id;
+  db.transaction(() => {
+    id = db
+      .prepare(
+        `INSERT INTO events (kind, title, start_date, end_date, place, fee, plan, leader_id, section, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(v.kind, v.title, v.start_date, v.end_date, v.place, v.fee, v.plan, v.leader_id, v.section,
+        req.user.display_name || req.user.username).lastInsertRowid;
+    setEventBranches(id, parsed.branchIds);
+  })();
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  auditEvent(req, 'create', 'event', id, null, { ...ev, branch_ids: parsed.branchIds });
+  res.status(201).json(eventPayload(req, ev));
+});
+
+app.put('/api/events/:id', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseEvent(req, ev);
+  if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
+  const v = parsed.values;
+  const branchesBefore = eventBranchIds(ev.id);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE events SET kind = ?, title = ?, start_date = ?, end_date = ?, place = ?, fee = ?, plan = ?,
+         leader_id = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(v.kind, v.title, v.start_date, v.end_date, v.place, v.fee, v.plan, v.leader_id, ev.id);
+    setEventBranches(ev.id, parsed.branchIds);
+  })();
+  const updated = db.prepare('SELECT * FROM events WHERE id = ?').get(ev.id);
+  auditEvent(req, 'update', 'event', ev.id, { ...ev, branch_ids: branchesBefore }, { ...updated, branch_ids: parsed.branchIds });
+  res.json(eventPayload(req, updated));
+});
+
+// المشاركون و البرنامج و الحضور و المصاريف تسقط معه (ON DELETE CASCADE)
+app.delete('/api/events/:id', requireAdmin, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  db.prepare('DELETE FROM events WHERE id = ?').run(ev.id);
+  auditEvent(req, 'delete', 'event', ev.id, ev, null);
+  res.status(204).end();
+});
+
+// من يمكن إضافته: عناصر الفرق المعنية (أو فرق القسم كلها لمخيم الفوج) — و من فرق
+// المستخدم وحدها — و قادة القسم الفعّالون، ما لم يكونوا مشاركين بعد. أسماء فقط.
+app.get('/api/events/:id/candidates', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const branchIds = eventBranchIds(ev.id);
+  // أرقام الفرق من القاعدة و القسم مُتحقَّق منه، فدمجهما في النص آمن
+  const pool = branchIds.length ? `m.branch_id IN (${branchIds.join(',')})` : `b.section = '${ev.section}'`;
+  const members = db
+    .prepare(
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.group_id, g.name AS group_name,
+              b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM members m JOIN branches b ON b.id = m.branch_id LEFT JOIN branch_groups g ON g.id = m.group_id
+       WHERE m.status = 'active' AND ${pool}${branchFilterSQL(req, 'm.branch_id')}
+         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.member_id = m.id)
+       ORDER BY b.sort_order, b.id, m.last_name, m.first_name`
+    )
+    .all(ev.id);
+  const leaders = db
+    .prepare(
+      `SELECT l.id, l.first_name, l.father_name, l.last_name FROM leaders l
+       WHERE l.status = 'active' AND l.section = ?
+         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.leader_id = l.id)
+       ORDER BY l.last_name, l.first_name`
+    )
+    .all(ev.section, ev.id);
+  res.json({ members, leaders });
+});
+
+app.post('/api/events/:id/participants', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const memberIds = positiveIds(req.body?.member_ids);
+  const leaderIds = positiveIds(req.body?.leader_ids);
+  const guestNames = parseGuestNames(req.body?.guest_names);
+  if (memberIds === null || leaderIds === null || guestNames === null)
+    return res.status(400).json({ error: 'invalid participants' });
+  const branchIds = eventBranchIds(ev.id);
+  const memberOf = db.prepare(
+    'SELECT m.id, m.branch_id, m.status, b.section FROM members m JOIN branches b ON b.id = m.branch_id WHERE m.id = ?'
+  );
+  for (const id of memberIds) {
+    const m = memberOf.get(id);
+    if (!m || m.status !== 'active' || m.section !== ev.section || (branchIds.length && !branchIds.includes(m.branch_id)))
+      return res.status(400).json({ error: 'invalid member_ids' });
+    if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden_branch' });
+  }
+  for (const id of leaderIds)
+    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active' AND section = ?").get(id, ev.section))
+      return res.status(400).json({ error: 'invalid leader_ids' });
+  // الضيف نفسه لا يُسجَّل مرّتين، و لو كُتب اسمه بحالة أحرف أخرى
+  const guests = new Set(
+    db
+      .prepare('SELECT guest_name FROM event_participants WHERE event_id = ? AND guest_name IS NOT NULL')
+      .all(ev.id)
+      .map((r) => r.guest_name.toLowerCase())
+  );
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO event_participants (event_id, member_id, leader_id, guest_name) VALUES (?, ?, ?, ?)'
+  );
+  let added = 0;
+  db.transaction(() => {
+    for (const id of memberIds) added += insert.run(ev.id, id, null, null).changes;
+    for (const id of leaderIds) added += insert.run(ev.id, null, id, null).changes;
+    for (const name of guestNames) {
+      if (guests.has(name.toLowerCase())) continue;
+      guests.add(name.toLowerCase());
+      added += insert.run(ev.id, null, null, name).changes;
+    }
+  })();
+  if (added)
+    auditEvent(req, 'add_participants', 'event', ev.id, null, {
+      member_ids: memberIds,
+      leader_ids: leaderIds,
+      guest_names: guestNames,
+    });
+  res.status(201).json(eventPayload(req, ev));
+});
+
+// المشارك المطلوب من هذا المخيم. الحساب المقيَّد لا يمسّ عناصر غير فرقه — كحضور النشاط المشترك.
+function loadParticipant(req, res, ev) {
+  const p = db
+    .prepare(
+      `SELECT p.*, m.branch_id FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
+       WHERE p.id = ? AND p.event_id = ?`
+    )
+    .get(intOr(req.params.pid), ev.id);
+  if (!p) {
+    res.status(404).json({ error: 'participant not found' });
+    return null;
+  }
+  if (p.member_id && !branchOk(req, p.branch_id)) {
+    res.status(403).json({ error: 'forbidden_branch' });
+    return null;
+  }
+  return p;
+}
+
+app.delete('/api/events/:id/participants/:pid', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const p = loadParticipant(req, res, ev);
+  if (!p) return;
+  db.prepare('DELETE FROM event_participants WHERE id = ?').run(p.id);
+  auditEvent(req, 'remove_participant', 'event', ev.id, p, null);
+  res.json(eventPayload(req, ev));
+});
+
+// الدفع: paid هو كل ما دفعه المشارك حتى الآن (NULL = لم يدفع). amount_due ما يُطلب منه
+// إن خالف قيمة الاشتراك (0 = معفى، NULL = القيمة نفسها) — شرطٌ من شروط المخيم، فيضعه
+// من يملك تعديله.
+app.put('/api/events/:id/participants/:pid', requirePerm('sessions.read.fees'), (req, res) => {
+  if (!hasPerm(req, 'sessions.attendance') && !hasPerm(req, 'sessions.create'))
+    return res.status(403).json({ error: 'forbidden' });
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const p = loadParticipant(req, res, ev);
+  if (!p) return;
+  const b = req.body || {};
+  const sets = [];
+  const params = [];
+  if ('paid' in b) {
+    const paid = parsePaid(b.paid);
+    if (paid === undefined) return res.status(400).json({ error: 'invalid paid' });
+    sets.push('paid = ?', "paid_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END", 'recorded_by = ?');
+    params.push(paid, paid, req.user.display_name || req.user.username);
+  }
+  if ('amount_due' in b) {
+    if (!hasPerm(req, 'sessions.create')) return res.status(403).json({ error: 'forbidden' });
+    const due = parsePaid(b.amount_due);
+    if (due === undefined) return res.status(400).json({ error: 'invalid amount_due' });
+    sets.push('amount_due = ?');
+    params.push(due);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  db.prepare(`UPDATE event_participants SET ${sets.join(', ')} WHERE id = ?`).run(...params, p.id);
+  const after = db.prepare('SELECT * FROM event_participants WHERE id = ?').get(p.id);
+  auditEvent(req, 'update', 'event_payment', p.id, p, after);
+  res.json({
+    participant: db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id),
+    summary: eventSummary(ev),
+  });
+});
+
+// جلسة من البرنامج: يومها داخل أيام المخيم، و ساعتا البدء و الانتهاء اختياريتان — سهرة
+// تنتهي بعد منتصف الليل مقبولة، فلا يُفرض أن تسبق الأولى الثانية.
+function parseEventSession(req, ev) {
+  const b = req.body || {};
+  const title = optionalText(b.title, 200);
+  if (!title) return { error: 'invalid title' };
+  if (!validISODate(b.date)) return { error: 'invalid date' };
+  if (b.date < ev.start_date || b.date > ev.end_date) return { error: 'date_outside_event' };
+  const time = (v) => (v === undefined || v === null || v === '' ? null : String(v).slice(0, 5));
+  const start = time(b.start_time);
+  const end = time(b.end_time);
+  if ((start && !EVENT_TIME_RE.test(start)) || (end && !EVENT_TIME_RE.test(end))) return { error: 'invalid time' };
+  const responsible = optionalText(b.responsible, 120);
+  const notes = optionalText(b.notes, 4000);
+  if (responsible === undefined || notes === undefined) return { error: 'text too long' };
+  return { values: [title, b.date, start, end, responsible, notes] };
+}
+
+const loadEventSession = (req, res, ev) => {
+  const s = db.prepare('SELECT * FROM event_sessions WHERE id = ? AND event_id = ?').get(intOr(req.params.sid), ev.id);
+  if (!s) res.status(404).json({ error: 'session not found' });
+  return s || null;
+};
+
+app.post('/api/events/:id/sessions', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseEventSession(req, ev);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  db.prepare(
+    `INSERT INTO event_sessions (event_id, title, date, start_time, end_time, responsible, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(ev.id, ...parsed.values);
+  res.status(201).json(eventPayload(req, ev));
+});
+
+app.put('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const s = loadEventSession(req, res, ev);
+  if (!s) return;
+  const parsed = parseEventSession(req, ev);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  db.prepare(
+    `UPDATE event_sessions SET title = ?, date = ?, start_time = ?, end_time = ?, responsible = ?, notes = ?
+     WHERE id = ?`
+  ).run(...parsed.values, s.id);
+  res.json(eventPayload(req, ev));
+});
+
+// حضورها يسقط معها
+app.delete('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const s = loadEventSession(req, res, ev);
+  if (!s) return;
+  db.prepare('DELETE FROM event_sessions WHERE id = ?').run(s.id);
+  auditEvent(req, 'delete', 'event_session', s.id, s, null);
+  res.json(eventPayload(req, ev));
+});
+
+// حضور جلسة: records = [{ participant_id, status }]، و status = null يمسح التسجيل
+app.post('/api/events/:id/sessions/:sid/attendance', requirePerm('sessions.attendance'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const s = loadEventSession(req, res, ev);
+  if (!s) return;
+  const records = Array.isArray(req.body?.records) ? req.body.records : [req.body || {}];
+  if (records.length === 0 || records.length > 500) return res.status(400).json({ error: 'invalid records' });
+  const participantOf = db.prepare(
+    `SELECT p.id, p.member_id, m.branch_id FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
+     WHERE p.id = ? AND p.event_id = ?`
+  );
+  const upsert = db.prepare(
+    `INSERT INTO event_attendance (session_id, participant_id, status) VALUES (?, ?, ?)
+     ON CONFLICT(session_id, participant_id) DO UPDATE SET status = excluded.status`
+  );
+  const clear = db.prepare('DELETE FROM event_attendance WHERE session_id = ? AND participant_id = ?');
+  try {
+    db.transaction(() => {
+      for (const r of records) {
+        const status = r?.status ?? null;
+        if (status !== null && !['present', 'absent', 'excused'].includes(status)) throw new Error('invalid status');
+        const p = participantOf.get(intOr(r?.participant_id), ev.id);
+        if (!p) throw new Error('invalid participant');
+        if (p.member_id && !branchOk(req, p.branch_id)) throw new Error('forbidden_branch');
+        if (status === null) clear.run(s.id, p.id);
+        else upsert.run(s.id, p.id, status);
+      }
+    })();
+  } catch (e) {
+    return res.status(e.message === 'forbidden_branch' ? 403 : 400).json({ error: e.message });
+  }
+  res.json({ ok: true });
+});
+
+function parseExpense(req) {
+  const b = req.body || {};
+  const label = optionalText(b.label, 200);
+  if (!label) return { error: 'invalid label' };
+  const amount = parsePaid(b.amount);
+  if (amount === undefined || amount === null) return { error: 'invalid amount' };
+  const category = b.category === undefined || b.category === null || b.category === '' ? 'other' : b.category;
+  if (!EXPENSE_CATEGORIES.includes(category)) return { error: 'invalid category' };
+  const date = b.date === undefined || b.date === null || b.date === '' ? null : b.date;
+  if (date !== null && !validISODate(date)) return { error: 'invalid date' };
+  const paidBy = optionalText(b.paid_by, 120);
+  if (paidBy === undefined) return { error: 'text too long' };
+  return { values: [label, amount, category, date, paidBy] };
+}
+
+const loadExpense = (req, res, ev) => {
+  const x = db.prepare('SELECT * FROM event_expenses WHERE id = ? AND event_id = ?').get(intOr(req.params.xid), ev.id);
+  if (!x) res.status(404).json({ error: 'expense not found' });
+  return x || null;
+};
+
+// المصاريف مال كذلك: تُكتب بصلاحية تعديل المخيم و رؤية المبالغ معًا
+const requireEventMoney = [requirePerm('sessions.create'), requirePerm('sessions.read.fees')];
+const expensesPayload = (ev) => ({ expenses: expensesOf(ev.id), summary: eventSummary(ev) });
+
+app.post('/api/events/:id/expenses', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseExpense(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const id = db
+    .prepare(
+      `INSERT INTO event_expenses (event_id, label, amount, category, date, paid_by, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(ev.id, ...parsed.values, req.user.display_name || req.user.username).lastInsertRowid;
+  auditEvent(req, 'create', 'event_expense', id, null, db.prepare('SELECT * FROM event_expenses WHERE id = ?').get(id));
+  res.status(201).json(expensesPayload(ev));
+});
+
+app.put('/api/events/:id/expenses/:xid', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const x = loadExpense(req, res, ev);
+  if (!x) return;
+  const parsed = parseExpense(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  db.prepare('UPDATE event_expenses SET label = ?, amount = ?, category = ?, date = ?, paid_by = ? WHERE id = ?').run(
+    ...parsed.values,
+    x.id
+  );
+  auditEvent(req, 'update', 'event_expense', x.id, x, db.prepare('SELECT * FROM event_expenses WHERE id = ?').get(x.id));
+  res.json(expensesPayload(ev));
+});
+
+app.delete('/api/events/:id/expenses/:xid', ...requireEventMoney, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const x = loadExpense(req, res, ev);
+  if (!x) return;
+  db.prepare('DELETE FROM event_expenses WHERE id = ?').run(x.id);
+  auditEvent(req, 'delete', 'event_expense', x.id, x, null);
+  res.json(expensesPayload(ev));
+});
+
 // ---------- Dashboard ----------
 // Everything the home page shows, in one request: what asks something of the قائد
 // (unmarked pointage, next Saturday's plan and preparation card, unpaid

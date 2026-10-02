@@ -7,7 +7,7 @@ import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { LeaderDuesCard } from '../components/LeaderDues';
-import { AttendanceStrip, RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
+import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, phoneNumbers, telHref, waHref } from '../components/MemberParts';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import {
   Avatar,
@@ -410,11 +410,11 @@ export default function LeaderDetail() {
         {phones.length > 0 && (
           <ul className="grid gap-2 sm:flex sm:flex-wrap">
             {phones.map((n) => (
-              <li key={n} className="min-w-0">
+              <li key={n} className="flex min-w-0 gap-2">
                 <a
                   href={telHref(n)}
                   aria-label={`${t('member.call')} ${name} — ${fmtPhone(n)}`}
-                  className="focus-ring flex min-h-12 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
+                  className="focus-ring flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
                 >
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                     <IconPhone className="h-4 w-4" />
@@ -426,6 +426,7 @@ export default function LeaderDetail() {
                     </span>
                   </span>
                 </a>
+                <WhatsAppTile href={waHref(n)} label={`${t('member.whatsapp')} ${name} — ${fmtPhone(n)}`} />
               </li>
             ))}
           </ul>

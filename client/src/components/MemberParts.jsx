@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fmtDate } from '../utils';
-import { cn } from './ui';
+import { IconWhatsApp, cn } from './ui';
 
 /** Présence tone — the same 75 / 50 thresholds in the list and on the profile. */
 export const rateTone = (rate) =>
@@ -77,6 +77,36 @@ export function phoneNumbers(value) {
 }
 
 export const telHref = (n) => `tel:${String(n).replace(/[^\d+]/g, '')}`;
+
+/**
+ * WhatsApp chat link. wa.me wants the full international number: a +/00 prefix is
+ * already international, a bare 10-digit number is Ivorian (+225, leading 0 kept).
+ */
+export function waHref(n) {
+  const s = String(n).trim();
+  let digits = s.replace(/\D/g, '');
+  if (s.startsWith('+')) {
+    // already international
+  } else if (digits.startsWith('00')) digits = digits.slice(2);
+  else if (digits.length === 10) digits = `225${digits}`;
+  return `https://wa.me/${digits}`;
+}
+
+/** Square companion to a call tile: same height, opens the chat in WhatsApp. */
+export function WhatsAppTile({ href, label }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={label}
+      title={label}
+      className="focus-ring flex min-h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-[#25D366] shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10"
+    >
+      <IconWhatsApp className="h-5 w-5" />
+    </a>
+  );
+}
 
 /** Who can be called about this person, in the order a قائد tries them. */
 export function contactsOf(m) {
