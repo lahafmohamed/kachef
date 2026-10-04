@@ -89,7 +89,7 @@ export default function PrepCards() {
         {(() => {
           const q = new URLSearchParams(params);
           q.delete('branch');
-          return <ExportPdfButton kind="prep-list" id={params.get('branch') || 0} query={q.toString()} />;
+          return <ExportPdfButton kind="prep-list" id={params.get('branch') || 0} query={q.toString()} compact />;
         })()}
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>

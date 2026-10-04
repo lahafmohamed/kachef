@@ -294,7 +294,7 @@ function ProgramTab({ ev, t, lng, canEdit, onAdd, onEdit, onOpen, onEditPlan }) 
           </CardHeader>
           <CardContent>
             {/* auto: an Arabic plan keeps its own direction on the French screen, and vice versa */}
-            <p dir="auto" className="whitespace-pre-wrap text-sm leading-relaxed">
+            <p dir="auto" className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
               {ev.plan}
             </p>
           </CardContent>
@@ -333,7 +333,7 @@ function ProgramTab({ ev, t, lng, canEdit, onAdd, onEdit, onOpen, onEditPlan }) 
             </Button>
           )}
         </CardHeader>
-        <CardContent className="p-0 pb-2">
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           {ev.sessions.length === 0 ? (
             <EmptyState
               icon={<IconCalendar className="h-6 w-6" />}
@@ -388,7 +388,7 @@ function ProgramTab({ ev, t, lng, canEdit, onAdd, onEdit, onOpen, onEditPlan }) 
                             {s.notes && (
                               <span
                                 dir="auto"
-                                className="line-clamp-2 block whitespace-pre-line text-sm text-muted-foreground"
+                                className="line-clamp-2 block whitespace-pre-line text-sm text-muted-foreground [overflow-wrap:anywhere]"
                               >
                                 {s.notes}
                               </span>
@@ -927,7 +927,7 @@ function StaffTab({ ev, t, canEdit, canLeaders, onAssign, onEdit, onEditChief })
           </Button>
         )}
       </CardHeader>
-      <CardContent className="p-0 pb-2">
+      <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
         <ul className="divide-y divide-border border-t border-border">
           {rows.map((r) => (
             // The post on its own column from sm up, so the names line up and read as a roster
@@ -1259,7 +1259,7 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
       {hidden > 0 && (
         <p className="px-4 pb-3 text-xs text-muted-foreground sm:px-5">{t('event.ownBranchesOnly', { count: hidden })}</p>
       )}
-      <CardContent className="p-0 pb-2">
+      <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
         {people.length === 0 ? (
           <EmptyState
             icon={<IconUsers className="h-6 w-6" />}
@@ -1756,7 +1756,7 @@ function ExpensesTab({ ev, t, canWrite, onAdd, onEdit }) {
           </Button>
         )}
       </CardHeader>
-      <CardContent className="p-0 pb-2">
+      <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
         {list.length === 0 ? (
           <EmptyState
             icon={<IconCoins className="h-6 w-6" />}
@@ -1986,7 +1986,7 @@ function DonationsCard({ ev, t, canWrite, onAdd, onEdit }) {
         )}
       </CardHeader>
       {list.length > 0 && (
-        <CardContent className="p-0 pb-2">
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           <ul className="divide-y divide-border border-t border-border">
             {list.map((d) => {
               const title = d.note || t('event.donation');
@@ -2279,6 +2279,7 @@ export default function EventDetail() {
 
   return (
     <div className="space-y-4">
+      {/* Same header as an activity's: icon-only actions on phones */}
       <div className="flex items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
           <IconBack className="rtl:rotate-180" />
@@ -2286,15 +2287,27 @@ export default function EventDetail() {
         </Button>
         <div className="flex items-center gap-2">
           {canEdit && (
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing(true)}
+              aria-label={t('common.edit')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
               <IconPencil />
-              {t('common.edit')}
+              <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
             </Button>
           )}
           {isAdmin && (
-            <Button variant="destructive-ghost" size="sm" onClick={removeEvent}>
+            <Button
+              variant="destructive-ghost"
+              size="sm"
+              onClick={removeEvent}
+              aria-label={t('common.delete')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
               <IconTrash />
-              {t('common.delete')}
+              <span className="sr-only sm:not-sr-only">{t('common.delete')}</span>
             </Button>
           )}
         </div>

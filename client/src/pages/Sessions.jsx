@@ -1,5 +1,5 @@
 import ExportPdfButton from '../components/ExportPdfButton';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -136,13 +136,19 @@ function tally(s) {
   return { marked, rate: marked ? Math.round((100 * (s.present_count || 0)) / marked) : null };
 }
 
+/**
+ * Every عنصر starts out غائب when the نشاط is created: today's or an upcoming one with
+ * nobody marked present or excused has simply not been taken yet — it is not a 0%.
+ */
+const untaken = (s) => s.date >= todayISO() && !s.present_count && !s.excused_count;
+
 /** Rate across a month: every marked عنصر weighs the same, so a big نشاط counts for more. */
 function monthRate(rows) {
   let present = 0;
   let marked = 0;
   for (const s of rows) {
     // زيارة is 100% by nature and نشاط عام للفوج has counts, not a roll call
-    if (s.kind === 'visit' || s.kind === 'group') continue;
+    if (s.kind === 'visit' || s.kind === 'group' || untaken(s)) continue;
     present += s.present_count || 0;
     marked += tally(s).marked;
   }
@@ -169,7 +175,7 @@ function AttendanceMeter({ s, t }) {
     return <p className="text-sm text-muted-foreground">{t('session.visitedCount', { count: s.present_count || 0 })}</p>;
 
   const { marked, rate } = tally(s);
-  if (!marked)
+  if (!marked || untaken(s))
     return (
       <div className="space-y-1.5">
         <p className="text-xs text-muted-foreground">{t('session.notMarked')}</p>
@@ -180,14 +186,22 @@ function AttendanceMeter({ s, t }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="truncate text-xs text-muted-foreground">
-          <span className="tabular-nums">{s.present_count}</span> {t('session.present')}
+        {/* Wraps rather than cutting «1 excusé» off on a 320px screen — between two
+            counts, never inside «1 غائب بعذر» */}
+        <p className="min-w-0 text-xs text-muted-foreground">
+          <span className="whitespace-nowrap">
+            <span className="tabular-nums">{s.present_count}</span> {t('session.present')}
+          </span>
           {' · '}
-          <span className="tabular-nums">{s.absent_count}</span> {t('session.absent')}
+          <span className="whitespace-nowrap">
+            <span className="tabular-nums">{s.absent_count}</span> {t('session.absent')}
+          </span>
           {s.excused_count > 0 && (
             <>
               {' · '}
-              <span className="tabular-nums">{s.excused_count}</span> {t('session.excused')}
+              <span className="whitespace-nowrap">
+                <span className="tabular-nums">{s.excused_count}</span> {t('session.excused')}
+              </span>
             </>
           )}
         </p>
@@ -243,9 +257,19 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
             <span className="font-semibold group-hover:text-primary">{s.title}</span>
             {tag && <Badge variant={tag.variant}>{t(tag.key)}</Badge>}
           </div>
+          {/* Two lines on a phone: cut to one, the قائد and the type were always the
+              part that fell off. A short fact stays whole, so the line breaks between
+              two — «أحمد / ياسين» read as two people — and each keeps its own
+              direction: an Arabic place beside an Arabic name swapped places, and
+              their dots, on the French screen. */}
           {meta.length > 0 && (
-            <p className="truncate text-sm text-muted-foreground" title={meta.join(' · ')}>
-              {meta.join(' · ')}
+            <p className="text-sm text-muted-foreground max-sm:line-clamp-2 sm:truncate" title={meta.join(' · ')}>
+              {meta.map((m, i) => (
+                <Fragment key={i}>
+                  {i > 0 && ' · '}
+                  <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+                </Fragment>
+              ))}
             </p>
           )}
           <div className="flex flex-wrap items-center gap-1.5">
@@ -734,7 +758,7 @@ export default function Sessions() {
         {(() => {
           const q = new URLSearchParams(params);
           q.delete('branch');
-          return <ExportPdfButton kind="sessions-list" id={params.get('branch') || 0} query={q.toString()} />;
+          return <ExportPdfButton kind="sessions-list" id={params.get('branch') || 0} query={q.toString()} compact />;
         })()}
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>

@@ -135,9 +135,16 @@ export const whoLabel = (t, who) => t(WHO_KEY[who]);
 /**
  * Underlined tabs with roving focus (arrows follow the reading direction).
  * Scrolls sideways on phones rather than wrapping, and keeps the chosen tab in view.
+ * Under the app bar (phones, tablets) a tap on a tab brings the top of its panel on
+ * screen: below a profile's figures the row sits at the fold, where switching tabs
+ * changed nothing the eye could see. The row also sticks there, unless `sticky` is
+ * off — for a row whose parent ends before its panel, where it could only stick
+ * for a moment.
  */
-export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId, className }) {
+export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId, className, sticky = true }) {
   const refs = useRef({});
+  const anchorRef = useRef(null);
+  const picked = useRef(false);
 
   // Sideways only: a tab row below the fold must not drag the page down to itself.
   // Re-run when tabs arrive — ones loaded after mount can push the chosen one out.
@@ -147,6 +154,25 @@ export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId
     if (box && box.top >= 0 && box.bottom <= window.innerHeight)
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [value, items.length]);
+
+  // After a tap (never on mount or a programmatic change), once the new panel is
+  // laid out: a row low on the screen, or scrolled past over a long panel, is lined
+  // up under the app bar so the panel reads from its start. No app bar from lg up
+  // (its bottom reads 0), and there the page stays put.
+  useEffect(() => {
+    if (!picked.current) return;
+    picked.current = false;
+    const under = document.querySelector('[data-app-bar]')?.getBoundingClientRect().bottom;
+    if (!under) return;
+    const top = anchorRef.current.getBoundingClientRect().top;
+    if (top < under - 1 || top > window.innerHeight * 0.45)
+      window.scrollTo({ top: window.scrollY + top - under });
+  }, [value]);
+
+  function pick(id) {
+    picked.current = true;
+    onChange(id);
+  }
 
   function onKeyDown(e) {
     const rtl = document.documentElement.dir === 'rtl';
@@ -159,53 +185,63 @@ export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId
     else if (e.key === 'End') next = ids[ids.length - 1];
     if (next == null) return;
     e.preventDefault();
-    onChange(next);
+    pick(next);
     refs.current[next]?.focus();
   }
 
   return (
-    <div
-      role="tablist"
-      aria-label={label}
-      onKeyDown={onKeyDown}
-      className={cn(
-        'no-scrollbar -mx-4 flex gap-1 overflow-x-auto border-b border-border px-4 sm:mx-0 sm:px-0',
-        className
-      )}
-    >
-      {items.map((x) => {
-        const on = x.id === value;
-        return (
-          <button
-            key={x.id}
-            ref={(el) => (refs.current[x.id] = el)}
-            type="button"
-            role="tab"
-            id={`${idPrefix}-${x.id}`}
-            aria-selected={on}
-            aria-controls={panelId}
-            tabIndex={on ? 0 : -1}
-            onClick={() => onChange(x.id)}
-            className={cn(
-              'focus-ring -mb-px inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-3 text-sm font-medium transition-colors sm:px-4',
-              on ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {x.label}
-            {x.count != null && (
-              <span
-                className={cn(
-                  'min-w-6 rounded-full px-1.5 py-px text-center text-xs font-medium tabular-nums',
-                  on ? 'bg-primary/12 text-primary' : 'bg-secondary text-muted-foreground',
-                  !on && x.count === 0 && 'opacity-60'
-                )}
-              >
-                {x.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+    <>
+      {/* Where the row sits in the flow: once stuck, the row itself can no longer
+          say. Out of flow, so the parent's space-y gaps stay as they were. */}
+      <div ref={anchorRef} aria-hidden="true" className="absolute" />
+      <div
+        role="tablist"
+        aria-label={label}
+        onKeyDown={onKeyDown}
+        className={cn(
+          'no-scrollbar -mx-4 flex gap-1 overflow-x-auto border-b border-border px-4 sm:mx-0 sm:px-0',
+          // 1px under the app bar's own border, which paints over it: no seam for the
+          // content to show through. The panel under it fills the screen (index.css),
+          // so any tab can bring the row up here.
+          sticky &&
+            'max-lg:sticky max-lg:top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] max-lg:z-20 max-lg:bg-background',
+          className
+        )}
+      >
+        {items.map((x) => {
+          const on = x.id === value;
+          return (
+            <button
+              key={x.id}
+              ref={(el) => (refs.current[x.id] = el)}
+              type="button"
+              role="tab"
+              id={`${idPrefix}-${x.id}`}
+              aria-selected={on}
+              aria-controls={panelId}
+              tabIndex={on ? 0 : -1}
+              onClick={() => pick(x.id)}
+              className={cn(
+                'focus-ring -mb-px inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-3 text-sm font-medium transition-colors sm:px-4',
+                on ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {x.label}
+              {x.count != null && (
+                <span
+                  className={cn(
+                    'min-w-6 rounded-full px-1.5 py-px text-center text-xs font-medium tabular-nums',
+                    on ? 'bg-primary/12 text-primary' : 'bg-secondary text-muted-foreground',
+                    !on && x.count === 0 && 'opacity-60'
+                  )}
+                >
+                  {x.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }

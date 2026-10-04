@@ -635,9 +635,12 @@ function Meter({ value, className }) {
   );
 }
 
-/** Sparkline for a figure: context only, the figure beside it states the value. */
+/**
+ * Sparkline for a figure: context only, the figure beside it states the value. One or
+ * two bars draw no trend and read as a rendering glitch, so it waits for a third.
+ */
 function Spark({ points, className }) {
-  if (!points?.length) return null;
+  if (!points || points.length < 3) return null;
   const last = points.length - 1;
   return (
     <span aria-hidden="true" className={cn('flex h-8 items-end gap-0.5', className)} style={deemph}>
@@ -712,7 +715,7 @@ function Kpi({ label, value, context, spark, to }) {
       <span className="text-sm text-muted-foreground max-sm:min-h-[2lh]">{label}</span>
       <span className="text-3xl font-bold leading-tight tracking-tight">{value}</span>
       {context && <span className="text-xs text-muted-foreground">{context}</span>}
-      {spark?.length > 1 && <Spark points={spark} className="mt-auto h-9 pt-2" />}
+      <Spark points={spark} className="mt-auto h-9 pt-2" />
     </Card>
   );
   return to ? (
@@ -977,7 +980,7 @@ export default function Dashboard() {
                         <PrefLink
                           to="/branches"
                           pref={['branches.selected', b.id]}
-                          className="focus-ring min-w-0 rounded font-semibold hover:text-primary hover:underline"
+                          className='focus-ring relative min-w-0 rounded font-semibold before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[""] hover:text-primary hover:underline'
                         >
                           {branchName(b, lng)}
                         </PrefLink>
@@ -1035,7 +1038,12 @@ export default function Dashboard() {
               <Card>
                 <CardHeader className="flex-row items-baseline justify-between gap-3">
                   <CardTitle id="dashboard-recent">{t('dashboard.recentSessions')}</CardTitle>
-                  <Link to="/sessions" className="focus-ring rounded text-sm font-medium text-primary hover:underline">
+                  {/* The pseudo-element takes the hit area to a thumb's size; the
+                      header keeps its height */}
+                  <Link
+                    to="/sessions"
+                    className='focus-ring relative rounded text-sm font-medium text-primary before:absolute before:-inset-x-2 before:-inset-y-3 before:content-[""] hover:underline'
+                  >
                     {t('dashboard.seeAll')}
                   </Link>
                 </CardHeader>

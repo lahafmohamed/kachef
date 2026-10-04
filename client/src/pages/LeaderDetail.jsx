@@ -52,12 +52,15 @@ function ageOf(iso) {
   return age;
 }
 
-/** Mixed scripts in one line: each part keeps its own direction. */
+/**
+ * Mixed scripts in one line: each part keeps its own direction. A short part also
+ * stays whole, so a wrapped line breaks between two facts, never inside one.
+ */
 function Parts({ parts }) {
   return parts.filter(Boolean).map((p, i) => (
     <span key={i}>
       {i > 0 && <span aria-hidden="true"> · </span>}
-      <bdi>{p}</bdi>
+      <bdi className={String(p).length <= 24 ? 'whitespace-nowrap' : undefined}>{p}</bdi>
     </span>
   ));
 }
@@ -135,7 +138,7 @@ function ActivityList({ rows, lang, t }) {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium">{s.title}</span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
                       <Parts
                         parts={[
                           isLeadersOnly(s) ? t('session.kindLeaders') : branchName(s, lang),

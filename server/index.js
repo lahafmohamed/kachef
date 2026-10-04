@@ -3960,6 +3960,83 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   });
 });
 
+// تعديل نشاط بعد إنشائه: تفاصيله وحدها — العنوان، اليوم و الساعة، المكان، الطبيعة،
+// الأجرة، القائد المسؤول، المطالب، عدد القادة. نوعه و فرقه و مجموعاته تبقى كما هي:
+// منها بُنيت لائحة الحضور، و تغييرها يمحو حضورًا مسجّلًا أو يخلط فرقًا لم تُدعَ.
+app.put('/api/sessions/:id', requirePerm('sessions.create'), (req, res) => {
+  const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  // نشاط مشترك يعدّله من يملك فرقه كلها، كما يُنشأ
+  const branchIds = branchIdsOfSession(s.id);
+  if (!branchIds.every((b) => branchOk(req, b))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const title = optionalText(b.title, 200);
+  if (!title || !validISODate(b.date)) return res.status(400).json({ error: 'invalid title or date' });
+  const startTime = b.start_time === undefined || b.start_time === null || b.start_time === '' ? null : String(b.start_time).slice(0, 5);
+  if (startTime !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) return res.status(400).json({ error: 'invalid start_time' });
+  const place = optionalText(b.place, 200);
+  if (place === undefined) return res.status(400).json({ error: 'text too long' });
+  const activityType = s.kind === 'visit' ? s.activity_type : b.activity_type || null;
+  if (activityType !== null && !ACTIVITY_TYPES.includes(activityType))
+    return res.status(400).json({ error: 'invalid activity_type' });
+  if (s.kind === 'group' && !activityType) return res.status(400).json({ error: 'activity_type required' });
+  // الأجرة مال: من لا يرى المبالغ لا يكتبها، و تعديله للنشاط لا يمحوها
+  let fee = s.fee;
+  if (hasPerm(req, 'sessions.read.fees') && 'fee' in b && s.kind !== 'visit' && s.kind !== 'group') {
+    if (b.fee !== null && b.fee !== '' && (typeof b.fee !== 'number' || !Number.isFinite(b.fee) || b.fee < 0))
+      return res.status(400).json({ error: 'invalid fee' });
+    fee = b.fee === '' ? null : b.fee;
+  }
+  // القائد المسؤول من قسم النشاط؛ قائد أُرشف يبقى على نشاطه القديم
+  let leaderRow = null;
+  if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
+    leaderRow = db.prepare('SELECT * FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), s.section);
+    if (!leaderRow || (leaderRow.status !== 'active' && leaderRow.id !== s.leader_id))
+      return res.status(400).json({ error: 'invalid leader_id' });
+  }
+  // المطالب لنشاط الفرقة وحده، و في حدود كل فرقة يشملها
+  let matalib = JSON.parse(s.matalib || '[]');
+  if (s.kind === 'activity' && b.matalib !== undefined) {
+    const nums = b.matalib === null ? [] : b.matalib;
+    if (!Array.isArray(nums) || !nums.every((n) => Number.isInteger(n) && n >= 1))
+      return res.status(400).json({ error: 'invalid matalib' });
+    matalib = [...new Set(nums)].sort((x, y) => x - y);
+    for (const bid of branchIds) {
+      const total = db.prepare('SELECT total_requirements FROM branches WHERE id = ?').get(bid)?.total_requirements;
+      if (matalib.some((n) => n > total)) return res.status(400).json({ error: 'invalid matalib' });
+    }
+  }
+  let leadersCount = s.leaders_count;
+  if (s.kind === 'group' && b.leaders_count !== undefined) {
+    leadersCount = b.leaders_count === null || b.leaders_count === '' ? null : Number(b.leaders_count);
+    if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
+      return res.status(400).json({ error: 'invalid leaders_count' });
+  }
+  // `leader` keeps the plain-text snapshot, as at creation
+  const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leaderRow === null && s.leader_id ? null : s.leader;
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE sessions SET title = ?, date = ?, start_time = ?, place = ?, activity_type = ?, fee = ?,
+         leader = ?, leader_id = ?, matalib = ?, leaders_count = ? WHERE id = ?`
+    ).run(title, b.date, startTime, place, activityType, fee, leaderName, leaderRow ? leaderRow.id : null,
+      JSON.stringify(matalib), leadersCount, s.id);
+    // القائد المسؤول هو صفّ «main» بين قادة النشاط: السابق يخرج، و الجديد يُرفَّع — و إن كان
+    // مساعدًا قبلًا يبقى حضوره المسجَّل
+    if ((leaderRow?.id ?? null) !== s.leader_id) {
+      db.prepare("DELETE FROM session_leaders WHERE session_id = ? AND role = 'main'").run(s.id);
+      if (leaderRow)
+        db.prepare(
+          `INSERT INTO session_leaders (session_id, leader_id, role) VALUES (?, ?, 'main')
+           ON CONFLICT(session_id, leader_id) DO UPDATE SET role = 'main'`
+        ).run(s.id, leaderRow.id);
+    }
+  })();
+  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(s.id);
+  auditEvent(req, 'update', 'session', s.id, s, row);
+  res.json(stripFee(req, { ...row, matalib: JSON.parse(row.matalib), branch_ids: branchIds, group_ids: groupIdsOfSession(s.id) }));
+});
+
 // حذف نشاط — أدمن فقط. الحضور و المنشّطون و روابط الخطة تسقط معه (ON DELETE
 // CASCADE)، و إشعاراته تحتفظ بعنوانه المنسوخ (SET NULL) فلا تنكسر.
 app.delete('/api/sessions/:id', requireAdmin, (req, res) => {

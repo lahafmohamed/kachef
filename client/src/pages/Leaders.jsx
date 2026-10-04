@@ -883,7 +883,7 @@ function Holder({ a, page, strong = false }) {
         onChange={(e) => quickAssign(a, e.target.value)}
         ariaLabel={`${a.title} — ${t('leader.selectLeader')}`}
         className={cn(
-          '-ms-2 inline-flex h-auto min-h-9 w-auto max-w-full gap-1.5 border-transparent bg-transparent px-2 py-1 shadow-none hover:border-border hover:bg-accent sm:h-auto',
+          '-ms-2 inline-flex h-auto min-h-11 w-auto max-w-full gap-1.5 border-transparent bg-transparent px-2 py-1 shadow-none hover:border-border hover:bg-accent sm:h-auto sm:min-h-9',
           size
         )}
         // An archived قائد stays on the slot they hold, but is not offered anew; and a
@@ -1434,7 +1434,9 @@ function LeadersFigures({ leaders, tachkila, loading, isAdmin, onCourse }) {
       {/* The ladder: how many قادة hold each course, lowest to highest. Each count
           is also the way to those قادة: it opens the list filtered on that course */}
       <Stat label={t('leader.figTraining')} className="col-span-2">
-        <ul className="grid grid-cols-5 gap-3">
+        {/* Three across under 400px: five columns there are 42px wide, and
+            «Formateur» ran into its neighbour */}
+        <ul className="grid grid-cols-3 gap-x-3 gap-y-4 min-[25rem]:grid-cols-5">
           {TRAINING_COURSES.map((c) => {
             const n = active.filter((l) => l.training_level.includes(c)).length;
             const course = t(`leader.courseShort.${c}`);
@@ -1717,7 +1719,7 @@ export default function Leaders() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
-        <ExportPdfButton kind="leaders-list" id={0} query={current === 'leaders' ? exportQuery : ''} />
+        <ExportPdfButton kind="leaders-list" id={0} query={current === 'leaders' ? exportQuery : ''} compact />
         {isAdmin && (
           <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
             <IconPlus />

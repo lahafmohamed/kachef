@@ -84,11 +84,13 @@ const SCROLL_KEY = 'members.scroll';
 const yearsSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null);
 
 /** Mixed scripts in one line («13 سنة · برية · Alghadir»): each part keeps its own direction. */
+// A short part stays whole: on two lines, «طليعة / الذئاب» read as two facts. A long
+// free-text one (a school, an address) may still break, rather than run off the row.
 function Parts({ parts }) {
   return parts.filter(Boolean).map((p, i) => (
     <span key={i}>
       {i > 0 && ' · '}
-      <bdi>{p}</bdi>
+      <bdi className={String(p).length <= 24 ? 'whitespace-nowrap' : undefined}>{p}</bdi>
     </span>
   ));
 }
@@ -157,8 +159,9 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
               )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
             </div>
-            {/* Phones: age and طليعة fold in here; wider cards give them columns */}
-            <div className="mt-0.5 truncate text-xs text-muted-foreground @2xl:hidden">
+            {/* Phones: age and طليعة fold in here; wider cards give them columns. Two
+                lines: on one, a 360px screen cut the طليعة to «طليعة ا…» */}
+            <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground @2xl:hidden">
               <Parts parts={[age, ...where, ...details]} />
             </div>
             {details.some(Boolean) && (
@@ -637,6 +640,9 @@ export default function Members() {
           label={t('member.branch')}
           idPrefix="members-tab"
           panelId="members-panel"
+          // Its wrapper ends with the search row, before the list: it could only
+          // stick for the height of the chips
+          sticky={false}
         />
 
         {patrols && (
@@ -859,7 +865,8 @@ export default function Members() {
                     id="f_phone"
                     type="tel"
                     inputMode="tel"
-                    dir="ltr"
+                    // ltr once a number is typed; empty, the hint is a sentence in the page's language
+                    dir={parentPhone ? 'ltr' : undefined}
                     placeholder={t('member.phoneFilterHint')}
                     value={parentPhone}
                     onChange={(e) => setParentPhone(e.target.value)}

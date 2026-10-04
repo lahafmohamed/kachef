@@ -441,7 +441,8 @@ export default function Settings() {
   }
 
   return (
-    <div className="space-y-4">
+    // The header's action lines up with the sections' edge, not the far side of the page
+    <div className="max-w-3xl space-y-4">
       <PageHeader title={t('settings.title')} description={t('settings.subtitle')}>
         <Button variant="brand" onClick={() => setCreating(true)}>
           <IconPlus />

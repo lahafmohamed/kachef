@@ -5,6 +5,7 @@ import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
+import SessionEditDialog from '../components/SessionEditDialog';
 import SearchInput from '../components/SearchInput';
 import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName } from '../utils';
 import {
@@ -32,6 +33,7 @@ import {
   IconClipboard,
   IconClock,
   IconCoins,
+  IconPencil,
   IconPin,
   IconPlus,
   IconSearch,
@@ -288,6 +290,9 @@ export default function SessionDetail() {
   // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
   const branches = useFetch('/branches');
   const [bulkBusy, setBulkBusy] = useState(false);
+  // تعديل تفاصيل النشاط بعد إنشائه — لمن يُنشئ الأنشطة
+  const canEditSession = has('sessions.create');
+  const [editingSession, setEditingSession] = useState(false);
   // فلترة عرض اللائحة (لا تمسّ الحضور المسجّل، عرضٌ فقط)
   const [filterBranch, setFilterBranch] = useState('');
   const [filterGroup, setFilterGroup] = useState('');
@@ -666,17 +671,37 @@ export default function SessionDetail() {
 
   return (
     <div className="space-y-4">
+      {/* Icon-only actions on phones, as on a عنصر's page: four labelled buttons ran
+          120px past a 360px screen in French */}
       <div className="flex items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
           <IconBack className="rtl:rotate-180" />
           {t('common.back')}
         </Button>
         <div className="flex items-center gap-2">
-          <ExportPdfButton kind="sessions" id={session.id} />
+          {canEditSession && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditingSession(true)}
+              aria-label={t('common.edit')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
+              <IconPencil />
+              <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
+            </Button>
+          )}
+          <ExportPdfButton kind="sessions" id={session.id} compact />
           {isAdmin && (
-            <Button variant="destructive-ghost" size="sm" onClick={removeSession} className="gap-2">
+            <Button
+              variant="destructive-ghost"
+              size="sm"
+              onClick={removeSession}
+              aria-label={t('common.delete')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
               <IconTrash />
-              {t('common.delete')}
+              <span className="sr-only sm:not-sr-only">{t('common.delete')}</span>
             </Button>
           )}
         </div>
@@ -860,7 +885,7 @@ export default function SessionDetail() {
             </Select>
           )}
         </CardHeader>
-        <CardContent className="p-0 pb-2">
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           {(session.animators || []).length === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('session.noAnimators')} />
           ) : (
@@ -901,6 +926,8 @@ export default function SessionDetail() {
                               size="icon"
                               onClick={() => removeHelper(a)}
                               aria-label={`${t('common.delete')} — ${memberName(a)}`}
+                              // The full-width control beside it squeezed it to 37px
+                              className="shrink-0"
                             >
                               <IconTrash />
                             </Button>
@@ -1013,7 +1040,7 @@ export default function SessionDetail() {
             </div>
           )}
         </CardHeader>
-        <CardContent className="p-0 pb-2">
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           {totalRoster === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('session.emptyRoster')} />
           ) : visibleRoster === 0 ? (
@@ -1103,6 +1130,21 @@ export default function SessionDetail() {
           )}
         </CardContent>
       </Card>
+      )}
+
+      {canEditSession && (
+        <SessionEditDialog
+          session={session}
+          branches={branches.data || []}
+          open={editingSession}
+          onClose={() => setEditingSession(false)}
+          onSaved={() => {
+            setEditingSession(false);
+            // Leader, matalib and fee feed several blocks of the page: read it back whole
+            reload({ quiet: true });
+            toast.success(t('session.updated'));
+          }}
+        />
       )}
     </div>
   );

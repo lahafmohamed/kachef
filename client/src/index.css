@@ -287,6 +287,17 @@ body[data-scroll-locked] {
   touch-action: none;
 }
 
+/* Below the app bar, a tab panel fills what is left of the screen however little
+   it holds: any tab can then bring its row up under the bar (UnderlineTabs), and
+   going from a long tab to a short one never makes the row jump. 100vh is the tall
+   viewport on phones (address bar slid away), so the room is there either way;
+   5rem is the row, its gap and main's bottom padding above the tab bar. */
+@media (max-width: 1023.98px) {
+  [role="tablist"] ~ [role="tabpanel"] {
+    min-height: calc(100vh - var(--header-h) - env(safe-area-inset-top, 0px) - var(--bottomnav-h) - 5rem);
+  }
+}
+
 /* iOS zooms any focused field under 16px. Bump the real font-size on small
    screens but keep the visual size via the text-* utility on larger ones. */
 @media (max-width: 640px) {

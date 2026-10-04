@@ -413,12 +413,18 @@ export function ThemeProvider({ children }) {
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('dark', theme === 'dark');
-    // Read after the class flips, so the tint resolves in the new theme
-    const tint = chromeTint && getComputedStyle(root).getPropertyValue(chromeTint).trim();
-    document.querySelector('meta[name="theme-color"]')?.setAttribute(
-      'content',
-      tint || (theme === 'dark' ? '#120d17' : '#f8fbfc')
-    );
+    // The browser chrome (a phone's status and address bars) takes the colour of the
+    // screen's top edge — the app bar's card surface, unless a screen asks for a tint.
+    // Read after the class flips, so it resolves in the new theme, and through a
+    // probe, so the meta always gets a plain rgb() whatever syntax the token uses.
+    const probe = document.createElement('i');
+    probe.style.color = `var(${chromeTint || '--card'})`;
+    document.body.appendChild(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    // Every theme-color meta: index.html scopes one per system colour scheme, and with
+    // the app's theme set against the system's, the one left untouched would win
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', color));
     localStorage.setItem('theme', theme);
   }, [theme, chromeTint]);
 
@@ -1003,7 +1009,16 @@ export function Dialog({ open, onClose, title, description, children, footer, si
             <IconX />
           </Button>
         </div>
-        <div ref={contentRef} className={cn('flex-1 overflow-y-auto p-4 sm:p-5', !frame.footer && 'safe-b')}>
+        {/* max(), as on the footer: safe-b alone zeroes the bottom padding on phones
+            without a home indicator, so a form's own buttons sat on the screen edge */}
+        <div
+          ref={contentRef}
+          className={cn(
+            'flex-1 overflow-y-auto p-4 sm:p-5',
+            !frame.footer &&
+              'pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:pb-[max(1.25rem,env(safe-area-inset-bottom,0px))]'
+          )}
+        >
           {frame.children}
         </div>
         {frame.footer && (

@@ -213,7 +213,7 @@ function fmtNotifTime(createdAt, lng) {
  * Polls the unread count once a minute; opening the panel marks everything seen.
  * Rendered only for admins — the server refuses everyone else anyway.
  */
-function NotificationsBell({ variant = 'outline' }) {
+function NotificationsBell({ variant = 'outline', className, iconClassName }) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
@@ -253,11 +253,16 @@ function NotificationsBell({ variant = 'outline' }) {
     }
   }
 
+  // On an outlined button the count rides the corner; a ghost one has no visible
+  // corner, so the count sits on the bell itself instead of floating off it
   const badge =
     unread > 0 ? (
       <span
         aria-hidden="true"
-        className="absolute -end-1 -top-1 flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.6875rem] font-bold leading-none tabular-nums text-destructive-foreground ring-2 ring-card"
+        className={cn(
+          'absolute flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.6875rem] font-bold leading-none tabular-nums text-destructive-foreground ring-2 ring-card',
+          variant === 'ghost' ? 'end-1 top-1' : '-end-1 -top-1'
+        )}
       >
         {unread > 9 ? '9+' : unread}
       </span>
@@ -267,8 +272,15 @@ function NotificationsBell({ variant = 'outline' }) {
 
   return (
     <>
-      <Button variant={variant} size="icon" onClick={openPanel} aria-label={label} title={label} className="relative">
-        <IconBell />
+      <Button
+        variant={variant}
+        size="icon"
+        onClick={openPanel}
+        aria-label={label}
+        title={label}
+        className={cn('relative', className)}
+      >
+        <IconBell className={iconClassName} />
         {badge}
       </Button>
 
@@ -628,12 +640,14 @@ export default function Layout({ children }) {
 
       {/* ---------- Mobile top bar ---------- */}
       {/* Slim (64px) so content owns the screen; the brand crop reads fine at 44px.
-          Bell and account menu only, so the app name is never cut short. */}
-      <header className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
+          Bell and account menu only, so the app name is never cut short. The bell
+          is a round ghost beside the round initials — a bordered square there read
+          as a second, unrelated control. */}
+      <header data-app-bar className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
         <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
           <Brand className="min-w-0" sub={pickedName} />
-          <div className="flex shrink-0 items-center gap-1.5">
-            <NotificationsBell />
+          <div className="flex shrink-0 items-center gap-1">
+            <NotificationsBell variant="ghost" className="rounded-full" iconClassName="h-5 w-5" />
             <AccountButton />
           </div>
         </div>

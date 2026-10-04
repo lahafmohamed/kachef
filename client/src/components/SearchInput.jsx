@@ -53,7 +53,8 @@ export default function SearchInput({ value, onChange, placeholder, className, a
             <IconX />
           </button>
         ) : autoFocusHotkey ? (
-          <kbd className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[0.6875rem] font-medium text-muted-foreground sm:flex">
+          // ltr: a shortcut reads Ctrl K in either language, never K Ctrl
+          <kbd dir="ltr" className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[0.6875rem] font-medium text-muted-foreground sm:flex">
             <span>{/Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl'}</span>K
           </kbd>
         ) : null}

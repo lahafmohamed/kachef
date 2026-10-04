@@ -77,37 +77,51 @@ export default function PrepCardDetail() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+      {/* Phones: back and the icon-only actions share one line, and «create the
+          activity» — the card's next step — gets a full-width line of its own under
+          them instead of wrapping the header into three ragged rows */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2 me-auto">
           <IconBack className="rtl:rotate-180" />
           {t('common.back')}
         </Button>
-        <div className="flex gap-2">
-          {/* البطاقة كُتبت قبل النشاط: من هنا يُنشأ النشاط مملوءًا منها و مربوطًا بها */}
-          {editable && !card.session_id && (
-            <Button
-              variant="brand"
-              size="sm"
-              onClick={() => navigate('/sessions', { state: { prepCard: card } })}
-            >
-              <IconCalendar />
-              {t('prep.createSession')}
-            </Button>
-          )}
-          <ExportPdfButton kind="prep" id={card.id} />
-          {editable && (
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-              <IconPencil />
-              {t('common.edit')}
-            </Button>
-          )}
-          {isAdmin && (
-            <Button variant="outline" size="sm" onClick={remove} className="text-destructive">
-              <IconTrash />
-              {t('common.delete')}
-            </Button>
-          )}
-        </div>
+        {/* البطاقة كُتبت قبل النشاط: من هنا يُنشأ النشاط مملوءًا منها و مربوطًا بها */}
+        {editable && !card.session_id && (
+          <Button
+            variant="brand"
+            size="sm"
+            onClick={() => navigate('/sessions', { state: { prepCard: card } })}
+            className="order-last w-full sm:order-none sm:w-auto"
+          >
+            <IconCalendar />
+            {t('prep.createSession')}
+          </Button>
+        )}
+        <ExportPdfButton kind="prep" id={card.id} compact />
+        {editable && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setEditing(true)}
+            aria-label={t('common.edit')}
+            className="w-11 px-0 sm:w-auto sm:px-3"
+          >
+            <IconPencil />
+            <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
+          </Button>
+        )}
+        {isAdmin && (
+          <Button
+            variant="destructive-ghost"
+            size="sm"
+            onClick={remove}
+            aria-label={t('common.delete')}
+            className="w-11 px-0 sm:w-auto sm:px-3"
+          >
+            <IconTrash />
+            <span className="sr-only sm:not-sr-only">{t('common.delete')}</span>
+          </Button>
+        )}
       </div>
 
       <Card className="overflow-hidden">
@@ -187,7 +201,8 @@ export default function PrepCardDetail() {
             <CardTitle>{t(labelKey)}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{card[key]}</p>
+            {/* anywhere: one pasted link must not push the page past a phone's edge */}
+            <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">{card[key]}</p>
           </CardContent>
         </Card>
       ))}

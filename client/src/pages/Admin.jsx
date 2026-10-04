@@ -223,6 +223,8 @@ function UsernameField({ form, setForm, isEdit, exceptId, original }) {
           }}
           aria-label={t('admin.usernameRegenerate')}
           title={t('admin.usernameRegenerate')}
+          // The full-width field beside it squeezed it to 38px on a phone
+          className="shrink-0"
         >
           {!busy && <IconRefresh />}
         </Button>
@@ -715,7 +717,7 @@ export default function Admin() {
       </PageHeader>
 
       <Card>
-        <CardContent className="p-0 pb-2">
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           {activeUsers.length === 0 ? (
             <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('admin.noUsers')} />
           ) : (
@@ -737,7 +739,7 @@ export default function Admin() {
             <p className="text-xs text-muted-foreground">{t('admin.inactiveHint')}</p>
           </div>
           <Card>
-            <CardContent className="p-0 pb-2">
+            <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
               <ul className="divide-y divide-border">
                 {inactiveUsers.map((u) => (
                   <UserRow key={u.id} u={u} {...rowProps} />

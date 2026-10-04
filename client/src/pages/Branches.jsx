@@ -1666,7 +1666,7 @@ function PlanMark({ plan }) {
 
 const tileClass = (on) =>
   cn(
-    'focus-ring flex min-w-[8.75rem] flex-1 shrink-0 snap-start cursor-pointer flex-col justify-between gap-4 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150',
+    'focus-ring flex min-w-[9rem] flex-1 shrink-0 snap-start cursor-pointer flex-col justify-between gap-4 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150',
     on
       ? 'border-primary bg-card shadow-sm ring-1 ring-primary'
       : 'border-border bg-card shadow-xs hover:border-primary/35 hover:bg-accent/40'
@@ -1953,7 +1953,7 @@ export default function Branches() {
       <div
         role="group"
         aria-label={t('branch.pageTitle')}
-        className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(8.75rem,1fr))] sm:overflow-visible sm:p-0"
+        className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
       >
         {branches.map((x) => (
           <BranchTile
