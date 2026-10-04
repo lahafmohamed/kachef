@@ -16,3 +16,9 @@ server/scout.db-*
 .agents/
 .claude/
 skills-lock.json
+# the same skills linked for other agents
+.continue/
+.hermes/
+.qwen/
+.windsurf/
+skills/
