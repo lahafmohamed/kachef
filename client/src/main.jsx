@@ -10,6 +10,20 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/noto-sans-arabic';
 import './index.css';
 
+// A deploy replaces every hashed chunk, so a tab still running the previous build
+// asks for pages that are gone. Reload once to pick up the new build instead of
+// showing the crash screen — once: a server that is really down must not loop it.
+window.addEventListener('vite:preloadError', () => {
+  try {
+    const last = Number(sessionStorage.getItem('chunk-reload-at')) || 0;
+    if (Date.now() - last < 10_000) return;
+    sessionStorage.setItem('chunk-reload-at', String(Date.now()));
+  } catch {
+    return; // no storage, no loop guard: the error screen shows instead
+  }
+  window.location.reload();
+});
+
 // Agentation: outil de retour visuel — on clique un élément de l'UI, on note, et
 // l'annotation part vers le serveur MCP (port 4747) que Claude Code lit. Dev seulement :
 // l'import dynamique gardé par import.meta.env.DEV le sort du bundle de production.

@@ -5603,6 +5603,10 @@ if (fs.existsSync(clientDist)) {
   );
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'not found' });
+    // A chunk of a previous build (a tab opened before the deploy): a plain 404. Sent
+    // as index.html it fails as a script with a MIME error; either way the page
+    // reloads once onto the new build (main.jsx)
+    if (req.path.startsWith('/assets/')) return res.status(404).end();
     res.setHeader('Cache-Control', 'no-store');
     res.sendFile(path.join(clientDist, 'index.html'));
   });
