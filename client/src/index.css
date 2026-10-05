@@ -331,25 +331,29 @@ input[type="radio"] {
   box-shadow: 0 0 0 1000px var(--card) inset, var(--shadow-xs);
 }
 
-/* Slim, themed scrollbars — desktop only, mobile keeps the native overlay */
-@media (pointer: fine) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
-  }
-  *::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
-  }
-  *::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 9999px;
-  }
-  *::-webkit-scrollbar-thumb:hover {
-    background: var(--input);
-  }
-  *::-webkit-scrollbar-track {
-    background: transparent;
+/* Slim, themed scrollbars — desktop only, mobile keeps the native overlay. In the
+   base layer on purpose: unlayered, `* { scrollbar-width: thin }` beat the
+   `no-scrollbar` utility, and every tab row and tile strip showed a bar on desktop. */
+@layer base {
+  @media (pointer: fine) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    *::-webkit-scrollbar {
+      width: 9px;
+      height: 9px;
+    }
+    *::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 9999px;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: var(--input);
+    }
+    *::-webkit-scrollbar-track {
+      background: transparent;
+    }
   }
 }
 

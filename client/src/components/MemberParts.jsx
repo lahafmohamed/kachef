@@ -199,7 +199,9 @@ export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId
         aria-label={label}
         onKeyDown={onKeyDown}
         className={cn(
-          'no-scrollbar -mx-4 flex gap-1 overflow-x-auto border-b border-border px-4 sm:mx-0 sm:px-0',
+          // The base line is an inset shadow, not a border the tabs overlap with -mb-px:
+          // that pixel hung below the row and made it scroll up and down by one
+          'no-scrollbar -mx-4 flex gap-1 overflow-x-auto px-4 shadow-[inset_0_-1px_0_var(--border)] sm:mx-0 sm:px-0',
           // 1px under the app bar's own border, which paints over it: no seam for the
           // content to show through. The panel under it fills the screen (index.css),
           // so any tab can bring the row up here.
@@ -222,7 +224,7 @@ export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId
               tabIndex={on ? 0 : -1}
               onClick={() => pick(x.id)}
               className={cn(
-                'focus-ring -mb-px inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-3 text-sm font-medium transition-colors sm:px-4',
+                'focus-ring inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-3 text-sm font-medium transition-colors sm:px-4',
                 on ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
             >
