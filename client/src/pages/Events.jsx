@@ -26,12 +26,16 @@ import {
 // Ongoing first, then what is coming (nearest first), then the archive (latest first)
 const PHASES = ['ongoing', 'upcoming', 'past'];
 
-/** The money of one event at a glance: collected against expected, then what is left with the donations, once the expenses are paid. */
+/**
+ * The money of one event at a glance: collected against expected, then what is left
+ * with the donations and what the caisses gave (less what went back), once the
+ * expenses are paid.
+ */
 function MoneyMeter({ e, t }) {
-  if (!e.expected && !e.expenses && !e.collected && !e.donations)
+  if (!e.expected && !e.expenses && !e.collected && !e.donations && !e.funded)
     return <p className="text-xs text-muted-foreground">{t(e.fee ? 'event.noPaymentsYet' : 'event.free')}</p>;
   const pct = e.expected ? Math.min(100, Math.round((100 * e.collected) / e.expected)) : null;
-  const balance = e.collected + e.donations - e.expenses;
+  const balance = e.collected + e.donations + (e.funded || 0) - e.expenses;
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
@@ -47,7 +51,7 @@ function MoneyMeter({ e, t }) {
           <span className="bg-success" style={{ width: `${pct}%` }} />
         </div>
       )}
-      {(e.expenses > 0 || e.donations > 0) && (
+      {(e.expenses > 0 || e.donations > 0 || !!e.funded) && (
         <p className="text-xs text-muted-foreground">
           {t('event.balance')}{' '}
           <span dir="ltr" className={cn('font-medium tabular-nums', balance < 0 ? 'text-destructive' : 'text-success')}>

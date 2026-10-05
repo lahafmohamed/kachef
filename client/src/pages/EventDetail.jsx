@@ -65,6 +65,7 @@ import {
   IconShield,
   IconTrash,
   IconUsers,
+  IconWallet,
   IconX,
 } from '../components/ui';
 
@@ -165,8 +166,11 @@ function EventFigures({ ev, t }) {
     s.unpaid && t('event.stateUnpaidCount', { count: s.unpaid }),
     s.exempt && t('event.stateExemptCount', { count: s.exempt }),
   ].filter(Boolean);
+  // Money from the caisses gets its own figure once there is any: six figures then
+  // fill three rows on a phone, so the balance no longer takes a whole one
+  const funds = s.funding_count > 0;
   return (
-    <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border lg:grid-cols-5">
+    <Card className={cn('grid grid-cols-2 gap-px overflow-hidden bg-border', funds ? 'lg:grid-cols-6' : 'lg:grid-cols-5')}>
       <Figure label={t('event.participants')}>
         <p className="text-2xl font-bold tabular-nums">{s.participants}</p>
         {/* Each state stays whole: a half-cut «لم / يدفعوا» across two lines reads as nothing */}
@@ -207,12 +211,25 @@ function EventFigures({ ev, t }) {
         <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.donations)}</p>
         <p className="text-xs text-muted-foreground">{t('event.donationCount', { count: s.donation_count })}</p>
       </Figure>
+      {funds && (
+        <Figure label={t('event.fromCaisses')}>
+          <p className="text-2xl font-bold tabular-nums">
+            <span dir="ltr">{signed(s.funded - s.returned)}</span>
+          </p>
+          {s.returned > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {t('event.fundingTakenReturned', { taken: fmtAmount(s.funded), returned: fmtAmount(s.returned) })}
+            </p>
+          )}
+        </Figure>
+      )}
       <Figure label={t('event.expenses')}>
         <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.expenses)}</p>
         <p className="text-xs text-muted-foreground">{t('event.expenseCount', { count: s.expense_count })}</p>
       </Figure>
-      {/* Fifth figure: the whole width on a phone, the bottom line of the account */}
-      <Figure label={t('event.balance')} className="col-span-2 lg:col-span-1">
+      {/* Last figure: the bottom line of the account — the whole width on a phone when it
+          would sit alone on its row */}
+      <Figure label={t('event.balance')} className={funds ? undefined : 'col-span-2 lg:col-span-1'}>
         <p
           className={cn(
             'text-2xl font-bold tabular-nums',
@@ -224,7 +241,7 @@ function EventFigures({ ev, t }) {
         <p className="text-xs text-muted-foreground">
           {s.outstanding > 0 ? (
             <>
-              {t('event.projected')} <span dir="ltr" className="font-medium tabular-nums">{signed(s.expected + s.donations - s.expenses)}</span>
+              {t('event.projected')} <span dir="ltr" className="font-medium tabular-nums">{signed(s.expected + s.donations + s.funded - s.returned - s.expenses)}</span>
             </>
           ) : (
             t(s.balance < 0 ? 'event.deficit' : 'event.surplus')
@@ -1959,6 +1976,257 @@ function ExpenseDialog({ ev, expense, open, onClose, onSaved, t }) {
 }
 
 /* ============================================================
+   الصناديق
+   ============================================================ */
+
+// The caisse a line comes from or goes to: the فوج's, or a فرقة's
+const caisseName = (f, t, lng) => (f.branch_id ? branchName(f, lng) : t('treasury.groupShort'));
+const withSign = (n) => (n < 0 ? `−${fmtAmount(-n)}` : fmtAmount(n));
+
+/**
+ * Money between the فوج's caisses and this event: taken from the group's or a فرقة's
+ * caisse for it, or handed back once it is over. Each line is in that caisse too.
+ * Written by whoever holds the caisse (`ev.funding_boxes`).
+ */
+function FundingsCard({ ev, t, lng, onAdd, onEdit }) {
+  const list = ev.fundings || [];
+  const boxes = ev.funding_boxes || [];
+  const held = (f) => boxes.some((b) => b.key === f.box);
+  const net = list.reduce((n, f) => n + (f.direction === 'to_event' ? f.amount : -f.amount), 0);
+  return (
+    <Card>
+      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <CardTitle>
+            {t('event.fundings')}
+            {list.length > 0 && (
+              <span className="ms-2 font-normal tabular-nums text-muted-foreground">
+                <span dir="ltr">{signed(net)}</span>
+              </span>
+            )}
+          </CardTitle>
+          {list.length === 0 && <p className="mt-1 text-sm text-muted-foreground">{t('event.fundingsHint')}</p>}
+        </div>
+        {boxes.length > 0 && (
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => onAdd('to_event')} className="flex-1 sm:flex-none">
+              <IconPlus />
+              {t('event.fundingTake')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onAdd('from_event')} className="flex-1 sm:flex-none">
+              {t('event.fundingReturn')}
+            </Button>
+          </div>
+        )}
+      </CardHeader>
+      {list.length > 0 && (
+        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
+          <ul className="divide-y divide-border border-t border-border">
+            {list.map((f) => {
+              const into = f.direction === 'to_event';
+              const title = t(into ? 'event.fundingFromRow' : 'event.fundingToRow', { name: caisseName(f, t, lng) });
+              const meta = [fmtDate(f.date), f.label, f.created_by && t('treasury.recordedBy', { name: f.created_by })]
+                .filter(Boolean)
+                .join(' · ');
+              const body = (
+                <>
+                  <IconWallet className="text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{title}</span>
+                    <span className="block text-xs text-muted-foreground">{meta}</span>
+                  </span>
+                  <span dir="ltr" className={cn('shrink-0 font-semibold tabular-nums', into && 'text-success')}>
+                    {into ? '+' : '−'}
+                    {fmtAmount(f.amount)}
+                  </span>
+                </>
+              );
+              return (
+                <li key={f.id}>
+                  {held(f) ? (
+                    <button
+                      type="button"
+                      onClick={() => onEdit(f)}
+                      aria-label={`${t('common.edit')} — ${title} ${fmtAmount(f.amount)}`}
+                      className="focus-ring flex w-full items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]! sm:px-5"
+                    >
+                      {body}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-3 px-4 py-3 sm:px-5">{body}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Taking money from a caisse for the event, or handing it back to one: which caisse,
+ * how much, which day. Taking says what the caisse keeps after.
+ */
+function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [form, setForm] = useState({ box: '', amount: '', date: '', label: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const boxes = ev.funding_boxes || [];
+  const dir = funding?.direction || direction;
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    if (funding) {
+      setForm({ box: funding.box, amount: String(funding.amount), date: funding.date, label: funding.label || '' });
+      return;
+    }
+    // A camp of one فرقة is first paid for by that فرقة's caisse
+    const own = boxes.find((b) => b.branch_id && ev.branch_ids?.length === 1 && b.branch_id === ev.branch_ids[0]);
+    setForm({ box: (own || boxes[0])?.key || '', amount: '', date: todayISO(), label: '' });
+  }, [open, funding]); // eslint-disable-line react-hooks/exhaustive-deps -- the caisses on opening
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const body = {
+        direction: dir,
+        box: form.box,
+        amount: Number(form.amount),
+        date: form.date,
+        label: form.label.trim() || null,
+      };
+      const res = funding
+        ? await api.put(`/events/${ev.id}/fundings/${funding.id}`, body)
+        : await api.post(`/events/${ev.id}/fundings`, body);
+      onSaved(res, funding ? 'event.fundingUpdated' : 'event.fundingAdded');
+    } catch (err) {
+      setError(errorText(t, err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (
+      !(await confirm({
+        title: t('event.fundingEdit'),
+        message: t('event.deleteFundingConfirm', { amount: fmtAmount(funding.amount) }),
+        confirmLabel: t('common.delete'),
+      }))
+    )
+      return;
+    try {
+      onSaved(await api.del(`/events/${ev.id}/fundings/${funding.id}`), 'event.fundingDeleted');
+    } catch (err) {
+      toast.error(errorText(t, err));
+    }
+  }
+
+  const box = boxes.find((b) => b.key === form.box);
+  // Editing: what the line already took out of this caisse goes back before the new amount
+  const back =
+    funding && funding.direction === 'to_event' && funding.box === form.box && box?.start && funding.date >= box.start.date
+      ? funding.amount
+      : 0;
+  const after = dir === 'to_event' && box?.start && form.amount ? box.balance + back - Number(form.amount) : null;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t(funding ? 'event.fundingEdit' : dir === 'to_event' ? 'event.fundingTitleTake' : 'event.fundingTitleReturn')}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          {funding ? (
+            <Button variant="destructive-ghost" onClick={remove}>
+              <IconTrash />
+              {t('common.delete')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="event-funding-form" loading={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="event-funding-form" onSubmit={save} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="fd_box">{t(dir === 'to_event' ? 'treasury.transferFrom' : 'treasury.transferTo')}</Label>
+          <Select id="fd_box" value={form.box} onChange={set('box')}>
+            {boxes.map((b) => (
+              <option key={b.key} value={b.key}>
+                {caisseName(b, t, lng)}
+              </option>
+            ))}
+          </Select>
+          {box?.start && (
+            <p className="text-xs text-muted-foreground">
+              {t('event.fundingInBox')} <span dir="ltr" className="tabular-nums">{withSign(box.balance)}</span>
+            </p>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="fd_amount">{t('event.amount')}</Label>
+            <Input
+              id="fd_amount"
+              required
+              type="number"
+              min="0.01"
+              step="any"
+              inputMode="decimal"
+              className="tabular-nums"
+              value={form.amount}
+              onChange={set('amount')}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fd_date">{t('common.date')}</Label>
+            <DatePicker id="fd_date" required clearable={false} value={form.date} onChange={set('date')} />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="fd_label">{t('treasury.transferNote')}</Label>
+          <Input
+            id="fd_label"
+            maxLength={200}
+            autoComplete="off"
+            placeholder={t('event.fundingNoteHint')}
+            value={form.label}
+            onChange={set('label')}
+          />
+        </div>
+        {after !== null && (
+          <p className={cn('text-sm', after < 0 ? 'font-medium text-destructive' : 'text-muted-foreground')}>
+            {after < 0 ? t('treasury.boxShort') : t('treasury.leftAfter', { amount: withSign(after) })}
+          </p>
+        )}
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/* ============================================================
    التبرعات
    ============================================================ */
 
@@ -2194,6 +2462,8 @@ export default function EventDetail() {
   const [paying, setPaying] = useState(null);
   const [expenseDialog, setExpenseDialog] = useState(null);
   const [donationDialog, setDonationDialog] = useState(null);
+  // { funding, direction } — money taken from or handed back to a caisse
+  const [fundingDialog, setFundingDialog] = useState(null);
   // { staff, role } — null = closed; staff null = a new post, role = the slot it fills
   const [staffDialog, setStaffDialog] = useState(null);
 
@@ -2272,7 +2542,13 @@ export default function EventDetail() {
     { id: 'staff', label: t('event.tabStaff'), count: ev.staff.length + (ev.leader_id ? 1 : 0) },
     { id: 'participants', label: t('event.tabParticipants'), count: ev.participants.length },
     ...(canFees
-      ? [{ id: 'money', label: t('event.tabMoney'), count: ev.expenses.length + ev.donations.length }]
+      ? [
+          {
+            id: 'money',
+            label: t('event.tabMoney'),
+            count: ev.expenses.length + ev.donations.length + (ev.fundings?.length || 0),
+          },
+        ]
       : []),
   ];
   const openSession = attendanceFor ? ev.sessions.find((s) => s.id === attendanceFor) : null;
@@ -2438,6 +2714,13 @@ export default function EventDetail() {
               onAdd={() => setDonationDialog({ donation: null })}
               onEdit={(d) => setDonationDialog({ donation: d })}
             />
+            <FundingsCard
+              ev={ev}
+              t={t}
+              lng={lng}
+              onAdd={(direction) => setFundingDialog({ funding: null, direction })}
+              onEdit={(f) => setFundingDialog({ funding: f, direction: f.direction })}
+            />
           </div>
         )}
       </div>
@@ -2561,6 +2844,23 @@ export default function EventDetail() {
             toast.success(t(msg));
           }}
           t={t}
+        />
+      )}
+
+      {canFees && (
+        <FundingDialog
+          ev={ev}
+          funding={fundingDialog?.funding ?? null}
+          direction={fundingDialog?.direction ?? 'to_event'}
+          open={!!fundingDialog}
+          onClose={() => setFundingDialog(null)}
+          onSaved={({ fundings, funding_boxes, summary }, msg) => {
+            setFundingDialog(null);
+            setEv((e) => ({ ...e, fundings, funding_boxes, summary }));
+            toast.success(t(msg));
+          }}
+          t={t}
+          lng={lng}
         />
       )}
     </div>

@@ -4509,13 +4509,24 @@ function eventSummary(ev) {
     db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM ${table} WHERE event_id = ?`).get(ev.id);
   const d = sum('event_donations');
   const x = sum('event_expenses');
+  // Money from the caisses, and money handed back to them
+  const f = db
+    .prepare(
+      `SELECT COALESCE(SUM(CASE WHEN direction = 'to_event' THEN amount END), 0) AS funded,
+         COALESCE(SUM(CASE WHEN direction = 'from_event' THEN amount END), 0) AS returned, COUNT(*) AS n
+       FROM event_fundings WHERE event_id = ?`
+    )
+    .get(ev.id);
   return {
     ...out,
     donations: d.total,
     donation_count: d.n,
     expenses: x.total,
     expense_count: x.n,
-    balance: out.collected + d.total - x.total,
+    funded: f.funded,
+    returned: f.returned,
+    funding_count: f.n,
+    balance: out.collected + d.total + f.funded - f.returned - x.total,
   };
 }
 
@@ -4555,6 +4566,42 @@ const staffOf = (eventId) =>
     )
     .all(eventId)
     .sort((a, b) => STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role));
+
+// What the caisses gave this event, or got back from it — newest first
+const fundingsOf = (eventId) =>
+  db
+    .prepare(
+      `SELECT f.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+       FROM event_fundings f LEFT JOIN branches b ON b.id = f.branch_id
+       WHERE f.event_id = ? ORDER BY f.date DESC, f.id DESC`
+    )
+    .all(eventId)
+    .map((f) => ({
+      id: f.id,
+      direction: f.direction,
+      amount: f.amount,
+      date: f.date,
+      label: f.label,
+      section: f.section,
+      box: boxKey(f.section, f.branch_id),
+      branch_id: f.branch_id,
+      branch_name_fr: f.branch_name_fr ?? null,
+      branch_name_ar: f.branch_name_ar ?? null,
+      created_by: f.created_by,
+    }));
+
+// The caisses of the event's قسم the caller holds, with what is in each: where money
+// for it can come from or go back to. None for whoever does not write in caisses.
+function eventFundingBoxes(req, ev) {
+  if (!hasPerm(req, 'treasury.manage')) return [];
+  const openings = openingsOf([ev.section]);
+  return treasuryBoxes(req)
+    .filter((b) => b.visible && b.section === ev.section)
+    .map(({ visible, ...box }) => {
+      const l = boxLedger(box, openings);
+      return { ...box, start: l.start, balance: l.balance };
+    });
+}
 
 const donationsOf = (eventId) =>
   db
@@ -4598,6 +4645,8 @@ function eventPayload(req, ev) {
       .filter((a) => visible.has(a.participant_id)),
     donations: canFees ? donationsOf(ev.id) : null,
     expenses: canFees ? expensesOf(ev.id) : null,
+    fundings: canFees ? fundingsOf(ev.id) : null,
+    funding_boxes: canFees ? eventFundingBoxes(req, ev) : [],
     summary: canFees ? eventSummary(ev) : null,
   };
 }
@@ -4681,7 +4730,9 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
       (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
          FROM event_participants p WHERE p.event_id = e.id) AS outstanding,
       (SELECT COALESCE(SUM(d.amount), 0) FROM event_donations d WHERE d.event_id = e.id) AS donations,
-      (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses
+      (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses,
+      (SELECT COALESCE(SUM(CASE WHEN f.direction = 'to_event' THEN f.amount ELSE -f.amount END), 0)
+         FROM event_fundings f WHERE f.event_id = e.id) AS funded
     FROM events e LEFT JOIN leaders l ON l.id = e.leader_id
     WHERE 1=1${eventScopeSQL(req)}`;
   const params = [];
@@ -4694,7 +4745,7 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
     params.push(`%${req.query.q}%`, `%${req.query.q}%`, `%${req.query.q}%`);
   }
   sql += ' ORDER BY e.start_date DESC, e.id DESC';
-  const money = ['fee', 'collected', 'expected', 'outstanding', 'donations', 'expenses'];
+  const money = ['fee', 'collected', 'expected', 'outstanding', 'donations', 'expenses', 'funded'];
   res.json(
     db
       .prepare(sql)
@@ -5244,6 +5295,87 @@ app.delete('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) =>
   res.json(donationsPayload(ev));
 });
 
+// ---------- المخيم و الصناديق ----------
+// مال يُؤخذ من صندوق للمخيم، أو يُعاد إليه منه. يكتبه من يمسك ذلك الصندوق و يرى مال
+// المخيم؛ يظهر في الصندوق و في حساب المخيم معًا.
+
+function parseFunding(req, ev) {
+  const b = req.body || {};
+  if (!['to_event', 'from_event'].includes(b.direction)) return { error: 'invalid direction' };
+  const box = visibleBox(req, b.box);
+  if (!box || box.section !== ev.section) return { error: 'invalid box' };
+  const amount = parsePaid(b.amount);
+  if (!amount) return { error: 'invalid amount' };
+  if (!validISODate(b.date)) return { error: 'invalid date' };
+  const label = optionalText(b.label, 200);
+  if (label === undefined) return { error: 'text too long' };
+  return {
+    values: { section: box.section, branch_id: box.branch_id, direction: b.direction, amount, date: b.date, label },
+  };
+}
+
+const fundingById = (id) => db.prepare('SELECT * FROM event_fundings WHERE id = ?').get(id);
+
+// The line, when it belongs to this event and its caisse is one the caller holds
+function loadFunding(req, res, ev) {
+  const f = db.prepare('SELECT * FROM event_fundings WHERE id = ? AND event_id = ?').get(intOr(req.params.fid), ev.id);
+  if (!f || !visibleBox(req, boxKey(f.section, f.branch_id))) {
+    res.status(404).json({ error: 'funding not found' });
+    return null;
+  }
+  return f;
+}
+
+const requireEventCaisse = [requirePerm('treasury.manage'), requirePerm('sessions.read.fees')];
+const fundingsPayload = (req, ev) => ({
+  fundings: fundingsOf(ev.id),
+  funding_boxes: eventFundingBoxes(req, ev),
+  summary: eventSummary(ev),
+});
+
+app.post('/api/events/:id/fundings', ...requireEventCaisse, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const parsed = parseFunding(req, ev);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  const id = db
+    .prepare(
+      `INSERT INTO event_fundings (event_id, section, branch_id, direction, amount, date, label, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(ev.id, v.section, v.branch_id, v.direction, v.amount, v.date, v.label, actorName(req)).lastInsertRowid;
+  auditEvent(req, 'create', 'event_funding', id, null, fundingById(id));
+  res.status(201).json(fundingsPayload(req, ev));
+});
+
+app.put('/api/events/:id/fundings/:fid', ...requireEventCaisse, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const f = loadFunding(req, res, ev);
+  if (!f) return;
+  const parsed = parseFunding(req, ev);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  db.prepare(
+    `UPDATE event_fundings SET section = ?, branch_id = ?, direction = ?, amount = ?, date = ?, label = ?,
+       updated_by = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(v.section, v.branch_id, v.direction, v.amount, v.date, v.label, actorName(req), f.id);
+  auditEvent(req, 'update', 'event_funding', f.id, f, fundingById(f.id));
+  res.json(fundingsPayload(req, ev));
+});
+
+app.delete('/api/events/:id/fundings/:fid', ...requireEventCaisse, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const f = loadFunding(req, res, ev);
+  if (!f) return;
+  db.prepare('DELETE FROM event_fundings WHERE id = ?').run(f.id);
+  auditEvent(req, 'delete', 'event_funding', f.id, f, null);
+  res.json(fundingsPayload(req, ev));
+});
+
 // ---------- الصناديق ----------
 // صندوق للفوج في كل قسم، و صندوق لكل فرقة. لكلٍّ رصيد افتتاحه، ثم ما دخله و خرج منه
 // منذ يومه؛ لا مجموع يُخزَّن: الحساب كله عند القراءة.
@@ -5252,8 +5384,10 @@ app.delete('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) =>
 // - التبرعات و المداخيل و المصاريف المكتوبة باليد: الصندوق الذي اختير. مصروف النشاط:
 //   صندوق فرقة نشاطه.
 // - التحويل: يخرج من صندوق و يدخل آخر في القسم نفسه.
+// - المخيمات و الدورات: ما أُخذ من صندوق لمخيم يخرج منه، و ما أُعيد منه يدخله
+//   (event_fundings). بقية حساب المخيم في صفحته.
 // من حُصر بفرق لا يرى و لا يكتب إلا صناديقها؛ صندوق الفوج لمن لم يُحصر بفرق. المخيمات
-// خارج الصناديق — حسابها في صفحتها، هكذا طُلب.
+// تبقى في صفحتها إلا ما بينها و بين صندوق.
 
 const TREASURY_OUT = ['gear', 'food', 'transport', 'venue', 'uniform', 'other'];
 const TREASURY_IN = ['donation', 'other'];
@@ -5428,7 +5562,31 @@ function boxRows(box, from) {
     )
     .all(box.section, from, bid, bid)
     .map((t) => transferRow(t, (t.from_branch_id ?? 0) === bid ? 'out' : 'in'));
-  return [...entries, ...sessions, ...dues.values(), ...transfers];
+  // مخيمات و دورات: ما أعطاها الصندوق، أو ما أعادته إليه
+  const fundings = db
+    .prepare(
+      `SELECT f.*, e.title AS event_title, e.kind AS event_kind
+       FROM event_fundings f LEFT JOIN events e ON e.id = f.event_id
+       WHERE f.section = ? AND IFNULL(f.branch_id, 0) = ? AND f.date >= ?`
+    )
+    .all(box.section, bid, from)
+    .map((f) => ({
+      key: `f${f.id}`,
+      source: 'event',
+      id: f.id,
+      direction: f.direction === 'to_event' ? 'out' : 'in',
+      category: 'event',
+      label: f.label,
+      amount: f.amount,
+      date: f.date,
+      section: f.section,
+      box: box.key,
+      event_id: f.event_id,
+      event_title: f.event_title ?? null,
+      event_kind: f.event_kind ?? null,
+      created_by: f.created_by,
+    }));
+  return [...entries, ...sessions, ...dues.values(), ...transfers, ...fundings];
 }
 
 // ما بقي دَينًا على صندوق، أقدمه أولًا. يوم الافتتاح لا يحدّه: دَين قديم يخرج يوم يُسدَّد.
@@ -5443,8 +5601,8 @@ const owedOf = (box) =>
     .map(entryRow);
 
 const emptyFigures = () => ({
-  income: { sessions: 0, dues: 0, donation: 0, other: 0, transfer: 0, total: 0 },
-  expenses: { ...Object.fromEntries(TREASURY_OUT.map((c) => [c, 0])), transfer: 0, total: 0 },
+  income: { sessions: 0, dues: 0, donation: 0, other: 0, transfer: 0, event: 0, total: 0 },
+  expenses: { ...Object.fromEntries(TREASURY_OUT.map((c) => [c, 0])), transfer: 0, event: 0, total: 0 },
 });
 
 const addToFigures = (f, r) => {

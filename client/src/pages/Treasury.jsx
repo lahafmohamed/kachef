@@ -36,6 +36,7 @@ import {
   IconPlus,
   IconReceipt,
   IconShield,
+  IconTent,
   IconTransfer,
   IconTrash,
   IconWallet,
@@ -198,8 +199,9 @@ const ROW_CLASS =
 
 /**
  * One movement: a نشاط's اشتراكات (one line per نشاط), a day of اشتراكات القادة (who
- * paid, how many months), a transfer, or a line written by hand. What is written by
- * hand opens for correction; the computed lines lead to where they are recorded.
+ * paid, how many months), a transfer, money given to or back from a camp, or a line
+ * written by hand. What is written by hand opens for correction; the other lines lead
+ * to where they are recorded.
  * `direction` 'move': a transfer between two caisses on screen, which moves nothing.
  */
 function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEdit }) {
@@ -208,7 +210,9 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
   const Icon =
     r.source === 'transfer'
       ? IconTransfer
-      : r.source === 'session'
+      : r.source === 'event'
+        ? IconTent
+        : r.source === 'session'
         ? IconCalendar
         : r.source === 'dues'
           ? IconShield
@@ -224,13 +228,20 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
         : isIn
           ? t('treasury.transferRowFrom', { name: names.inline(r.from) })
           : t('treasury.transferRowTo', { name: names.inline(r.to) })
-      : r.source === 'session'
-        ? r.label
-        : r.source === 'dues'
-          ? t('treasury.duesRow')
-          : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
+      : r.source === 'event'
+        ? r.event_title || t('treasury.eventDeleted')
+        : r.source === 'session'
+          ? r.label
+          : r.source === 'dues'
+            ? t('treasury.duesRow')
+            : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
   const meta = [fmtDate(r.date)];
-  if (r.source === 'transfer') {
+  if (r.source === 'event') {
+    if (r.event_kind) meta.push(t(`event.kind_${r.event_kind}`));
+    meta.push(t(isIn ? 'treasury.eventIn' : 'treasury.eventOut'));
+    if (r.label) meta.push(r.label);
+    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
+  } else if (r.source === 'transfer') {
     if (r.label) meta.push(r.label);
     if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
   } else if (r.source === 'session') meta.push(t('treasury.sessionFees'), t('treasury.payers', { count: r.payers }));
@@ -290,6 +301,13 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
       >
         {body}
       </button>
+    );
+  // Written and corrected on the camp's page, where its money is
+  if (r.source === 'event' && r.event_id && canSessions)
+    return (
+      <Link to={`/events/${r.event_id}?tab=money`} className={ROW_CLASS}>
+        {body}
+      </Link>
     );
   if (r.source === 'session' && canSessions)
     return (

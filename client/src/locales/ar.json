@@ -763,7 +763,24 @@
     "deleteDonationConfirm": "هل تريد حذف هذا التبرّع ({{amount}})؟",
     "donationAdded": "تمت إضافة التبرّع",
     "donationUpdated": "تم تعديل التبرّع",
-    "donationDeleted": "حُذف التبرّع"
+    "donationDeleted": "حُذف التبرّع",
+    "fundings": "الصناديق",
+    "fundingsHint": "المال المأخوذ من صندوق لهذا المخيم، أو المُعاد إلى صندوق بعده. يظهر أيضًا في الصندوق.",
+    "fundingTake": "أخذ من صندوق",
+    "fundingReturn": "إعادة إلى صندوق",
+    "fundingFromRow": "من صندوق {{name}}",
+    "fundingToRow": "إلى صندوق {{name}}",
+    "fundingTitleTake": "أخذ مال من صندوق",
+    "fundingTitleReturn": "إعادة مال إلى صندوق",
+    "fundingEdit": "تعديل الحركة",
+    "fundingInBox": "في الصندوق:",
+    "fundingNoteHint": "مثال: سلفة لشراء الخيم",
+    "fundingAdded": "سُجّلت الحركة",
+    "fundingUpdated": "عُدّلت الحركة",
+    "fundingDeleted": "حُذفت الحركة",
+    "deleteFundingConfirm": "حذف هذه الحركة ({{amount}})؟ يُصحَّح الصندوق معها.",
+    "fromCaisses": "من الصناديق",
+    "fundingTakenReturned": "أُخذ {{taken}} · أُعيد {{returned}}"
   },
   "promotion": {
     "title": "الترفيع",
@@ -1651,6 +1668,11 @@
     "deleteTransferConfirm": "حذف هذا التحويل ({{amount}})؟",
     "leftAfter": "يبقى في هذا الصندوق: {{amount}}",
     "boxShort": "ما في هذا الصندوق لا يكفي.",
-    "groupBoxInline": "صندوق الفوج"
+    "groupBoxInline": "صندوق الفوج",
+    "in_event": "عائدات المخيمات",
+    "cat_event": "المخيمات و الدورات",
+    "eventOut": "دُفع له من الصندوق",
+    "eventIn": "أُعيد إلى الصندوق",
+    "eventDeleted": "مخيم أو دورة محذوفة"
   }
 }

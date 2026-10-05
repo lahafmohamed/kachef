@@ -9,9 +9,10 @@ export const OUT_CATEGORIES = ['gear', 'food', 'transport', 'venue', 'uniform', 
 export const IN_CATEGORIES = ['donation', 'other'];
 
 // Where a box's money came from and went, in the order its figures list them: a
-// transfer from or to another box is one more line of each
-export const INCOME_SOURCES = ['sessions', 'dues', 'donation', 'other', 'transfer'];
-export const OUT_FIGURES = [...OUT_CATEGORIES, 'transfer'];
+// transfer from or to another box, and money given to or back from a camp, are one
+// more line of each
+export const INCOME_SOURCES = ['sessions', 'dues', 'donation', 'other', 'transfer', 'event'];
+export const OUT_FIGURES = [...OUT_CATEGORIES, 'transfer', 'event'];
 
 /**
  * A caisse's name: the فوج's — with its قسم when both are on screen — or its فرقة's.

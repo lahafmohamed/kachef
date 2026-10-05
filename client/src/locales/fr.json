@@ -671,7 +671,24 @@
     "deleteDonationConfirm": "Supprimer ce don ({{amount}}) ?",
     "donationAdded": "Don ajouté",
     "donationUpdated": "Don modifié",
-    "donationDeleted": "Don supprimé"
+    "donationDeleted": "Don supprimé",
+    "fundings": "Caisses",
+    "fundingsHint": "L’argent pris d’une caisse pour ce camp, ou rendu à une caisse ensuite. Il apparaît aussi dans la caisse.",
+    "fundingTake": "Prendre d’une caisse",
+    "fundingReturn": "Rendre à une caisse",
+    "fundingFromRow": "Pris de la caisse : {{name}}",
+    "fundingToRow": "Rendu à la caisse : {{name}}",
+    "fundingTitleTake": "Prendre de l’argent d’une caisse",
+    "fundingTitleReturn": "Rendre de l’argent à une caisse",
+    "fundingEdit": "Modifier le mouvement",
+    "fundingInBox": "En caisse :",
+    "fundingNoteHint": "Ex. : avance pour les tentes",
+    "fundingAdded": "Mouvement noté",
+    "fundingUpdated": "Mouvement modifié",
+    "fundingDeleted": "Mouvement supprimé",
+    "deleteFundingConfirm": "Supprimer ce mouvement ({{amount}}) ? La caisse sera corrigée aussi.",
+    "fromCaisses": "Des caisses",
+    "fundingTakenReturned": "pris {{taken}} · rendu {{returned}}"
   },
   "promotion": {
     "title": "Promotions",
@@ -1494,6 +1511,11 @@
     "deleteTransferConfirm": "Supprimer ce transfert ({{amount}}) ?",
     "leftAfter": "Restera dans cette caisse : {{amount}}",
     "boxShort": "Il n’y a pas assez d’argent dans cette caisse.",
-    "groupBoxInline": "la caisse du groupe"
+    "groupBoxInline": "la caisse du groupe",
+    "in_event": "Retours des camps",
+    "cat_event": "Camps et formations",
+    "eventOut": "argent versé",
+    "eventIn": "argent rendu",
+    "eventDeleted": "Camp ou formation supprimé"
   }
 }

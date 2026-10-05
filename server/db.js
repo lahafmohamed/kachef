@@ -631,6 +631,25 @@ CREATE TABLE IF NOT EXISTS treasury_transfers (
   updated_by TEXT,
   updated_at TEXT
 );
+
+-- مال بين صندوق و مخيم أو دورة: يُؤخذ من صندوق الفوج أو صندوق فرقة للمخيم (to_event)،
+-- أو يُعاد منه إلى صندوق (from_event). يخرج من الصندوق و يدخل حساب المخيم، أو العكس.
+-- حذف المخيم يُبقي الحركة في الصندوق: المال خرج منه فعلًا.
+CREATE TABLE IF NOT EXISTS event_fundings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  -- الصندوق: NULL = صندوق الفوج في قسمه
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('to_event', 'from_event')),
+  amount REAL NOT NULL CHECK (amount > 0),
+  date TEXT NOT NULL,
+  label TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  updated_at TEXT
+);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -1195,6 +1214,8 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_section_paid ON treasury_entries(section, paid_on);
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_session ON treasury_entries(session_id);
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_branch ON treasury_entries(branch_id);
+    CREATE INDEX IF NOT EXISTS idx_event_fundings_event ON event_fundings(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_fundings_box ON event_fundings(section, branch_id, date);
   `);
 
   migrateBranchRoles();
