@@ -86,6 +86,13 @@ const PERM_GROUPS = [
       { key: 'leaders.dues', label: 'admin.permLeadersDues' },
     ],
   },
+  {
+    page: 'nav.treasury',
+    items: [
+      { key: 'treasury.read', label: 'admin.permTreasuryRead' },
+      { key: 'treasury.manage', label: 'admin.permTreasuryManage' },
+    ],
+  },
 ];
 
 const ALL_PERM_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
@@ -109,6 +116,7 @@ const PERM_DEPENDENCIES = {
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
   'leaders.dues': ['leaders.read'],
+  'treasury.manage': ['treasury.read'],
 };
 
 function withPerm(perms, key) {
@@ -142,7 +150,8 @@ const EMPTY_USER = {
   display_name: '',
   role: 'user',
   branches: [],
-  perms: [...ALL_PERM_KEYS],
+  // Everything but the الصندوق: money is handed to the أمين المال by hand, never by default
+  perms: ALL_PERM_KEYS.filter((k) => !k.startsWith('treasury.')),
   // 'M' | 'F' | '' (both أقسام) — the form opens on the قسم being looked at
   section: 'M',
 };

@@ -1485,6 +1485,14 @@ export default function Leaders() {
   const [view, setView] = useLocalStorage('leaders.tachkilaView', 'list');
   // Which section the page shows — kept from one visit to the next, like the view
   const [tab, setTab] = useLocalStorage('leaders.tab', 'tachkila');
+  // A link may ask for a tab (a الصندوق line of اشتراكات القادة opens «dues»): taken
+  // once, then dropped from the address so the remembered tab rules again
+  useEffect(() => {
+    const wanted = sp.get('tab');
+    if (!wanted) return;
+    if (TABS.includes(wanted)) setTab(wanted);
+    patch({ tab: '' });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- the address of the first visit only
   const [editingLeader, setEditingLeader] = useState(null);
   const [editingAssignment, setEditingAssignment] = useState(null);
   // القائد الذي يُنشأ له حساب دخول

@@ -568,6 +568,46 @@ CREATE TABLE IF NOT EXISTS event_donations (
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- الصندوق: ما يُكتب فيه باليد — مصروف (out)، أو تبرّع أو مدخول آخر (in). اشتراكات
+-- الأنشطة (attendance.paid) و اشتراك القادة (leader_dues) لا تُنسخ هنا: تُقرأ من
+-- مصدرها عند الحساب، فتصحيح خانة دفع يصحّح الصندوق معه. المخيمات خارجه: حسابها في
+-- صفحتها. category بلا CHECK كفئات مصاريف المخيم — التحقّق في الخادم.
+CREATE TABLE IF NOT EXISTS treasury_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+  -- out: gear | food | transport | venue | uniform | other — in: donation | other
+  category TEXT NOT NULL DEFAULT 'other',
+  -- البيان: ما هو المصروف (إلزامي له)، أو ملاحظة التبرّع و المدخول (اختيارية)
+  label TEXT,
+  amount REAL NOT NULL CHECK (amount > 0),
+  -- يوم المصروف (الشراء)، أو يوم دخول المال
+  date TEXT NOT NULL,
+  -- يوم خروج المال من الصندوق: يُحسب فيه إن لم يسبق يوم افتتاحه. NULL = مصروف لم
+  -- يُدفع بعد (قائد سلّف ثمنه، أو دكّان باع بالدَّين): لا ينقص الصندوق حتى يُسدَّد.
+  -- المداخيل: يوم دخولها نفسه.
+  paid_on TEXT,
+  -- صاحب الدَّين: القائد الذي سلّف أو الدكّان. يبقى بعد التسديد: إلى من دُفع
+  owed_to TEXT,
+  -- مصروف نشاط: ما اشتُري له. حذف النشاط يفكّ الربط و يُبقي المصروف — المال صُرف فعلًا
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  -- صندوق كل قسم وحده: مصروف النشاط من قسم نشاطه
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  updated_at TEXT
+);
+
+-- افتتاح الصندوق: المبلغ الذي عُدّ فيه صباح ذلك اليوم. لا يُحسب قبله شيء — اشتراكات
+-- قديمة صُرفت بلا أثر كانت ستجعل الرصيد كاذبًا. صفّ لكل قسم؛ غيابه = صندوق لم يُفتح.
+CREATE TABLE IF NOT EXISTS treasury_openings (
+  section TEXT PRIMARY KEY CHECK (section IN ('M', 'F')),
+  date TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount >= 0),
+  set_by TEXT,
+  set_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -1028,6 +1068,14 @@ function migrate() {
   const usersHadSection = db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'section');
   ensureColumn('users', 'section', "section TEXT CHECK (section IN ('M', 'F'))");
   if (!usersHadSection) db.exec("UPDATE users SET section = 'M' WHERE role != 'admin'");
+  // A الصندوق line written before «not paid yet» existed left the box the day it was written
+  const entriesHadPaidOn = db
+    .prepare('PRAGMA table_info(treasury_entries)')
+    .all()
+    .some((c) => c.name === 'paid_on');
+  ensureColumn('treasury_entries', 'paid_on', 'paid_on TEXT');
+  ensureColumn('treasury_entries', 'owed_to', 'owed_to TEXT');
+  if (!entriesHadPaidOn) db.exec('UPDATE treasury_entries SET paid_on = date');
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -1083,6 +1131,8 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_event_donations_event ON event_donations(event_id);
     CREATE INDEX IF NOT EXISTS idx_event_staff_event ON event_staff(event_id);
     CREATE INDEX IF NOT EXISTS idx_event_staff_leader ON event_staff(leader_id);
+    CREATE INDEX IF NOT EXISTS idx_treasury_entries_section_paid ON treasury_entries(section, paid_on);
+    CREATE INDEX IF NOT EXISTS idx_treasury_entries_session ON treasury_entries(session_id);
   `);
 
   migrateBranchRoles();

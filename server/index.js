@@ -60,6 +60,9 @@ const PERM_GROUPS = {
   // اشتراك القادة: يُمنح يدويًا لأشخاص بعينهم. مجموعة مستقلة كي لا يرثه من كانت
   // له صفحة القادة كاملة في صيغة الصلاحيات القديمة.
   dues: ['leaders.dues'],
+  // الصندوق: رصيد الفوج و حركاته. يُمنح يدويًا لأمين المال — read يرى، manage يكتب
+  // المصاريف و التبرعات و رصيد الافتتاح.
+  treasury: ['treasury.read', 'treasury.manage'],
 };
 const ALL_PERMS = Object.values(PERM_GROUPS).flat();
 
@@ -81,6 +84,7 @@ const PERM_DEPENDENCIES = {
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
   'leaders.dues': ['leaders.read'],
+  'treasury.manage': ['treasury.read'],
 };
 
 function expandPerms(keys) {
@@ -4123,6 +4127,9 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     animators,
     // حصيلة اشتراكات النشاط كاملًا — يحسبها البرنامج من الخانات، لا تُدخَل يدويًا
     subscriptions: sessionSubscriptions(s.id),
+    // ما اشتُري للنشاط من الصندوق — لمن يرى مبالغ الأنشطة أو الصندوق
+    expenses: canSeeSessionExpenses(req) ? sessionExpensesOf(s.id) : null,
+    can_write_expenses: canWriteSessionExpenses(req),
     branch_counts: branchCountsOf(s.id),
     branch_ids: branchIds,
     // ضيوف نشاط القادة — أسماء حرّة من خارج البرنامج
@@ -5235,6 +5242,393 @@ app.delete('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) =>
   db.prepare('DELETE FROM event_donations WHERE id = ?').run(d.id);
   auditEvent(req, 'delete', 'event_donation', d.id, d, null);
   res.json(donationsPayload(ev));
+});
+
+// ---------- الصندوق ----------
+// رصيد الفوج: رصيد الافتتاح، ثم كل ما دخل و خرج منذ يومه. ما يدخل: اشتراكات الأنشطة
+// (خانات الدفع في الحضور)، اشتراك القادة الشهري، و التبرعات و المداخيل المكتوبة باليد.
+// ما يخرج: المصاريف، عامّةً أو لنشاط بعينه. لا مجموع يُخزَّن: الحساب كله عند القراءة.
+// صندوق لكل قسم، كالبرنامج كله؛ و الأدمن على القسمين يرى مجموعهما. الصندوق للفوج كله
+// داخل القسم: حصر الحساب بفرق لا يقطع منه شيئًا، و إلا صار الرصيد نصف حساب.
+// المخيمات خارجه — حسابها في صفحتها، هكذا طُلب.
+
+const TREASURY_OUT = ['gear', 'food', 'transport', 'venue', 'uniform', 'other'];
+const TREASURY_IN = ['donation', 'other'];
+
+const treasurySections = (req) => {
+  const s = activeSection(req);
+  return s ? [s] : SECTIONS;
+};
+
+const actorName = (req) => req.user.display_name || req.user.username;
+
+const openingsOf = (sections) =>
+  Object.fromEntries(
+    db
+      .prepare(`SELECT * FROM treasury_openings WHERE section IN (${sections.map(() => '?').join(',')})`)
+      .all(...sections)
+      .map((o) => [o.section, o])
+  );
+
+// مصروف أو مدخول مكتوب، بالشكل الذي يعرضه السجلّ
+const ENTRY_SQL = `
+  SELECT e.*, s.title AS session_title
+  FROM treasury_entries e LEFT JOIN sessions s ON s.id = e.session_id`;
+
+// date: the day it moved the box (paid_on), or the day of the مصروف while it is owed
+const entryRow = (e) => ({
+  key: `e${e.id}`,
+  source: 'entry',
+  id: e.id,
+  direction: e.direction,
+  category: e.category,
+  label: e.label,
+  amount: e.amount,
+  date: e.paid_on ?? e.date,
+  spent_on: e.date,
+  paid_on: e.paid_on,
+  owed_to: e.owed_to,
+  section: e.section,
+  session_id: e.session_id,
+  session_title: e.session_title ?? null,
+  created_by: e.created_by,
+  updated_by: e.updated_by,
+});
+
+// سجلّ قسم واحد منذ افتتاحه: ما دخل أو خرج فعلًا — مصروف لم يُسدَّد ليس فيه بعد
+function treasuryRows(section, from) {
+  const entries = db
+    .prepare(`${ENTRY_SQL} WHERE e.section = ? AND e.paid_on >= ?`)
+    .all(section, from)
+    .map(entryRow);
+  // اشتراكات نشاط: سطر واحد للنشاط، بيومه — الخانة لا تحفظ يوم الدفع، و الدفع يكون فيه
+  const sessions = db
+    .prepare(
+      `SELECT s.id, s.title, s.date, COUNT(*) AS payers, SUM(a.paid) AS amount
+       FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE s.section = ? AND s.date >= ? AND a.paid > 0
+       GROUP BY s.id`
+    )
+    .all(section, from)
+    .map((s) => ({
+      key: `s${s.id}`,
+      source: 'session',
+      direction: 'in',
+      category: 'sessions',
+      label: s.title,
+      amount: s.amount,
+      date: s.date,
+      section,
+      session_id: s.id,
+      payers: s.payers,
+    }));
+  // اشتراك القادة: سطر لكل يوم تسجيل، بأسماء من دفع فيه و عدد أشهره
+  const dues = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT date(d.paid_at) AS day, l.id AS leader_id, ${fullNameSQL('l')} AS name,
+         COUNT(*) AS months, SUM(d.amount) AS amount
+       FROM leader_dues d JOIN leaders l ON l.id = d.leader_id
+       WHERE l.section = ? AND date(d.paid_at) >= ?
+       GROUP BY day, l.id ORDER BY name`
+    )
+    .all(section, from)) {
+    const row = dues.get(r.day) || {
+      key: `d${section}${r.day}`,
+      source: 'dues',
+      direction: 'in',
+      category: 'dues',
+      amount: 0,
+      date: r.day,
+      section,
+      leaders: [],
+    };
+    row.amount += r.amount;
+    row.leaders.push({ id: r.leader_id, name: r.name, months: r.months });
+    dues.set(r.day, row);
+  }
+  return [...entries, ...sessions, ...dues.values()];
+}
+
+// Latest day first; within a day, what was written by hand (newest first) before the computed lines
+const rowOrder = (a, b) =>
+  a.date !== b.date ? (a.date < b.date ? 1 : -1) : (b.id ?? 0) - (a.id ?? 0);
+
+// ما بقي دَينًا على الصندوق، أقدمه أولًا. يوم الافتتاح لا يحدّه: دَين قديم يخرج يوم يُسدَّد.
+const owedOf = (sections) =>
+  db
+    .prepare(
+      `${ENTRY_SQL} WHERE e.direction = 'out' AND e.paid_on IS NULL
+         AND e.section IN (${sections.map(() => '?').join(',')})
+       ORDER BY e.date, e.id`
+    )
+    .all(...sections)
+    .map(entryRow);
+
+// السجلّ و حصيلته لأقسام الطلب. قسم لم يُفتح صندوقه لا يدخل الحساب.
+function treasuryPayload(req) {
+  const sections = treasurySections(req);
+  const openings = openingsOf(sections);
+  const opened = sections.filter((s) => openings[s]);
+  const rows = opened.flatMap((s) => treasuryRows(s, openings[s].date)).sort(rowOrder);
+  const owed = opened.length ? owedOf(opened) : [];
+  const income = { sessions: 0, dues: 0, donation: 0, other: 0, total: 0 };
+  const expenses = Object.fromEntries(TREASURY_OUT.map((c) => [c, 0]));
+  let spent = 0;
+  // Each قسم's own box: a debt is paid out of its قسم's, even when both are on screen
+  const balances = Object.fromEntries(opened.map((s) => [s, openings[s].amount]));
+  for (const r of rows) {
+    if (r.direction === 'in') {
+      income[r.category] += r.amount;
+      income.total += r.amount;
+      balances[r.section] += r.amount;
+    } else {
+      expenses[r.category] += r.amount;
+      spent += r.amount;
+      balances[r.section] -= r.amount;
+    }
+  }
+  const opening = Object.values(openings).reduce((n, o) => n + o.amount, 0);
+  return {
+    sections: sections.map((s) => ({
+      section: s,
+      opening: openings[s]
+        ? { date: openings[s].date, amount: openings[s].amount, set_by: openings[s].set_by, set_at: openings[s].set_at }
+        : null,
+      balance: balances[s] ?? null,
+    })),
+    summary: {
+      opening,
+      income,
+      expenses: { ...expenses, total: spent },
+      balance: opening + income.total - spent,
+      owed: owed.reduce((n, e) => n + e.amount, 0),
+    },
+    rows,
+    owed,
+    can_manage: hasPerm(req, 'treasury.manage'),
+  };
+}
+
+app.get('/api/treasury', requirePerm('treasury.read'), (req, res) => {
+  res.json(treasuryPayload(req));
+});
+
+// قسم الكتابة: قسم الطلب، و إلا ما اختير في النموذج (الأدمن على القسمين)
+const writeSection = (req) => activeSection(req) || parseSection(req.body?.section);
+
+// رصيد الافتتاح: المبلغ الذي عُدّ في الصندوق صباح ذلك اليوم. يُصحَّح متى لزم.
+app.put('/api/treasury/opening', requirePerm('treasury.manage'), (req, res) => {
+  const section = writeSection(req);
+  if (!section) return res.status(400).json({ error: 'invalid section' });
+  const amount = parsePaid(req.body?.amount);
+  if (amount === undefined || amount === null) return res.status(400).json({ error: 'invalid amount' });
+  if (!validISODate(req.body?.date)) return res.status(400).json({ error: 'invalid date' });
+  const before = db.prepare('SELECT * FROM treasury_openings WHERE section = ?').get(section) || null;
+  db.prepare(
+    `INSERT INTO treasury_openings (section, date, amount, set_by, set_at) VALUES (?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(section) DO UPDATE SET date = excluded.date, amount = excluded.amount,
+       set_by = excluded.set_by, set_at = excluded.set_at`
+  ).run(section, req.body.date, amount, actorName(req));
+  const after = db.prepare('SELECT * FROM treasury_openings WHERE section = ?').get(section);
+  auditEvent(req, before ? 'update' : 'create', 'treasury_opening', section, before, after);
+  res.json(treasuryPayload(req));
+});
+
+// Validates an entry's body. `direction` comes from the row being edited, or the body
+// on creation; a مصروف names what it is, an تبرّع may say nothing but its amount.
+// A مصروف is paid (`paid` absent or true) or still owed (`paid: false`) to someone who
+// must be named — a قائد who advanced it, a shop that gave credit. Paid, it left the box
+// on `paid_on`, its own day when not given.
+function parseTreasuryEntry(req, direction) {
+  const b = req.body || {};
+  if (!['in', 'out'].includes(direction)) return { error: 'invalid direction' };
+  const categories = direction === 'out' ? TREASURY_OUT : TREASURY_IN;
+  const category =
+    b.category === undefined || b.category === null || b.category === ''
+      ? direction === 'out'
+        ? 'other'
+        : 'donation'
+      : b.category;
+  if (!categories.includes(category)) return { error: 'invalid category' };
+  const label = optionalText(b.label, 200);
+  if (label === undefined) return { error: 'text too long' };
+  if (direction === 'out' && !label) return { error: 'invalid label' };
+  const amount = parsePaid(b.amount);
+  if (!amount) return { error: 'invalid amount' };
+  if (!validISODate(b.date)) return { error: 'invalid date' };
+  if (direction === 'in')
+    return { values: { direction, category, label, amount, date: b.date, paid_on: b.date, owed_to: null } };
+  const owedTo = optionalText(b.owed_to, 120);
+  if (owedTo === undefined) return { error: 'text too long' };
+  if (b.paid !== undefined && typeof b.paid !== 'boolean') return { error: 'invalid paid' };
+  const paid = b.paid !== false;
+  if (!paid && !owedTo) return { error: 'invalid owed_to' };
+  const paidOn = !paid ? null : b.paid_on === undefined || b.paid_on === null || b.paid_on === '' ? b.date : b.paid_on;
+  if (paid && !validISODate(paidOn)) return { error: 'invalid date' };
+  return { values: { direction, category, label, amount, date: b.date, paid_on: paidOn, owed_to: owedTo } };
+}
+
+const loadEntry = (req, res) => {
+  const e = db.prepare('SELECT * FROM treasury_entries WHERE id = ?').get(intOr(req.params.xid));
+  // صندوق القسم الآخر غير موجود لمن لا يراه
+  if (!e || !treasurySections(req).includes(e.section)) {
+    res.status(404).json({ error: 'entry not found' });
+    return null;
+  }
+  return e;
+};
+
+const entryById = (id) => db.prepare('SELECT * FROM treasury_entries WHERE id = ?').get(id);
+
+const insertEntry = (req, v, section, sessionId = null) => {
+  const id = db
+    .prepare(
+      `INSERT INTO treasury_entries
+         (direction, category, label, amount, date, paid_on, owed_to, session_id, section, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      v.direction,
+      v.category,
+      v.label,
+      v.amount,
+      v.date,
+      v.paid_on,
+      v.owed_to,
+      sessionId,
+      section,
+      actorName(req)
+    ).lastInsertRowid;
+  auditEvent(req, 'create', 'treasury_entry', id, null, entryById(id));
+};
+
+const updateEntry = (req, e, v) => {
+  db.prepare(
+    `UPDATE treasury_entries SET category = ?, label = ?, amount = ?, date = ?, paid_on = ?, owed_to = ?,
+       updated_by = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(v.category, v.label, v.amount, v.date, v.paid_on, v.owed_to, actorName(req), e.id);
+  auditEvent(req, 'update', 'treasury_entry', e.id, e, entryById(e.id));
+};
+
+const deleteEntry = (req, e) => {
+  db.prepare('DELETE FROM treasury_entries WHERE id = ?').run(e.id);
+  auditEvent(req, 'delete', 'treasury_entry', e.id, e, null);
+};
+
+app.post('/api/treasury/entries', requirePerm('treasury.manage'), (req, res) => {
+  const section = writeSection(req);
+  if (!section) return res.status(400).json({ error: 'invalid section' });
+  const parsed = parseTreasuryEntry(req, req.body?.direction);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  insertEntry(req, parsed.values, section);
+  res.status(201).json(treasuryPayload(req));
+});
+
+// يعدّل أيضًا مصروف نشاط، فيبقى مربوطًا بنشاطه و قسمه
+app.put('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const e = loadEntry(req, res);
+  if (!e) return;
+  const parsed = parseTreasuryEntry(req, e.direction);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  updateEntry(req, e, parsed.values);
+  res.json(treasuryPayload(req));
+});
+
+// تسديد مصروف لم يُدفع: يخرج من الصندوق في ذلك اليوم (اليوم إن لم يُذكر)
+app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.manage'), (req, res) => {
+  const e = loadEntry(req, res);
+  if (!e) return;
+  if (e.direction !== 'out' || e.paid_on) return res.status(400).json({ error: 'not owed' });
+  const date = req.body?.date || todayISO();
+  if (!validISODate(date)) return res.status(400).json({ error: 'invalid date' });
+  db.prepare(
+    "UPDATE treasury_entries SET paid_on = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(date, actorName(req), e.id);
+  auditEvent(req, 'update', 'treasury_entry', e.id, e, entryById(e.id));
+  res.json(treasuryPayload(req));
+});
+
+app.delete('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const e = loadEntry(req, res);
+  if (!e) return;
+  deleteEntry(req, e);
+  res.json(treasuryPayload(req));
+});
+
+// ---------- مصاريف النشاط ----------
+// ما اشتُري لنشاط (لوازم، ضيافة…) يُكتب من صفحته، فيخرج من صندوق قسمه. يكتبه من
+// يسجّل الدفع في النشاط (الحضور + رؤية المبالغ)، أو أمين المال.
+
+const sessionExpensesOf = (sessionId) =>
+  db
+    .prepare(`${ENTRY_SQL} WHERE e.session_id = ? AND e.direction = 'out' ORDER BY e.date DESC, e.id DESC`)
+    .all(sessionId)
+    .map(entryRow);
+
+const canSeeSessionExpenses = (req) => hasPerm(req, 'sessions.read.fees') || hasPerm(req, 'treasury.read');
+const canWriteSessionExpenses = (req) =>
+  (hasPerm(req, 'sessions.attendance') && hasPerm(req, 'sessions.read.fees')) || hasPerm(req, 'treasury.manage');
+
+const requireSessionMoney = (req, res, next) =>
+  canWriteSessionExpenses(req) ? next() : res.status(403).json({ error: 'forbidden' });
+
+// النشاط بعد التحقّق من نطاقه، أو null بعد ردّ 404 / 403
+function loadSessionForMoney(req, res) {
+  const s = db.prepare('SELECT id, branch_id, section, date FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) {
+    res.status(404).json({ error: 'session not found' });
+    return null;
+  }
+  if (!sessionOk(req, s)) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return s;
+}
+
+const loadSessionExpense = (req, res, s) => {
+  const e = db
+    .prepare("SELECT * FROM treasury_entries WHERE id = ? AND session_id = ? AND direction = 'out'")
+    .get(intOr(req.params.xid), s.id);
+  if (!e) res.status(404).json({ error: 'expense not found' });
+  return e || null;
+};
+
+// يوم المصروف يوم النشاط إن لم يُذكر: يُشترى له عادةً في يومه
+const withSessionDate = (req, s) => {
+  const b = req.body || {};
+  return b.date === undefined || b.date === null || b.date === '' ? { ...req, body: { ...b, date: s.date } } : req;
+};
+
+app.post('/api/sessions/:id/expenses', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+  const s = loadSessionForMoney(req, res);
+  if (!s) return;
+  const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  insertEntry(req, parsed.values, s.section, s.id);
+  res.status(201).json({ expenses: sessionExpensesOf(s.id) });
+});
+
+app.put('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+  const s = loadSessionForMoney(req, res);
+  if (!s) return;
+  const e = loadSessionExpense(req, res, s);
+  if (!e) return;
+  const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  updateEntry(req, e, parsed.values);
+  res.json({ expenses: sessionExpensesOf(s.id) });
+});
+
+app.delete('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+  const s = loadSessionForMoney(req, res);
+  if (!s) return;
+  const e = loadSessionExpense(req, res, s);
+  if (!e) return;
+  deleteEntry(req, e);
+  res.json({ expenses: sessionExpensesOf(s.id) });
 });
 
 // ---------- Dashboard ----------

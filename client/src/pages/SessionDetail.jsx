@@ -6,6 +6,7 @@ import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
 import SessionEditDialog from '../components/SessionEditDialog';
+import SessionExpenses from '../components/SessionExpenses';
 import SearchInput from '../components/SearchInput';
 import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName } from '../utils';
 import {
@@ -605,41 +606,25 @@ export default function SessionDetail() {
           <div className="text-sm font-medium tabular-nums">
             {t('session.marked', { marked, total: totalRoster })}
           </div>
-          {/* Named, not just coloured: the colour repeats the word */}
+          {/* Named, not just coloured: the colour repeats the word. An empty count says
+              nothing the bar does not, so «غائبون بعذر 0» is left out */}
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant="success">
-              {t('session.tallyPresent')} <span className="tabular-nums">{counts.present}</span>
-            </Badge>
-            <Badge variant="destructive">
-              {t('session.tallyAbsent')} <span className="tabular-nums">{counts.absent}</span>
-            </Badge>
-            <Badge variant="warning">
-              {t('session.tallyExcused')} <span className="tabular-nums">{counts.excused}</span>
-            </Badge>
+            {[
+              ['success', 'session.tallyPresent', counts.present],
+              ['destructive', 'session.tallyAbsent', counts.absent],
+              ['warning', 'session.tallyExcused', counts.excused],
+            ]
+              .filter(([, , n]) => n > 0)
+              .map(([variant, key, n]) => (
+                <Badge key={key} variant={variant}>
+                  {t(key)} <span className="tabular-nums">{n}</span>
+                </Badge>
+              ))}
           </div>
         </div>
         <ProgressBar value={pct} label={t('session.attendance')} />
-        {/* ---------- حصيلة الاشتراكات، محسوبة تلقائيًا من خانات اللائحة ---------- */}
-        {canSeeFees && (
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border pt-3">
-            <span className="flex items-center gap-1.5 text-sm font-medium">
-              <IconCoins className="h-4 w-4 text-muted-foreground" />
-              {t('session.subscriptions')}
-            </span>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={collected > 0 ? 'success' : 'outline'}>{fmtAmount(collected)}</Badge>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {t('session.paidCount', { paid: payers.length, total: totalRoster })}
-              </span>
-              {session.fee > 0 && (
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  · {t('session.expectedTotal', { amount: fmtAmount(session.fee * totalRoster) })}
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-        {/* اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ الجامع هنا يصير تكرارًا */}
+        {/* Right under the bar they complete. اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ
+            الجامع هنا يصير تكرارًا */}
         {editable && !splitRoster && visibleLeft > 0 && (
           <div className="flex flex-wrap gap-2">
             <Button
@@ -663,6 +648,27 @@ export default function SessionDetail() {
                 {t('session.markRestAbsent', { count: visibleUntouched })}
               </Button>
             )}
+          </div>
+        )}
+        {/* ---------- حصيلة الاشتراكات، محسوبة تلقائيًا من خانات اللائحة ----------
+            Only where an amount is asked or was given: on a free نشاط «0 · 0/15» is noise */}
+        {canSeeFees && (session.fee > 0 || payers.length > 0) && (
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border pt-3">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <IconCoins className="h-4 w-4 text-muted-foreground" />
+              {t('session.subscriptions')}
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={collected > 0 ? 'success' : 'outline'}>{fmtAmount(collected)}</Badge>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {t('session.paidCount', { paid: payers.length, total: totalRoster })}
+              </span>
+              {session.fee > 0 && (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  · {t('session.expectedTotal', { amount: fmtAmount(session.fee * totalRoster) })}
+                </span>
+              )}
+            </div>
           </div>
         )}
       </CardContent>
@@ -837,12 +843,16 @@ export default function SessionDetail() {
                 {t('session.marked', { marked: leaderMarked, total: leaderRoster.length })}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="success">
-                  {t('session.tallyPresent')} <span className="tabular-nums">{leaderCounts.present}</span>
-                </Badge>
-                <Badge variant="destructive">
-                  {t('session.tallyAbsent')} <span className="tabular-nums">{leaderCounts.absent}</span>
-                </Badge>
+                {leaderCounts.present > 0 && (
+                  <Badge variant="success">
+                    {t('session.tallyPresent')} <span className="tabular-nums">{leaderCounts.present}</span>
+                  </Badge>
+                )}
+                {leaderCounts.absent > 0 && (
+                  <Badge variant="destructive">
+                    {t('session.tallyAbsent')} <span className="tabular-nums">{leaderCounts.absent}</span>
+                  </Badge>
+                )}
               </div>
             </div>
             <ProgressBar
@@ -887,7 +897,8 @@ export default function SessionDetail() {
         </CardHeader>
         <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
           {(session.animators || []).length === 0 ? (
-            <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('session.noAnimators')} />
+            // One quiet line: a large empty state here pushed the roster a screen down
+            <p className="px-4 pb-2 text-sm text-muted-foreground sm:px-5">{t('session.noAnimators')}</p>
           ) : (
             <ul className="divide-y divide-border">
               {session.animators.map((a) => (
@@ -1132,6 +1143,11 @@ export default function SessionDetail() {
       </Card>
       )}
 
+      {/* ---------- مصاريف النشاط: ما اشتُري له، يخرج من الصندوق ---------- */}
+      {session.expenses && (
+        <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
+      )}
+
       {canEditSession && (
         <SessionEditDialog
           session={session}
@@ -1183,7 +1199,7 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
               <IconCoins className="h-3 w-3" />
               {fmtAmount(m.paid)}
             </Badge>
-          ) : m.status === 'present' ? (
+          ) : m.status === 'present' && fee > 0 ? (
             <Badge variant="outline">{t('session.notPaid')}</Badge>
           ) : null}
         </div>
@@ -1268,9 +1284,9 @@ function PaidCell({ m, fee, t, onSave }) {
       />
     );
 
-  // Nothing paid by someone not marked present: still recordable, but a bare
-  // coin rather than forty «Non payé» buttons down a list of absences
-  if (!paid && m.status !== 'present')
+  // Nothing paid by someone not marked present, or on a free نشاط: still recordable,
+  // but a bare coin rather than forty «Non payé» buttons down the list
+  if (!paid && (m.status !== 'present' || !(fee > 0)))
     return (
       <Button
         variant="ghost"

@@ -35,6 +35,7 @@ import {
   IconMoon,
   IconSwap,
   IconTent,
+  IconWallet,
 } from './ui';
 
 const NAV_ITEMS = [
@@ -44,6 +45,7 @@ const NAV_ITEMS = [
   { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions.read' },
   { to: '/prep-cards', key: 'nav.prepCards', short: 'nav.prepCardsShort', Icon: IconClipboard, perm: 'sessions.read' },
   { to: '/events', key: 'nav.events', short: 'nav.eventsShort', Icon: IconTent, perm: 'sessions.read' },
+  { to: '/treasury', key: 'nav.treasury', short: 'nav.treasury', Icon: IconWallet, perm: 'treasury.read' },
   { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions.read' },
   { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, perm: 'leaders.read' },
   { to: '/settings', key: 'nav.settings', short: 'nav.settings', Icon: IconSettings, admin: true },
