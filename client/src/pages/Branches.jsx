@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -6,7 +6,8 @@ import { useAuth, usePerms } from '../auth';
 import { useFetch, useLocalStorage } from '../hooks';
 import { useSection } from '../section';
 import { toDate, toISO } from '../lib/date';
-import { avatarName, branchName, fmtDate, memberName } from '../utils';
+import { avatarName, branchName, fmtAmount, fmtDate, memberName } from '../utils';
+import { OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
 import NewBranchDialog from '../components/NewBranchDialog';
@@ -38,6 +39,7 @@ import {
   IconLink,
   IconPencil,
   IconPlus,
+  IconReceipt,
   IconRefresh,
   IconTrash,
   IconUnlink,
@@ -47,7 +49,7 @@ import {
 // Scout-year order: أيلول opens the year, آب closes it
 const SCOUT_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
 
-const TABS = ['plan', 'sessions', 'groups', 'matalib'];
+const TABS = ['plan', 'sessions', 'groups', 'matalib', 'expenses'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses
 const monthName = (m, lng) =>
@@ -1641,6 +1643,184 @@ function BranchMatalib({ b }) {
 }
 
 /* ============================================================
+   مصاريف الفرقة
+   ============================================================ */
+
+const expenseRowClass = 'flex w-full items-center gap-3 px-4 py-3 text-start sm:px-5';
+
+/**
+ * What a فرقة cost: its أنشطة's مصاريف and what was written for it in the الصندوق,
+ * paid or still owed, month by month. Read here; written in the الصندوق or on the نشاط,
+ * where a line leads.
+ */
+function BranchExpenses({ branchId }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const { can } = usePerms();
+  const res = useFetch(`/branches/${branchId}/expenses`);
+
+  if (res.loading)
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-32 rounded-2xl" />
+        <Skeleton className="h-56 rounded-2xl" />
+      </div>
+    );
+  if (res.error)
+    return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
+
+  const { expenses, summary, caisse } = res.data;
+  // What the فرقة's own caisse holds now, for whoever sees it — and the way to it
+  const caisseCard = caisse && (
+    <Card className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-4 sm:px-5">
+      <div className="min-w-0 space-y-1">
+        <p className="text-xs font-medium text-muted-foreground">{t('branch.caisse')}</p>
+        {caisse.opened ? (
+          <p className={cn('text-xl font-bold tabular-nums', caisse.balance < 0 && 'text-destructive')}>
+            <span dir="ltr">{caisse.balance < 0 ? `−${fmtAmount(-caisse.balance)}` : fmtAmount(caisse.balance)}</span>
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">{t('branch.caisseNotOpen')}</p>
+        )}
+        {caisse.owed > 0 && (
+          <p className="text-xs font-medium text-warning">
+            {t('treasury.owedSummary', { amount: fmtAmount(caisse.owed) })}
+          </p>
+        )}
+      </div>
+      <Link
+        to={`/treasury?box=${caisse.box}`}
+        className="focus-ring inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium text-primary hover:underline sm:min-h-9"
+      >
+        {t('branch.caisseOpen')}
+      </Link>
+    </Card>
+  );
+  if (expenses.length === 0)
+    return (
+      <div className="space-y-4">
+        {caisseCard}
+        <Card>
+          <EmptyState icon={<IconReceipt className="h-6 w-6" />} title={t('branch.expensesEmpty')}>
+            {t('branch.expensesEmptyHint')}
+          </EmptyState>
+        </Card>
+      </div>
+    );
+
+  const categories = OUT_CATEGORIES.map((k) => ({ key: k, amount: summary.by_category[k] }))
+    .filter((c) => c.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  // Month of the مصروف itself, not of its payment: this is what the فرقة cost, when
+  const months = byMonth(expenses.map((x) => ({ ...x, date: x.spent_on })));
+
+  return (
+    <div className="space-y-4">
+      {caisseCard}
+      <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2">
+        <Stat label={t('branch.expensesTotal')} className="sm:p-5">
+          <p className="text-3xl font-bold tracking-tight tabular-nums">{fmtAmount(summary.total)}</p>
+          <p className="text-xs text-muted-foreground">{t('branch.expensesCount', { count: expenses.length })}</p>
+          {summary.owed > 0 && (
+            <p className="text-xs font-medium text-warning">
+              {t('branch.expensesOwed', { amount: fmtAmount(summary.owed) })}
+            </p>
+          )}
+        </Stat>
+        <Stat label={t('branch.expensesByCategory')} className="sm:p-5">
+          <dl className="space-y-1 text-sm">
+            {categories.map((c) => (
+              <div key={c.key} className="flex items-baseline justify-between gap-3">
+                <dt className="min-w-0 text-muted-foreground">{t(`treasury.cat_${c.key}`)}</dt>
+                <dd className="shrink-0 font-medium tabular-nums">{fmtAmount(c.amount)}</dd>
+              </div>
+            ))}
+          </dl>
+        </Stat>
+      </Card>
+
+      <Card className="divide-y divide-border overflow-hidden">
+        {months.map((m) => (
+          <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
+            <div className="flex items-baseline justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2 sm:px-5">
+              <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
+              <p dir="ltr" className="text-xs font-medium tabular-nums text-muted-foreground">
+                −{fmtAmount(m.out)}
+              </p>
+            </div>
+            <ul className="divide-y divide-border">
+              {m.rows.map((x) => {
+                const owed = !x.paid_on;
+                const meta = [
+                  fmtDate(x.spent_on),
+                  t(`treasury.cat_${x.category}`),
+                  x.session_title && t('treasury.forSession', { title: x.session_title }),
+                  x.owed_to && t(owed ? 'treasury.owedRowTo' : 'treasury.paidRowTo', { name: x.owed_to }),
+                ].filter(Boolean);
+                const body = (
+                  <>
+                    <span
+                      className={cn(
+                        'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+                        owed ? 'bg-warning/15 text-warning' : 'bg-muted text-muted-foreground'
+                      )}
+                    >
+                      <IconReceipt />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-medium">{x.label}</span>
+                        {owed && <Badge variant="warning">{t('treasury.statusOwed')}</Badge>}
+                      </span>
+                      {/* Each fact stays whole: the line breaks between them, never inside a short one */}
+                      <span className="block text-xs text-muted-foreground">
+                        {meta.map((m, i) => (
+                          <Fragment key={i}>
+                            {i > 0 && ' · '}
+                            <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+                          </Fragment>
+                        ))}
+                      </span>
+                    </span>
+                    <span dir="ltr" className="shrink-0 font-semibold tabular-nums">
+                      {fmtAmount(x.amount)}
+                    </span>
+                  </>
+                );
+                // A نشاط's مصروف leads to its نشاط, another to the الصندوق where it is written
+                const to =
+                  x.session_id && can('sessions.read')
+                    ? `/sessions/${x.session_id}`
+                    : can('treasury.read')
+                      ? `/treasury?box=${x.box}`
+                      : null;
+                return (
+                  <li key={x.key}>
+                    {to ? (
+                      <Link
+                        to={to}
+                        className={cn(
+                          expenseRowClass,
+                          'focus-ring transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]!'
+                        )}
+                      >
+                        {body}
+                      </Link>
+                    ) : (
+                      <div className={expenseRowClass}>{body}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
    Page
    ============================================================ */
 
@@ -1802,7 +1982,7 @@ function BranchFigures({ b }) {
  * Tabs of the selected فرقة. Each panel mounts on its first visit and then stays,
  * hidden: going to the أنشطة and back must not throw away a month typed but not saved.
  */
-function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty }) {
+function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canExpenses }) {
   const { t, i18n } = useTranslation();
   const seen = useRef(new Set());
   seen.current.add(tab);
@@ -1816,6 +1996,8 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty }) {
           { id: 'sessions', label: t('branch.activities') },
           { id: 'groups', label: t('branch.groupsTitle') },
           { id: 'matalib', label: t('branch.matalib') },
+          // Amounts: for whoever sees what was paid (a نشاط's fees, or the الصندوق)
+          ...(canExpenses ? [{ id: 'expenses', label: t('branch.expensesTab') }] : []),
         ]}
         value={tab}
         onChange={onTab}
@@ -1828,6 +2010,7 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty }) {
         {panel('sessions', <BranchSessions branchId={b.id} />)}
         {panel('groups', <BranchGroups branchId={b.id} />)}
         {panel('matalib', <BranchMatalib b={b} />)}
+        {canExpenses && panel('expenses', <BranchExpenses branchId={b.id} />)}
       </div>
     </div>
   );
@@ -1859,7 +2042,9 @@ export default function Branches() {
   const [selectedId, setSelectedId] = useLocalStorage('branches.selected', null);
   const { view: onScreen, setView } = useSection();
   const [storedTab, setTab] = useLocalStorage('branches.tab', 'plan');
-  const tab = TABS.includes(storedTab) ? storedTab : 'plan';
+  const { can } = usePerms();
+  const canExpenses = can('sessions.read.fees') || can('treasury.read');
+  const tab = TABS.includes(storedTab) && (storedTab !== 'expenses' || canExpenses) ? storedTab : 'plan';
   // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -1997,6 +2182,7 @@ export default function Branches() {
             onTab={setTab}
             onPlanChange={() => plans.reload({ quiet: true })}
             onPlanDirty={onPlanDirty}
+            canExpenses={canExpenses}
           />
         </div>
       )}

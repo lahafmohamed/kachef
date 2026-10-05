@@ -2,12 +2,20 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
-import { IN_CATEGORIES, OUT_CATEGORIES } from '../lib/treasury';
+import { IN_CATEGORIES, OUT_CATEGORIES, boxName } from '../lib/treasury';
 import DatePicker from './DatePicker';
-import SectionField from './SectionField';
 import { Button, Dialog, Input, Label, SegmentedControl, Select, useConfirm, useToast, IconTrash } from './ui';
 
-const EMPTY = { category: '', label: '', amount: '', date: '', section: 'M', paid: true, paid_on: '', owed_to: '' };
+const EMPTY = {
+  category: '',
+  label: '',
+  amount: '',
+  date: '',
+  box: '',
+  paid: true,
+  paid_on: '',
+  owed_to: '',
+};
 
 /**
  * One line of the الصندوق: a مصروف (what it is, how much, which kind, which day) or an
@@ -15,9 +23,10 @@ const EMPTY = { category: '', label: '', amount: '', date: '', section: 'M', pai
  * (`endpoint` = /treasury/entries) and from a نشاط's expenses card (`endpoint` =
  * /sessions/:id/expenses, the day defaulting to the نشاط's). `onSaved(response, toastKey)`.
  *
- * `pickSection`: the admin is looking at both أقسام, so a new line says whose box it
- * goes in. `openings` ({ M: day, F: day }) with `section` (the one on screen): a day
- * before the box's opening is kept but not counted — said before saving.
+ * `boxes` (the الصندوق page only): the caisses the line can go in — the فوج's and the
+ * فرق's the قائد holds — `defaultBox` the one on screen. A نشاط's مصروف needs no such
+ * question: it goes out of its نشاط's فرقة's. `openings` ({ box: day }): a day before
+ * the box's opening is kept but not counted — said before saving.
  *
  * A مصروف is paid, or not yet: a قائد advanced it or a shop gave credit, and the box
  * only goes down the day it is settled. Once it has been owed, it keeps who it was
@@ -32,10 +41,11 @@ export default function TreasuryEntryDialog({
   endpoint,
   defaultDate,
   openings = null,
-  section = null,
-  pickSection = false,
+  boxes = null,
+  defaultBox = null,
+  bothSections = false,
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
   const [form, setForm] = useState(EMPTY);
@@ -57,21 +67,23 @@ export default function TreasuryEntryDialog({
             label: entry.label || '',
             amount: String(entry.amount),
             date: entry.spent_on ?? entry.date,
-            section: entry.section,
+            box: entry.box || '',
             paid: !!entry.paid_on,
             paid_on: entry.paid_on || '',
             owed_to: entry.owed_to || '',
           }
-        : { ...EMPTY, category: out ? 'other' : 'donation', date: defaultDate || todayISO() }
+        : { ...EMPTY, category: out ? 'other' : 'donation', date: defaultDate || todayISO(), box: defaultBox || '' }
     );
-  }, [open, entry, out, defaultDate]);
+  }, [open, entry, out, defaultDate, defaultBox]);
 
   const donation = !out && form.category === 'donation';
   const showOwedTo = out && (!form.paid || wasOwed);
   const showPaidOn = out && form.paid && wasOwed;
   // The day the money leaves (or enters) the box — none while it is still owed
   const cashDate = !out ? form.date : !form.paid ? null : showPaidOn ? form.paid_on : form.date;
-  const openingDate = openings?.[entry?.section || (pickSection ? form.section : section)] ?? null;
+  const openingDate = openings?.[form.box] ?? null;
+  // Which caisse: asked when there is a choice; a نشاط's مصروف is already its فرقة's
+  const boxChoices = boxes && boxes.length > 1 && !entry?.session_id ? boxes : null;
   const beforeOpening = openingDate && cashDate && cashDate < openingDate;
 
   function setPaid(v) {
@@ -99,7 +111,7 @@ export default function TreasuryEntryDialog({
               owed_to: showOwedTo ? form.owed_to.trim() || null : null,
             }
           : {}),
-        ...(pickSection && !entry ? { section: form.section } : {}),
+        ...(boxes && !entry?.session_id ? { box: form.box } : {}),
       };
       const res = entry ? await api.put(`${endpoint}/${entry.id}`, body) : await api.post(endpoint, body);
       onSaved(res, `treasury.${out ? 'expense' : 'income'}${entry ? 'Updated' : 'Added'}`);
@@ -160,8 +172,17 @@ export default function TreasuryEntryDialog({
       }
     >
       <form id="treasury-entry-form" onSubmit={save} className="space-y-4">
-        {pickSection && !entry && (
-          <SectionField value={form.section} onChange={(v) => setForm((f) => ({ ...f, section: v }))} />
+        {boxChoices && (
+          <div className="space-y-1.5">
+            <Label htmlFor="tx_box">{t('treasury.box')}</Label>
+            <Select id="tx_box" value={form.box} onChange={set('box')}>
+              {boxChoices.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {boxName(b, t, i18n.language, { both: bothSections, short: true })}
+                </option>
+              ))}
+            </Select>
+          </div>
         )}
         {!out && (
           <div className="space-y-1.5">

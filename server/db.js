@@ -591,6 +591,9 @@ CREATE TABLE IF NOT EXISTS treasury_entries (
   owed_to TEXT,
   -- مصروف نشاط: ما اشتُري له. حذف النشاط يفكّ الربط و يُبقي المصروف — المال صُرف فعلًا
   session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  -- الصندوق: صندوق الفرقة، أو NULL = صندوق الفوج في قسمه. مصروف النشاط من صندوق فرقة
+  -- نشاطه ما دام مربوطًا به، و تُحفظ هنا لتبقى إن حُذف النشاط.
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   -- صندوق كل قسم وحده: مصروف النشاط من قسم نشاطه
   section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
   created_by TEXT,
@@ -599,14 +602,34 @@ CREATE TABLE IF NOT EXISTS treasury_entries (
   updated_at TEXT
 );
 
--- افتتاح الصندوق: المبلغ الذي عُدّ فيه صباح ذلك اليوم. لا يُحسب قبله شيء — اشتراكات
--- قديمة صُرفت بلا أثر كانت ستجعل الرصيد كاذبًا. صفّ لكل قسم؛ غيابه = صندوق لم يُفتح.
+-- افتتاح صندوق: المبلغ الذي عُدّ فيه صباح ذلك اليوم. لا يُحسب قبله شيء — اشتراكات
+-- قديمة صُرفت بلا أثر كانت ستجعل الرصيد كاذبًا. صفّ لكل صندوق: الفوج في قسمه
+-- (branch_id NULL) أو فرقة. صندوق فرقة بلا صفّ يبدأ فارغًا يوم افتتاح صندوق الفوج؛
+-- صندوق الفوج بلا صفّ لم يُفتح. صفّ واحد للصندوق: فهرس فريد بعد الترحيل.
 CREATE TABLE IF NOT EXISTS treasury_openings (
-  section TEXT PRIMARY KEY CHECK (section IN ('M', 'F')),
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
   date TEXT NOT NULL,
   amount REAL NOT NULL CHECK (amount >= 0),
   set_by TEXT,
   set_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- تحويل مال من صندوق إلى آخر في القسم نفسه. NULL = صندوق الفوج. لا يغيّر مجموع
+-- الصناديق: يخرج من واحد و يدخل الآخر في يومه.
+CREATE TABLE IF NOT EXISTS treasury_transfers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  from_branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  to_branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  amount REAL NOT NULL CHECK (amount > 0),
+  date TEXT NOT NULL,
+  label TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  updated_at TEXT
 );
 `);
 
@@ -896,6 +919,33 @@ function migrateBranchRoles() {
 // تُربط بأمينها متى وُجد الاثنان في السنة نفسها. آمنة التكرار: صفٌّ رُبط لا يُربط ثانية،
 // و رابطٌ فكّه الأدمن عمدًا لا يُعاد (الشرط parent_id IS NULL يمسّ غير المربوط فقط...
 // فكُّ الربط يعيده NULL و قد يُعاد ربطه عند الإقلاع — مقبول: هذه صفوف القالب بعينها).
+// One صندوق per قسم became one per قسم and per فرقة: the قسم's opening, keyed by its
+// section, is now its فوج box's row. SQLite cannot change a primary key in place.
+function migrateTreasuryOpenings() {
+  const cols = db.prepare('PRAGMA table_info(treasury_openings)').all().map((c) => c.name);
+  if (!cols.includes('branch_id')) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE treasury_openings_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+          branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
+          date TEXT NOT NULL,
+          amount REAL NOT NULL CHECK (amount >= 0),
+          set_by TEXT,
+          set_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO treasury_openings_new (section, branch_id, date, amount, set_by, set_at)
+          SELECT section, NULL, date, amount, set_by, set_at FROM treasury_openings;
+        DROP TABLE treasury_openings;
+        ALTER TABLE treasury_openings_new RENAME TO treasury_openings;
+      `);
+    })();
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_treasury_openings_box ON treasury_openings(section, IFNULL(branch_id, 0))');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_treasury_transfers_section_date ON treasury_transfers(section, date)');
+}
+
 function migrateAmanaHelpers() {
   const PAIRS = [
     ['إعلامي', 'أمين الإعلام'],
@@ -1076,6 +1126,17 @@ function migrate() {
   ensureColumn('treasury_entries', 'paid_on', 'paid_on TEXT');
   ensureColumn('treasury_entries', 'owed_to', 'owed_to TEXT');
   if (!entriesHadPaidOn) db.exec('UPDATE treasury_entries SET paid_on = date');
+  // Expenses per فرقة: a نشاط's expenses written before that belong to its فرقة
+  const entriesHadBranch = db
+    .prepare('PRAGMA table_info(treasury_entries)')
+    .all()
+    .some((c) => c.name === 'branch_id');
+  ensureColumn('treasury_entries', 'branch_id', 'branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL');
+  if (!entriesHadBranch)
+    db.exec(
+      'UPDATE treasury_entries SET branch_id = (SELECT s.branch_id FROM sessions s WHERE s.id = treasury_entries.session_id) WHERE session_id IS NOT NULL'
+    );
+  migrateTreasuryOpenings();
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -1133,6 +1194,7 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_event_staff_leader ON event_staff(leader_id);
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_section_paid ON treasury_entries(section, paid_on);
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_session ON treasury_entries(session_id);
+    CREATE INDEX IF NOT EXISTS idx_treasury_entries_branch ON treasury_entries(branch_id);
   `);
 
   migrateBranchRoles();

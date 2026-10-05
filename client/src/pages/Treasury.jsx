@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -6,9 +6,8 @@ import { usePerms } from '../auth';
 import { useFetch, useUrlFilters } from '../hooks';
 import { useSection } from '../section';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
-import { INCOME_SOURCES, OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
+import { INCOME_SOURCES, OUT_FIGURES, boxName, byMonth, fmtMonth } from '../lib/treasury';
 import DatePicker from '../components/DatePicker';
-import SectionField from '../components/SectionField';
 import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import {
   Badge,
@@ -25,7 +24,9 @@ import {
   Label,
   PageHeader,
   SegmentedControl,
+  Select,
   Skeleton,
+  useConfirm,
   useToast,
   IconCalendar,
   IconCoins,
@@ -35,6 +36,8 @@ import {
   IconPlus,
   IconReceipt,
   IconShield,
+  IconTransfer,
+  IconTrash,
   IconWallet,
 } from '../components/ui';
 
@@ -67,79 +70,123 @@ function Breakdown({ items, empty }) {
   );
 }
 
-// A line of the balance that the أمين المال can tap to correct or open a قسم's box
+/** A line's facts, each kept whole: the line breaks between them, never inside a short one */
+function Meta({ items }) {
+  return (
+    <span className="block text-xs text-muted-foreground">
+      {items.map((m, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+const tileClass = (on) =>
+  cn(
+    'focus-ring flex min-w-[9rem] flex-1 shrink-0 snap-start cursor-pointer flex-col justify-between gap-3 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150',
+    on
+      ? 'border-primary bg-card shadow-sm ring-1 ring-primary'
+      : 'border-border bg-card shadow-xs hover:border-primary/35 hover:bg-accent/40'
+  );
+
+/** One caisse in the switcher — or all of them: what is in it, and what it still owes */
+function BoxTile({ label, balance, owed, opened, selected, onSelect, t }) {
+  const ref = useRef(null);
+  // Opened on a caisse further along the row (from a فرقة's page): brought into view
+  // sideways only, never dragging the page down to it
+  useEffect(() => {
+    const box = ref.current?.getBoundingClientRect();
+    if (selected && box && box.top >= 0 && box.bottom <= window.innerHeight)
+      ref.current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selected]);
+  return (
+    <button ref={ref} type="button" aria-pressed={selected} onClick={onSelect} className={tileClass(selected)}>
+      <span className={cn('truncate text-sm font-semibold', selected && 'text-primary')}>{label}</span>
+      <span className="leading-none">
+        {opened ? (
+          <span className={cn('block text-xl font-bold leading-none tabular-nums', balance < 0 && 'text-destructive')}>
+            <span dir="ltr">{money(balance)}</span>
+          </span>
+        ) : (
+          <span className="block text-sm leading-none text-muted-foreground">{t('treasury.boxNotOpen')}</span>
+        )}
+        {owed > 0 && (
+          <span className="mt-1.5 block text-xs font-medium text-warning">
+            {t('treasury.owedSummary', { amount: fmtAmount(owed) })}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// A line of the balance that the أمين المال can tap to correct a box's opening
 const lineButton =
   'focus-ring -mx-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-start transition-colors hover:bg-accent hover:text-accent-foreground sm:min-h-8';
 
 /**
- * The three numbers: what is in the box now, what came in and what went out since it
- * was opened — and, under the balance, when each box was opened and with how much.
+ * The three numbers of one caisse, or of all of them together: what is in it now, what
+ * came in and what went out since it was opened. Under one box's balance, when and
+ * with how much it started.
  */
-function Figures({ data, both, canManage, onOpening, t }) {
-  const s = data.summary;
-  const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: s.income[k] })).filter(
+function Figures({ fig, box, name, canManage, onOpening, t }) {
+  const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: fig.income[k] })).filter(
     (i) => i.amount > 0
   );
-  const spent = OUT_CATEGORIES.map((k) => ({ key: k, label: t(`treasury.cat_${k}`), amount: s.expenses[k] }))
+  const spent = OUT_FIGURES.map((k) => ({ key: k, label: t(`treasury.cat_${k}`), amount: fig.expenses[k] }))
     .filter((i) => i.amount > 0)
     .sort((a, b) => b.amount - a.amount);
+  const start = box?.start;
+  const startText =
+    start &&
+    (start.inherited
+      ? t('treasury.startedWithGroup', { date: fmtDate(start.date) })
+      : t('treasury.openedOn', { date: fmtDate(start.date), amount: fmtAmount(start.amount) }));
   return (
     <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2 lg:grid-cols-3">
-      <Figure label={t('treasury.balance')} className="sm:col-span-2 lg:col-span-1">
-        <p className={cn('text-3xl font-bold tracking-tight tabular-nums', s.balance < 0 && 'text-destructive')}>
-          <span dir="ltr">{money(s.balance)}</span>
+      <Figure label={name ? `${t('treasury.balance')} · ${name}` : t('treasury.balance')} className="sm:col-span-2 lg:col-span-1">
+        <p className={cn('text-3xl font-bold tracking-tight tabular-nums', fig.balance < 0 && 'text-destructive')}>
+          <span dir="ltr">{money(fig.balance)}</span>
         </p>
-        {s.balance < 0 && <p className="text-xs font-medium text-destructive">{t('treasury.deficit')}</p>}
-        {s.owed > 0 && (
+        {fig.balance < 0 && <p className="text-xs font-medium text-destructive">{t('treasury.deficit')}</p>}
+        {fig.owed > 0 && (
           <p className="text-xs font-medium text-warning">
-            <bdi className="whitespace-nowrap">{t('treasury.owedSummary', { amount: fmtAmount(s.owed) })}</bdi>
+            <bdi className="whitespace-nowrap">{t('treasury.owedSummary', { amount: fmtAmount(fig.owed) })}</bdi>
             {' · '}
             {/* A deficit's «−» isolated left-to-right: in Arabic it would otherwise trail the figure */}
             <bdi className="whitespace-nowrap">
-              {t('treasury.afterOwed', { amount: `⁦${money(s.balance - s.owed)}⁩` })}
+              {t('treasury.afterOwed', { amount: `⁦${money(fig.balance - fig.owed)}⁩` })}
             </bdi>
           </p>
         )}
-        <ul className="text-xs text-muted-foreground">
-          {data.sections.map(({ section, opening }) => {
-            const name = t(`section.${section}`);
-            const text = opening
-              ? t(both ? 'treasury.sectionOpenedOn' : 'treasury.openedOn', {
-                  section: name,
-                  date: fmtDate(opening.date),
-                  amount: fmtAmount(opening.amount),
-                })
-              : t('treasury.sectionNotOpen', { section: name });
-            return (
-              <li key={section}>
-                {canManage ? (
-                  <button
-                    type="button"
-                    onClick={() => onOpening({ section, current: opening })}
-                    aria-label={opening ? `${t('treasury.editOpening')} — ${text}` : `${t('treasury.openSection')} — ${text}`}
-                    className={lineButton}
-                  >
-                    {text}
-                    {opening ? (
-                      <IconPencil className="h-3.5 w-3.5" />
-                    ) : (
-                      <span className="font-medium text-primary">{t('treasury.openSection')}</span>
-                    )}
-                  </button>
-                ) : (
-                  <span className="block py-1">{text}</span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        {startText &&
+          (canManage ? (
+            <button
+              type="button"
+              onClick={() => onOpening(box)}
+              aria-label={`${t('treasury.editOpening')} — ${startText}`}
+              className={cn(lineButton, 'text-xs text-muted-foreground')}
+            >
+              {startText}
+              {start.inherited ? (
+                <span className="font-medium text-primary">{t('treasury.setOwnCount')}</span>
+              ) : (
+                <IconPencil className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : (
+            <p className="py-1 text-xs text-muted-foreground">{startText}</p>
+          ))}
       </Figure>
       <Figure label={t('treasury.income')}>
-        <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.income.total)}</p>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(fig.income.total)}</p>
         <Breakdown items={income} empty={t('treasury.nothingYet')} />
       </Figure>
       <Figure label={t('treasury.expenses')}>
-        <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.expenses.total)}</p>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(fig.expenses.total)}</p>
         <Breakdown items={spent} empty={t('treasury.nothingYet')} />
       </Figure>
     </Card>
@@ -151,29 +198,42 @@ const ROW_CLASS =
 
 /**
  * One movement: a نشاط's اشتراكات (one line per نشاط), a day of اشتراكات القادة (who
- * paid, how many months), or a line written by hand. What is written by hand opens for
- * correction; the computed lines lead to where they are recorded.
+ * paid, how many months), a transfer, or a line written by hand. What is written by
+ * hand opens for correction; the computed lines lead to where they are recorded.
+ * `direction` 'move': a transfer between two caisses on screen, which moves nothing.
  */
-function JournalRow({ r, t, lng, tagSection, canManage, canSessions, canDues, onEdit }) {
+function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEdit }) {
   const isIn = r.direction === 'in';
+  const move = r.direction === 'move';
   const Icon =
-    r.source === 'session'
-      ? IconCalendar
-      : r.source === 'dues'
-        ? IconShield
-        : !isIn
-          ? IconReceipt
-          : r.category === 'donation'
-            ? IconHandHeart
-            : IconCoins;
+    r.source === 'transfer'
+      ? IconTransfer
+      : r.source === 'session'
+        ? IconCalendar
+        : r.source === 'dues'
+          ? IconShield
+          : !isIn
+            ? IconReceipt
+            : r.category === 'donation'
+              ? IconHandHeart
+              : IconCoins;
   const title =
-    r.source === 'session'
-      ? r.label
-      : r.source === 'dues'
-        ? t('treasury.duesRow')
-        : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
+    r.source === 'transfer'
+      ? move
+        ? t('treasury.transferRowBetween', { from: names.short(r.from), to: names.short(r.to) })
+        : isIn
+          ? t('treasury.transferRowFrom', { name: names.inline(r.from) })
+          : t('treasury.transferRowTo', { name: names.inline(r.to) })
+      : r.source === 'session'
+        ? r.label
+        : r.source === 'dues'
+          ? t('treasury.duesRow')
+          : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
   const meta = [fmtDate(r.date)];
-  if (r.source === 'session') meta.push(t('treasury.sessionFees'), t('treasury.payers', { count: r.payers }));
+  if (r.source === 'transfer') {
+    if (r.label) meta.push(r.label);
+    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
+  } else if (r.source === 'session') meta.push(t('treasury.sessionFees'), t('treasury.payers', { count: r.payers }));
   else if (r.source === 'dues') {
     // A whole month of اشتراكات can land on one day: three names, then how many more
     const months = r.leaders.reduce((n, l) => n + l.months, 0);
@@ -206,18 +266,21 @@ function JournalRow({ r, t, lng, tagSection, canManage, canSessions, canDues, on
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-medium">{title}</span>
-          {tagSection && <Badge variant={r.section === 'F' ? 'info' : 'outline'}>{t(`section.${r.section}`)}</Badge>}
+          {tag && <Badge variant="outline">{tag}</Badge>}
         </span>
         <Meta items={meta} />
       </span>
-      <span dir="ltr" className={cn('shrink-0 font-semibold tabular-nums', isIn && 'text-success')}>
-        {isIn ? '+' : '−'}
+      <span
+        dir="ltr"
+        className={cn('shrink-0 font-semibold tabular-nums', isIn && 'text-success', move && 'text-muted-foreground')}
+      >
+        {move ? '' : isIn ? '+' : '−'}
         {fmtAmount(r.amount)}
       </span>
     </>
   );
 
-  if (r.source === 'entry' && canManage)
+  if ((r.source === 'entry' || r.source === 'transfer') && canEdit)
     return (
       <button
         type="button"
@@ -243,25 +306,11 @@ function JournalRow({ r, t, lng, tagSection, canManage, canSessions, canDues, on
   return <div className="flex items-center gap-3 px-4 py-3 sm:px-5">{body}</div>;
 }
 
-/** A line's facts, each kept whole: the line breaks between them, never inside a short one */
-function Meta({ items }) {
-  return (
-    <span className="block text-xs text-muted-foreground">
-      {items.map((m, i) => (
-        <Fragment key={i}>
-          {i > 0 && ' · '}
-          <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
-        </Fragment>
-      ))}
-    </span>
-  );
-}
-
 /**
  * What is still owed: مصاريف a قائد advanced or a shop gave on credit. They stay out
- * of the balance until the أمين المال pays them — the oldest first.
+ * of their caisse until it pays them — the oldest first.
  */
-function OwedCard({ owed, total, t, tagSection, canManage, onEdit, onPay }) {
+function OwedCard({ owed, total, t, tagOf, canManage, onEdit, onPay }) {
   return (
     <Card>
       <CardHeader>
@@ -274,6 +323,7 @@ function OwedCard({ owed, total, t, tagSection, canManage, onEdit, onPay }) {
       <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
         <ul className="divide-y divide-border border-t border-border">
           {owed.map((x) => {
+            const tag = tagOf(x);
             const meta = [
               t('treasury.owedRowTo', { name: x.owed_to }),
               fmtDate(x.spent_on),
@@ -288,9 +338,7 @@ function OwedCard({ owed, total, t, tagSection, canManage, onEdit, onPay }) {
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="font-medium">{x.label}</span>
-                    {tagSection && (
-                      <Badge variant={x.section === 'F' ? 'info' : 'outline'}>{t(`section.${x.section}`)}</Badge>
-                    )}
+                    {tag && <Badge variant="outline">{tag}</Badge>}
                   </span>
                   <Meta items={meta} />
                 </span>
@@ -334,11 +382,21 @@ function OwedCard({ owed, total, t, tagSection, canManage, onEdit, onPay }) {
   );
 }
 
+/** What the caisse will hold after, or that it does not hold that much */
+function LeftAfter({ after, t }) {
+  if (after === null || after === undefined) return null;
+  return (
+    <p className={cn('text-sm', after < 0 ? 'font-medium text-destructive' : 'text-muted-foreground')}>
+      {after < 0 ? t('treasury.boxShort') : t('treasury.leftAfter', { amount: money(after) })}
+    </p>
+  );
+}
+
 /**
- * Paying what is owed: the day it left the box (today unless told otherwise), and what
- * the قسم's box holds once it has.
+ * Paying what is owed, out of its own caisse: the day it left (today unless told
+ * otherwise), and what the caisse holds once it has.
  */
-function PayDialog({ entry, onClose, onSaved, balance, openingDate, t }) {
+function PayDialog({ entry, box, boxLabel, onClose, onSaved, t }) {
   const [date, setDate] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -362,7 +420,7 @@ function PayDialog({ entry, onClose, onSaved, balance, openingDate, t }) {
     }
   }
 
-  const after = balance === null || balance === undefined || !entry ? null : balance - entry.amount;
+  const openingDate = box?.start?.date;
   return (
     <Dialog
       open={!!entry}
@@ -384,7 +442,9 @@ function PayDialog({ entry, onClose, onSaved, balance, openingDate, t }) {
           <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
             <div className="min-w-0">
               <p className="font-medium">{entry.label}</p>
-              <p className="text-xs text-muted-foreground">{t('treasury.owedRowTo', { name: entry.owed_to })}</p>
+              <p className="text-xs text-muted-foreground">
+                {t('treasury.owedRowTo', { name: entry.owed_to })} · {boxLabel}
+              </p>
             </div>
             <p dir="ltr" className="shrink-0 font-semibold tabular-nums">
               {fmtAmount(entry.amount)}
@@ -400,11 +460,7 @@ function PayDialog({ entry, onClose, onSaved, balance, openingDate, t }) {
               onChange={(e) => setDate(e.target.value)}
             />
           </div>
-          {after !== null && (
-            <p className={cn('text-sm', after < 0 ? 'font-medium text-destructive' : 'text-muted-foreground')}>
-              {after < 0 ? t('treasury.payShort') : t('treasury.payAfter', { amount: money(after) })}
-            </p>
-          )}
+          <LeftAfter after={box?.start ? box.balance - entry.amount : null} t={t} />
           {openingDate && date && date < openingDate && (
             <p className="text-sm font-medium text-warning">
               {t('treasury.beforeOpening', { date: fmtDate(openingDate) })}
@@ -422,25 +478,206 @@ function PayDialog({ entry, onClose, onSaved, balance, openingDate, t }) {
 }
 
 /**
- * Opening a قسم's box, or correcting its opening: the amount counted in it on the
- * morning of a day. Everything recorded from that day on is added to it.
+ * Moving money from a caisse the قائد holds to another of its قسم: a فرقة handing the
+ * فوج what it collected, the فوج giving a فرقة what it needs. Both caisses change; the
+ * total does not.
  */
-function OpeningDialog({ open, onClose, onSaved, section, current, t }) {
-  const [form, setForm] = useState({ amount: '', date: '', section: 'M' });
+function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, onSaved, t }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [form, setForm] = useState({ from: '', to: '', amount: '', date: '', label: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
-  // Both أقسام on screen and no قسم named yet: the form asks whose box this is
-  const pickSection = !section;
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const held = boxes.filter((b) => b.visible);
+  const targetsOf = (fromKey) => {
+    const from = boxes.find((b) => b.key === fromKey);
+    return from ? boxes.filter((b) => b.section === from.section && b.key !== from.key) : [];
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    if (transfer) {
+      setForm({
+        from: transfer.from,
+        to: transfer.to,
+        amount: String(transfer.amount),
+        date: transfer.date,
+        label: transfer.label || '',
+      });
+      return;
+    }
+    const from = defaultFrom || held[0]?.key || '';
+    const targets = targetsOf(from);
+    // A فرقة hands its money to the فوج; the فوج gives to a فرقة
+    const to = targets.find((b) => !b.branch_id)?.key || targets[0]?.key || '';
+    setForm({ from, to, amount: '', date: todayISO(), label: '' });
+  }, [open, transfer]); // eslint-disable-line react-hooks/exhaustive-deps -- the boxes on opening
+
+  function setFrom(e) {
+    const from = e.target.value;
+    setForm((f) => {
+      const targets = targetsOf(from);
+      return { ...f, from, to: targets.some((b) => b.key === f.to) ? f.to : targets[0]?.key || '' };
+    });
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const body = {
+        from: form.from,
+        to: form.to,
+        amount: Number(form.amount),
+        date: form.date,
+        label: form.label.trim() || null,
+      };
+      const res = transfer
+        ? await api.put(`/treasury/transfers/${transfer.id}`, body)
+        : await api.post('/treasury/transfers', body);
+      onSaved(res, transfer ? 'treasury.transferUpdated' : 'treasury.transferAdded');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (
+      !(await confirm({
+        title: t('treasury.editTransfer'),
+        message: t('treasury.deleteTransferConfirm', { amount: fmtAmount(transfer.amount) }),
+        confirmLabel: t('common.delete'),
+      }))
+    )
+      return;
+    try {
+      onSaved(await api.del(`/treasury/transfers/${transfer.id}`), 'treasury.transferDeleted');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  const from = boxes.find((b) => b.key === form.from);
+  // Editing: what the transfer already took out goes back before the new amount leaves
+  const back = transfer && transfer.from === form.from && from?.start && transfer.date >= from.start.date ? transfer.amount : 0;
+  const after = from?.start && form.amount ? from.balance + back - Number(form.amount) : null;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t(transfer ? 'treasury.editTransfer' : 'treasury.transferTitle')}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          {transfer ? (
+            <Button variant="destructive-ghost" onClick={remove}>
+              <IconTrash />
+              {t('common.delete')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="treasury-transfer-form" loading={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="treasury-transfer-form" onSubmit={save} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_from">{t('treasury.transferFrom')}</Label>
+            <Select id="tr_from" value={form.from} onChange={setFrom}>
+              {held.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {nameOf(b.key)}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_to">{t('treasury.transferTo')}</Label>
+            <Select id="tr_to" value={form.to} onChange={set('to')}>
+              {targetsOf(form.from).map((b) => (
+                <option key={b.key} value={b.key}>
+                  {nameOf(b.key)}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_amount">{t('treasury.amount')}</Label>
+            <Input
+              id="tr_amount"
+              required
+              type="number"
+              min="0.01"
+              step="any"
+              inputMode="decimal"
+              className="tabular-nums"
+              value={form.amount}
+              onChange={set('amount')}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_date">{t('common.date')}</Label>
+            <DatePicker id="tr_date" required clearable={false} value={form.date} onChange={set('date')} />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="tr_label">{t('treasury.transferNote')}</Label>
+          <Input
+            id="tr_label"
+            maxLength={200}
+            autoComplete="off"
+            placeholder={t('treasury.transferNoteHint')}
+            value={form.label}
+            onChange={set('label')}
+          />
+        </div>
+        <LeftAfter after={after} t={t} />
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Opening a caisse, or correcting its opening: the amount counted in it on the morning
+ * of a day. Everything recorded from that day on is added to it. A فرقة's caisse that
+ * started empty with the فوج's gets its own count here. `box` null: the form asks
+ * which caisse.
+ */
+function OpeningDialog({ open, box, boxes, nameOf, onClose, onSaved, t }) {
+  const [form, setForm] = useState({ box: '', amount: '', date: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const held = boxes.filter((b) => b.visible);
+  const current = box?.start && !box.start.inherited ? box.start : null;
 
   useEffect(() => {
     if (!open) return;
     setError(null);
     setForm({
+      box: box?.key || held[0]?.key || '',
       amount: current ? String(current.amount) : '',
       date: current?.date || todayISO(),
-      section: section || 'M',
     });
-  }, [open, section, current]);
+  }, [open, box]); // eslint-disable-line react-hooks/exhaustive-deps -- the boxes on opening
 
   async function save(e) {
     e.preventDefault();
@@ -448,9 +685,9 @@ function OpeningDialog({ open, onClose, onSaved, section, current, t }) {
     setSaving(true);
     try {
       const res = await api.put('/treasury/opening', {
+        box: form.box,
         amount: Number(form.amount),
         date: form.date,
-        section: pickSection ? form.section : section,
       });
       onSaved(res, current ? 'treasury.openingUpdated' : 'treasury.openingSaved');
     } catch (err) {
@@ -464,7 +701,7 @@ function OpeningDialog({ open, onClose, onSaved, section, current, t }) {
     <Dialog
       open={open}
       onClose={onClose}
-      title={section ? `${t('treasury.openingTitle')} — ${t(`section.${section}`)}` : t('treasury.openingTitle')}
+      title={box ? `${t('treasury.openingTitle')} — ${nameOf(box.key)}` : t('treasury.openingTitle')}
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
@@ -477,8 +714,17 @@ function OpeningDialog({ open, onClose, onSaved, section, current, t }) {
       }
     >
       <form id="treasury-opening-form" onSubmit={save} className="space-y-4">
-        {pickSection && (
-          <SectionField value={form.section} onChange={(v) => setForm((f) => ({ ...f, section: v }))} />
+        {!box && held.length > 1 && (
+          <div className="space-y-1.5">
+            <Label htmlFor="op_box">{t('treasury.box')}</Label>
+            <Select id="op_box" value={form.box} onChange={(e) => setForm((f) => ({ ...f, box: e.target.value }))}>
+              {held.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {nameOf(b.key)}
+                </option>
+              ))}
+            </Select>
+          </div>
         )}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
@@ -520,6 +766,11 @@ function OpeningDialog({ open, onClose, onSaved, section, current, t }) {
 function LoadingState() {
   return (
     <div className="space-y-4" aria-busy="true">
+      <div className="flex gap-2 overflow-hidden">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} className="h-[5.25rem] min-w-[9rem] flex-1 rounded-xl" />
+        ))}
+      </div>
       <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 3 }, (_, i) => (
           <div key={i} className={cn('space-y-3 bg-card p-4 sm:p-5', i === 0 && 'sm:col-span-2 lg:col-span-1')}>
@@ -546,10 +797,11 @@ function LoadingState() {
 }
 
 /**
- * الصندوق: what the فوج has now, what came in and went out since the box was opened,
- * then every movement month by month. The أمين المال writes the مصاريف and the
- * تبرعات here; اشتراكات الأنشطة and اشتراكات القادة arrive on their own from where
- * they are recorded, and a نشاط's مصاريف from its page.
+ * الصناديق: a caisse for the فوج and one for each فرقة. Each tile says what is in one;
+ * picked, it shows what came in and went out since it was opened, what it still owes,
+ * then every movement month by month — «Toutes» puts them together. The أمين المال
+ * writes the مصاريف, the تبرعات and the transfers here; اشتراكات الأنشطة go to their
+ * فرقة's caisse on their own, اشتراكات القادة to the فوج's, a نشاط's مصاريف from its page.
  */
 export default function Treasury() {
   const { t, i18n } = useTranslation();
@@ -563,26 +815,54 @@ export default function Treasury() {
   const flow = FLOWS.includes(sp.get('flow')) ? sp.get('flow') : '';
   // { direction, entry } while a line is written or corrected
   const [entryDialog, setEntryDialog] = useState(null);
-  // { section, current } while a box is opened or its opening corrected
+  // { box } while a caisse is opened or its opening corrected (box null: asked)
   const [openingDialog, setOpeningDialog] = useState(null);
   // The owed مصروف being paid
   const [paying, setPaying] = useState(null);
+  // { transfer } while one is written or corrected
+  const [transferDialog, setTransferDialog] = useState(null);
 
   const data = ledger.data;
   const canManage = !!data?.can_manage;
-  const sections = data?.sections || [];
-  const opened = sections.filter((s) => s.opening);
-  const openings = Object.fromEntries(opened.map((s) => [s.section, s.opening.date]));
-  const rows = (data?.rows || []).filter((r) => !flow || r.direction === flow);
-  const owed = data?.owed || [];
+  const boxes = data?.boxes || [];
+  const byKey = Object.fromEntries(boxes.map((b) => [b.key, b]));
+  const held = boxes.filter((b) => b.visible);
+  const multi = held.length > 1;
+  const nameOf = (key) => boxName(byKey[key], t, lng, { both });
+  const shortOf = (b) => boxName(b, t, lng, { both, short: true });
+  const names = {
+    short: (key) => shortOf(byKey[key]),
+    inline: (key) => boxName(byKey[key], t, lng, { both, inline: true }),
+  };
+  // The caisse on screen: one asked for in the address, else all of them together —
+  // or the only one there is
+  const wanted = sp.get('box') || '';
+  const sel = byKey[wanted]?.visible ? byKey[wanted] : multi ? null : held[0] || null;
+  const anyOpen = held.some((b) => b.start);
+  const openings = Object.fromEntries(held.filter((b) => b.start).map((b) => [b.key, b.start.date]));
+
+  // One caisse: its own lines. All together: a transfer between two of them is one
+  // line that moves nothing
+  const viewRows = (data?.rows || [])
+    .filter((r) => (sel ? r.box === sel.key : !(r.internal && r.direction === 'in')))
+    .map((r) => (!sel && r.internal ? { ...r, direction: 'move' } : r));
+  const rows = viewRows.filter((r) => !flow || r.direction === flow);
+  const owed = (data?.owed || []).filter((x) => !sel || x.box === sel.key);
+  const fig = sel || data?.summary;
   const months = byMonth(rows);
-  // Both أقسام on screen: each line says whose box it is — once both have lines
-  const tagSection = new Set([...rows, ...owed].map((r) => r.section)).size > 1;
+  // All caisses on screen: each line says whose it is
+  const tagOf = (r) => (!sel && multi && r.direction !== 'move' ? shortOf(byKey[r.box]) : null);
+  // A transfer is corrected by whoever holds the caisse it left
+  const canEditRow = (r) => canManage && (r.source !== 'transfer' || !!byKey[r.from]?.visible);
+  // Somewhere to send money: another caisse of a held one's قسم
+  const canTransfer = held.some((h) => boxes.some((b) => b.section === h.section && b.key !== h.key));
+  const writeBox = sel?.key || held.find((b) => b.start)?.key || held[0]?.key;
 
   const saved = (res, key) => {
     setEntryDialog(null);
     setOpeningDialog(null);
     setPaying(null);
+    setTransferDialog(null);
     ledger.setData(res);
     toast.success(t(key));
   };
@@ -590,12 +870,23 @@ export default function Treasury() {
   return (
     <div className="space-y-4">
       <PageHeader title={t('treasury.title')} description={t('treasury.subtitle')}>
-        {canManage && opened.length > 0 && (
+        {canManage && anyOpen && (
           <>
             <Button variant="outline" onClick={() => setEntryDialog({ direction: 'in', entry: null })}>
               <IconHandHeart />
               {t('treasury.addIncome')}
             </Button>
+            {canTransfer && (
+              <Button
+                variant="outline"
+                onClick={() => setTransferDialog({ transfer: null })}
+                aria-label={t('treasury.transferTitle')}
+              >
+                <IconTransfer />
+                {/* Three actions outgrow a phone's row: the icon alone there */}
+                <span className="hidden sm:inline">{t('treasury.addTransfer')}</span>
+              </Button>
+            )}
             {/* «Ajouter une dépense» beside «Don ou recette» outgrows a phone's row */}
             <Button variant="brand" onClick={() => setEntryDialog({ direction: 'out', entry: null })}>
               <IconPlus />
@@ -610,14 +901,14 @@ export default function Treasury() {
         <ErrorState message={t('error.loadFailed')} onRetry={ledger.reload} retryLabel={t('error.retry')} />
       ) : ledger.loading || !data ? (
         <LoadingState />
-      ) : opened.length === 0 ? (
+      ) : !anyOpen ? (
         <Card>
           <EmptyState
             icon={<IconWallet className="h-6 w-6" />}
             title={t('treasury.notOpenTitle')}
             action={
               canManage && (
-                <Button variant="brand" onClick={() => setOpeningDialog({ section, current: null })}>
+                <Button variant="brand" onClick={() => setOpeningDialog({ box: null })}>
                   <IconWallet />
                   {t('treasury.openAction')}
                 </Button>
@@ -629,86 +920,151 @@ export default function Treasury() {
         </Card>
       ) : (
         <>
-          <Figures data={data} both={both} canManage={canManage} onOpening={setOpeningDialog} t={t} />
-
-          {owed.length > 0 && (
-            <OwedCard
-              owed={owed}
-              total={data.summary.owed}
-              t={t}
-              tagSection={tagSection}
-              canManage={canManage}
-              onEdit={(entry) => setEntryDialog({ direction: 'out', entry })}
-              onPay={setPaying}
-            />
+          {multi && (
+            // Swiped sideways on a phone; a grid from tablet up
+            <div
+              role="group"
+              aria-label={t('treasury.title')}
+              className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
+            >
+              <BoxTile
+                label={t('treasury.allBoxes')}
+                balance={data.summary.balance}
+                owed={data.summary.owed}
+                opened
+                selected={!sel}
+                onSelect={() => patch({ box: '' })}
+                t={t}
+              />
+              {held.map((b) => (
+                <BoxTile
+                  key={b.key}
+                  label={shortOf(b)}
+                  balance={b.balance}
+                  owed={b.owed}
+                  opened={!!b.start}
+                  selected={sel?.key === b.key}
+                  onSelect={() => patch({ box: b.key })}
+                  t={t}
+                />
+              ))}
+            </div>
           )}
 
-          <Card>
-            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <CardTitle>{t('treasury.journal')}</CardTitle>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {t('treasury.movementCount', { count: rows.length })}
-                </p>
-              </div>
-              <SegmentedControl
-                size="sm"
-                label={t('treasury.journal')}
-                value={flow}
-                onChange={(v) => patch({ flow: v })}
-                options={[
-                  { value: '', label: t('treasury.filterAll') },
-                  { value: 'in', label: t('treasury.filterIn') },
-                  { value: 'out', label: t('treasury.filterOut') },
-                ]}
-                className="flex w-full sm:w-auto"
+          {sel && !sel.start ? (
+            <Card>
+              <EmptyState
+                icon={<IconWallet className="h-6 w-6" />}
+                title={t('treasury.boxNotOpenTitle', { name: nameOf(sel.key) })}
+                action={
+                  canManage && (
+                    <Button variant="brand" onClick={() => setOpeningDialog({ box: sel })}>
+                      <IconWallet />
+                      {t('treasury.openAction')}
+                    </Button>
+                  )
+                }
+              >
+                {t(canManage ? 'treasury.notOpenHint' : 'treasury.notOpenReadonly')}
+              </EmptyState>
+            </Card>
+          ) : (
+            <>
+              <Figures
+                fig={fig}
+                box={sel}
+                // No tiles to say whose caisse this is: the only one the قائد holds
+                name={!multi && sel ? shortOf(sel) : null}
+                canManage={canManage}
+                onOpening={(box) => setOpeningDialog({ box })}
+                t={t}
               />
-            </CardHeader>
-            <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
-              {rows.length === 0 ? (
-                <EmptyState
-                  icon={<IconInbox className="h-6 w-6" />}
-                  title={t(
-                    flow === 'in'
-                      ? 'treasury.emptyFilterIn'
-                      : flow === 'out'
-                        ? 'treasury.emptyFilterOut'
-                        : 'treasury.emptyJournal'
-                  )}
-                >
-                  {!flow && t('treasury.emptyJournalHint')}
-                </EmptyState>
-              ) : (
-                months.map((m) => (
-                  <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
-                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-y border-border bg-muted/30 px-4 py-2 sm:px-5">
-                      <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
-                      <p dir="ltr" className="flex gap-3 text-xs font-medium tabular-nums">
-                        {m.in > 0 && <span className="text-success">+{fmtAmount(m.in)}</span>}
-                        {m.out > 0 && <span className="text-muted-foreground">−{fmtAmount(m.out)}</span>}
-                      </p>
-                    </div>
-                    <ul className="divide-y divide-border">
-                      {m.rows.map((r) => (
-                        <li key={r.key}>
-                          <JournalRow
-                            r={r}
-                            t={t}
-                            lng={lng}
-                            tagSection={tagSection}
-                            canManage={canManage}
-                            canSessions={has('sessions.read')}
-                            canDues={has('leaders.dues')}
-                            onEdit={(entry) => setEntryDialog({ direction: entry.direction, entry })}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))
+
+              {owed.length > 0 && (
+                <OwedCard
+                  owed={owed}
+                  total={owed.reduce((n, x) => n + x.amount, 0)}
+                  t={t}
+                  tagOf={tagOf}
+                  canManage={canManage}
+                  onEdit={(entry) => setEntryDialog({ direction: 'out', entry })}
+                  onPay={setPaying}
+                />
               )}
-            </CardContent>
-          </Card>
+
+              <Card>
+                <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <CardTitle>{t('treasury.journal')}</CardTitle>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {t('treasury.movementCount', { count: rows.length })}
+                    </p>
+                  </div>
+                  <SegmentedControl
+                    size="sm"
+                    label={t('treasury.journal')}
+                    value={flow}
+                    onChange={(v) => patch({ flow: v })}
+                    options={[
+                      { value: '', label: t('treasury.filterAll') },
+                      { value: 'in', label: t('treasury.filterIn') },
+                      { value: 'out', label: t('treasury.filterOut') },
+                    ]}
+                    className="flex w-full sm:w-auto"
+                  />
+                </CardHeader>
+                <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
+                  {rows.length === 0 ? (
+                    <EmptyState
+                      icon={<IconInbox className="h-6 w-6" />}
+                      title={t(
+                        flow === 'in'
+                          ? 'treasury.emptyFilterIn'
+                          : flow === 'out'
+                            ? 'treasury.emptyFilterOut'
+                            : 'treasury.emptyJournal'
+                      )}
+                    >
+                      {!flow && t('treasury.emptyJournalHint')}
+                    </EmptyState>
+                  ) : (
+                    months.map((m) => (
+                      <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-y border-border bg-muted/30 px-4 py-2 sm:px-5">
+                          <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
+                          <p dir="ltr" className="flex gap-3 text-xs font-medium tabular-nums">
+                            {m.in > 0 && <span className="text-success">+{fmtAmount(m.in)}</span>}
+                            {m.out > 0 && <span className="text-muted-foreground">−{fmtAmount(m.out)}</span>}
+                          </p>
+                        </div>
+                        <ul className="divide-y divide-border">
+                          {m.rows.map((r) => (
+                            <li key={r.key}>
+                              <JournalRow
+                                r={r}
+                                t={t}
+                                lng={lng}
+                                names={names}
+                                tag={tagOf(r)}
+                                canEdit={canEditRow(r)}
+                                canSessions={has('sessions.read')}
+                                canDues={has('leaders.dues')}
+                                onEdit={(x) =>
+                                  x.source === 'transfer'
+                                    ? setTransferDialog({ transfer: x })
+                                    : setEntryDialog({ direction: x.direction, entry: x })
+                                }
+                              />
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
         </>
       )}
 
@@ -721,23 +1077,35 @@ export default function Treasury() {
             entry={entryDialog?.entry ?? null}
             endpoint="/treasury/entries"
             openings={openings}
-            section={section}
-            pickSection={both}
+            boxes={held}
+            defaultBox={writeBox}
+            bothSections={both}
             onSaved={saved}
           />
           <PayDialog
             entry={paying}
+            box={paying ? byKey[paying.box] : null}
+            boxLabel={paying ? names.short(paying.box) : ''}
             onClose={() => setPaying(null)}
             onSaved={saved}
-            balance={sections.find((s) => s.section === paying?.section)?.balance}
-            openingDate={paying ? openings[paying.section] : null}
+            t={t}
+          />
+          <TransferDialog
+            open={!!transferDialog}
+            transfer={transferDialog?.transfer ?? null}
+            boxes={boxes}
+            defaultFrom={sel?.key}
+            nameOf={names.short}
+            onClose={() => setTransferDialog(null)}
+            onSaved={saved}
             t={t}
           />
           <OpeningDialog
             open={!!openingDialog}
+            box={openingDialog?.box ?? null}
+            boxes={boxes}
+            nameOf={names.short}
             onClose={() => setOpeningDialog(null)}
-            section={openingDialog?.section ?? null}
-            current={openingDialog?.current ?? null}
             onSaved={saved}
             t={t}
           />

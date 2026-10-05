@@ -5244,13 +5244,16 @@ app.delete('/api/events/:id/donations/:did', ...requireEventMoney, (req, res) =>
   res.json(donationsPayload(ev));
 });
 
-// ---------- الصندوق ----------
-// رصيد الفوج: رصيد الافتتاح، ثم كل ما دخل و خرج منذ يومه. ما يدخل: اشتراكات الأنشطة
-// (خانات الدفع في الحضور)، اشتراك القادة الشهري، و التبرعات و المداخيل المكتوبة باليد.
-// ما يخرج: المصاريف، عامّةً أو لنشاط بعينه. لا مجموع يُخزَّن: الحساب كله عند القراءة.
-// صندوق لكل قسم، كالبرنامج كله؛ و الأدمن على القسمين يرى مجموعهما. الصندوق للفوج كله
-// داخل القسم: حصر الحساب بفرق لا يقطع منه شيئًا، و إلا صار الرصيد نصف حساب.
-// المخيمات خارجه — حسابها في صفحتها، هكذا طُلب.
+// ---------- الصناديق ----------
+// صندوق للفوج في كل قسم، و صندوق لكل فرقة. لكلٍّ رصيد افتتاحه، ثم ما دخله و خرج منه
+// منذ يومه؛ لا مجموع يُخزَّن: الحساب كله عند القراءة.
+// - اشتراكات نشاط (خانات الدفع في الحضور): صندوق فرقته، أو صندوق الفوج لنشاط عام أو للقادة.
+// - اشتراك القادة الشهري: صندوق الفوج.
+// - التبرعات و المداخيل و المصاريف المكتوبة باليد: الصندوق الذي اختير. مصروف النشاط:
+//   صندوق فرقة نشاطه.
+// - التحويل: يخرج من صندوق و يدخل آخر في القسم نفسه.
+// من حُصر بفرق لا يرى و لا يكتب إلا صناديقها؛ صندوق الفوج لمن لم يُحصر بفرق. المخيمات
+// خارج الصناديق — حسابها في صفحتها، هكذا طُلب.
 
 const TREASURY_OUT = ['gear', 'food', 'transport', 'venue', 'uniform', 'other'];
 const TREASURY_IN = ['donation', 'other'];
@@ -5262,18 +5265,64 @@ const treasurySections = (req) => {
 
 const actorName = (req) => req.user.display_name || req.user.username;
 
+// 'M' / 'F': a قسم's فوج box; 'b<id>': a فرقة's
+const boxKey = (section, branchId) => (branchId ? `b${branchId}` : section);
+
+// Every box of the أقسام on screen: each قسم's فوج box, then its فرق in age order. The
+// caller sees the فوج's when not limited to فرق, and the فرق of their scope; the others
+// are only somewhere money can be sent.
+function treasuryBoxes(req) {
+  const sections = treasurySections(req);
+  const scope = allowedBranches(req);
+  const wholeGroup = req.user.role === 'admin' || !req.user.branches;
+  const branches = db
+    .prepare(
+      `SELECT id, name_fr, name_ar, section FROM branches
+       WHERE section IN (${sections.map(() => '?').join(',')}) ORDER BY sort_order, id`
+    )
+    .all(...sections);
+  return sections.flatMap((section) => [
+    { key: section, section, branch_id: null, name_fr: null, name_ar: null, visible: wholeGroup },
+    ...branches
+      .filter((b) => b.section === section)
+      .map((b) => ({
+        key: `b${b.id}`,
+        section,
+        branch_id: b.id,
+        name_fr: b.name_fr,
+        name_ar: b.name_ar,
+        visible: !scope || scope.has(b.id),
+      })),
+  ]);
+}
+
+// A box the caller sees — and, with treasury.manage, writes in — or null
+const visibleBox = (req, key) => treasuryBoxes(req).find((b) => b.visible && b.key === key) || null;
+
 const openingsOf = (sections) =>
-  Object.fromEntries(
-    db
-      .prepare(`SELECT * FROM treasury_openings WHERE section IN (${sections.map(() => '?').join(',')})`)
-      .all(...sections)
-      .map((o) => [o.section, o])
-  );
+  db
+    .prepare(`SELECT * FROM treasury_openings WHERE section IN (${sections.map(() => '?').join(',')})`)
+    .all(...sections);
+
+// The day a box starts and with how much: its own count, or — a فرقة's box never
+// counted — the فوج's opening day, empty. null: not opened yet.
+function boxStart(box, openings) {
+  const own = openings.find((o) => o.section === box.section && (o.branch_id ?? null) === box.branch_id);
+  if (own) return { date: own.date, amount: own.amount, inherited: false, set_by: own.set_by, set_at: own.set_at };
+  const group = box.branch_id && openings.find((o) => o.section === box.section && o.branch_id === null);
+  return group ? { date: group.date, amount: 0, inherited: true } : null;
+}
+
+// صندوق المصروف: صندوق فرقة النشاط ما دام مربوطًا به، و إلا ما كُتب فيه
+const ENTRY_BRANCH_SQL = 'CASE WHEN e.session_id IS NOT NULL THEN s.branch_id ELSE e.branch_id END';
 
 // مصروف أو مدخول مكتوب، بالشكل الذي يعرضه السجلّ
 const ENTRY_SQL = `
-  SELECT e.*, s.title AS session_title
-  FROM treasury_entries e LEFT JOIN sessions s ON s.id = e.session_id`;
+  SELECT e.*, s.title AS session_title, ${ENTRY_BRANCH_SQL} AS spent_branch_id,
+    b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+  FROM treasury_entries e
+  LEFT JOIN sessions s ON s.id = e.session_id
+  LEFT JOIN branches b ON b.id = ${ENTRY_BRANCH_SQL}`;
 
 // date: the day it moved the box (paid_on), or the day of the مصروف while it is owed
 const entryRow = (e) => ({
@@ -5289,27 +5338,49 @@ const entryRow = (e) => ({
   paid_on: e.paid_on,
   owed_to: e.owed_to,
   section: e.section,
+  box: boxKey(e.section, e.spent_branch_id),
   session_id: e.session_id,
   session_title: e.session_title ?? null,
+  branch_id: e.spent_branch_id ?? null,
+  branch_name_fr: e.branch_name_fr ?? null,
+  branch_name_ar: e.branch_name_ar ?? null,
   created_by: e.created_by,
   updated_by: e.updated_by,
 });
 
-// سجلّ قسم واحد منذ افتتاحه: ما دخل أو خرج فعلًا — مصروف لم يُسدَّد ليس فيه بعد
-function treasuryRows(section, from) {
+// A transfer, as one of its two boxes sees it
+const transferRow = (t, direction) => ({
+  key: `t${t.id}${direction}`,
+  source: 'transfer',
+  id: t.id,
+  direction,
+  category: 'transfer',
+  label: t.label,
+  amount: t.amount,
+  date: t.date,
+  section: t.section,
+  box: boxKey(t.section, direction === 'out' ? t.from_branch_id : t.to_branch_id),
+  from: boxKey(t.section, t.from_branch_id),
+  to: boxKey(t.section, t.to_branch_id),
+  created_by: t.created_by,
+});
+
+// What came in and went out of one box since it started — a debt not paid yet is not in it
+function boxRows(box, from) {
+  const bid = box.branch_id ?? 0;
   const entries = db
-    .prepare(`${ENTRY_SQL} WHERE e.section = ? AND e.paid_on >= ?`)
-    .all(section, from)
+    .prepare(`${ENTRY_SQL} WHERE e.section = ? AND IFNULL(${ENTRY_BRANCH_SQL}, 0) = ? AND e.paid_on >= ?`)
+    .all(box.section, bid, from)
     .map(entryRow);
   // اشتراكات نشاط: سطر واحد للنشاط، بيومه — الخانة لا تحفظ يوم الدفع، و الدفع يكون فيه
   const sessions = db
     .prepare(
       `SELECT s.id, s.title, s.date, COUNT(*) AS payers, SUM(a.paid) AS amount
        FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE s.section = ? AND s.date >= ? AND a.paid > 0
+       WHERE s.section = ? AND IFNULL(s.branch_id, 0) = ? AND s.date >= ? AND a.paid > 0
        GROUP BY s.id`
     )
-    .all(section, from)
+    .all(box.section, bid, from)
     .map((s) => ({
       key: `s${s.id}`,
       source: 'session',
@@ -5318,94 +5389,135 @@ function treasuryRows(section, from) {
       label: s.title,
       amount: s.amount,
       date: s.date,
-      section,
+      section: box.section,
+      box: box.key,
       session_id: s.id,
       payers: s.payers,
     }));
-  // اشتراك القادة: سطر لكل يوم تسجيل، بأسماء من دفع فيه و عدد أشهره
+  // اشتراك القادة، في صندوق الفوج: سطر لكل يوم تسجيل، بأسماء من دفع فيه و عدد أشهره
   const dues = new Map();
-  for (const r of db
+  if (!box.branch_id)
+    for (const r of db
+      .prepare(
+        `SELECT date(d.paid_at) AS day, l.id AS leader_id, ${fullNameSQL('l')} AS name,
+           COUNT(*) AS months, SUM(d.amount) AS amount
+         FROM leader_dues d JOIN leaders l ON l.id = d.leader_id
+         WHERE l.section = ? AND date(d.paid_at) >= ?
+         GROUP BY day, l.id ORDER BY name`
+      )
+      .all(box.section, from)) {
+      const row = dues.get(r.day) || {
+        key: `d${box.section}${r.day}`,
+        source: 'dues',
+        direction: 'in',
+        category: 'dues',
+        amount: 0,
+        date: r.day,
+        section: box.section,
+        box: box.key,
+        leaders: [],
+      };
+      row.amount += r.amount;
+      row.leaders.push({ id: r.leader_id, name: r.name, months: r.months });
+      dues.set(r.day, row);
+    }
+  const transfers = db
     .prepare(
-      `SELECT date(d.paid_at) AS day, l.id AS leader_id, ${fullNameSQL('l')} AS name,
-         COUNT(*) AS months, SUM(d.amount) AS amount
-       FROM leader_dues d JOIN leaders l ON l.id = d.leader_id
-       WHERE l.section = ? AND date(d.paid_at) >= ?
-       GROUP BY day, l.id ORDER BY name`
+      `SELECT * FROM treasury_transfers
+       WHERE section = ? AND date >= ? AND (IFNULL(from_branch_id, 0) = ? OR IFNULL(to_branch_id, 0) = ?)`
     )
-    .all(section, from)) {
-    const row = dues.get(r.day) || {
-      key: `d${section}${r.day}`,
-      source: 'dues',
-      direction: 'in',
-      category: 'dues',
-      amount: 0,
-      date: r.day,
-      section,
-      leaders: [],
-    };
-    row.amount += r.amount;
-    row.leaders.push({ id: r.leader_id, name: r.name, months: r.months });
-    dues.set(r.day, row);
-  }
-  return [...entries, ...sessions, ...dues.values()];
+    .all(box.section, from, bid, bid)
+    .map((t) => transferRow(t, (t.from_branch_id ?? 0) === bid ? 'out' : 'in'));
+  return [...entries, ...sessions, ...dues.values(), ...transfers];
+}
+
+// ما بقي دَينًا على صندوق، أقدمه أولًا. يوم الافتتاح لا يحدّه: دَين قديم يخرج يوم يُسدَّد.
+const owedOf = (box) =>
+  db
+    .prepare(
+      `${ENTRY_SQL} WHERE e.direction = 'out' AND e.paid_on IS NULL
+         AND e.section = ? AND IFNULL(${ENTRY_BRANCH_SQL}, 0) = ?
+       ORDER BY e.date, e.id`
+    )
+    .all(box.section, box.branch_id ?? 0)
+    .map(entryRow);
+
+const emptyFigures = () => ({
+  income: { sessions: 0, dues: 0, donation: 0, other: 0, transfer: 0, total: 0 },
+  expenses: { ...Object.fromEntries(TREASURY_OUT.map((c) => [c, 0])), transfer: 0, total: 0 },
+});
+
+const addToFigures = (f, r) => {
+  const side = r.direction === 'in' ? f.income : f.expenses;
+  side[r.category] += r.amount;
+  side.total += r.amount;
+};
+
+const sumOf = (list, pick) => list.reduce((n, x) => n + pick(x), 0);
+
+// One box: where it started, every movement since, and what it still owes
+function boxLedger(box, openings) {
+  const start = boxStart(box, openings);
+  const f = emptyFigures();
+  if (!start) return { start: null, rows: [], owed: [], balance: null, owedTotal: 0, ...f };
+  const rows = boxRows(box, start.date);
+  const owed = owedOf(box);
+  for (const r of rows) addToFigures(f, r);
+  return {
+    start,
+    rows,
+    owed,
+    balance: start.amount + f.income.total - f.expenses.total,
+    owedTotal: sumOf(owed, (x) => x.amount),
+    ...f,
+  };
 }
 
 // Latest day first; within a day, what was written by hand (newest first) before the computed lines
 const rowOrder = (a, b) =>
   a.date !== b.date ? (a.date < b.date ? 1 : -1) : (b.id ?? 0) - (a.id ?? 0);
 
-// ما بقي دَينًا على الصندوق، أقدمه أولًا. يوم الافتتاح لا يحدّه: دَين قديم يخرج يوم يُسدَّد.
-const owedOf = (sections) =>
-  db
-    .prepare(
-      `${ENTRY_SQL} WHERE e.direction = 'out' AND e.paid_on IS NULL
-         AND e.section IN (${sections.map(() => '?').join(',')})
-       ORDER BY e.date, e.id`
-    )
-    .all(...sections)
-    .map(entryRow);
-
-// السجلّ و حصيلته لأقسام الطلب. قسم لم يُفتح صندوقه لا يدخل الحساب.
+// Every box the caller sees, each with its figures, and their movements and debts
+// together. A box not opened yet has no figures and adds nothing.
 function treasuryPayload(req) {
-  const sections = treasurySections(req);
-  const openings = openingsOf(sections);
-  const opened = sections.filter((s) => openings[s]);
-  const rows = opened.flatMap((s) => treasuryRows(s, openings[s].date)).sort(rowOrder);
-  const owed = opened.length ? owedOf(opened) : [];
-  const income = { sessions: 0, dues: 0, donation: 0, other: 0, total: 0 };
-  const expenses = Object.fromEntries(TREASURY_OUT.map((c) => [c, 0]));
-  let spent = 0;
-  // Each قسم's own box: a debt is paid out of its قسم's, even when both are on screen
-  const balances = Object.fromEntries(opened.map((s) => [s, openings[s].amount]));
+  const openings = openingsOf(treasurySections(req));
+  const rows = [];
+  const owed = [];
+  const boxes = treasuryBoxes(req).map(({ visible, ...box }) => {
+    if (!visible) return { ...box, visible: false };
+    const l = boxLedger(box, openings);
+    rows.push(...l.rows);
+    owed.push(...l.owed);
+    return {
+      ...box,
+      visible: true,
+      start: l.start,
+      balance: l.balance,
+      owed: l.owedTotal,
+      income: l.income,
+      expenses: l.expenses,
+    };
+  });
+  // All boxes together: a transfer between two of them moves nothing — marked, shown
+  // once, and left out of what came in and went out
+  const sides = new Map();
+  for (const r of rows) if (r.source === 'transfer') sides.set(r.id, (sides.get(r.id) || 0) + 1);
+  const summary = emptyFigures();
   for (const r of rows) {
-    if (r.direction === 'in') {
-      income[r.category] += r.amount;
-      income.total += r.amount;
-      balances[r.section] += r.amount;
-    } else {
-      expenses[r.category] += r.amount;
-      spent += r.amount;
-      balances[r.section] -= r.amount;
-    }
+    if (r.source === 'transfer' && sides.get(r.id) === 2) r.internal = true;
+    else addToFigures(summary, r);
   }
-  const opening = Object.values(openings).reduce((n, o) => n + o.amount, 0);
+  const opened = boxes.filter((b) => b.visible && b.start);
   return {
-    sections: sections.map((s) => ({
-      section: s,
-      opening: openings[s]
-        ? { date: openings[s].date, amount: openings[s].amount, set_by: openings[s].set_by, set_at: openings[s].set_at }
-        : null,
-      balance: balances[s] ?? null,
-    })),
+    boxes,
     summary: {
-      opening,
-      income,
-      expenses: { ...expenses, total: spent },
-      balance: opening + income.total - spent,
-      owed: owed.reduce((n, e) => n + e.amount, 0),
+      ...summary,
+      opening: sumOf(opened, (b) => b.start.amount),
+      balance: sumOf(opened, (b) => b.balance),
+      owed: sumOf(owed, (x) => x.amount),
     },
-    rows,
-    owed,
+    rows: rows.sort(rowOrder),
+    owed: owed.sort((a, b) => (a.spent_on !== b.spent_on ? (a.spent_on < b.spent_on ? -1 : 1) : a.id - b.id)),
     can_manage: hasPerm(req, 'treasury.manage'),
   };
 }
@@ -5414,24 +5526,39 @@ app.get('/api/treasury', requirePerm('treasury.read'), (req, res) => {
   res.json(treasuryPayload(req));
 });
 
-// قسم الكتابة: قسم الطلب، و إلا ما اختير في النموذج (الأدمن على القسمين)
-const writeSection = (req) => activeSection(req) || parseSection(req.body?.section);
+// The box a write names: `box` from the body, else the فوج box of the قسم on screen
+const bodyBox = (req) => visibleBox(req, req.body?.box ?? activeSection(req));
 
 // رصيد الافتتاح: المبلغ الذي عُدّ في الصندوق صباح ذلك اليوم. يُصحَّح متى لزم.
 app.put('/api/treasury/opening', requirePerm('treasury.manage'), (req, res) => {
-  const section = writeSection(req);
-  if (!section) return res.status(400).json({ error: 'invalid section' });
+  const box = bodyBox(req);
+  if (!box) return res.status(400).json({ error: 'invalid box' });
   const amount = parsePaid(req.body?.amount);
   if (amount === undefined || amount === null) return res.status(400).json({ error: 'invalid amount' });
   if (!validISODate(req.body?.date)) return res.status(400).json({ error: 'invalid date' });
-  const before = db.prepare('SELECT * FROM treasury_openings WHERE section = ?').get(section) || null;
-  db.prepare(
-    `INSERT INTO treasury_openings (section, date, amount, set_by, set_at) VALUES (?, ?, ?, ?, datetime('now'))
-     ON CONFLICT(section) DO UPDATE SET date = excluded.date, amount = excluded.amount,
-       set_by = excluded.set_by, set_at = excluded.set_at`
-  ).run(section, req.body.date, amount, actorName(req));
-  const after = db.prepare('SELECT * FROM treasury_openings WHERE section = ?').get(section);
-  auditEvent(req, before ? 'update' : 'create', 'treasury_opening', section, before, after);
+  const before =
+    db
+      .prepare('SELECT * FROM treasury_openings WHERE section = ? AND IFNULL(branch_id, 0) = ?')
+      .get(box.section, box.branch_id ?? 0) || null;
+  if (before)
+    db.prepare("UPDATE treasury_openings SET date = ?, amount = ?, set_by = ?, set_at = datetime('now') WHERE id = ?").run(
+      req.body.date,
+      amount,
+      actorName(req),
+      before.id
+    );
+  else
+    db.prepare('INSERT INTO treasury_openings (section, branch_id, date, amount, set_by) VALUES (?, ?, ?, ?, ?)').run(
+      box.section,
+      box.branch_id,
+      req.body.date,
+      amount,
+      actorName(req)
+    );
+  const after = db
+    .prepare('SELECT * FROM treasury_openings WHERE section = ? AND IFNULL(branch_id, 0) = ?')
+    .get(box.section, box.branch_id ?? 0);
+  auditEvent(req, before ? 'update' : 'create', 'treasury_opening', box.key, before, after);
   res.json(treasuryPayload(req));
 });
 
@@ -5469,15 +5596,23 @@ function parseTreasuryEntry(req, direction) {
   return { values: { direction, category, label, amount, date: b.date, paid_on: paidOn, owed_to: owedTo } };
 }
 
-const loadEntry = (req, res) => {
-  const e = db.prepare('SELECT * FROM treasury_entries WHERE id = ?').get(intOr(req.params.xid));
-  // صندوق القسم الآخر غير موجود لمن لا يراه
-  if (!e || !treasurySections(req).includes(e.section)) {
+// The line and its box, when the caller sees that box; otherwise a 404 is sent: another
+// قسم's or another فرقة's box does not exist for them
+function loadEntry(req, res) {
+  const e = db
+    .prepare(
+      `SELECT e.*, ${ENTRY_BRANCH_SQL} AS box_branch
+       FROM treasury_entries e LEFT JOIN sessions s ON s.id = e.session_id WHERE e.id = ?`
+    )
+    .get(intOr(req.params.xid));
+  const box = e && visibleBox(req, boxKey(e.section, e.box_branch));
+  if (!box) {
     res.status(404).json({ error: 'entry not found' });
-    return null;
+    return [null, null];
   }
-  return e;
-};
+  delete e.box_branch;
+  return [e, box];
+}
 
 const entryById = (id) => db.prepare('SELECT * FROM treasury_entries WHERE id = ?').get(id);
 
@@ -5485,8 +5620,8 @@ const insertEntry = (req, v, section, sessionId = null) => {
   const id = db
     .prepare(
       `INSERT INTO treasury_entries
-         (direction, category, label, amount, date, paid_on, owed_to, session_id, section, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (direction, category, label, amount, date, paid_on, owed_to, session_id, branch_id, section, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       v.direction,
@@ -5497,6 +5632,7 @@ const insertEntry = (req, v, section, sessionId = null) => {
       v.paid_on,
       v.owed_to,
       sessionId,
+      v.branch_id ?? null,
       section,
       actorName(req)
     ).lastInsertRowid;
@@ -5506,9 +5642,20 @@ const insertEntry = (req, v, section, sessionId = null) => {
 const updateEntry = (req, e, v) => {
   db.prepare(
     `UPDATE treasury_entries SET category = ?, label = ?, amount = ?, date = ?, paid_on = ?, owed_to = ?,
-       updated_by = ?, updated_at = datetime('now')
+       branch_id = ?, section = ?, updated_by = ?, updated_at = datetime('now')
      WHERE id = ?`
-  ).run(v.category, v.label, v.amount, v.date, v.paid_on, v.owed_to, actorName(req), e.id);
+  ).run(
+    v.category,
+    v.label,
+    v.amount,
+    v.date,
+    v.paid_on,
+    v.owed_to,
+    v.branch_id ?? null,
+    v.section ?? e.section,
+    actorName(req),
+    e.id
+  );
   auditEvent(req, 'update', 'treasury_entry', e.id, e, entryById(e.id));
 };
 
@@ -5518,27 +5665,37 @@ const deleteEntry = (req, e) => {
 };
 
 app.post('/api/treasury/entries', requirePerm('treasury.manage'), (req, res) => {
-  const section = writeSection(req);
-  if (!section) return res.status(400).json({ error: 'invalid section' });
+  const box = bodyBox(req);
+  if (!box) return res.status(400).json({ error: 'invalid box' });
   const parsed = parseTreasuryEntry(req, req.body?.direction);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  insertEntry(req, parsed.values, section);
+  insertEntry(req, { ...parsed.values, branch_id: box.branch_id }, box.section);
   res.status(201).json(treasuryPayload(req));
 });
 
-// يعدّل أيضًا مصروف نشاط، فيبقى مربوطًا بنشاطه و قسمه
+// Moves a line to another box the caller holds, when asked. A نشاط's مصروف stays in
+// its نشاط's فرقة's box.
 app.put('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
-  const e = loadEntry(req, res);
+  const [e, box] = loadEntry(req, res);
   if (!e) return;
   const parsed = parseTreasuryEntry(req, e.direction);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  updateEntry(req, e, parsed.values);
+  let target = box;
+  if (!e.session_id && req.body?.box !== undefined && req.body.box !== box.key) {
+    target = visibleBox(req, req.body.box);
+    if (!target) return res.status(400).json({ error: 'invalid box' });
+  }
+  updateEntry(req, e, {
+    ...parsed.values,
+    branch_id: e.session_id ? e.branch_id : target.branch_id,
+    section: e.session_id ? e.section : target.section,
+  });
   res.json(treasuryPayload(req));
 });
 
-// تسديد مصروف لم يُدفع: يخرج من الصندوق في ذلك اليوم (اليوم إن لم يُذكر)
+// تسديد مصروف لم يُدفع: يخرج من صندوقه في ذلك اليوم (اليوم إن لم يُذكر)
 app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.manage'), (req, res) => {
-  const e = loadEntry(req, res);
+  const [e] = loadEntry(req, res);
   if (!e) return;
   if (e.direction !== 'out' || e.paid_on) return res.status(400).json({ error: 'not owed' });
   const date = req.body?.date || todayISO();
@@ -5551,14 +5708,90 @@ app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.manage'), (req,
 });
 
 app.delete('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
-  const e = loadEntry(req, res);
+  const [e] = loadEntry(req, res);
   if (!e) return;
   deleteEntry(req, e);
   res.json(treasuryPayload(req));
 });
 
+// ---------- التحويلات ----------
+// من صندوق يمسكه الكاتب إلى أيّ صندوق آخر في قسمه — فرقة تسلّم صندوق الفوج ما جمعت،
+// أو الفوج يعطي فرقة ما تحتاج. يعدّله و يحذفه من يمسك الصندوق الذي خرج منه.
+
+function parseTransfer(req) {
+  const b = req.body || {};
+  const boxes = treasuryBoxes(req);
+  const from = boxes.find((x) => x.visible && x.key === b.from);
+  if (!from) return { error: 'invalid from' };
+  const to = boxes.find((x) => x.key === b.to);
+  if (!to || to.section !== from.section || to.key === from.key) return { error: 'invalid to' };
+  const amount = parsePaid(b.amount);
+  if (!amount) return { error: 'invalid amount' };
+  if (!validISODate(b.date)) return { error: 'invalid date' };
+  const label = optionalText(b.label, 200);
+  if (label === undefined) return { error: 'text too long' };
+  return {
+    values: {
+      section: from.section,
+      from_branch_id: from.branch_id,
+      to_branch_id: to.branch_id,
+      amount,
+      date: b.date,
+      label,
+    },
+  };
+}
+
+const transferById = (id) => db.prepare('SELECT * FROM treasury_transfers WHERE id = ?').get(id);
+
+function loadTransfer(req, res) {
+  const t = transferById(intOr(req.params.xid));
+  if (!t || !visibleBox(req, boxKey(t.section, t.from_branch_id))) {
+    res.status(404).json({ error: 'transfer not found' });
+    return null;
+  }
+  return t;
+}
+
+app.post('/api/treasury/transfers', requirePerm('treasury.manage'), (req, res) => {
+  const parsed = parseTransfer(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  const id = db
+    .prepare(
+      `INSERT INTO treasury_transfers (section, from_branch_id, to_branch_id, amount, date, label, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(v.section, v.from_branch_id, v.to_branch_id, v.amount, v.date, v.label, actorName(req)).lastInsertRowid;
+  auditEvent(req, 'create', 'treasury_transfer', id, null, transferById(id));
+  res.status(201).json(treasuryPayload(req));
+});
+
+app.put('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const t = loadTransfer(req, res);
+  if (!t) return;
+  const parsed = parseTransfer(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  db.prepare(
+    `UPDATE treasury_transfers SET section = ?, from_branch_id = ?, to_branch_id = ?, amount = ?, date = ?,
+       label = ?, updated_by = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(v.section, v.from_branch_id, v.to_branch_id, v.amount, v.date, v.label, actorName(req), t.id);
+  auditEvent(req, 'update', 'treasury_transfer', t.id, t, transferById(t.id));
+  res.json(treasuryPayload(req));
+});
+
+app.delete('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const t = loadTransfer(req, res);
+  if (!t) return;
+  db.prepare('DELETE FROM treasury_transfers WHERE id = ?').run(t.id);
+  auditEvent(req, 'delete', 'treasury_transfer', t.id, t, null);
+  res.json(treasuryPayload(req));
+});
+
 // ---------- مصاريف النشاط ----------
-// ما اشتُري لنشاط (لوازم، ضيافة…) يُكتب من صفحته، فيخرج من صندوق قسمه. يكتبه من
+// ما اشتُري لنشاط (لوازم، ضيافة…) يُكتب من صفحته، فيخرج من صندوق فرقته. يكتبه من
 // يسجّل الدفع في النشاط (الحضور + رؤية المبالغ)، أو أمين المال.
 
 const sessionExpensesOf = (sessionId) =>
@@ -5607,7 +5840,7 @@ app.post('/api/sessions/:id/expenses', requirePerm('sessions.read'), requireSess
   if (!s) return;
   const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  insertEntry(req, parsed.values, s.section, s.id);
+  insertEntry(req, { ...parsed.values, branch_id: s.branch_id }, s.section, s.id);
   res.status(201).json({ expenses: sessionExpensesOf(s.id) });
 });
 
@@ -5618,7 +5851,7 @@ app.put('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), require
   if (!e) return;
   const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  updateEntry(req, e, parsed.values);
+  updateEntry(req, e, { ...parsed.values, branch_id: s.branch_id });
   res.json({ expenses: sessionExpensesOf(s.id) });
 });
 
@@ -5629,6 +5862,35 @@ app.delete('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), requ
   if (!e) return;
   deleteEntry(req, e);
   res.json({ expenses: sessionExpensesOf(s.id) });
+});
+
+// ---------- مصاريف الفرقة ----------
+// كل ما صُرف لفرقة: مصاريف أنشطتها، و ما كُتب لها في الصندوق. منذ البداية، مدفوعًا أو
+// لم يُدفع بعد — هي كلفة الفرقة، لا حركة الصندوق، فيوم الافتتاح لا يحدّها.
+app.get('/api/branches/:id/expenses', requirePerm('branches.read'), (req, res) => {
+  const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(intOr(req.params.id));
+  if (!branch) return res.status(404).json({ error: 'branch not found' });
+  if (!branchOk(req, branch.id) || !canSeeSessionExpenses(req)) return res.status(403).json({ error: 'forbidden' });
+  const expenses = db
+    .prepare(`${ENTRY_SQL} WHERE e.direction = 'out' AND ${ENTRY_BRANCH_SQL} = ? ORDER BY e.date DESC, e.id DESC`)
+    .all(branch.id)
+    .map(entryRow);
+  const byCategory = Object.fromEntries(TREASURY_OUT.map((c) => [c, 0]));
+  let total = 0;
+  let owed = 0;
+  for (const x of expenses) {
+    byCategory[x.category] += x.amount;
+    total += x.amount;
+    if (!x.paid_on) owed += x.amount;
+  }
+  // The فرقة's own box, for whoever sees it: what is in it now
+  const box = hasPerm(req, 'treasury.read') ? visibleBox(req, `b${branch.id}`) : null;
+  const l = box && boxLedger(box, openingsOf([box.section]));
+  res.json({
+    expenses,
+    summary: { total, owed, paid: total - owed, by_category: byCategory },
+    caisse: box ? { box: box.key, opened: !!l.start, balance: l.balance, owed: l.owedTotal } : null,
+  });
 });
 
 // ---------- Dashboard ----------

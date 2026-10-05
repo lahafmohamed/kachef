@@ -308,6 +308,14 @@ export const IconReceipt = (p) => (
     <path d="M12 17.5v-11" />
   </Icon>
 );
+export const IconTransfer = (p) => (
+  <Icon {...p}>
+    <path d="m16 3 4 4-4 4" />
+    <path d="M20 7H4" />
+    <path d="m8 21-4-4 4-4" />
+    <path d="M4 17h16" />
+  </Icon>
+);
 export const IconLock = (p) => (
   <Icon {...p}>
     <rect x="3" y="11" width="18" height="11" rx="2" />
