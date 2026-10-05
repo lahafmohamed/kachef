@@ -527,8 +527,12 @@ function TrendChart({ points, height = 176 }) {
     refs.current[next]?.focus();
   }
 
+  // A «05/10» needs ~37px a column; seven or more days on a phone leave ~28px,
+  // so a narrow chart labels every other day, counting back from the latest
+  const thin = points.length > 6;
+
   return (
-    <div style={deemph}>
+    <div className="@container" style={deemph}>
       <div className="relative" style={{ height }}>
         {/* Hairline grid at 50 and 100 — the baseline is the list's own bottom border */}
         <div aria-hidden="true" className="pointer-events-none absolute inset-0">
@@ -615,8 +619,16 @@ function TrendChart({ points, height = 176 }) {
         </ul>
       </div>
       <div aria-hidden="true" className="mt-1.5 flex gap-2 pe-10">
-        {points.map((p) => (
-          <span key={p.date} className="min-w-0 flex-1 truncate text-center text-[0.6875rem] tabular-nums text-muted-foreground">
+        {/* Centred and never cut: a label a hair wider than its bar spills
+            evenly into the gaps either side instead of ending in «05/…» */}
+        {points.map((p, i) => (
+          <span
+            key={p.date}
+            className={cn(
+              'flex min-w-0 flex-1 justify-center whitespace-nowrap text-[0.6875rem] tabular-nums text-muted-foreground',
+              thin && (last - i) % 2 === 1 && '@max-[20.5rem]:invisible'
+            )}
+          >
             {f.short(p.date)}
           </span>
         ))}
@@ -869,7 +881,10 @@ export default function Dashboard() {
         </section>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-3 xl:items-start">
+      {/* grid-cols-1, not the implicit auto column: an auto track grows to its
+          widest child's min-content (the chart's eight date labels), and the
+          whole column — «À traiter» included — then ran past a phone's edge */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3 xl:items-start">
         {/* First in the source so a phone reaches it right after the figures;
             placed in the end column from xl up — any narrower and a third of
             the width leaves its titles breaking mid-word */}
