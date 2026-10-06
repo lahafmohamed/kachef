@@ -29,18 +29,30 @@ export function fmtPhone(raw) {
   return compact.replace(/(\d{2})(?=\d)/g, '$1 ');
 }
 
-// مبالغ الاشتراكات: أرقام لاتينية مفصولة بالآلاف في اللغتين، كالتواريخ — الفرنك
-// يُكتب بلا كسور، و الكسر يظهر حين يوجد فقط.
-const amountFormats = {};
-export function fmtAmount(v) {
+// المبالغ: «20 700 F» في اللغتين — أرقام لاتينية كالتواريخ، و الآلاف مفصولة بمسافة
+// ظاهرة، ثم الوحدة (الفرنك الإفريقي). الفرنك يُكتب بلا كسور، و الكسر يظهر حين يوجد فقط.
+const CURRENCY = 'F';
+const NBSP = '\u00A0';
+let amountFormat;
+
+/**
+ * An amount as read everywhere: «20 700 F». A plain no-break space between the
+ * thousands — fr-FR's own narrow one all but vanished in small type, and the Arabic
+ * comma read differently from the French — then the unit. In Arabic the amount is
+ * isolated left-to-right, so the unit never jumps to the other side of the number.
+ * `unit: false` for the first of a pair: «2 000 / 5 000 F».
+ */
+export function fmtAmount(v, { unit = true } = {}) {
   if (v === null || v === undefined || v === '') return '';
   const n = Number(v);
   if (!Number.isFinite(n)) return '';
-  const locale = i18n.language === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
-  const fmt = (amountFormats[locale] ??= new Intl.NumberFormat(locale, {
-    maximumFractionDigits: 2,
-  }));
-  return fmt.format(n).replace(/[‎‏؜]/g, '');
+  amountFormat ??= new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
+  const digits = amountFormat
+    .format(n)
+    .replace(/[\u202F\u00A0]/g, NBSP)
+    .replace(/[\u200E\u200F\u061C]/g, '');
+  const out = unit ? `${digits}${NBSP}${CURRENCY}` : digits;
+  return i18n.language === 'ar' ? `\u2066${out}\u2069` : out;
 }
 
 export function todayISO() {

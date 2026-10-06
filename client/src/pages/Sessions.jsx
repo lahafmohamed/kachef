@@ -9,6 +9,7 @@ import { useSection } from '../section';
 import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
+import AmountInput from '../components/AmountInput';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import DateRangePicker from '../components/DateRangePicker';
@@ -1093,12 +1094,8 @@ export default function Sessions() {
           const feeField = !isVisit && !isGroup && (
               <div className="space-y-1.5">
                 <Label htmlFor="s_fee">{t('session.fee')}</Label>
-                <Input
+                <AmountInput
                   id="s_fee"
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="0.01"
                   placeholder="—"
                   value={form.fee}
                   onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))}

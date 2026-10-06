@@ -6,6 +6,7 @@ import { useFetch } from '../hooks';
 import { useSection } from '../section';
 import { branchName, memberName, todayISO } from '../utils';
 import { EVENT_KINDS, chiefLabel } from '../lib/events';
+import AmountInput from './AmountInput';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
 import SectionField from './SectionField';
@@ -218,12 +219,8 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
             {canFees && (
               <div className="space-y-1.5">
                 <Label htmlFor="ev_fee">{t('event.fee')}</Label>
-                <Input
+                <AmountInput
                   id="ev_fee"
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="any"
                   placeholder={t('event.free')}
                   value={form.fee}
                   onChange={set('fee')}

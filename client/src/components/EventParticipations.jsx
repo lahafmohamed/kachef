@@ -74,7 +74,7 @@ export default function EventParticipations({ state, feminine = false }) {
             joined && canFees && (e.fee > 0 || e.paid !== null || e.amount_due !== null) ? payState(e, e) : null;
           const pay = payKey && {
             paid: fmtAmount(e.paid),
-            partial: `${fmtAmount(e.paid)} / ${fmtAmount(dueOf(e, e))}`,
+            partial: `${fmtAmount(e.paid, { unit: false })} / ${fmtAmount(dueOf(e, e))}`,
             unpaid: tg('event.notPaid'),
             exempt: tg('event.exempt'),
           }[payKey];

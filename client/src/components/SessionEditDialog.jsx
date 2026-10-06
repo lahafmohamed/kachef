@@ -4,6 +4,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { ACTIVITY_TYPES, branchName, memberName } from '../utils';
+import AmountInput from './AmountInput';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
 import TimePicker from './TimePicker';
@@ -213,14 +214,9 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
           {showFee && (
             <div className="space-y-1.5">
               <Label htmlFor="se_fee">{t('session.fee')}</Label>
-              <Input
+              <AmountInput
                 id="se_fee"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
                 placeholder="—"
-                className="tabular-nums"
                 value={form.fee}
                 onChange={set('fee')}
               />

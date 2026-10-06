@@ -41,7 +41,9 @@ function MoneyMeter({ e, t }) {
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-xs text-muted-foreground">
           {t('event.collected')}{' '}
-          <span className="font-medium tabular-nums text-foreground">{fmtAmount(e.collected)}</span>
+          <span className="font-medium tabular-nums text-foreground">
+            {fmtAmount(e.collected, { unit: !(e.expected > 0) })}
+          </span>
           {e.expected > 0 && <span className="tabular-nums"> / {fmtAmount(e.expected)}</span>}
         </p>
         {pct !== null && <span className="text-sm font-semibold tabular-nums">{pct}%</span>}

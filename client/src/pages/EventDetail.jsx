@@ -23,6 +23,7 @@ import {
   signed,
   staffRoleLabel,
 } from '../lib/events';
+import AmountInput from '../components/AmountInput';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
 import EventFormDialog from '../components/EventForm';
@@ -1180,7 +1181,7 @@ function PayChip({ p, ev, t, onOpen }) {
   const due = dueOf(p, ev);
   const label = {
     paid: fmtAmount(p.paid),
-    partial: `${fmtAmount(p.paid)} / ${fmtAmount(due)}`,
+    partial: `${fmtAmount(p.paid, { unit: false })} / ${fmtAmount(due)}`,
     unpaid: t('session.notPaid'),
     exempt: t('event.exempt'),
     free: t('event.free'),
@@ -1685,13 +1686,8 @@ function PaymentDialog({ ev, participant: p, open, onClose, onSaved, canEdit, t 
               ]}
             />
             {dueMode === 'custom' && (
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                inputMode="decimal"
+              <AmountInput
                 aria-label={t('event.dueCustom')}
-                className="tabular-nums"
                 value={custom}
                 onChange={(e) => setCustom(e.target.value)}
                 required
@@ -1702,14 +1698,9 @@ function PaymentDialog({ ev, participant: p, open, onClose, onSaved, canEdit, t 
         )}
         <div className="space-y-1.5">
           <Label htmlFor="ep_paid">{t('event.paidLabel')}</Label>
-          <Input
+          <AmountInput
             id="ep_paid"
-            type="number"
-            min="0"
-            step="any"
-            inputMode="decimal"
             autoFocus
-            className="tabular-nums"
             placeholder={t('session.notPaid')}
             value={paid}
             onChange={(e) => setPaid(e.target.value)}
@@ -1927,14 +1918,9 @@ function ExpenseDialog({ ev, expense, open, onClose, onSaved, t }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="ex_amount">{t('event.amount')}</Label>
-            <Input
+            <AmountInput
               id="ex_amount"
               required
-              type="number"
-              min="0"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={set('amount')}
             />
@@ -2183,14 +2169,9 @@ function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="fd_amount">{t('event.amount')}</Label>
-            <Input
+            <AmountInput
               id="fd_amount"
               required
-              type="number"
-              min="0.01"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={set('amount')}
             />
@@ -2373,14 +2354,9 @@ function DonationDialog({ ev, donation, open, onClose, onSaved, t }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="dn_amount">{t('event.amount')}</Label>
-            <Input
+            <AmountInput
               id="dn_amount"
               required
-              type="number"
-              min="0"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={set('amount')}
             />
