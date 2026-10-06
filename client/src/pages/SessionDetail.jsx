@@ -4,9 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
+import AmountInput from '../components/AmountInput';
 import ExportPdfButton from '../components/ExportPdfButton';
+import { fmtDueMonth } from '../components/LeaderDues';
+import { DuesChip, MemberDuesDialog } from '../components/MemberDues';
 import SessionEditDialog from '../components/SessionEditDialog';
-import SessionExpenses from '../components/SessionExpenses';
+import SessionExpenses, { SessionDonations } from '../components/SessionExpenses';
 import SearchInput from '../components/SearchInput';
 import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName } from '../utils';
 import {
@@ -52,13 +55,21 @@ const MEMBER_STATUSES = [
 ];
 const ANIMATOR_STATUSES = MEMBER_STATUSES.filter((s) => s.value !== 'excused');
 
-// What the roster can be narrowed to: each mark, nobody marked yet, and — on a paid
-// نشاط — who came without paying
-const ROSTER_FILTERS = ['present', 'absent', 'excused', 'unmarked', 'unpaid'];
+// What the roster can be narrowed to: each mark, nobody marked yet, — on a paid
+// نشاط — who came without paying, and who still owes the month's dues (all of it, or
+// what is left of it)
+const ROSTER_FILTERS = ['present', 'absent', 'excused', 'unmarked', 'unpaid', 'dues'];
 const isPaid = (m) => m.paid !== null && m.paid !== undefined;
+const owesMonth = (m) => !!m.dues && !m.dues.month?.full && m.dues.owes;
 const matchStatus = (m, f) =>
   !f ||
-  (f === 'unmarked' ? !m.status : f === 'unpaid' ? m.status === 'present' && !isPaid(m) : m.status === f);
+  (f === 'unmarked'
+    ? !m.status
+    : f === 'unpaid'
+      ? m.status === 'present' && !isPaid(m)
+      : f === 'dues'
+        ? owesMonth(m)
+        : m.status === f);
 
 // رفض السيرفر لفرقة ليست للمستخدم يُقرأ كرسالة، لا كرمز خام
 const attendanceError = (t, err) =>
@@ -299,6 +310,8 @@ export default function SessionDetail() {
   const [filterGroup, setFilterGroup] = useState('');
   // بحث بالاسم داخل اللائحة: اللوائح الطويلة تُطال بالكتابة لا بالتمرير
   const [rosterQuery, setRosterQuery] = useState('');
+  // الاشتراك الشهري: العنصر الذي فُتحت نافذة اشتراكه
+  const [duesFor, setDuesFor] = useState(null);
   // حالة الحضور: من غاب (للاتصال بأهله)، من لم يُؤشَّر بعد، من حضر و لم يدفع (للتحصيل).
   // في الرابط، فتفتح لوحة القيادة النشاطَ على ما يُطلب فيه مباشرة.
   const [sp, setSp] = useSearchParams();
@@ -348,6 +361,36 @@ export default function SessionDetail() {
       setSession(prev);
       toast.error(attendanceError(t, err));
     }
+  }
+
+  /**
+   * A month of an عنصر's dues saved from his dialog (`paid`: what was given for it, null
+   * once nothing is): his line follows without reading the whole نشاط again — the
+   * نشاط's month, what was paid here, the months late.
+   */
+  function patchDues(memberId, month, paid) {
+    setSession((s) => {
+      const sessionMonth = s.member_dues.month;
+      return {
+        ...s,
+        roster: s.roster.map((m) => {
+          if (m.id !== memberId) return m;
+          const d = m.dues;
+          const here = [
+            ...d.here.filter((h) => h.month !== month),
+            ...(paid?.payments || [])
+              .filter((p) => p.session_id === s.id)
+              .map((p) => ({ id: p.id, month, amount: p.amount })),
+          ];
+          const late = d.late.filter((x) => x !== month);
+          if (!paid?.full && d.owes && month >= d.from && month < sessionMonth) late.push(month);
+          return {
+            ...m,
+            dues: { ...d, month: month === sessionMonth ? paid : d.month, here, late: late.sort() },
+          };
+        }),
+      };
+    });
   }
 
   // inScope حين يُمرَّر: الزرّ لا يتجاوز ما يراه القائد — فرقته بعد الفلاتر و البحث.
@@ -528,6 +571,15 @@ export default function SessionDetail() {
   // بيده، و النشاط المشترك يُظهر لكل قائد حصيلة فرقه التي يراها.
   const payers = session.roster.filter((m) => m.paid !== null && m.paid !== undefined);
   const collected = payers.reduce((n, m) => n + m.paid, 0);
+  // الاشتراك الشهري (لمن يراه): كم سدّد شهر النشاط من اللائحة، و ما حُصّل في النشاط نفسه
+  const duesMeta = session.member_dues;
+  const duesMonthLabel = duesMeta
+    ? `${fmtDueMonth(duesMeta.month, i18n.language, 'long')} ${duesMeta.month.slice(0, 4)}`
+    : '';
+  const duesPaid = session.roster.filter((m) => m.dues?.month?.full).length;
+  // Begun but not paid in full: 500 given of the month, the rest to come
+  const duesPart = session.roster.filter((m) => m.dues?.month && !m.dues.month.full).length;
+  const duesHere = session.roster.reduce((n, m) => n + (m.dues?.here || []).reduce((a, h) => a + h.amount, 0), 0);
   // نشاط قادة: لائحته هي القادة أنفسهم — تقدّمه و أزراره تُبنى من animators
   const isLeadersSession = session.kind === 'leaders';
   const leaderRoster = session.animators || [];
@@ -577,6 +629,7 @@ export default function SessionDetail() {
     { value: 'unmarked', label: t('session.tallyUnmarked') },
     // Only where an amount is asked, and for who may see amounts
     ...(canSeeFees && session.fee > 0 ? [{ value: 'unpaid', label: t('session.tallyUnpaid') }] : []),
+    ...(duesMeta ? [{ value: 'dues', label: t('session.tallyDuesUnpaid') }] : []),
   ]
     .map((o) => ({ ...o, count: session.roster.filter((m) => matchStatus(m, o.value)).length }))
     .filter((o) => o.count > 0 || o.value === statusFilter);
@@ -668,6 +721,22 @@ export default function SessionDetail() {
                   · {t('session.expectedTotal', { amount: fmtAmount(session.fee * totalRoster) })}
                 </span>
               )}
+            </div>
+          </div>
+        )}
+        {/* ---------- الاشتراك الشهري: من سدّد شهر النشاط، و ما حُصّل هنا ---------- */}
+        {duesMeta && (
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border pt-3">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <IconCalendar className="h-4 w-4 text-muted-foreground" />
+              {t('session.monthlyDues', { month: duesMonthLabel })}
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={duesHere > 0 ? 'success' : 'outline'}>{fmtAmount(duesHere)}</Badge>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {t('session.paidCount', { paid: duesPaid, total: totalRoster })}
+                {duesPart > 0 && ` · ${t('session.paidPart', { count: duesPart })}`}
+              </span>
             </div>
           </div>
         )}
@@ -1116,6 +1185,9 @@ export default function SessionDetail() {
                         payEditable={payEditable}
                         fee={session.fee}
                         setPaid={setPaid}
+                        duesMonth={duesMeta?.month}
+                        duesEditable={!!duesMeta?.can_edit}
+                        onDues={setDuesFor}
                       />
                     ))}
                   </ul>
@@ -1135,6 +1207,9 @@ export default function SessionDetail() {
                   payEditable={payEditable}
                   fee={session.fee}
                   setPaid={setPaid}
+                  duesMonth={duesMeta?.month}
+                  duesEditable={!!duesMeta?.can_edit}
+                  onDues={setDuesFor}
                 />
               ))}
             </ul>
@@ -1143,9 +1218,23 @@ export default function SessionDetail() {
       </Card>
       )}
 
+      {/* ---------- تبرعات النشاط: ما أُعطي فيه، يدخل صندوق فرقته ---------- */}
+      {session.donations && (
+        <SessionDonations session={session} onChange={(donations) => setSession((s) => ({ ...s, donations }))} />
+      )}
+
       {/* ---------- مصاريف النشاط: ما اشتُري له، يخرج من الصندوق ---------- */}
       {session.expenses && (
         <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
+      )}
+
+      {duesMeta && (
+        <MemberDuesDialog
+          member={duesFor ? session.roster.find((m) => m.id === duesFor) || null : null}
+          session={session}
+          onClose={() => setDuesFor(null)}
+          onSaved={patchDues}
+        />
       )}
 
       {canEditSession && (
@@ -1167,9 +1256,11 @@ export default function SessionDetail() {
 }
 
 /**
- * سطر عنصر في لائحة الحضور: الاسم، تنبيه الغيابات المتتالية، خانة الاشتراك، و أزرار الحالة.
+ * سطر عنصر في لائحة الحضور: الاسم، تنبيه الغيابات المتتالية و الاشتراك المتأخّر، خانة
+ * اشتراك النشاط و الاشتراك الشهري، و أزرار الحالة.
  */
-function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid }) {
+function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid, duesMonth, duesEditable, onDues }) {
+  const late = m.dues?.late.length || 0;
   return (
     <li className={cnRow(m.status)}>
       <Avatar photo={m.photo} name={avatarName(m)} />
@@ -1180,12 +1271,20 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
         >
           {memberName(m)}
         </Link>
-        {m.consecutive_absences >= 3 && (
-          <div className="mt-0.5">
-            <Badge variant="destructive">
-              <IconAlert className="h-3 w-3" />
-              {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
-            </Badge>
+        {(m.consecutive_absences >= 3 || late > 0) && (
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            {m.consecutive_absences >= 3 && (
+              <Badge variant="destructive">
+                <IconAlert className="h-3 w-3" />
+                {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
+              </Badge>
+            )}
+            {late > 0 && (
+              <Badge variant="warning">
+                <IconCalendar className="h-3 w-3" />
+                {t('session.duesLate', { count: late })}
+              </Badge>
+            )}
           </div>
         )}
       </div>
@@ -1204,9 +1303,17 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
           ) : null}
         </div>
       )}
+      {/* الاشتراك الشهري: بعد خانة النشاط من sm، و في الهاتف آخر سطر الحضور — سطر الاسم
+          لا يتّسع لـ«لم يدفع» و للخانتين معًا */}
+      {m.dues && (
+        <div className="shrink-0 max-sm:order-last">
+          <DuesChip m={m} month={duesMonth} editable={duesEditable} onOpen={() => onDues(m.id)} />
+        </div>
+      )}
       {/* Natural width and one-line labels from sm up: squeezed, «غائب بعذر» wrapped
-          onto two lines. Phones keep the full-width control, where wrapping is the fallback */}
-      <div className="w-full sm:w-auto sm:shrink-0">
+          onto two lines. Phones give it the line below the name — all of it, or all
+          but the dues button — where wrapping is the fallback */}
+      <div className="min-w-56 flex-1 sm:min-w-0 sm:flex-none sm:shrink-0">
         {editable ? (
           <SegmentedControl
             className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
@@ -1253,14 +1360,9 @@ function PaidCell({ m, fee, t, onSave }) {
 
   if (editing)
     return (
-      <Input
-        type="number"
-        min="0"
-        step="any"
-        inputMode="decimal"
+      <AmountInput
         autoFocus
-        dir="ltr"
-        className="h-11 w-24 text-center tabular-nums sm:h-9"
+        className="h-11 w-28 text-center sm:h-9"
         aria-label={t('session.subscriptionOf', { name: memberName(m) })}
         placeholder={t('session.notPaid')}
         value={value}

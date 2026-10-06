@@ -11,6 +11,7 @@ import { OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
 import NewBranchDialog from '../components/NewBranchDialog';
+import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import { RateValue, UnderlineTabs } from '../components/MemberParts';
 import {
   Avatar,
@@ -35,6 +36,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconClock,
+  IconHandHeart,
   IconInbox,
   IconLink,
   IconPencil,
@@ -49,7 +51,7 @@ import {
 // Scout-year order: أيلول opens the year, آب closes it
 const SCOUT_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
 
-const TABS = ['plan', 'sessions', 'groups', 'matalib', 'expenses'];
+const TABS = ['plan', 'sessions', 'groups', 'matalib', 'money'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses
 const monthName = (m, lng) =>
@@ -1643,21 +1645,76 @@ function BranchMatalib({ b }) {
 }
 
 /* ============================================================
-   مصاريف الفرقة
+   مالية الفرقة
    ============================================================ */
 
-const expenseRowClass = 'flex w-full items-center gap-3 px-4 py-3 text-start sm:px-5';
+const moneyRowClass = 'flex w-full items-center gap-3 px-4 py-3 text-start sm:px-5';
+const moneyRowActive = 'focus-ring transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]!';
 
 /**
- * What a فرقة cost: its أنشطة's مصاريف and what was written for it in the الصندوق,
- * paid or still owed, month by month. Read here; written in the الصندوق or on the نشاط,
- * where a line leads.
+ * One line of a فرقة's money, a مصروف or a تبرّع: its mark, what it is, its facts and
+ * its amount. It opens for correction (`onEdit`) when it was written for the فرقة's
+ * caisse and the قائد holds it; otherwise it leads (`to`) to its نشاط or to the caisse.
  */
-function BranchExpenses({ branchId }) {
+function MoneyRow({ mark, title, badge, meta, amount, onEdit, editLabel, to }) {
+  const body = (
+    <>
+      {mark}
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="font-medium">{title}</span>
+          {badge}
+        </span>
+        {/* Each fact stays whole: the line breaks between them, never inside a short one */}
+        <span className="block text-xs text-muted-foreground">
+          {meta.map((m, i) => (
+            <Fragment key={i}>
+              {i > 0 && ' · '}
+              <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+            </Fragment>
+          ))}
+        </span>
+      </span>
+      {amount}
+    </>
+  );
+  return (
+    <li>
+      {onEdit ? (
+        <button type="button" onClick={onEdit} aria-label={editLabel} className={cn(moneyRowClass, moneyRowActive)}>
+          {body}
+        </button>
+      ) : to ? (
+        <Link to={to} className={cn(moneyRowClass, moneyRowActive)}>
+          {body}
+        </Link>
+      ) : (
+        <div className={moneyRowClass}>{body}</div>
+      )}
+    </li>
+  );
+}
+
+const RowMark = ({ className, children }) => (
+  <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', className)}>{children}</span>
+);
+
+/**
+ * A فرقة's money: what its caisse holds now; what was given to it — its أنشطة's
+ * تبرعات and those written for its caisse; and what it cost — its أنشطة's مصاريف and
+ * what was written for it in the الصندوق, paid or still owed, month by month. Whoever
+ * holds the فرقة's caisse writes and corrects its general تبرعات and مصاريف right
+ * here; a نشاط's are written on the نشاط, where its line leads.
+ */
+function BranchMoney({ branchId }) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
   const { can } = usePerms();
-  const res = useFetch(`/branches/${branchId}/expenses`);
+  const toast = useToast();
+  const res = useFetch(`/branches/${branchId}/money`);
+  // { direction, entry } while a تبرّع (in) or a مصروف (out) of the فرقة's caisse is
+  // written (entry null) or corrected
+  const [dialog, setDialog] = useState(null);
 
   if (res.loading)
     return (
@@ -1669,11 +1726,42 @@ function BranchExpenses({ branchId }) {
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
-  const { expenses, summary, caisse } = res.data;
-  // What the فرقة's own caisse holds now, for whoever sees it — and the way to it
+  const { expenses, donations, summary, caisse } = res.data;
+  const canWrite = !!caisse?.can_write;
+  // A general line opens here for whoever holds the caisse
+  const editOf = (x) => (canWrite && !x.session_id ? () => setDialog({ direction: x.direction, entry: x }) : null);
+  // A نشاط's line leads to its نشاط, another to the الصندوق where it is written
+  const linkOf = (x) =>
+    x.session_id && can('sessions.read')
+      ? `/sessions/${x.session_id}`
+      : can('treasury.read')
+        ? `/treasury?box=${x.box}`
+        : null;
+
+  const entryDialog = canWrite && (
+    <TreasuryEntryDialog
+      open={!!dialog}
+      onClose={() => setDialog(null)}
+      direction={dialog?.direction ?? 'out'}
+      donationOnly={dialog?.direction === 'in'}
+      entry={dialog?.entry ?? null}
+      endpoint="/treasury/entries"
+      openings={caisse.start ? { [caisse.box]: caisse.start } : null}
+      boxes={[{ key: caisse.box }]}
+      defaultBox={caisse.box}
+      onSaved={(_, key) => {
+        setDialog(null);
+        res.reload({ quiet: true });
+        toast.success(t(key));
+      }}
+    />
+  );
+
+  // What the فرقة's own caisse holds now, for whoever sees it — the way to it, and what
+  // its holder writes in it from here
   const caisseCard = caisse && (
-    <Card className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-4 sm:px-5">
-      <div className="min-w-0 space-y-1">
+    <Card className="flex flex-wrap items-center gap-x-4 gap-y-3 p-4 sm:px-5">
+      <div className="min-w-0 flex-1 space-y-1">
         <p className="text-xs font-medium text-muted-foreground">{t('branch.caisse')}</p>
         {caisse.opened ? (
           <p className={cn('text-xl font-bold tabular-nums', caisse.balance < 0 && 'text-destructive')}>
@@ -1690,24 +1778,42 @@ function BranchExpenses({ branchId }) {
       </div>
       <Link
         to={`/treasury?box=${caisse.box}`}
-        className="focus-ring inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium text-primary hover:underline sm:min-h-9"
+        className="focus-ring -mt-3.5 inline-flex min-h-11 items-center self-start rounded-lg px-2 text-sm font-medium text-primary hover:underline sm:mt-0 sm:min-h-9 sm:self-center"
       >
         {t('branch.caisseOpen')}
       </Link>
+      {canWrite && (
+        // Under the balance on a phone, both of a width: short words there
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+          <Button size="sm" variant="outline" onClick={() => setDialog({ direction: 'in', entry: null })}>
+            <IconHandHeart />
+            <span className="sm:hidden">{t('treasury.addDonationShort')}</span>
+            <span className="hidden sm:inline">{t('treasury.addDonation')}</span>
+          </Button>
+          <Button size="sm" variant="brand" onClick={() => setDialog({ direction: 'out', entry: null })}>
+            <IconPlus />
+            <span className="sm:hidden">{t('treasury.addExpenseShort')}</span>
+            <span className="hidden sm:inline">{t('treasury.addExpense')}</span>
+          </Button>
+        </div>
+      )}
     </Card>
   );
-  if (expenses.length === 0)
+
+  if (expenses.length === 0 && donations.length === 0)
     return (
       <div className="space-y-4">
         {caisseCard}
         <Card>
-          <EmptyState icon={<IconReceipt className="h-6 w-6" />} title={t('branch.expensesEmpty')}>
-            {t('branch.expensesEmptyHint')}
+          <EmptyState icon={<IconReceipt className="h-6 w-6" />} title={t('branch.moneyEmpty')}>
+            {t('branch.moneyEmptyHint')}
           </EmptyState>
         </Card>
+        {entryDialog}
       </div>
     );
 
+  const given = donations.reduce((n, x) => n + x.amount, 0);
   const categories = OUT_CATEGORIES.map((k) => ({ key: k, amount: summary.by_category[k] }))
     .filter((c) => c.amount > 0)
     .sort((a, b) => b.amount - a.amount);
@@ -1717,105 +1823,117 @@ function BranchExpenses({ branchId }) {
   return (
     <div className="space-y-4">
       {caisseCard}
-      <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2">
-        <Stat label={t('branch.expensesTotal')} className="sm:p-5">
-          <p className="text-3xl font-bold tracking-tight tabular-nums">{fmtAmount(summary.total)}</p>
-          <p className="text-xs text-muted-foreground">{t('branch.expensesCount', { count: expenses.length })}</p>
-          {summary.owed > 0 && (
-            <p className="text-xs font-medium text-warning">
-              {t('branch.expensesOwed', { amount: fmtAmount(summary.owed) })}
-            </p>
-          )}
-        </Stat>
-        <Stat label={t('branch.expensesByCategory')} className="sm:p-5">
-          <dl className="space-y-1 text-sm">
-            {categories.map((c) => (
-              <div key={c.key} className="flex items-baseline justify-between gap-3">
-                <dt className="min-w-0 text-muted-foreground">{t(`treasury.cat_${c.key}`)}</dt>
-                <dd className="shrink-0 font-medium tabular-nums">{fmtAmount(c.amount)}</dd>
-              </div>
-            ))}
-          </dl>
-        </Stat>
-      </Card>
 
-      <Card className="divide-y divide-border overflow-hidden">
-        {months.map((m) => (
-          <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
-            <div className="flex items-baseline justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2 sm:px-5">
-              <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
-              <p dir="ltr" className="text-xs font-medium tabular-nums text-muted-foreground">
-                −{fmtAmount(m.out)}
-              </p>
-            </div>
-            <ul className="divide-y divide-border">
-              {m.rows.map((x) => {
-                const owed = !x.paid_on;
-                const meta = [
-                  fmtDate(x.spent_on),
-                  t(`treasury.cat_${x.category}`),
-                  x.session_title && t('treasury.forSession', { title: x.session_title }),
-                  x.owed_to && t(owed ? 'treasury.owedRowTo' : 'treasury.paidRowTo', { name: x.owed_to }),
-                ].filter(Boolean);
-                const body = (
-                  <>
-                    <span
-                      className={cn(
-                        'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-                        owed ? 'bg-warning/15 text-warning' : 'bg-muted text-muted-foreground'
-                      )}
-                    >
-                      <IconReceipt />
+      {donations.length > 0 && (
+        <Card className="overflow-hidden">
+          <div className="flex items-baseline justify-between gap-3 px-4 py-3 sm:px-5">
+            <h3 className="font-semibold">{t('branch.donations')}</h3>
+            <p dir="ltr" className="text-sm font-semibold tabular-nums text-success">
+              +{fmtAmount(given)}
+            </p>
+          </div>
+          <ul className="divide-y divide-border border-t border-border">
+            {donations.map((x) => {
+              // A note says what the don was for; without one, the line is simply «Don»
+              const title = x.label || t('treasury.donation');
+              return (
+                <MoneyRow
+                  key={x.key}
+                  mark={
+                    <RowMark className="bg-success/12 text-success">
+                      <IconHandHeart />
+                    </RowMark>
+                  }
+                  title={title}
+                  meta={[
+                    fmtDate(x.date),
+                    x.session_title && t('treasury.forSession', { title: x.session_title }),
+                  ].filter(Boolean)}
+                  amount={
+                    <span dir="ltr" className="shrink-0 font-semibold tabular-nums text-success">
+                      +{fmtAmount(x.amount)}
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="font-medium">{x.label}</span>
-                        {owed && <Badge variant="warning">{t('treasury.statusOwed')}</Badge>}
-                      </span>
-                      {/* Each fact stays whole: the line breaks between them, never inside a short one */}
-                      <span className="block text-xs text-muted-foreground">
-                        {meta.map((m, i) => (
-                          <Fragment key={i}>
-                            {i > 0 && ' · '}
-                            <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
-                          </Fragment>
-                        ))}
-                      </span>
-                    </span>
-                    <span dir="ltr" className="shrink-0 font-semibold tabular-nums">
-                      {fmtAmount(x.amount)}
-                    </span>
-                  </>
-                );
-                // A نشاط's مصروف leads to its نشاط, another to the الصندوق where it is written
-                const to =
-                  x.session_id && can('sessions.read')
-                    ? `/sessions/${x.session_id}`
-                    : can('treasury.read')
-                      ? `/treasury?box=${x.box}`
-                      : null;
-                return (
-                  <li key={x.key}>
-                    {to ? (
-                      <Link
-                        to={to}
-                        className={cn(
-                          expenseRowClass,
-                          'focus-ring transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]!'
-                        )}
-                      >
-                        {body}
-                      </Link>
-                    ) : (
-                      <div className={expenseRowClass}>{body}</div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ))}
-      </Card>
+                  }
+                  onEdit={editOf(x)}
+                  editLabel={`${t('common.edit')} — ${title} ${fmtAmount(x.amount)}`}
+                  to={linkOf(x)}
+                />
+              );
+            })}
+          </ul>
+        </Card>
+      )}
+
+      {expenses.length > 0 && (
+        <>
+          <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2">
+            <Stat label={t('branch.expensesTotal')} className="sm:p-5">
+              <p className="text-3xl font-bold tracking-tight tabular-nums">{fmtAmount(summary.total)}</p>
+              <p className="text-xs text-muted-foreground">{t('branch.expensesCount', { count: expenses.length })}</p>
+              {summary.owed > 0 && (
+                <p className="text-xs font-medium text-warning">
+                  {t('branch.expensesOwed', { amount: fmtAmount(summary.owed) })}
+                </p>
+              )}
+            </Stat>
+            <Stat label={t('branch.expensesByCategory')} className="sm:p-5">
+              <dl className="space-y-1 text-sm">
+                {categories.map((c) => (
+                  <div key={c.key} className="flex items-baseline justify-between gap-3">
+                    <dt className="min-w-0 text-muted-foreground">{t(`treasury.cat_${c.key}`)}</dt>
+                    <dd className="shrink-0 font-medium tabular-nums">{fmtAmount(c.amount)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </Stat>
+          </Card>
+
+          <Card className="divide-y divide-border overflow-hidden">
+            {months.map((m) => (
+              <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
+                <div className="flex items-baseline justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2 sm:px-5">
+                  <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
+                  <p dir="ltr" className="text-xs font-medium tabular-nums text-muted-foreground">
+                    −{fmtAmount(m.out)}
+                  </p>
+                </div>
+                <ul className="divide-y divide-border">
+                  {m.rows.map((x) => {
+                    const owed = !x.paid_on;
+                    return (
+                      <MoneyRow
+                        key={x.key}
+                        mark={
+                          <RowMark className={owed ? 'bg-warning/15 text-warning' : 'bg-muted text-muted-foreground'}>
+                            <IconReceipt />
+                          </RowMark>
+                        }
+                        title={x.label}
+                        badge={owed && <Badge variant="warning">{t('treasury.statusOwed')}</Badge>}
+                        meta={[
+                          fmtDate(x.spent_on),
+                          t(`treasury.cat_${x.category}`),
+                          x.session_title && t('treasury.forSession', { title: x.session_title }),
+                          x.owed_to && t(owed ? 'treasury.owedRowTo' : 'treasury.paidRowTo', { name: x.owed_to }),
+                        ].filter(Boolean)}
+                        amount={
+                          <span dir="ltr" className="shrink-0 font-semibold tabular-nums">
+                            {fmtAmount(x.amount)}
+                          </span>
+                        }
+                        onEdit={editOf(x)}
+                        editLabel={`${t('common.edit')} — ${x.label} ${fmtAmount(x.amount)}`}
+                        to={linkOf(x)}
+                      />
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </Card>
+        </>
+      )}
+      {entryDialog}
     </div>
   );
 }
@@ -1982,7 +2100,7 @@ function BranchFigures({ b }) {
  * Tabs of the selected فرقة. Each panel mounts on its first visit and then stays,
  * hidden: going to the أنشطة and back must not throw away a month typed but not saved.
  */
-function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canExpenses }) {
+function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canMoney }) {
   const { t, i18n } = useTranslation();
   const seen = useRef(new Set());
   seen.current.add(tab);
@@ -1997,7 +2115,7 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canExpenses })
           { id: 'groups', label: t('branch.groupsTitle') },
           { id: 'matalib', label: t('branch.matalib') },
           // Amounts: for whoever sees what was paid (a نشاط's fees, or the الصندوق)
-          ...(canExpenses ? [{ id: 'expenses', label: t('branch.expensesTab') }] : []),
+          ...(canMoney ? [{ id: 'money', label: t('branch.moneyTab') }] : []),
         ]}
         value={tab}
         onChange={onTab}
@@ -2010,7 +2128,7 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canExpenses })
         {panel('sessions', <BranchSessions branchId={b.id} />)}
         {panel('groups', <BranchGroups branchId={b.id} />)}
         {panel('matalib', <BranchMatalib b={b} />)}
-        {canExpenses && panel('expenses', <BranchExpenses branchId={b.id} />)}
+        {canMoney && panel('money', <BranchMoney branchId={b.id} />)}
       </div>
     </div>
   );
@@ -2043,8 +2161,10 @@ export default function Branches() {
   const { view: onScreen, setView } = useSection();
   const [storedTab, setTab] = useLocalStorage('branches.tab', 'plan');
   const { can } = usePerms();
-  const canExpenses = can('sessions.read.fees') || can('treasury.read');
-  const tab = TABS.includes(storedTab) && (storedTab !== 'expenses' || canExpenses) ? storedTab : 'plan';
+  const canMoney = can('sessions.read.fees') || can('treasury.read');
+  // «expenses» was the money tab's name before the تبرعات joined it
+  const wanted = storedTab === 'expenses' ? 'money' : storedTab;
+  const tab = TABS.includes(wanted) && (wanted !== 'money' || canMoney) ? wanted : 'plan';
   // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -2182,7 +2302,7 @@ export default function Branches() {
             onTab={setTab}
             onPlanChange={() => plans.reload({ quiet: true })}
             onPlanDirty={onPlanDirty}
-            canExpenses={canExpenses}
+            canMoney={canMoney}
           />
         </div>
       )}

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
 import { IN_CATEGORIES, OUT_CATEGORIES, boxName } from '../lib/treasury';
+import AmountInput from './AmountInput';
 import DatePicker from './DatePicker';
 import { Button, Dialog, Input, Label, SegmentedControl, Select, useConfirm, useToast, IconTrash } from './ui';
 
@@ -28,6 +29,9 @@ const EMPTY = {
  * question: it goes out of its نشاط's فرقة's. `openings` ({ box: day }): a day before
  * the box's opening is kept but not counted — said before saving.
  *
+ * `donationOnly`: a نشاط's donations card (`endpoint` = /sessions/:id/donations) — an
+ * تبرّع, so no question of its kind, and it is named a don throughout.
+ *
  * A مصروف is paid, or not yet: a قائد advanced it or a shop gave credit, and the box
  * only goes down the day it is settled. Once it has been owed, it keeps who it was
  * owed to and says on which day it was paid.
@@ -44,6 +48,7 @@ export default function TreasuryEntryDialog({
   boxes = null,
   defaultBox = null,
   bothSections = false,
+  donationOnly = false,
 }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -54,6 +59,8 @@ export default function TreasuryEntryDialog({
   // Owed at some point: who to pay stays on screen, and paying it asks on which day
   const [wasOwed, setWasOwed] = useState(false);
   const out = direction === 'out';
+  // How the line is named in its title, toasts and confirmation
+  const noun = out ? 'expense' : donationOnly ? 'donation' : 'income';
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   useEffect(() => {
@@ -114,7 +121,7 @@ export default function TreasuryEntryDialog({
         ...(boxes && !entry?.session_id ? { box: form.box } : {}),
       };
       const res = entry ? await api.put(`${endpoint}/${entry.id}`, body) : await api.post(endpoint, body);
-      onSaved(res, `treasury.${out ? 'expense' : 'income'}${entry ? 'Updated' : 'Added'}`);
+      onSaved(res, `treasury.${noun}${entry ? 'Updated' : 'Added'}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -126,16 +133,16 @@ export default function TreasuryEntryDialog({
     const amount = fmtAmount(entry.amount);
     if (
       !(await confirm({
-        title: t(out ? 'treasury.editExpense' : 'treasury.editIncome'),
+        title: t(out ? 'treasury.editExpense' : donationOnly ? 'treasury.editDonation' : 'treasury.editIncome'),
         message: out
           ? t('treasury.deleteExpenseConfirm', { label: entry.label, amount })
-          : t('treasury.deleteIncomeConfirm', { amount }),
+          : t(donationOnly ? 'treasury.deleteDonationConfirm' : 'treasury.deleteIncomeConfirm', { amount }),
         confirmLabel: t('common.delete'),
       }))
     )
       return;
     try {
-      onSaved(await api.del(`${endpoint}/${entry.id}`), `treasury.${out ? 'expense' : 'income'}Deleted`);
+      onSaved(await api.del(`${endpoint}/${entry.id}`), `treasury.${noun}Deleted`);
     } catch (err) {
       toast.error(err.message);
     }
@@ -143,7 +150,9 @@ export default function TreasuryEntryDialog({
 
   const title = out
     ? t(entry ? 'treasury.editExpense' : 'treasury.addExpense')
-    : t(entry ? 'treasury.editIncome' : 'treasury.newIncome');
+    : donationOnly
+      ? t(entry ? 'treasury.editDonation' : 'treasury.addDonation')
+      : t(entry ? 'treasury.editIncome' : 'treasury.newIncome');
 
   return (
     <Dialog
@@ -184,7 +193,7 @@ export default function TreasuryEntryDialog({
             </Select>
           </div>
         )}
-        {!out && (
+        {!out && !donationOnly && (
           <div className="space-y-1.5">
             <Label>{t('treasury.incomeType')}</Label>
             <SegmentedControl
@@ -214,14 +223,9 @@ export default function TreasuryEntryDialog({
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="tx_amount">{t('treasury.amount')}</Label>
-            <Input
+            <AmountInput
               id="tx_amount"
               required
-              type="number"
-              min="0.01"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={set('amount')}
             />

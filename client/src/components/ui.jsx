@@ -89,6 +89,16 @@ export const IconCalendar = (p) => (
     <line x1="3" y1="10" x2="21" y2="10" />
   </Icon>
 );
+/** A month's dues paid — lucide «calendar-check» */
+export const IconCalendarCheck = (p) => (
+  <Icon {...p}>
+    <rect x="3" y="4" width="18" height="18" rx="2" />
+    <line x1="16" y1="2" x2="16" y2="6" />
+    <line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="3" y1="10" x2="21" y2="10" />
+    <path d="m9 16 2 2 4-4" />
+  </Icon>
+);
 /** المخيمات و الدورات — lucide «tent» */
 export const IconTent = (p) => (
   <Icon {...p}>
@@ -314,6 +324,16 @@ export const IconTransfer = (p) => (
     <path d="M20 7H4" />
     <path d="m8 21-4-4 4-4" />
     <path d="M4 17h16" />
+  </Icon>
+);
+// lucide «scale»: a caisse's count weighed against its book
+export const IconScale = (p) => (
+  <Icon {...p}>
+    <path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z" />
+    <path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z" />
+    <path d="M7 21h10" />
+    <path d="M12 3v18" />
+    <path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2" />
   </Icon>
 );
 export const IconLock = (p) => (

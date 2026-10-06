@@ -3204,6 +3204,274 @@ app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues'), (req, res) 
   });
 });
 
+// ---------- اشتراك العناصر الشهري ----------
+// كل عنصر يدفع قيمة ثابتة كل شهر، دفعةً واحدة أو على دفعات (500 ثم 1500…): صفّ في
+// member_dues = دفعة، و الشهر مسدَّد متى بلغ مجموع دفعاته القيمة الشهرية. الشهر يُستحقّ
+// متى حلّ، من MEMBER_DUES_START أو من شهر انتساب العنصر إن جاء بعده؛ العنصر غير الفعّال
+// لا يُطالَب بشيء. يُدفع عادةً في النشاط (من لائحة الحضور، مربوطًا به و بيومه) أو من ملفّ
+// العنصر (اليوم)، و يدخل صندوق فرقة العنصر.
+// يراه من يرى مبالغ الأنشطة أو الصندوق، و يسجّله من يسجّل الدفع في الأنشطة أو أمين المال.
+
+const MEMBER_DUE_MONTHLY = 2000;
+const MEMBER_DUES_START = '2026-10';
+
+const canSeeMemberDues = (req) => hasPerm(req, 'sessions.read.fees') || hasPerm(req, 'treasury.read');
+const canWriteMemberDues = (req) =>
+  (hasPerm(req, 'sessions.attendance') && hasPerm(req, 'sessions.read.fees')) || hasPerm(req, 'treasury.manage');
+
+// '2026-12' -> '2027-01'
+const nextMonth = (month) => {
+  const [y, m] = month.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+};
+
+// Every month from `first` to `last`, both included
+function monthsBetween(first, last) {
+  const out = [];
+  for (let m = first; m <= last; m = nextMonth(m)) out.push(m);
+  return out;
+}
+
+// أوّل شهر يُطالَب به العنصر: بدء الاشتراك، أو شهر انتسابه إن جاء بعده
+const memberDuesFrom = (m) => {
+  const joined = /^\d{4}-\d{2}/.test(m.join_date || '') ? m.join_date.slice(0, 7) : null;
+  return joined && joined > MEMBER_DUES_START ? joined : MEMBER_DUES_START;
+};
+
+// What was given for each month, from an عنصر's payments: month -> total
+const paidByMonth = (rows) => {
+  const out = new Map();
+  for (const r of rows) out.set(r.month, (out.get(r.month) || 0) + r.amount);
+  return out;
+};
+
+// What is left to pay of a month once `paid` was given for it
+const dueLeft = (paid) => Math.max(0, MEMBER_DUE_MONTHLY - (paid || 0));
+
+// The months owed up to `until` and not paid in full (`paid`: month -> total) — none
+// for an عنصر no longer active
+const memberLateMonths = (m, paid, until) =>
+  m.status === 'active' ? monthsBetween(memberDuesFrom(m), until).filter((x) => dueLeft(paid.get(x)) > 0) : [];
+
+// السنوات المعروضة: من سنة البدء إلى السنة القادمة، و أبعد إن سُجّل دفع مقدَّم
+function memberDuesYears() {
+  const first = Number(MEMBER_DUES_START.slice(0, 4));
+  const lastPaid = db.prepare('SELECT MAX(month) AS m FROM member_dues').get().m;
+  const last = Math.max(Number(currentMonth().slice(0, 4)) + 1, lastPaid ? Number(lastPaid.slice(0, 4)) : 0);
+  return Array.from({ length: last - first + 1 }, (_, i) => String(first + i));
+}
+
+// Payments oldest first: a month reads in the order it was paid
+const MEMBER_DUE_SQL = `
+  SELECT d.*, s.title AS session_title FROM member_dues d LEFT JOIN sessions s ON s.id = d.session_id`;
+const MEMBER_DUE_ORDER = ' ORDER BY d.paid_on, d.id';
+
+const memberDuePayment = (r) => ({
+  id: r.id,
+  amount: r.amount,
+  paid_on: r.paid_on,
+  session_id: r.session_id,
+  session_title: r.session_title ?? null,
+  recorded_by: r.recorded_by,
+});
+
+// One month as the screens show it: how much was given, what is left, is it paid in
+// full, and each payment. null: nothing given for it.
+function memberDueMonth(payments) {
+  if (!payments.length) return null;
+  const amount = payments.reduce((n, p) => n + p.amount, 0);
+  const left = dueLeft(amount);
+  return { amount, left, full: left === 0, payments: payments.map(memberDuePayment) };
+}
+
+const memberDuesOf = (memberId, first, last) => {
+  const byMonth = new Map();
+  for (const r of db
+    .prepare(`${MEMBER_DUE_SQL} WHERE d.member_id = ? AND d.month >= ? AND d.month <= ?${MEMBER_DUE_ORDER}`)
+    .all(memberId, first, last)) {
+    if (!byMonth.has(r.month)) byMonth.set(r.month, []);
+    byMonth.get(r.month).push(r);
+  }
+  return Object.fromEntries([...byMonth].map(([month, rows]) => [month, memberDueMonth(rows)]));
+};
+
+const memberMonthOf = (memberId, month) =>
+  memberDueMonth(
+    db.prepare(`${MEMBER_DUE_SQL} WHERE d.member_id = ? AND d.month = ?${MEMBER_DUE_ORDER}`).all(memberId, month)
+  );
+
+// حصيلة عنصر على كل السنوات: ما دفعه، و الأشهر التي حلّت و لم تُسدَّد كاملةً، و ما بقي منها
+function memberDuesSummary(m) {
+  const rows = db.prepare('SELECT month, amount FROM member_dues WHERE member_id = ?').all(m.id);
+  const paid = paidByMonth(rows);
+  const unpaid = memberLateMonths(m, paid, currentMonth());
+  return {
+    paid_total: rows.reduce((n, r) => n + r.amount, 0),
+    unpaid_months: unpaid,
+    owed_total: unpaid.reduce((n, x) => n + dueLeft(paid.get(x)), 0),
+  };
+}
+
+// Each عنصر of a نشاط's roster, with the نشاط's month (what was given for it, and is it
+// owed), the months before it not paid in full, and what was paid in this نشاط itself
+function rosterDues(roster, session) {
+  const month = session.date.slice(0, 7);
+  const ids = roster.map((m) => intOr(m.id)).join(',') || '-1';
+  const info = new Map(
+    db.prepare(`SELECT id, status, join_date FROM members WHERE id IN (${ids})`).all().map((m) => [m.id, m])
+  );
+  const byMember = new Map();
+  for (const d of db.prepare(`${MEMBER_DUE_SQL} WHERE d.member_id IN (${ids})${MEMBER_DUE_ORDER}`).all()) {
+    if (!byMember.has(d.member_id)) byMember.set(d.member_id, []);
+    byMember.get(d.member_id).push(d);
+  }
+  return roster.map((r) => {
+    const m = info.get(r.id);
+    const own = byMember.get(r.id) || [];
+    const from = memberDuesFrom(m);
+    return {
+      ...r,
+      dues: {
+        from,
+        owes: m.status === 'active' && month >= from,
+        month: memberDueMonth(own.filter((d) => d.month === month)),
+        late: memberLateMonths(m, paidByMonth(own), month).filter((x) => x < month),
+        here: own
+          .filter((d) => d.session_id === session.id)
+          .map((d) => ({ id: d.id, month: d.month, amount: d.amount })),
+      },
+    };
+  });
+}
+
+// العنصر بعد التحقّق من نطاقه، أو null بعد ردّ 404 / 403
+function loadDuesMember(req, res) {
+  const m = db.prepare('SELECT id, branch_id, status, join_date FROM members WHERE id = ?').get(intOr(req.params.id));
+  if (!m) res.status(404).json({ error: 'member not found' });
+  else if (!branchOk(req, m.branch_id)) res.status(403).json({ error: 'forbidden' });
+  else return m;
+  return null;
+}
+
+// The نشاط a payment is taken in (body.session_id): it exists, the writer sees it, and
+// the عنصر is on its roster. null: outside a نشاط. undefined: refused, the error sent.
+function duesSession(req, res, m) {
+  const id = req.body?.session_id;
+  if (id === undefined || id === null) return null;
+  const session = db.prepare('SELECT id, date, branch_id, section FROM sessions WHERE id = ?').get(intOr(id));
+  const onRoster =
+    session && db.prepare('SELECT 1 FROM attendance WHERE session_id = ? AND member_id = ?').get(session.id, m.id);
+  if (!onRoster) res.status(400).json({ error: 'invalid session' });
+  else if (!sessionOk(req, session)) res.status(403).json({ error: 'forbidden' });
+  else return session;
+  return undefined;
+}
+
+// A payment enters the box of the عنصر's فرقة on the نشاط's day (today when the نشاط
+// is still to come), or today outside a نشاط
+function insertMemberDue(req, m, month, amount, session) {
+  const today = todayISO();
+  const id = db
+    .prepare(
+      `INSERT INTO member_dues (member_id, month, amount, paid_on, session_id, branch_id, section, recorded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      m.id,
+      month,
+      amount,
+      session && session.date < today ? session.date : today,
+      session?.id ?? null,
+      m.branch_id,
+      sectionOfBranch(m.branch_id) ?? 'M',
+      actorName(req)
+    ).lastInsertRowid;
+  auditEvent(req, 'create', 'member_due', id, null, db.prepare('SELECT * FROM member_dues WHERE id = ?').get(id));
+}
+
+const monthLeft = (m, month) =>
+  dueLeft(db.prepare('SELECT SUM(amount) AS n FROM member_dues WHERE member_id = ? AND month = ?').get(m.id, month).n);
+
+// The month after a change, and the عنصر's whole account with it
+const memberMonthPayload = (m, month) => ({ month, paid: memberMonthOf(m.id, month), summary: memberDuesSummary(m) });
+
+app.get('/api/members/:id/dues', (req, res) => {
+  if (!canSeeMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const year = duesYearParam(req);
+  if (!year) return res.status(400).json({ error: 'invalid year' });
+  const months = yearMonths(year);
+  res.json({
+    year,
+    years: memberDuesYears(),
+    months,
+    monthly: MEMBER_DUE_MONTHLY,
+    start_month: memberDuesFrom(m),
+    current_month: currentMonth(),
+    member_id: m.id,
+    active: m.status === 'active',
+    paid: memberDuesOf(m.id, months[0], months[11]),
+    summary: memberDuesSummary(m),
+    can_edit: canWriteMemberDues(req),
+  });
+});
+
+// دفعة لشهر: amount ما أُعطي — ما بقي من الشهر إن لم يُذكر — و لا يتجاوز ما بقي.
+// session_id: النشاط الذي دُفعت فيه — العنصر من لائحته، و يوم الدفعة يومه (اليوم إن كان
+// النشاط لم يأتِ بعد)؛ بدونه اليوم، خارج نشاط.
+app.post('/api/members/:id/dues/:month', (req, res) => {
+  if (!canWriteMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const month = req.params.month;
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'invalid month' });
+  const session = duesSession(req, res, m);
+  if (session === undefined) return;
+  const left = monthLeft(m, month);
+  if (left === 0) return res.status(400).json({ error: 'already paid' });
+  const given = req.body?.amount;
+  const amount = given === undefined || given === null || given === '' ? left : parsePaid(given);
+  if (!amount) return res.status(400).json({ error: 'invalid amount' });
+  if (amount > left) return res.status(400).json({ error: 'more than owed' });
+  insertMemberDue(req, m, month, amount, session);
+  res.status(201).json(memberMonthPayload(m, month));
+});
+
+// Takes one payment back — written by mistake, or the money given back
+app.delete('/api/members/:id/dues/payments/:pid', (req, res) => {
+  if (!canWriteMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const p = db.prepare('SELECT * FROM member_dues WHERE id = ? AND member_id = ?').get(intOr(req.params.pid), m.id);
+  if (!p) return res.status(404).json({ error: 'payment not found' });
+  db.prepare('DELETE FROM member_dues WHERE id = ?').run(p.id);
+  auditEvent(req, 'delete', 'member_due', p.id, p, null);
+  res.json(memberMonthPayload(m, p.month));
+});
+
+// The whole month at once — paid: true pays what is left of it (in the نشاط session_id
+// names, as above), false takes back every payment made for it
+app.put('/api/members/:id/dues/:month', (req, res) => {
+  if (!canWriteMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const month = req.params.month;
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'invalid month' });
+  if (typeof req.body?.paid !== 'boolean') return res.status(400).json({ error: 'invalid paid' });
+  const session = duesSession(req, res, m);
+  if (session === undefined) return;
+  if (req.body.paid) {
+    const left = monthLeft(m, month);
+    if (left > 0) insertMemberDue(req, m, month, left, session);
+  } else
+    for (const p of db.prepare('SELECT * FROM member_dues WHERE member_id = ? AND month = ?').all(m.id, month)) {
+      db.prepare('DELETE FROM member_dues WHERE id = ?').run(p.id);
+      auditEvent(req, 'delete', 'member_due', p.id, p, null);
+    }
+  res.json(memberMonthPayload(m, month));
+});
+
 app.put('/api/leaders/:id', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'leader not found' });
@@ -4119,16 +4387,22 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
              ORDER BY sl.role = 'helper', l.last_name, l.first_name`
           )
           .all(s.id);
+  // الاشتراك الشهري لكل عنصر في اللائحة، لمن يراه: شهر النشاط، و ما تأخّر قبله
+  const withDues = canSeeMemberDues(req) && roster.length > 0;
   // الأجرة و مبالغ الاشتراكات تسقط معًا عمّن لا يملك صلاحية رؤية المبالغ
   const payload = stripFee(req, {
     ...s,
     matalib: JSON.parse(s.matalib || '[]'),
-    roster,
+    roster: withDues ? rosterDues(roster, s) : roster,
     animators,
     // حصيلة اشتراكات النشاط كاملًا — يحسبها البرنامج من الخانات، لا تُدخَل يدويًا
     subscriptions: sessionSubscriptions(s.id),
-    // ما اشتُري للنشاط من الصندوق — لمن يرى مبالغ الأنشطة أو الصندوق
-    expenses: canSeeSessionExpenses(req) ? sessionExpensesOf(s.id) : null,
+    member_dues: withDues
+      ? { monthly: MEMBER_DUE_MONTHLY, month: s.date.slice(0, 7), can_edit: canWriteMemberDues(req) }
+      : null,
+    // ما اشتُري للنشاط من الصندوق، و التبرعات التي وصلت فيه — لمن يرى مبالغ الأنشطة أو الصندوق
+    expenses: canSeeSessionExpenses(req) ? sessionEntriesOf(s.id, 'out') : null,
+    donations: canSeeSessionExpenses(req) ? sessionEntriesOf(s.id, 'in') : null,
     can_write_expenses: canWriteSessionExpenses(req),
     branch_counts: branchCountsOf(s.id),
     branch_ids: branchIds,
@@ -5380,12 +5654,14 @@ app.delete('/api/events/:id/fundings/:fid', ...requireEventCaisse, (req, res) =>
 // صندوق للفوج في كل قسم، و صندوق لكل فرقة. لكلٍّ رصيد افتتاحه، ثم ما دخله و خرج منه
 // منذ يومه؛ لا مجموع يُخزَّن: الحساب كله عند القراءة.
 // - اشتراكات نشاط (خانات الدفع في الحضور): صندوق فرقته، أو صندوق الفوج لنشاط عام أو للقادة.
-// - اشتراك القادة الشهري: صندوق الفوج.
-// - التبرعات و المداخيل و المصاريف المكتوبة باليد: الصندوق الذي اختير. مصروف النشاط:
-//   صندوق فرقة نشاطه.
+// - اشتراك القادة الشهري: صندوق الفوج. اشتراك العناصر الشهري: صندوق فرقة العنصر يوم دفعه.
+// - التبرعات و المداخيل و المصاريف المكتوبة باليد: الصندوق الذي اختير. مصروف النشاط و
+//   التبرّع الذي وصل فيه: صندوق فرقة نشاطه.
 // - التحويل: يخرج من صندوق و يدخل آخر في القسم نفسه.
 // - المخيمات و الدورات: ما أُخذ من صندوق لمخيم يخرج منه، و ما أُعيد منه يدخله
 //   (event_fundings). بقية حساب المخيم في صفحته.
+// - المطابقة: ما عُدّ في الصندوق فعلًا مقابل ما يقوله السجلّ؛ الفرق يدخله أو يخرج منه
+//   (treasury_counts).
 // من حُصر بفرق لا يرى و لا يكتب إلا صناديقها؛ صندوق الفوج لمن لم يُحصر بفرق. المخيمات
 // تبقى في صفحتها إلا ما بينها و بين صندوق.
 
@@ -5555,6 +5831,37 @@ function boxRows(box, from) {
       row.leaders.push({ id: r.leader_id, name: r.name, months: r.months });
       dues.set(r.day, row);
     }
+  // اشتراك العناصر الشهري، في صندوق فرقة العنصر: سطر لكل نشاط جُمع فيه، و سطر لكل يوم
+  // سُجّل فيه خارج نشاط — بأسماء من دفع و عدد الأشهر التي دفع عنها، كاملةً أو جزءًا منها
+  const memberDues = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT d.paid_on AS day, d.session_id, s.title AS session_title, d.member_id,
+         ${fullNameSQL('m')} AS name, COUNT(DISTINCT d.month) AS months, SUM(d.amount) AS amount
+       FROM member_dues d LEFT JOIN sessions s ON s.id = d.session_id
+       LEFT JOIN members m ON m.id = d.member_id
+       WHERE d.section = ? AND IFNULL(d.branch_id, 0) = ? AND d.paid_on >= ?
+       GROUP BY d.paid_on, d.session_id, d.member_id ORDER BY name`
+    )
+    .all(box.section, bid, from)) {
+    const key = `${r.day}:${r.session_id ?? ''}`;
+    const row = memberDues.get(key) || {
+      key: `m:${box.key}:${key}`,
+      source: 'member_dues',
+      direction: 'in',
+      category: 'member_dues',
+      amount: 0,
+      date: r.day,
+      section: box.section,
+      box: box.key,
+      session_id: r.session_id,
+      session_title: r.session_title ?? null,
+      members: [],
+    };
+    row.amount += r.amount;
+    row.members.push({ id: r.member_id, name: r.name, months: r.months });
+    memberDues.set(key, row);
+  }
   const transfers = db
     .prepare(
       `SELECT * FROM treasury_transfers
@@ -5586,8 +5893,33 @@ function boxRows(box, from) {
       event_kind: f.event_kind ?? null,
       created_by: f.created_by,
     }));
-  return [...entries, ...sessions, ...dues.values(), ...transfers, ...fundings];
+  // مطابقات: فائض يدخل أو عجز يخرج، ليصير الرصيد ما عُدّ
+  const counts = db
+    .prepare('SELECT * FROM treasury_counts WHERE section = ? AND IFNULL(branch_id, 0) = ? AND date >= ?')
+    .all(box.section, bid, from)
+    .map((c) => countRow(c, box.key));
+  return [...entries, ...sessions, ...dues.values(), ...memberDues.values(), ...transfers, ...fundings, ...counts];
 }
+
+// What the count found against the book, to the centime: positive, more than written
+const countGap = (c) => Math.round((c.counted - c.expected) * 100) / 100;
+
+const countRow = (c, box) => ({
+  key: `c${c.id}`,
+  source: 'count',
+  id: c.id,
+  direction: countGap(c) > 0 ? 'in' : 'out',
+  category: 'count',
+  label: c.reason,
+  amount: Math.abs(countGap(c)),
+  date: c.date,
+  section: c.section,
+  box,
+  counted: c.counted,
+  expected: c.expected,
+  created_by: c.created_by,
+  updated_by: c.updated_by,
+});
 
 // ما بقي دَينًا على صندوق، أقدمه أولًا. يوم الافتتاح لا يحدّه: دَين قديم يخرج يوم يُسدَّد.
 const owedOf = (box) =>
@@ -5601,8 +5933,8 @@ const owedOf = (box) =>
     .map(entryRow);
 
 const emptyFigures = () => ({
-  income: { sessions: 0, dues: 0, donation: 0, other: 0, transfer: 0, event: 0, total: 0 },
-  expenses: { ...Object.fromEntries(TREASURY_OUT.map((c) => [c, 0])), transfer: 0, event: 0, total: 0 },
+  income: { sessions: 0, member_dues: 0, dues: 0, donation: 0, other: 0, transfer: 0, event: 0, count: 0, total: 0 },
+  expenses: { ...Object.fromEntries(TREASURY_OUT.map((c) => [c, 0])), transfer: 0, event: 0, count: 0, total: 0 },
 });
 
 const addToFigures = (f, r) => {
@@ -5631,9 +5963,14 @@ function boxLedger(box, openings) {
   };
 }
 
-// Latest day first; within a day, what was written by hand (newest first) before the computed lines
+// Latest day first; within a day, its count on top — it was taken once the day's lines
+// were in — then what was written by hand (newest first) before the computed lines
 const rowOrder = (a, b) =>
-  a.date !== b.date ? (a.date < b.date ? 1 : -1) : (b.id ?? 0) - (a.id ?? 0);
+  a.date !== b.date
+    ? a.date < b.date
+      ? 1
+      : -1
+    : (b.source === 'count') - (a.source === 'count') || (b.id ?? 0) - (a.id ?? 0);
 
 // Every box the caller sees, each with its figures, and their movements and debts
 // together. A box not opened yet has no figures and adds nothing.
@@ -5948,14 +6285,104 @@ app.delete('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req,
   res.json(treasuryPayload(req));
 });
 
-// ---------- مصاريف النشاط ----------
-// ما اشتُري لنشاط (لوازم، ضيافة…) يُكتب من صفحته، فيخرج من صندوق فرقته. يكتبه من
-// يسجّل الدفع في النشاط (الحضور + رؤية المبالغ)، أو أمين المال.
+// ---------- المطابقة ----------
+// من يمسك الصندوق يعدّ ما فيه فعلًا و يكتبه مع السبب. ما يقوله السجلّ في آخر ذلك اليوم
+// يُحفظ معه، و الفرق سطر في الصندوق فيصير رصيده ما عُدّ. إعادة المطابقة (تصحيح المبلغ
+// أو اليوم) تعيد حساب ما يقوله السجلّ بدونها.
 
-const sessionExpensesOf = (sessionId) =>
+// What the book says a box held at the end of a day: its start and every line up to that
+// day. Redoing count `redo`, it and any later count of the same day are left out.
+// null: the box had not started yet.
+function bookBalanceOn(box, date, redo = null) {
+  const start = boxStart(box, openingsOf([box.section]));
+  if (!start || date < start.date) return null;
+  let n = start.amount;
+  for (const r of boxRows(box, start.date)) {
+    if (r.date > date) continue;
+    if (redo && r.source === 'count' && r.date === date && r.id >= redo.id) continue;
+    n += r.direction === 'in' ? r.amount : -r.amount;
+  }
+  return Math.round(n * 100) / 100;
+}
+
+// Validates a count against the book. The box is the body's on creation, the count's own
+// when it is redone.
+function parseCount(req, box, redo = null) {
+  const b = req.body || {};
+  const counted = parsePaid(b.counted);
+  if (counted === undefined || counted === null) return { error: 'invalid amount' };
+  if (!validISODate(b.date)) return { error: 'invalid date' };
+  const reason = optionalText(b.reason, 200);
+  if (reason === undefined) return { error: 'text too long' };
+  if (!reason) return { error: 'invalid reason' };
+  const expected = bookBalanceOn(box, b.date, redo);
+  if (expected === null) return { error: 'before opening' };
+  if (countGap({ counted, expected }) === 0) return { error: 'no difference' };
+  return { values: { section: box.section, branch_id: box.branch_id, date: b.date, counted, expected, reason } };
+}
+
+const countById = (id) => db.prepare('SELECT * FROM treasury_counts WHERE id = ?').get(id);
+
+// The count and its box, when the caller holds that box; otherwise a 404 is sent
+function loadCount(req, res) {
+  const c = countById(intOr(req.params.xid));
+  const box = c && visibleBox(req, boxKey(c.section, c.branch_id));
+  if (!box) {
+    res.status(404).json({ error: 'count not found' });
+    return [null, null];
+  }
+  return [c, box];
+}
+
+app.post('/api/treasury/counts', requirePerm('treasury.manage'), (req, res) => {
+  const box = bodyBox(req);
+  if (!box) return res.status(400).json({ error: 'invalid box' });
+  const parsed = parseCount(req, box);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  const id = db
+    .prepare(
+      `INSERT INTO treasury_counts (section, branch_id, date, counted, expected, reason, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(v.section, v.branch_id, v.date, v.counted, v.expected, v.reason, actorName(req)).lastInsertRowid;
+  auditEvent(req, 'create', 'treasury_count', id, null, countById(id));
+  res.status(201).json(treasuryPayload(req));
+});
+
+app.put('/api/treasury/counts/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const [c, box] = loadCount(req, res);
+  if (!c) return;
+  const parsed = parseCount(req, box, c);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const v = parsed.values;
+  db.prepare(
+    `UPDATE treasury_counts SET date = ?, counted = ?, expected = ?, reason = ?, updated_by = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(v.date, v.counted, v.expected, v.reason, actorName(req), c.id);
+  auditEvent(req, 'update', 'treasury_count', c.id, c, countById(c.id));
+  res.json(treasuryPayload(req));
+});
+
+app.delete('/api/treasury/counts/:xid', requirePerm('treasury.manage'), (req, res) => {
+  const [c] = loadCount(req, res);
+  if (!c) return;
+  db.prepare('DELETE FROM treasury_counts WHERE id = ?').run(c.id);
+  auditEvent(req, 'delete', 'treasury_count', c.id, c, null);
+  res.json(treasuryPayload(req));
+});
+
+// ---------- مصاريف النشاط و تبرعاته ----------
+// ما اشتُري لنشاط (لوازم، ضيافة…) يُكتب من صفحته، فيخرج من صندوق فرقته؛ و التبرّع الذي
+// وصل فيه يدخل الصندوق نفسه، بلا اسم للمتبرّع. يكتبهما من يسجّل الدفع في النشاط (الحضور +
+// رؤية المبالغ)، أو أمين المال.
+
+// What was written for a نشاط in its box: its مصاريف (out), or what was given in it (in)
+const sessionEntriesOf = (sessionId, direction) =>
   db
-    .prepare(`${ENTRY_SQL} WHERE e.session_id = ? AND e.direction = 'out' ORDER BY e.date DESC, e.id DESC`)
-    .all(sessionId)
+    .prepare(`${ENTRY_SQL} WHERE e.session_id = ? AND e.direction = ? ORDER BY e.date DESC, e.id DESC`)
+    .all(sessionId, direction)
     .map(entryRow);
 
 const canSeeSessionExpenses = (req) => hasPerm(req, 'sessions.read.fees') || hasPerm(req, 'treasury.read');
@@ -5979,60 +6406,70 @@ function loadSessionForMoney(req, res) {
   return s;
 }
 
-const loadSessionExpense = (req, res, s) => {
+const loadSessionEntry = (req, res, s, direction) => {
   const e = db
-    .prepare("SELECT * FROM treasury_entries WHERE id = ? AND session_id = ? AND direction = 'out'")
-    .get(intOr(req.params.xid), s.id);
-  if (!e) res.status(404).json({ error: 'expense not found' });
+    .prepare('SELECT * FROM treasury_entries WHERE id = ? AND session_id = ? AND direction = ?')
+    .get(intOr(req.params.xid), s.id, direction);
+  if (!e) res.status(404).json({ error: direction === 'out' ? 'expense not found' : 'donation not found' });
   return e || null;
 };
 
-// يوم المصروف يوم النشاط إن لم يُذكر: يُشترى له عادةً في يومه
+// يوم المصروف أو التبرّع يوم النشاط إن لم يُذكر: يُشترى له و يُعطى عادةً في يومه
 const withSessionDate = (req, s) => {
   const b = req.body || {};
   return b.date === undefined || b.date === null || b.date === '' ? { ...req, body: { ...b, date: s.date } } : req;
 };
 
-app.post('/api/sessions/:id/expenses', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
-  const s = loadSessionForMoney(req, res);
-  if (!s) return;
-  const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
-  if (parsed.error) return res.status(400).json({ error: parsed.error });
-  insertEntry(req, { ...parsed.values, branch_id: s.branch_id }, s.section, s.id);
-  res.status(201).json({ expenses: sessionExpensesOf(s.id) });
-});
+// /expenses: مصاريف النشاط — /donations: تبرعاته. يردّ كلٌّ لائحته كاملة بعد الحفظ.
+for (const [list, direction] of [
+  ['expenses', 'out'],
+  ['donations', 'in'],
+]) {
+  app.post(`/api/sessions/:id/${list}`, requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+    const s = loadSessionForMoney(req, res);
+    if (!s) return;
+    const parsed = parseTreasuryEntry(withSessionDate(req, s), direction);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    insertEntry(req, { ...parsed.values, branch_id: s.branch_id }, s.section, s.id);
+    res.status(201).json({ [list]: sessionEntriesOf(s.id, direction) });
+  });
 
-app.put('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
-  const s = loadSessionForMoney(req, res);
-  if (!s) return;
-  const e = loadSessionExpense(req, res, s);
-  if (!e) return;
-  const parsed = parseTreasuryEntry(withSessionDate(req, s), 'out');
-  if (parsed.error) return res.status(400).json({ error: parsed.error });
-  updateEntry(req, e, { ...parsed.values, branch_id: s.branch_id });
-  res.json({ expenses: sessionExpensesOf(s.id) });
-});
+  app.put(`/api/sessions/:id/${list}/:xid`, requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+    const s = loadSessionForMoney(req, res);
+    if (!s) return;
+    const e = loadSessionEntry(req, res, s, direction);
+    if (!e) return;
+    const parsed = parseTreasuryEntry(withSessionDate(req, s), direction);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    updateEntry(req, e, { ...parsed.values, branch_id: s.branch_id });
+    res.json({ [list]: sessionEntriesOf(s.id, direction) });
+  });
 
-app.delete('/api/sessions/:id/expenses/:xid', requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
-  const s = loadSessionForMoney(req, res);
-  if (!s) return;
-  const e = loadSessionExpense(req, res, s);
-  if (!e) return;
-  deleteEntry(req, e);
-  res.json({ expenses: sessionExpensesOf(s.id) });
-});
+  app.delete(`/api/sessions/:id/${list}/:xid`, requirePerm('sessions.read'), requireSessionMoney, (req, res) => {
+    const s = loadSessionForMoney(req, res);
+    if (!s) return;
+    const e = loadSessionEntry(req, res, s, direction);
+    if (!e) return;
+    deleteEntry(req, e);
+    res.json({ [list]: sessionEntriesOf(s.id, direction) });
+  });
+}
 
-// ---------- مصاريف الفرقة ----------
+// ---------- مالية الفرقة ----------
 // كل ما صُرف لفرقة: مصاريف أنشطتها، و ما كُتب لها في الصندوق. منذ البداية، مدفوعًا أو
-// لم يُدفع بعد — هي كلفة الفرقة، لا حركة الصندوق، فيوم الافتتاح لا يحدّها.
-app.get('/api/branches/:id/expenses', requirePerm('branches.read'), (req, res) => {
+// لم يُدفع بعد — هي كلفة الفرقة، لا حركة الصندوق، فيوم الافتتاح لا يحدّها. و كل ما
+// أُعطي لها: تبرعات أنشطتها، و ما كُتب تبرّعًا لصندوقها.
+app.get('/api/branches/:id/money', requirePerm('branches.read'), (req, res) => {
   const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(intOr(req.params.id));
   if (!branch) return res.status(404).json({ error: 'branch not found' });
   if (!branchOk(req, branch.id) || !canSeeSessionExpenses(req)) return res.status(403).json({ error: 'forbidden' });
-  const expenses = db
-    .prepare(`${ENTRY_SQL} WHERE e.direction = 'out' AND ${ENTRY_BRANCH_SQL} = ? ORDER BY e.date DESC, e.id DESC`)
-    .all(branch.id)
-    .map(entryRow);
+  const entriesOf = (where) =>
+    db
+      .prepare(`${ENTRY_SQL} WHERE ${where} AND ${ENTRY_BRANCH_SQL} = ? ORDER BY e.date DESC, e.id DESC`)
+      .all(branch.id)
+      .map(entryRow);
+  const expenses = entriesOf("e.direction = 'out'");
+  const donations = entriesOf("e.direction = 'in' AND e.category = 'donation'");
   const byCategory = Object.fromEntries(TREASURY_OUT.map((c) => [c, 0]));
   let total = 0;
   let owed = 0;
@@ -6041,13 +6478,24 @@ app.get('/api/branches/:id/expenses', requirePerm('branches.read'), (req, res) =
     total += x.amount;
     if (!x.paid_on) owed += x.amount;
   }
-  // The فرقة's own box, for whoever sees it: what is in it now
+  // The فرقة's own box, for whoever sees it: what is in it now, since when, and
+  // whether the caller writes in it (a general مصروف or تبرّع of the فرقة, from this tab)
   const box = hasPerm(req, 'treasury.read') ? visibleBox(req, `b${branch.id}`) : null;
   const l = box && boxLedger(box, openingsOf([box.section]));
   res.json({
     expenses,
+    donations,
     summary: { total, owed, paid: total - owed, by_category: byCategory },
-    caisse: box ? { box: box.key, opened: !!l.start, balance: l.balance, owed: l.owedTotal } : null,
+    caisse: box
+      ? {
+          box: box.key,
+          opened: !!l.start,
+          start: l.start?.date ?? null,
+          balance: l.balance,
+          owed: l.owedTotal,
+          can_write: hasPerm(req, 'treasury.manage'),
+        }
+      : null,
   });
 });
 

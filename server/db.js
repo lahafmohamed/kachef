@@ -570,7 +570,7 @@ CREATE TABLE IF NOT EXISTS event_donations (
 );
 
 -- الصندوق: ما يُكتب فيه باليد — مصروف (out)، أو تبرّع أو مدخول آخر (in). اشتراكات
--- الأنشطة (attendance.paid) و اشتراك القادة (leader_dues) لا تُنسخ هنا: تُقرأ من
+-- الأنشطة (attendance.paid) و اشتراك القادة (leader_dues) و العناصر (member_dues) لا تُنسخ هنا: تُقرأ من
 -- مصدرها عند الحساب، فتصحيح خانة دفع يصحّح الصندوق معه. المخيمات خارجه: حسابها في
 -- صفحتها. category بلا CHECK كفئات مصاريف المخيم — التحقّق في الخادم.
 CREATE TABLE IF NOT EXISTS treasury_entries (
@@ -649,6 +649,45 @@ CREATE TABLE IF NOT EXISTS event_fundings (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_by TEXT,
   updated_at TEXT
+);
+
+-- مطابقة صندوق: عُدّ ما فيه فعلًا (counted) و كان السجلّ يقول expected في آخر ذلك
+-- اليوم. الفرق (counted − expected) سطر في الصندوق: فائض يدخله أو عجز يخرج منه، فيصير
+-- رصيده ما عُدّ. reason إلزامي: لماذا لم يطابق (مصروف نُسي، خطأ في العدّ…). الفرق
+-- ثابت بعد الحفظ: ما يُكتب بعدها لا يغيّره، و لا تُحفظ مطابقة بلا فرق.
+CREATE TABLE IF NOT EXISTS treasury_counts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  -- الصندوق: NULL = صندوق الفوج في قسمه
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  date TEXT NOT NULL,
+  counted REAL NOT NULL CHECK (counted >= 0),
+  expected REAL NOT NULL,
+  reason TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  updated_at TEXT
+);
+
+-- اشتراك العناصر الشهري: صفّ = دفعة لشهر من عنصر. month = 'YYYY-MM'. الشهر قد يُدفع
+-- على دفعات (500 ثم 1500…): يُسدَّد متى بلغ مجموع دفعاته القيمة الشهرية؛ لا صفّ = لم يُدفع
+-- منه شيء. يُدفع عادةً في نشاط (session_id: يُفكّ إن حُذف النشاط و تبقى الدفعة) أو يُسجَّل
+-- من ملفّ العنصر. amount ما دُفع فعلًا في هذه الدفعة. paid_on: يوم دخول المال، يوم
+-- النشاط حين يُدفع فيه. branch_id و section: صندوق فرقة العنصر يوم الدفع، فترفيعه بعدها
+-- لا ينقل مالًا دخل صندوقًا. حذف العنصر يُبقي الدفعة في الصندوق (member_id NULL): المال
+-- دخل فعلًا.
+CREATE TABLE IF NOT EXISTS member_dues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
+  month TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount > 0),
+  paid_on TEXT NOT NULL,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  recorded_by TEXT,
+  recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
 
@@ -965,6 +1004,35 @@ function migrateTreasuryOpenings() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_treasury_transfers_section_date ON treasury_transfers(section, date)');
 }
 
+// An عنصر's month took one row, paid in full; it now takes one row per payment, so that
+// 500 given one week and 1500 the next each enter the box on their own day. SQLite cannot
+// drop a UNIQUE constraint in place: the table is rebuilt, its rows kept as they are.
+function migrateMemberDues() {
+  const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'member_dues'").get();
+  if (/UNIQUE\s*\(\s*member_id\s*,\s*month\s*\)/i.test(sql))
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE member_dues_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
+          month TEXT NOT NULL,
+          amount REAL NOT NULL CHECK (amount > 0),
+          paid_on TEXT NOT NULL,
+          session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+          branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+          section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+          recorded_by TEXT,
+          recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO member_dues_new SELECT id, member_id, month, amount, paid_on, session_id, branch_id, section,
+          recorded_by, recorded_at FROM member_dues;
+        DROP TABLE member_dues;
+        ALTER TABLE member_dues_new RENAME TO member_dues;
+      `);
+    })();
+  db.exec('CREATE INDEX IF NOT EXISTS idx_member_dues_member_month ON member_dues(member_id, month)');
+}
+
 function migrateAmanaHelpers() {
   const PAIRS = [
     ['إعلامي', 'أمين الإعلام'],
@@ -1156,6 +1224,7 @@ function migrate() {
       'UPDATE treasury_entries SET branch_id = (SELECT s.branch_id FROM sessions s WHERE s.id = treasury_entries.session_id) WHERE session_id IS NOT NULL'
     );
   migrateTreasuryOpenings();
+  migrateMemberDues();
   // First run: an admin must exist or nobody can log in. Default credentials
   // admin / admin123 — change them from the admin page right away.
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
@@ -1216,6 +1285,9 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_treasury_entries_branch ON treasury_entries(branch_id);
     CREATE INDEX IF NOT EXISTS idx_event_fundings_event ON event_fundings(event_id);
     CREATE INDEX IF NOT EXISTS idx_event_fundings_box ON event_fundings(section, branch_id, date);
+    CREATE INDEX IF NOT EXISTS idx_treasury_counts_box ON treasury_counts(section, branch_id, date);
+    CREATE INDEX IF NOT EXISTS idx_member_dues_box ON member_dues(section, branch_id, paid_on);
+    CREATE INDEX IF NOT EXISTS idx_member_dues_session ON member_dues(session_id);
   `);
 
   migrateBranchRoles();

@@ -6,7 +6,8 @@ import { usePerms } from '../auth';
 import { useFetch, useUrlFilters } from '../hooks';
 import { useSection } from '../section';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
-import { INCOME_SOURCES, OUT_FIGURES, boxName, byMonth, fmtMonth } from '../lib/treasury';
+import { INCOME_SOURCES, OUT_FIGURES, bookBalanceOn, boxName, byMonth, fmtMonth } from '../lib/treasury';
+import AmountInput from '../components/AmountInput';
 import DatePicker from '../components/DatePicker';
 import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import {
@@ -35,7 +36,9 @@ import {
   IconPencil,
   IconPlus,
   IconReceipt,
+  IconScale,
   IconShield,
+  IconUsers,
   IconTent,
   IconTransfer,
   IconTrash,
@@ -131,9 +134,9 @@ const lineButton =
 /**
  * The three numbers of one caisse, or of all of them together: what is in it now, what
  * came in and what went out since it was opened. Under one box's balance, when and
- * with how much it started.
+ * with how much it started. Beside it, the أمين المال balances it against a count.
  */
-function Figures({ fig, box, name, canManage, onOpening, t }) {
+function Figures({ fig, box, name, canManage, onOpening, onCount, t }) {
   const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: fig.income[k] })).filter(
     (i) => i.amount > 0
   );
@@ -149,9 +152,18 @@ function Figures({ fig, box, name, canManage, onOpening, t }) {
   return (
     <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2 lg:grid-cols-3">
       <Figure label={name ? `${t('treasury.balance')} · ${name}` : t('treasury.balance')} className="sm:col-span-2 lg:col-span-1">
-        <p className={cn('text-3xl font-bold tracking-tight tabular-nums', fig.balance < 0 && 'text-destructive')}>
-          <span dir="ltr">{money(fig.balance)}</span>
-        </p>
+        {/* A long balance pushes the button under it rather than past the card */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <p className={cn('min-w-0 text-3xl font-bold tracking-tight tabular-nums', fig.balance < 0 && 'text-destructive')}>
+            <span dir="ltr">{money(fig.balance)}</span>
+          </p>
+          {canManage && (
+            <Button size="sm" variant="outline" onClick={() => onCount(box)} className="shrink-0">
+              <IconScale />
+              {t('treasury.countAction')}
+            </Button>
+          )}
+        </div>
         {fig.balance < 0 && <p className="text-xs font-medium text-destructive">{t('treasury.deficit')}</p>}
         {fig.owed > 0 && (
           <p className="text-xs font-medium text-warning">
@@ -199,24 +211,29 @@ const ROW_CLASS =
 
 /**
  * One movement: a نشاط's اشتراكات (one line per نشاط), a day of اشتراكات القادة (who
- * paid, how many months), a transfer, money given to or back from a camp, or a line
- * written by hand. What is written by hand opens for correction; the other lines lead
- * to where they are recorded.
+ * paid, how many months), the عناصر' monthly dues taken in a نشاط or on a day outside
+ * one, a transfer, money given to or back from a camp, or a line written by hand, or
+ * what a count found more or less than the book. What is written here opens for
+ * correction; the other lines lead to where they are recorded.
  * `direction` 'move': a transfer between two caisses on screen, which moves nothing.
  */
-function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEdit }) {
+function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canMembers, onEdit }) {
   const isIn = r.direction === 'in';
   const move = r.direction === 'move';
   const Icon =
     r.source === 'transfer'
       ? IconTransfer
-      : r.source === 'event'
+      : r.source === 'count'
+        ? IconScale
+        : r.source === 'event'
         ? IconTent
         : r.source === 'session'
         ? IconCalendar
         : r.source === 'dues'
           ? IconShield
-          : !isIn
+          : r.source === 'member_dues'
+            ? IconUsers
+            : !isIn
             ? IconReceipt
             : r.category === 'donation'
               ? IconHandHeart
@@ -228,15 +245,22 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
         : isIn
           ? t('treasury.transferRowFrom', { name: names.inline(r.from) })
           : t('treasury.transferRowTo', { name: names.inline(r.to) })
-      : r.source === 'event'
+      : r.source === 'count'
+        ? t(isIn ? 'treasury.countRowIn' : 'treasury.countRowOut')
+        : r.source === 'event'
         ? r.event_title || t('treasury.eventDeleted')
         : r.source === 'session'
           ? r.label
           : r.source === 'dues'
             ? t('treasury.duesRow')
-            : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
+            : r.source === 'member_dues'
+              ? t('treasury.memberDuesRow')
+              : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
   const meta = [fmtDate(r.date)];
-  if (r.source === 'event') {
+  if (r.source === 'count') {
+    meta.push(r.label, t('treasury.countedRow', { amount: fmtAmount(r.counted) }));
+    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
+  } else if (r.source === 'event') {
     if (r.event_kind) meta.push(t(`event.kind_${r.event_kind}`));
     meta.push(t(isIn ? 'treasury.eventIn' : 'treasury.eventOut'));
     if (r.label) meta.push(r.label);
@@ -255,6 +279,19 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
     // «+2» isolated left-to-right: after Arabic names it would otherwise read «2+»
     const more = r.leaders.length - 3;
     meta.push(t('treasury.monthsPaid', { count: months }), more > 0 ? `${names} ⁦+${more}⁩` : names);
+  } else if (r.source === 'member_dues') {
+    // Taken in a نشاط: its title says where. Then the months it was given for — whole
+    // or in part: 500 for October is October's — and who gave it
+    if (r.session_title) meta.push(t('treasury.forSession', { title: r.session_title }));
+    const months = r.members.reduce((n, m) => n + m.months, 0);
+    const named = r.members.filter((m) => m.name);
+    const names = named
+      .slice(0, 3)
+      .map((m) => m.name)
+      .join(lng === 'ar' ? '، ' : ', ');
+    const more = named.length - 3;
+    meta.push(t('treasury.duesMonths', { count: months }));
+    if (names) meta.push(more > 0 ? `${names} ⁦+${more}⁩` : names);
   } else {
     // An unnamed تبرّع is already titled «تبرّع»: its kind would only repeat it
     if (!isIn || r.label) meta.push(t(isIn ? `treasury.type_${r.category}` : `treasury.cat_${r.category}`));
@@ -291,7 +328,7 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
     </>
   );
 
-  if ((r.source === 'entry' || r.source === 'transfer') && canEdit)
+  if (['entry', 'transfer', 'count'].includes(r.source) && canEdit)
     return (
       <button
         type="button"
@@ -318,6 +355,19 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, onEd
   if (r.source === 'dues' && canDues)
     return (
       <Link to="/leaders?tab=dues" className={ROW_CLASS}>
+        {body}
+      </Link>
+    );
+  // Dues taken in a نشاط lead to it; outside one, a single عنصر's to his card
+  if (r.source === 'member_dues' && r.session_id && canSessions)
+    return (
+      <Link to={`/sessions/${r.session_id}`} className={ROW_CLASS}>
+        {body}
+      </Link>
+    );
+  if (r.source === 'member_dues' && !r.session_id && r.members.length === 1 && r.members[0].id && canMembers)
+    return (
+      <Link to={`/members/${r.members[0].id}?tab=dues`} className={ROW_CLASS}>
         {body}
       </Link>
     );
@@ -635,14 +685,9 @@ function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, o
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="tr_amount">{t('treasury.amount')}</Label>
-            <Input
+            <AmountInput
               id="tr_amount"
               required
-              type="number"
-              min="0.01"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={set('amount')}
             />
@@ -747,14 +792,9 @@ function OpeningDialog({ open, box, boxes, nameOf, onClose, onSaved, t }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="op_amount">{t('treasury.openingAmount')}</Label>
-            <Input
+            <AmountInput
               id="op_amount"
               required
-              type="number"
-              min="0"
-              step="any"
-              inputMode="decimal"
-              className="tabular-nums"
               value={form.amount}
               onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
             />
@@ -771,6 +811,199 @@ function OpeningDialog({ open, box, boxes, nameOf, onClose, onSaved, t }) {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">{t('treasury.openingHint')}</p>
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Balancing a caisse: the amount really in it, counted on a day, against what its lines
+ * say it holds by then. The gap is written into the caisse with its reason, so its
+ * balance becomes what was counted. `box` null: the form asks which caisse. `count`:
+ * a balancing redone — the book is reckoned without it.
+ */
+function CountDialog({ open, count, box, boxes, rows, nameOf, onClose, onSaved, t }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [form, setForm] = useState({ box: '', counted: '', date: '', reason: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const opened = boxes.filter((b) => b.visible && b.start);
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    setForm(
+      count
+        ? { box: count.box, counted: String(count.counted), date: count.date, reason: count.label || '' }
+        : { box: box?.key || opened[0]?.key || '', counted: '', date: todayISO(), reason: '' }
+    );
+  }, [open, count]); // eslint-disable-line react-hooks/exhaustive-deps -- the boxes on opening
+
+  const target = boxes.find((b) => b.key === form.box);
+  const book = bookBalanceOn(target, rows, form.date, count);
+  const counted = form.counted === '' ? null : Number(form.counted);
+  const gap = book === null || counted === null || !Number.isFinite(counted) ? null : Math.round((counted - book) * 100) / 100;
+  const early = target?.start && form.date && form.date < target.start.date;
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const body = { box: form.box, counted, date: form.date, reason: form.reason.trim() };
+      const res = count
+        ? await api.put(`/treasury/counts/${count.id}`, body)
+        : await api.post('/treasury/counts', body);
+      onSaved(res, count ? 'treasury.countUpdated' : 'treasury.countSaved');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (
+      !(await confirm({
+        title: t('treasury.editCount'),
+        message: t('treasury.deleteCountConfirm', { amount: fmtAmount(count.amount) }),
+        confirmLabel: t('common.delete'),
+      }))
+    )
+      return;
+    try {
+      onSaved(await api.del(`/treasury/counts/${count.id}`), 'treasury.countDeleted');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  const title = count ? t('treasury.editCount') : t('treasury.countTitle');
+  const fixed = count || box;
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={fixed && target ? `${title} — ${nameOf(target.key)}` : title}
+      description={t('treasury.countIntro')}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          {count ? (
+            <Button variant="destructive-ghost" onClick={remove}>
+              <IconTrash />
+              {t('common.delete')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="treasury-count-form" loading={saving} disabled={!!early || gap === 0}>
+              {count ? t('common.save') : t('treasury.countAction')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="treasury-count-form" onSubmit={save} className="space-y-4">
+        {!fixed && opened.length > 1 && (
+          <div className="space-y-1.5">
+            <Label htmlFor="ct_box">{t('treasury.box')}</Label>
+            <Select id="ct_box" value={form.box} onChange={set('box')}>
+              {opened.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {nameOf(b.key)}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="ct_amount">{t('treasury.countedAmount')}</Label>
+            <AmountInput
+              id="ct_amount"
+              required
+              value={form.counted}
+              onChange={set('counted')}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ct_date">{t('treasury.openingDate')}</Label>
+            <DatePicker id="ct_date" required clearable={false} value={form.date} onChange={set('date')} />
+          </div>
+        </div>
+        {early ? (
+          <p role="alert" className="text-sm font-medium text-warning">
+            {t('treasury.countBeforeOpening', { date: fmtDate(target.start.date) })}
+          </p>
+        ) : (
+          book !== null && (
+            <dl className="divide-y divide-border rounded-lg border border-border text-sm">
+              <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+                <dt className="text-muted-foreground">{t('treasury.countBook')}</dt>
+                <dd dir="ltr" className="font-medium tabular-nums">
+                  {money(book)}
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+                <dt className="text-muted-foreground">{t('treasury.countCounted')}</dt>
+                <dd dir="ltr" className="font-medium tabular-nums">
+                  {counted === null ? '—' : fmtAmount(counted)}
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+                <dt className="font-medium">{t('treasury.countGap')}</dt>
+                <dd
+                  className={cn(
+                    'font-semibold tabular-nums',
+                    gap > 0 && 'text-success',
+                    gap < 0 && 'text-destructive'
+                  )}
+                >
+                  {gap === null ? (
+                    '—'
+                  ) : gap === 0 ? (
+                    fmtAmount(0)
+                  ) : (
+                    <>
+                      <span dir="ltr">
+                        {gap > 0 ? '+' : '−'}
+                        {fmtAmount(Math.abs(gap))}
+                      </span>{' '}
+                      <span className="font-medium">{t(gap > 0 ? 'treasury.countOver' : 'treasury.countShort')}</span>
+                    </>
+                  )}
+                </dd>
+              </div>
+            </dl>
+          )
+        )}
+        {gap === 0 && <p className="text-sm font-medium text-success">{t('treasury.countExact')}</p>}
+        {gap !== null && gap !== 0 && (
+          <p className="text-sm text-muted-foreground">{t('treasury.countAfter', { amount: fmtAmount(counted) })}</p>
+        )}
+        <div className="space-y-1.5">
+          <Label htmlFor="ct_reason">{t('treasury.countReason')}</Label>
+          <Input
+            id="ct_reason"
+            required
+            maxLength={200}
+            autoComplete="off"
+            placeholder={t('treasury.countReasonHint')}
+            value={form.reason}
+            onChange={set('reason')}
+          />
+        </div>
         {error && (
           <p role="alert" className="text-sm font-medium text-destructive">
             {error}
@@ -839,6 +1072,8 @@ export default function Treasury() {
   const [paying, setPaying] = useState(null);
   // { transfer } while one is written or corrected
   const [transferDialog, setTransferDialog] = useState(null);
+  // { box, count } while a caisse is balanced (box null: asked) or a balancing redone
+  const [countDialog, setCountDialog] = useState(null);
 
   const data = ledger.data;
   const canManage = !!data?.can_manage;
@@ -881,6 +1116,7 @@ export default function Treasury() {
     setOpeningDialog(null);
     setPaying(null);
     setTransferDialog(null);
+    setCountDialog(null);
     ledger.setData(res);
     toast.success(t(key));
   };
@@ -995,6 +1231,7 @@ export default function Treasury() {
                 name={!multi && sel ? shortOf(sel) : null}
                 canManage={canManage}
                 onOpening={(box) => setOpeningDialog({ box })}
+                onCount={(box) => setCountDialog({ box, count: null })}
                 t={t}
               />
 
@@ -1067,10 +1304,13 @@ export default function Treasury() {
                                 canEdit={canEditRow(r)}
                                 canSessions={has('sessions.read')}
                                 canDues={has('leaders.dues')}
+                                canMembers={has('members.read')}
                                 onEdit={(x) =>
                                   x.source === 'transfer'
                                     ? setTransferDialog({ transfer: x })
-                                    : setEntryDialog({ direction: x.direction, entry: x })
+                                    : x.source === 'count'
+                                      ? setCountDialog({ box: null, count: x })
+                                      : setEntryDialog({ direction: x.direction, entry: x })
                                 }
                               />
                             </li>
@@ -1115,6 +1355,17 @@ export default function Treasury() {
             defaultFrom={sel?.key}
             nameOf={names.short}
             onClose={() => setTransferDialog(null)}
+            onSaved={saved}
+            t={t}
+          />
+          <CountDialog
+            open={!!countDialog}
+            count={countDialog?.count ?? null}
+            box={countDialog?.box ?? null}
+            boxes={boxes}
+            rows={data?.rows || []}
+            nameOf={names.short}
+            onClose={() => setCountDialog(null)}
             onSaved={saved}
             t={t}
           />

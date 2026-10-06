@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
-import { avatarName, fmtAmount, memberName } from '../utils';
+import { avatarName, fmtAmount, fmtDate, memberName } from '../utils';
 import { toDate } from '../lib/date';
 import SearchInput from './SearchInput';
 import {
@@ -31,28 +31,57 @@ export const dueMonths = (months, currentMonth, startMonth) =>
   months.filter((m) => m >= startMonth && m <= currentMonth);
 
 /**
- * One month of one قائد: a tap marks it paid, a second tap takes it back. A month not
- * reached yet is still payable (an advance) but reads quieter than one that is owed.
+ * One month of one قائد's or عنصر's dues. `paid`: what was given for it — a قائد's month
+ * is always whole, an عنصر's may be a part of it (`full: false`), shown with its amount.
+ * A month not reached yet is still payable (an advance) but reads quieter than one that
+ * is owed. A tap toggles the month paid (`onToggle`) — or, where months are picked
+ * rather than ticked (`selected` given), picks it.
  */
-export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name }) {
+export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name, selected }) {
+  const full = !!paid && paid.full !== false;
+  const part = paid && !full ? paid.amount : null;
   const label = `${fmtDueMonth(month, lng, 'long')} ${month.slice(0, 4)} — ${
-    paid ? t('dues.paid') : owed ? t('dues.unpaid') : t('dues.notYet')
+    full
+      ? t('dues.paid')
+      : part
+        ? t('dues.partPaid', { amount: fmtAmount(part), left: fmtAmount(paid.left) })
+        : owed
+          ? t('dues.unpaid')
+          : t('dues.notYet')
   }`;
-  const title = paid
-    ? `${label}\n${t('dues.recordedBy', { name: paid.recorded_by || '—', amount: fmtAmount(paid.amount) })}`
-    : label;
+  // Who wrote it, and an عنصر's payment taken in a نشاط also says which one
+  const lines = paid?.payments
+    ? paid.payments.map((p) =>
+        [fmtAmount(p.amount), p.session_title || fmtDate(p.paid_on), p.recorded_by && t('treasury.recordedBy', { name: p.recorded_by })]
+          .filter(Boolean)
+          .join(' · ')
+      )
+    : paid
+      ? [t('dues.recordedBy', { name: paid.recorded_by || '—', amount: fmtAmount(paid.amount) }), paid.session_title]
+      : [];
+  const title = [label, ...lines].filter(Boolean).join('\n');
   const cls = cn(
-    'flex h-9 w-9 items-center justify-center rounded-lg border text-xs transition-[color,background-color,border-color,scale]',
-    paid
+    'flex h-9 w-9 items-center justify-center rounded-lg border text-xs transition-[color,background-color,border-color,box-shadow,scale]',
+    full
       ? 'border-success/40 bg-success/15 text-success'
-      : owed
-        ? 'border-destructive/30 bg-destructive/5 text-destructive/70'
-        : 'border-dashed border-border text-muted-foreground/50'
+      : part
+        ? 'border-warning/40 bg-warning/12 text-warning'
+        : owed
+          ? 'border-destructive/30 bg-destructive/5 text-destructive/70'
+          : 'border-dashed border-border text-muted-foreground/50',
+    selected && 'ring-2 ring-primary'
+  );
+  const mark = full ? (
+    <IconCheck className="h-4 w-4" />
+  ) : part ? (
+    <span className="text-[10px] font-semibold tabular-nums">{fmtAmount(part, { unit: false })}</span>
+  ) : (
+    '·'
   );
   if (!editable)
     return (
       <span className={cls} title={title} role="img" aria-label={label}>
-        {paid ? <IconCheck className="h-4 w-4" /> : '·'}
+        {mark}
       </span>
     );
   return (
@@ -60,11 +89,11 @@ export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name })
       type="button"
       onClick={onToggle}
       title={title}
-      aria-pressed={!!paid}
-      aria-label={`${name} — ${label}`}
+      aria-pressed={selected === undefined ? full : selected}
+      aria-label={name ? `${name} — ${label}` : label}
       className={cn(cls, 'focus-ring active:scale-[0.94] hover:border-primary/50')}
     >
-      {paid ? <IconCheck className="h-4 w-4" /> : '·'}
+      {mark}
     </button>
   );
 }
@@ -269,32 +298,40 @@ export default function LeaderDues() {
  * on a profile. Only who holds leaders.dues can tick a month.
  */
 export function LeaderDuesCard({ endpoint, compact = false }) {
-  const { t, i18n } = useTranslation();
-  const lng = i18n.language;
+  const { t } = useTranslation();
+  return (
+    <DuesCard
+      endpoint={endpoint}
+      title={t(compact ? 'dues.mine' : 'dues.title')}
+      writeUrl={(data, month) => `/leaders/${data.leader_id}/dues/${month}`}
+    />
+  );
+}
+
+/**
+ * A قائد's monthly dues, read from `endpoint`: paid so far, still owed, and the 12 months
+ * of the year picked, each a tap away from paid or not. `writeUrl(data, month)` is where
+ * a tap is saved. `bare`: no card and no heading, inside something that has them.
+ */
+export function DuesCard({ endpoint, title, writeUrl, bare = false }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const [year, setYear] = useState('');
   const res = useFetch(`${endpoint}${year ? `?year=${encodeURIComponent(year)}` : ''}`);
   const data = res.data;
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
-  if (res.loading && !data) return <Skeleton className="h-40 rounded-2xl" />;
+  if (res.loading && !data) return <Skeleton className={cn('rounded-2xl', bare ? 'h-72' : 'h-40')} />;
   // Account not tied to a قائد: nothing to show on the home page
   if (!data) return null;
 
-  const { months, monthly, current_month: currentMonth, paid, summary } = data;
-  const owed = dueMonths(months, currentMonth, data.start_month);
-  const paidCount = months.filter((m) => paid[m]).length;
-  const paidThisYear = months.reduce((n, m) => n + (paid[m]?.amount || 0), 0);
-  const unpaid = summary.unpaid_months;
-  const monthLabel = (m) => `${fmtDueMonth(m, lng, 'long')} ${m.slice(0, 4)}`;
-
   async function toggle(month) {
-    const was = paid[month] || null;
+    const was = data.paid[month] || null;
     const set = (p, sum) =>
       res.setData((d) => ({ ...d, paid: { ...d.paid, [month]: p || undefined }, summary: sum || d.summary }));
-    set(was ? null : { amount: monthly, recorded_by: null });
+    set(was ? null : { amount: data.monthly, recorded_by: null });
     try {
-      const r = await api.put(`/leaders/${data.leader_id}/dues/${month}`, { paid: !was });
+      const r = await api.put(writeUrl(data, month), { paid: !was });
       set(r.paid, r.summary);
     } catch (err) {
       set(was);
@@ -302,15 +339,46 @@ export function LeaderDuesCard({ endpoint, compact = false }) {
     }
   }
 
+  return <DuesBody data={data} title={title} bare={bare} onYear={setYear} onCell={data.can_edit ? toggle : null} />;
+}
+
+/**
+ * One person's monthly dues as read from the server — a قائد's or an عنصر's: paid so
+ * far, still owed, and the 12 months of the year, each a tap (`onCell(month)`) away
+ * from whatever the caller does with it; no `onCell`, the months only read. `selected`:
+ * the month picked, where months are picked rather than ticked. `children` come under
+ * the heading. `bare`: no card and no heading, inside a dialog that has them.
+ */
+export function DuesBody({ data, title, bare = false, onYear, onCell = null, selected, children }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const { months, monthly, current_month: currentMonth, paid, summary } = data;
+  // An عنصر no longer active is asked for nothing; what he paid stays green
+  const inactive = data.active === false;
+  const owed = inactive ? [] : dueMonths(months, currentMonth, data.start_month);
+  // A month paid in part is not paid yet
+  const paidCount = months.filter((m) => paid[m] && paid[m].full !== false).length;
+  const paidThisYear = months.reduce((n, m) => n + (paid[m]?.amount || 0), 0);
+  const unpaid = summary.unpaid_months;
+  const monthLabel = (m) => `${fmtDueMonth(m, lng, 'long')} ${m.slice(0, 4)}`;
+
+  const Wrapper = bare ? 'div' : Card;
   return (
-    <Card className="space-y-4 p-4 sm:p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">{t(compact ? 'dues.mine' : 'dues.title')}</h2>
-          <p className="text-sm text-muted-foreground">{t('dues.monthlyShort', { amount: fmtAmount(monthly) })}</p>
+    <Wrapper className={cn('space-y-4', !bare && 'p-4 sm:p-5')}>
+      {/* The text wraps before the year picker leaves its line */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {!bare && <h2 className="text-base font-semibold">{title}</h2>}
+          <p className="text-sm text-muted-foreground">
+            {t('dues.monthlyShort', { amount: fmtAmount(monthly) })}
+            {/* An عنصر who joined later owes from his own first month */}
+            {data.member_id && !inactive && ` · ${t('dues.since', { month: monthLabel(data.start_month) })}`}
+          </p>
         </div>
-        <DuesYearSelect years={data.years} value={data.year} onChange={setYear} t={t} />
+        <DuesYearSelect years={data.years} value={data.year} onChange={onYear} t={t} />
       </div>
+      {inactive && <p className="text-sm text-muted-foreground">{t('dues.inactive')}</p>}
+      {children}
 
       {/* Ce que le قائد cherche d'abord : a-t-il encore quelque chose à payer ? */}
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border bg-border">
@@ -334,7 +402,8 @@ export function LeaderDuesCard({ endpoint, compact = false }) {
         </div>
       </div>
 
-      <ul className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-12">
+      {/* Six across at most inside a dialog: twelve 36px cells do not fit its width */}
+      <ul className={cn('grid grid-cols-4 gap-2 sm:grid-cols-6', !bare && 'lg:grid-cols-12')}>
         {months.map((m) => (
           <li key={m} className="flex flex-col items-center gap-1">
             <span className={cn('text-xs', m === currentMonth ? 'font-semibold text-primary' : 'text-muted-foreground')}>
@@ -344,11 +413,12 @@ export function LeaderDuesCard({ endpoint, compact = false }) {
               month={m}
               paid={paid[m]}
               owed={owed.includes(m)}
-              editable={data.can_edit}
-              onToggle={() => toggle(m)}
+              editable={!!onCell}
+              onToggle={() => onCell(m)}
               lng={lng}
               t={t}
               name=""
+              selected={selected === undefined ? undefined : selected === m}
             />
           </li>
         ))}
@@ -359,6 +429,6 @@ export function LeaderDuesCard({ endpoint, compact = false }) {
           <span className="font-medium">{t('dues.unpaidList')}</span> {unpaid.map(monthLabel).join(lng === 'ar' ? '، ' : ', ')}
         </p>
       )}
-    </Card>
+    </Wrapper>
   );
 }

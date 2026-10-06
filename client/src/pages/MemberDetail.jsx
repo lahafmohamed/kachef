@@ -8,6 +8,7 @@ import { toDate } from '../lib/date';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
+import { MemberDuesCard } from '../components/MemberDues';
 import MemberFormDialog from '../components/MemberForm';
 import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, callLabel, contactsOf, telHref, waHref, whoLabel } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
@@ -47,7 +48,7 @@ const STATUS_BADGE = {
   excused: ['warning', 'session.excused'],
 };
 
-const TABS = ['attendance', 'matalib', 'events', 'profile', 'history'];
+const TABS = ['attendance', 'matalib', 'events', 'dues', 'profile', 'history'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج uses — the same
 // headers as the activities journal. Latin digits, as everywhere else.
@@ -176,9 +177,12 @@ export default function MemberDetail() {
   const canArchive = has('members.delete');
   // المخيمات و الدورات: لمن يرى المخيمات
   const canEvents = has('sessions.read');
+  // الاشتراك الشهري: لمن يرى مبالغ الأنشطة أو الصندوق
+  const canDues = has('sessions.read.fees') || has('treasury.read');
   const [sp, setSp] = useSearchParams();
+  const asked = sp.get('tab');
   const tab =
-    TABS.includes(sp.get('tab')) && (sp.get('tab') !== 'events' || canEvents) ? sp.get('tab') : 'attendance';
+    TABS.includes(asked) && (asked !== 'events' || canEvents) && (asked !== 'dues' || canDues) ? asked : 'attendance';
   const setTab = (next) =>
     setSp(
       (prev) => {
@@ -475,6 +479,7 @@ export default function MemberDetail() {
             { id: 'attendance', label: t('member.attendance') },
             { id: 'matalib', label: t('member.matalib') },
             ...(canEvents ? [{ id: 'events', label: t('nav.events'), count: events.data?.length || null }] : []),
+            ...(canDues ? [{ id: 'dues', label: t('member.duesTab') }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -673,6 +678,8 @@ export default function MemberDetail() {
           )}
 
           {tab === 'events' && canEvents && <EventParticipations state={events} feminine={member.sex === 'F'} />}
+
+          {tab === 'dues' && canDues && <MemberDuesCard member={member} />}
 
           {tab === 'history' && (
             <>
