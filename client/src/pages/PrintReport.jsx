@@ -1,10 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
+import { useSection } from '../section';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { phoneNumbers } from '../components/MemberParts';
+import {
+  FLOWS,
+  INCOME_SOURCES,
+  OUT_CATEGORIES,
+  OUT_FIGURES,
+  boxName,
+  byMonth,
+  fmtMonth,
+  ledgerView,
+  resultTone,
+  rowText,
+  sessionMeta,
+} from '../lib/treasury';
+import { signed } from '../lib/events';
 import {
   LEADER_FILTER_KEYS,
   activityTypeKey,
@@ -53,6 +68,10 @@ const KINDS = {
   'prep-list': { perm: 'sessions.read', label: 'print.reportPrepList', back: '/prep-cards' },
   plan: { perm: 'branches.read', label: 'print.reportPlan', back: '/branches' },
   prep: { perm: 'sessions.read', label: 'print.reportPrep', back: '/prep-cards' },
+  // الصناديق: id 0, the caisse (?box=) and direction (?flow=) the page showed
+  treasury: { perm: 'treasury.read', label: 'print.reportTreasury', back: '/treasury' },
+  // A فرقة's money tab: the id is the فرقة
+  'branch-money': { perm: 'branches.read', label: 'print.reportBranchMoney', back: '/branches' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -1722,7 +1741,459 @@ function PrepReport({ id, onReady, kindLabel }) {
   );
 }
 
+/* ============================================================
+   الصناديق و مالية الفرقة
+   ============================================================ */
+
+// A deficit carries its sign, as on the page — isolated left-to-right, or an Arabic
+// sheet prints the «−» after the figure
+const moneyText = (n) => (n < 0 ? `−${fmtAmount(-n)}` : fmtAmount(n));
+const money = (n) => <span dir="ltr">{moneyText(n)}</span>;
+
+/** Where a total comes from or went, largest first: a label and its amount per line */
+function MoneyBreakdown({ items }) {
+  return (
+    <dl className="avoid-break space-y-1">
+      {items.map((i) => (
+        <div key={i.key} className="flex items-baseline justify-between gap-3 border-b border-dotted border-border pb-1">
+          <dt className="min-w-0 text-muted-foreground">{i.label}</dt>
+          <dd className="shrink-0 font-medium tabular-nums">{fmtAmount(i.amount)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** A line's facts under its title, each kept whole */
+function MoneyMeta({ items }) {
+  if (!items.length) return null;
+  return <div className="text-[11px] leading-snug text-muted-foreground">{items.join(' · ')}</div>;
+}
+
+/** A movement's amount: «+» in green for what came in, «−» for what went out, neither for a move */
+function Signed({ value, direction, muted, className }) {
+  return (
+    <span
+      dir="ltr"
+      className={cn(
+        'font-semibold tabular-nums',
+        direction === 'in' && !muted && 'text-success',
+        muted && 'text-muted-foreground',
+        className
+      )}
+    >
+      {direction === 'in' ? '+' : direction === 'out' ? '−' : ''}
+      {fmtAmount(value)}
+    </span>
+  );
+}
+
+/** A month's heading inside a money table: its name, what came in and what went out */
+function MonthRow({ month, lng, cols }) {
+  return (
+    <tr className="bg-muted/60">
+      <td colSpan={cols - 1} className={cn(td, 'ps-2 font-semibold')}>
+        {fmtMonth(month.key, lng)}
+      </td>
+      <td className={cn(tdNum, 'text-end text-[11px] font-medium')}>
+        <span dir="ltr" className="inline-flex gap-2">
+          {month.in > 0 && <span className="text-success">+{fmtAmount(month.in)}</span>}
+          {month.out > 0 && <span className="text-muted-foreground">−{fmtAmount(month.out)}</span>}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * الصناديق: what the page shows, on paper — the caisse picked in its address (?box=,
+ * none: all of them together) and the direction its journal shows (?flow=in|out). Its
+ * figures, what each caisse holds when all are together, where the money came from
+ * and went, what is still owed, then every movement month by month: each نشاط one
+ * line with its result, its movements under it.
+ */
+function TreasuryReport({ onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const { section } = useSection();
+  const both = !section;
+  const res = useFetch('/treasury');
+  const flow = FLOWS.includes(sp.get('flow')) ? sp.get('flow') : '';
+  const { byKey, held, multi, sel, owed, rows, months, fig } = ledgerView(res.data, { box: sp.get('box') || '', flow });
+  const names = {
+    short: (key) => boxName(byKey[key], t, lng, { both, short: true }),
+    inline: (key) => boxName(byKey[key], t, lng, { both, inline: true }),
+  };
+  const flowLabel = flow ? t(flow === 'in' ? 'treasury.filterIn' : 'treasury.filterOut') : '';
+  const title = !res.data ? '' : sel ? boxName(sel, t, lng, { both }) : t('print.treasuryAll');
+  const ready = title && (flowLabel ? `${title} · ${flowLabel}` : title);
+  useEffect(() => {
+    if (ready) onReady(ready);
+  }, [ready, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const startOf = (box) =>
+    box.start &&
+    (box.start.inherited
+      ? t('treasury.startedWithGroup', { date: fmtDate(box.start.date) })
+      : t('treasury.openedOn', { date: fmtDate(box.start.date), amount: fmtAmount(box.start.amount) }));
+  // All caisses together: each line says whose it is
+  const tagOf = (r) =>
+    !sel && multi && r.direction !== 'move' ? <Tag tone="neutral">{names.short(r.box)}</Tag> : null;
+  const notOpen = sel ? !sel.start : !held.some((b) => b.start);
+
+  if (notOpen)
+    return (
+      <Sheet kindLabel={kindLabel}>
+        <H1>{title}</H1>
+        <p className="mt-4 text-muted-foreground">{t('treasury.notOpenReadonly')}</p>
+      </Sheet>
+    );
+
+  const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: fig.income[k] }))
+    .filter((i) => i.amount > 0);
+  const spent = OUT_FIGURES.map((k) => ({ key: k, label: t(`treasury.cat_${k}`), amount: fig.expenses[k] }))
+    .filter((i) => i.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  const showIn = flow !== 'out';
+  const showOut = flow !== 'in';
+  const count = rows.length;
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>{title}</H1>
+      <Tags>
+        {flowLabel && <Tag>{t('print.treasuryOnly', { what: flowLabel })}</Tag>}
+        {sel && startOf(sel) && <Tag tone="neutral">{startOf(sel)}</Tag>}
+        <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
+      </Tags>
+
+      <div className="mt-5">
+        <Stats
+          items={[
+            {
+              label: t('treasury.balance'),
+              value: money(fig.balance),
+              cls: fig.balance < 0 ? 'text-destructive' : undefined,
+              hint: fig.balance < 0 ? t('treasury.deficit') : null,
+            },
+            showIn && { label: t('treasury.income'), value: fmtAmount(fig.income.total), cls: 'text-success' },
+            showOut && { label: t('treasury.expenses'), value: fmtAmount(fig.expenses.total) },
+            showOut &&
+              fig.owed > 0 && {
+                label: t('treasury.owedTitle'),
+                value: fmtAmount(fig.owed),
+                cls: 'text-warning',
+                hint: t('treasury.afterOwed', { amount: `⁦${moneyText(fig.balance - fig.owed)}⁩` }),
+              },
+          ].filter(Boolean)}
+        />
+      </div>
+
+      {!sel && multi && (
+        <>
+          <H2 aside={held.length}>{t('print.treasuryBoxes')}</H2>
+          <Table
+            head={[
+              t('treasury.box'),
+              t('print.treasuryStart'),
+              { label: t('treasury.owedTitle'), className: 'text-end' },
+              { label: t('treasury.balance'), className: 'text-end' },
+            ]}
+          >
+            {held.map((b) => (
+              <tr key={b.key}>
+                <td className={cn(td, 'font-medium')}>{names.short(b.key)}</td>
+                <td className={cn(td, 'text-muted-foreground')}>{startOf(b) || t('treasury.boxNotOpen')}</td>
+                <td className={cn(tdNum, 'text-end text-warning')}>{b.start && b.owed > 0 ? fmtAmount(b.owed) : ''}</td>
+                <td className={cn(tdNum, 'text-end font-semibold', b.balance < 0 && 'text-destructive')}>
+                  {b.start ? money(b.balance) : '—'}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      {(showIn && income.length > 0) || (showOut && spent.length > 0) ? (
+        <div className={cn('grid gap-x-8', showIn && showOut && 'grid-cols-2')}>
+          {showIn && income.length > 0 && (
+            <div>
+              <H2>{t('treasury.income')}</H2>
+              <MoneyBreakdown items={income} />
+            </div>
+          )}
+          {showOut && spent.length > 0 && (
+            <div>
+              <H2>{t('treasury.expenses')}</H2>
+              <MoneyBreakdown items={spent} />
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {showOut && owed.length > 0 && (
+        <>
+          <H2 aside={fmtAmount(fig.owed)}>{t('treasury.owedTitle')}</H2>
+          <Table
+            head={[
+              { label: t('common.date'), className: 'w-20' },
+              t('print.treasuryExpense'),
+              t('treasury.owedTo'),
+              { label: t('treasury.amount'), className: 'text-end' },
+            ]}
+          >
+            {owed.map((x) => (
+              <tr key={x.key}>
+                <td className={tdNum}>{fmtDate(x.spent_on)}</td>
+                <td className={td}>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-medium">{x.label}</span>
+                    {tagOf(x)}
+                  </div>
+                  <MoneyMeta
+                    items={[
+                      t(`treasury.cat_${x.category}`),
+                      x.session_title && t('treasury.forSession', { title: x.session_title }),
+                    ].filter(Boolean)}
+                  />
+                </td>
+                <td className={td}>{x.owed_to}</td>
+                <td className={cn(tdNum, 'text-end font-semibold')}>
+                  <span dir="ltr">{fmtAmount(x.amount)}</span>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      <H2 aside={t('treasury.movementCount', { count })}>{t('treasury.journal')}</H2>
+      {count === 0 ? (
+        <p className="text-muted-foreground">
+          {t(flow === 'in' ? 'treasury.emptyFilterIn' : flow === 'out' ? 'treasury.emptyFilterOut' : 'treasury.emptyJournal')}
+        </p>
+      ) : (
+        <Table
+          head={[
+            { label: t('common.date'), className: 'w-20' },
+            t('print.treasuryMovement'),
+            { label: t('treasury.amount'), className: 'text-end' },
+          ]}
+        >
+          {months.map((m) => (
+            <Fragment key={m.key}>
+              <MonthRow month={m} lng={lng} cols={3} />
+              {m.rows.map((r) => {
+                if (r.source === 'session_group') {
+                  const tone = resultTone(r.result);
+                  // Its movements under its title, each with its own amount; its
+                  // result in the amount column
+                  return (
+                    <tr key={r.key}>
+                      <td className={tdNum}>{fmtDate(r.date)}</td>
+                      <td className={td}>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium">{r.session_title}</span>
+                          {tagOf(r)}
+                        </div>
+                        <MoneyMeta items={sessionMeta(r, flow, t).slice(1)} />
+                        <ul className="mt-1 space-y-0.5 border-s-2 border-border ps-2 text-[11px]">
+                          {r.items.map((x) => {
+                            const it = rowText(x, { t, lng, names, nested: true });
+                            return (
+                              <li key={x.key} className="flex items-baseline justify-between gap-3">
+                                <span className="min-w-0">
+                                  {it.title}
+                                  {it.owed && <Tag tone="warning" className="ms-1.5 px-1.5 py-0 text-[10px]">{t('treasury.statusOwed')}</Tag>}
+                                  {it.meta.length > 0 && <span className="text-muted-foreground"> · {it.meta.join(' · ')}</span>}
+                                </span>
+                                <Signed value={x.amount} direction={x.direction} muted className="shrink-0 font-medium" />
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </td>
+                      <td className={cn(tdNum, 'text-end')}>
+                        <span dir="ltr" className={cn('font-semibold', tone.className)}>
+                          {signed(r.result)}
+                        </span>
+                        {!flow && <div className={cn('text-[10.5px] font-medium', tone.className)}>{t(tone.key)}</div>}
+                      </td>
+                    </tr>
+                  );
+                }
+                const it = rowText(r, { t, lng, names });
+                return (
+                  <tr key={r.key}>
+                    <td className={tdNum}>{fmtDate(r.date)}</td>
+                    <td className={td}>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium">{it.title}</span>
+                        {tagOf(r)}
+                        {it.owed && <Tag tone="warning">{t('treasury.statusOwed')}</Tag>}
+                      </div>
+                      <MoneyMeta items={it.meta.slice(1)} />
+                    </td>
+                    <td className={cn(tdNum, 'text-end')}>
+                      <Signed value={r.amount} direction={r.direction} muted={it.move || it.owed} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </Fragment>
+          ))}
+        </Table>
+      )}
+      <Signature label={t('print.signatureTreasurer')} />
+    </Sheet>
+  );
+}
+
+/**
+ * مالية الفرقة, as its tab shows it: what its caisse holds, what was given to it and
+ * what it cost — paid or still owed, by kind and month by month.
+ */
+function BranchMoneyReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const res = useFetch(`/branches/${id}/money`);
+  const branches = useFetch('/branches');
+  const b = (branches.data || []).find((x) => String(x.id) === String(id));
+  const name = b ? branchName(b, lng) : '';
+  useEffect(() => {
+    if (name) onReady(name);
+  }, [name, onReady]);
+
+  if (res.loading || branches.loading) return <SkeletonPage rows={6} />;
+  if (res.error || branches.error) return <LoadError onRetry={res.reload} />;
+  if (!b) return <NotFound />;
+
+  const { expenses, donations, summary, caisse } = res.data;
+  const given = donations.reduce((n, x) => n + x.amount, 0);
+  const categories = OUT_CATEGORIES.map((k) => ({ key: k, label: t(`treasury.cat_${k}`), amount: summary.by_category[k] }))
+    .filter((c) => c.amount > 0)
+    .sort((a, c) => c.amount - a.amount);
+  // Month of the مصروف itself, not of its payment: what the فرقة cost, when
+  const months = byMonth(expenses.map((x) => ({ ...x, date: x.spent_on })));
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>{name}</H1>
+      <Tags>
+        {caisse && !caisse.opened && <Tag tone="neutral">{`${t('branch.caisse')} : ${t('branch.caisseNotOpen')}`}</Tag>}
+        <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
+      </Tags>
+
+      <div className="mt-5">
+        <Stats
+          items={[
+            caisse?.opened && {
+              label: t('branch.caisse'),
+              value: money(caisse.balance),
+              cls: caisse.balance < 0 ? 'text-destructive' : undefined,
+            },
+            { label: t('branch.donations'), value: fmtAmount(given), cls: 'text-success' },
+            {
+              label: t('branch.expensesTotal'),
+              value: fmtAmount(summary.total),
+              hint: t('branch.expensesCount', { count: expenses.length }),
+            },
+            summary.owed > 0 && { label: t('treasury.owedTitle'), value: fmtAmount(summary.owed), cls: 'text-warning' },
+          ].filter(Boolean)}
+        />
+      </div>
+
+      {expenses.length === 0 && donations.length === 0 && (
+        <p className="mt-6 text-muted-foreground">{t('branch.moneyEmpty')}</p>
+      )}
+
+      {donations.length > 0 && (
+        <>
+          <H2 aside={fmtAmount(given)}>{t('branch.donations')}</H2>
+          <Table
+            head={[
+              { label: t('common.date'), className: 'w-20' },
+              t('treasury.donation'),
+              { label: t('treasury.amount'), className: 'text-end' },
+            ]}
+          >
+            {donations.map((x) => (
+              <tr key={x.key}>
+                <td className={tdNum}>{fmtDate(x.date)}</td>
+                <td className={td}>
+                  <span className="font-medium">{x.label || t('treasury.donation')}</span>
+                  <MoneyMeta items={[x.session_title && t('treasury.forSession', { title: x.session_title })].filter(Boolean)} />
+                </td>
+                <td className={cn(tdNum, 'text-end')}>
+                  <Signed value={x.amount} direction="in" />
+                </td>
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      {categories.length > 0 && (
+        <>
+          <H2>{t('branch.expensesByCategory')}</H2>
+          <MoneyBreakdown items={categories} />
+        </>
+      )}
+
+      {expenses.length > 0 && (
+        <>
+          <H2 aside={t('branch.expensesCount', { count: expenses.length })}>{t('treasury.expenses')}</H2>
+          <Table
+            head={[
+              { label: t('common.date'), className: 'w-20' },
+              t('print.treasuryExpense'),
+              { label: t('treasury.amount'), className: 'text-end' },
+            ]}
+          >
+            {months.map((m) => (
+              <Fragment key={m.key}>
+                <MonthRow month={m} lng={lng} cols={3} />
+                {m.rows.map((x) => {
+                  const owedNow = !x.paid_on;
+                  return (
+                    <tr key={x.key}>
+                      <td className={tdNum}>{fmtDate(x.spent_on)}</td>
+                      <td className={td}>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium">{x.label}</span>
+                          {owedNow && <Tag tone="warning">{t('treasury.statusOwed')}</Tag>}
+                        </div>
+                        <MoneyMeta
+                          items={[
+                            t(`treasury.cat_${x.category}`),
+                            x.session_title && t('treasury.forSession', { title: x.session_title }),
+                            x.owed_to && t(owedNow ? 'treasury.owedRowTo' : 'treasury.paidRowTo', { name: x.owed_to }),
+                          ].filter(Boolean)}
+                        />
+                      </td>
+                      <td className={cn(tdNum, 'text-end font-semibold')}>
+                        <span dir="ltr">{fmtAmount(x.amount)}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </Table>
+        </>
+      )}
+      <Signature label={t('print.signatureBranch')} />
+    </Sheet>
+  );
+}
+
 const REPORTS = {
+  treasury: TreasuryReport,
+  'branch-money': BranchMoneyReport,
   sessions: SessionReport,
   members: MemberReport,
   leaders: LeaderReport,

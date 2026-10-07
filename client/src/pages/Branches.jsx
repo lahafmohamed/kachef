@@ -1757,9 +1757,12 @@ function BranchMoney({ branchId }) {
     />
   );
 
+  // The tab on paper: its caisse, its تبرعات and its مصاريف
+  const exportButton = <ExportPdfButton kind="branch-money" id={branchId} compact />;
+
   // What the فرقة's own caisse holds now, for whoever sees it — the way to it, and what
-  // its holder writes in it from here
-  const caisseCard = caisse && (
+  // its holder writes in it from here. Without it, the export stands alone above.
+  const caisseCard = caisse ? (
     <Card className="flex flex-wrap items-center gap-x-4 gap-y-3 p-4 sm:px-5">
       <div className="min-w-0 flex-1 space-y-1">
         <p className="text-xs font-medium text-muted-foreground">{t('branch.caisse')}</p>
@@ -1776,12 +1779,15 @@ function BranchMoney({ branchId }) {
           </p>
         )}
       </div>
-      <Link
-        to={`/treasury?box=${caisse.box}`}
-        className="focus-ring -mt-3.5 inline-flex min-h-11 items-center self-start rounded-lg px-2 text-sm font-medium text-primary hover:underline sm:mt-0 sm:min-h-9 sm:self-center"
-      >
-        {t('branch.caisseOpen')}
-      </Link>
+      <div className="flex items-center gap-1 self-start sm:self-center">
+        <Link
+          to={`/treasury?box=${caisse.box}`}
+          className="focus-ring inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium text-primary hover:underline sm:min-h-9"
+        >
+          {t('branch.caisseOpen')}
+        </Link>
+        {exportButton}
+      </div>
       {canWrite && (
         // Under the balance on a phone, both of a width: short words there
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
@@ -1798,6 +1804,8 @@ function BranchMoney({ branchId }) {
         </div>
       )}
     </Card>
+  ) : (
+    <div className="flex justify-end">{exportButton}</div>
   );
 
   if (expenses.length === 0 && donations.length === 0)

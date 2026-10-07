@@ -6821,6 +6821,10 @@ const PDF_KINDS = {
   // خطة الفرقة السنوية: الرقم فرقة، و ?year= السنة الكشفية
   plan: 'branches.read',
   prep: 'sessions.read',
+  // الصناديق: الرقم 0، و ?box= الصندوق المختار (بلا box: كلها) و ?flow= in|out كما في الصفحة
+  treasury: 'treasury.read',
+  // مالية الفرقة: الرقم فرقة. ما يُرى منها (المبالغ، الصندوق) يقرّره /branches/:id/money
+  'branch-money': 'branches.read',
 };
 // Filters the list sheets read from the query string — nothing else reaches Chromium's URL
 const printQuery = (q) => {

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -6,9 +6,22 @@ import { usePerms } from '../auth';
 import { useFetch, useUrlFilters } from '../hooks';
 import { useSection } from '../section';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
-import { INCOME_SOURCES, OUT_FIGURES, bookBalanceOn, boxName, byMonth, fmtMonth } from '../lib/treasury';
+import {
+  FLOWS,
+  INCOME_SOURCES,
+  OUT_FIGURES,
+  bookBalanceOn,
+  boxName,
+  fmtMonth,
+  ledgerView,
+  resultTone,
+  rowText,
+  sessionMeta,
+} from '../lib/treasury';
+import { signed } from '../lib/events';
 import AmountInput from '../components/AmountInput';
 import DatePicker from '../components/DatePicker';
+import ExportPdfButton from '../components/ExportPdfButton';
 import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import {
   Badge,
@@ -30,6 +43,7 @@ import {
   useConfirm,
   useToast,
   IconCalendar,
+  IconChevronDown,
   IconCoins,
   IconHandHeart,
   IconInbox,
@@ -44,8 +58,6 @@ import {
   IconTrash,
   IconWallet,
 } from '../components/ui';
-
-const FLOWS = ['in', 'out'];
 
 // A deficit carries its sign: «−2 500» reads as one with or without colour
 const money = (n) => (n < 0 ? `−${fmtAmount(-n)}` : fmtAmount(n));
@@ -206,8 +218,12 @@ function Figures({ fig, box, name, canManage, onOpening, onCount, t }) {
   );
 }
 
-const ROW_CLASS =
-  'focus-ring flex w-full items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]! sm:px-5';
+const ROW_BASE =
+  'focus-ring flex w-full items-center gap-3 text-start transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]!';
+const ROW_CLASS = `${ROW_BASE} px-4 py-3 sm:px-5`;
+// A line opened under a نشاط's: its text under the نشاط's title (past the icon), its
+// amount under the total (short of the chevron)
+const NESTED_PAD = 'py-2.5 ps-16 pe-11 sm:ps-[4.25rem] sm:pe-12';
 
 /**
  * One movement: a نشاط's اشتراكات (one line per نشاط), a day of اشتراكات القادة (who
@@ -216,10 +232,11 @@ const ROW_CLASS =
  * what a count found more or less than the book. What is written here opens for
  * correction; the other lines lead to where they are recorded.
  * `direction` 'move': a transfer between two caisses on screen, which moves nothing.
+ * `nested`: one of a نشاط's movements, opened under its line — which already says the
+ * day and the نشاط, and stands for the icon. A مصروف of it still owed is one of them.
  */
-function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canMembers, onEdit }) {
-  const isIn = r.direction === 'in';
-  const move = r.direction === 'move';
+function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canMembers, onEdit, nested = false }) {
+  const { title, meta, isIn, move, owed } = rowText(r, { t, lng, names, nested });
   const Icon =
     r.source === 'transfer'
       ? IconTransfer
@@ -238,89 +255,34 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canM
             : r.category === 'donation'
               ? IconHandHeart
               : IconCoins;
-  const title =
-    r.source === 'transfer'
-      ? move
-        ? t('treasury.transferRowBetween', { from: names.short(r.from), to: names.short(r.to) })
-        : isIn
-          ? t('treasury.transferRowFrom', { name: names.inline(r.from) })
-          : t('treasury.transferRowTo', { name: names.inline(r.to) })
-      : r.source === 'count'
-        ? t(isIn ? 'treasury.countRowIn' : 'treasury.countRowOut')
-        : r.source === 'event'
-        ? r.event_title || t('treasury.eventDeleted')
-        : r.source === 'session'
-          ? r.label
-          : r.source === 'dues'
-            ? t('treasury.duesRow')
-            : r.source === 'member_dues'
-              ? t('treasury.memberDuesRow')
-              : r.label || t(r.category === 'donation' ? 'treasury.donation' : 'treasury.otherIncome');
-  const meta = [fmtDate(r.date)];
-  if (r.source === 'count') {
-    meta.push(r.label, t('treasury.countedRow', { amount: fmtAmount(r.counted) }));
-    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
-  } else if (r.source === 'event') {
-    if (r.event_kind) meta.push(t(`event.kind_${r.event_kind}`));
-    meta.push(t(isIn ? 'treasury.eventIn' : 'treasury.eventOut'));
-    if (r.label) meta.push(r.label);
-    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
-  } else if (r.source === 'transfer') {
-    if (r.label) meta.push(r.label);
-    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
-  } else if (r.source === 'session') meta.push(t('treasury.sessionFees'), t('treasury.payers', { count: r.payers }));
-  else if (r.source === 'dues') {
-    // A whole month of اشتراكات can land on one day: three names, then how many more
-    const months = r.leaders.reduce((n, l) => n + l.months, 0);
-    const names = r.leaders
-      .slice(0, 3)
-      .map((l) => l.name)
-      .join(lng === 'ar' ? '، ' : ', ');
-    // «+2» isolated left-to-right: after Arabic names it would otherwise read «2+»
-    const more = r.leaders.length - 3;
-    meta.push(t('treasury.monthsPaid', { count: months }), more > 0 ? `${names} ⁦+${more}⁩` : names);
-  } else if (r.source === 'member_dues') {
-    // Taken in a نشاط: its title says where. Then the months it was given for — whole
-    // or in part: 500 for October is October's — and who gave it
-    if (r.session_title) meta.push(t('treasury.forSession', { title: r.session_title }));
-    const months = r.members.reduce((n, m) => n + m.months, 0);
-    const named = r.members.filter((m) => m.name);
-    const names = named
-      .slice(0, 3)
-      .map((m) => m.name)
-      .join(lng === 'ar' ? '، ' : ', ');
-    const more = named.length - 3;
-    meta.push(t('treasury.duesMonths', { count: months }));
-    if (names) meta.push(more > 0 ? `${names} ⁦+${more}⁩` : names);
-  } else {
-    // An unnamed تبرّع is already titled «تبرّع»: its kind would only repeat it
-    if (!isIn || r.label) meta.push(t(isIn ? `treasury.type_${r.category}` : `treasury.cat_${r.category}`));
-    if (r.owed_to) meta.push(t('treasury.paidRowTo', { name: r.owed_to }));
-    if (r.spent_on !== r.date) meta.push(t('treasury.spentOn', { date: fmtDate(r.spent_on) }));
-    if (r.session_title) meta.push(t('treasury.forSession', { title: r.session_title }));
-    if (r.created_by) meta.push(t('treasury.recordedBy', { name: r.created_by }));
-  }
-
+  const rowClass = nested ? `${ROW_BASE} ${NESTED_PAD}` : ROW_CLASS;
   const body = (
     <>
-      <span
-        className={cn(
-          'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-          isIn ? 'bg-success/12 text-success' : 'bg-muted text-muted-foreground'
-        )}
-      >
-        <Icon />
-      </span>
+      {!nested && (
+        <span
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+            isIn ? 'bg-success/12 text-success' : 'bg-muted text-muted-foreground'
+          )}
+        >
+          <Icon />
+        </span>
+      )}
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-medium">{title}</span>
           {tag && <Badge variant="outline">{tag}</Badge>}
+          {owed && <Badge variant="warning">{t('treasury.statusOwed')}</Badge>}
         </span>
         <Meta items={meta} />
       </span>
       <span
         dir="ltr"
-        className={cn('shrink-0 font-semibold tabular-nums', isIn && 'text-success', move && 'text-muted-foreground')}
+        className={cn(
+          'shrink-0 font-semibold tabular-nums',
+          isIn && 'text-success',
+          (move || owed) && 'text-muted-foreground'
+        )}
       >
         {move ? '' : isIn ? '+' : '−'}
         {fmtAmount(r.amount)}
@@ -334,7 +296,7 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canM
         type="button"
         onClick={() => onEdit(r)}
         aria-label={`${t('common.edit')} — ${title} ${fmtAmount(r.amount)}`}
-        className={ROW_CLASS}
+        className={rowClass}
       >
         {body}
       </button>
@@ -348,7 +310,7 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canM
     );
   if (r.source === 'session' && canSessions)
     return (
-      <Link to={`/sessions/${r.session_id}`} className={ROW_CLASS}>
+      <Link to={`/sessions/${r.session_id}`} className={rowClass}>
         {body}
       </Link>
     );
@@ -371,7 +333,70 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canM
         {body}
       </Link>
     );
-  return <div className="flex items-center gap-3 px-4 py-3 sm:px-5">{body}</div>;
+  return <div className={cn('flex items-center gap-3', nested ? NESTED_PAD : 'px-4 py-3 sm:px-5')}>{body}</div>;
+}
+
+/**
+ * A نشاط as one line: what it brought in, what it cost and what it left — won, lost or
+ * even, as its own page says. Tapped, it opens on its movements — each corrected there
+ * like any line, a مصروف still owed among them — and on the way to the نشاط.
+ * `flow`: the journal shows only what came in or went out — the نشاط's share of it then.
+ */
+function SessionRow({ g, flow, t, tag, canSessions, rowProps }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const tone = resultTone(g.result);
+  const meta = sessionMeta(g, flow, t);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id} className={ROW_CLASS}>
+        <span
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+            g.result > 0 ? 'bg-success/12 text-success' : g.result < 0 ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'
+          )}
+        >
+          <IconCalendar />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium">{g.session_title}</span>
+            {tag && <Badge variant="outline">{tag}</Badge>}
+          </span>
+          <Meta items={meta} />
+        </span>
+        <span className="flex shrink-0 flex-col items-end gap-0.5">
+          <span dir="ltr" className={cn('font-semibold tabular-nums', tone.className)}>
+            {signed(g.result)}
+          </span>
+          {/* The word first — the colour only repeats it; filtered, the sum is no result */}
+          {!flow && <span className={cn('text-xs font-medium', tone.className)}>{t(tone.key)}</span>}
+        </span>
+        <IconChevronDown
+          className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200', open && 'rotate-180')}
+        />
+      </button>
+      {open && (
+        <div id={id} className="border-t border-border bg-muted/25">
+          <ul className="divide-y divide-border">
+            {g.items.map((r) => (
+              <li key={r.key}>
+                <JournalRow r={r} t={t} nested {...rowProps(r)} />
+              </li>
+            ))}
+          </ul>
+          {canSessions && (
+            <Link
+              to={`/sessions/${g.session_id}`}
+              className={`focus-ring flex min-h-11 items-center border-t border-border text-xs font-medium text-primary hover:underline focus-visible:[outline-offset:-2px]! ${NESTED_PAD}`}
+            >
+              {t('treasury.openSession')}
+            </Link>
+          )}
+        </div>
+      )}
+    </>
+  );
 }
 
 /**
@@ -1077,32 +1102,21 @@ export default function Treasury() {
 
   const data = ledger.data;
   const canManage = !!data?.can_manage;
-  const boxes = data?.boxes || [];
-  const byKey = Object.fromEntries(boxes.map((b) => [b.key, b]));
-  const held = boxes.filter((b) => b.visible);
-  const multi = held.length > 1;
+  // The caisse on screen: one asked for in the address, else all of them together —
+  // or the only one there is; its lines in the direction asked for
+  const { boxes, byKey, held, multi, sel, owed, rows, months, fig } = ledgerView(data, {
+    box: sp.get('box') || '',
+    flow,
+  });
   const nameOf = (key) => boxName(byKey[key], t, lng, { both });
   const shortOf = (b) => boxName(b, t, lng, { both, short: true });
   const names = {
     short: (key) => shortOf(byKey[key]),
     inline: (key) => boxName(byKey[key], t, lng, { both, inline: true }),
   };
-  // The caisse on screen: one asked for in the address, else all of them together —
-  // or the only one there is
-  const wanted = sp.get('box') || '';
-  const sel = byKey[wanted]?.visible ? byKey[wanted] : multi ? null : held[0] || null;
   const anyOpen = held.some((b) => b.start);
   const openings = Object.fromEntries(held.filter((b) => b.start).map((b) => [b.key, b.start.date]));
 
-  // One caisse: its own lines. All together: a transfer between two of them is one
-  // line that moves nothing
-  const viewRows = (data?.rows || [])
-    .filter((r) => (sel ? r.box === sel.key : !(r.internal && r.direction === 'in')))
-    .map((r) => (!sel && r.internal ? { ...r, direction: 'move' } : r));
-  const rows = viewRows.filter((r) => !flow || r.direction === flow);
-  const owed = (data?.owed || []).filter((x) => !sel || x.box === sel.key);
-  const fig = sel || data?.summary;
-  const months = byMonth(rows);
   // All caisses on screen: each line says whose it is
   const tagOf = (r) => (!sel && multi && r.direction !== 'move' ? shortOf(byKey[r.box]) : null);
   // A transfer is corrected by whoever holds the caisse it left
@@ -1110,6 +1124,21 @@ export default function Treasury() {
   // Somewhere to send money: another caisse of a held one's قسم
   const canTransfer = held.some((h) => boxes.some((b) => b.section === h.section && b.key !== h.key));
   const writeBox = sel?.key || held.find((b) => b.start)?.key || held[0]?.key;
+  // What a journal line needs besides itself, whether on its own or under its نشاط
+  const rowProps = (r) => ({
+    lng,
+    names,
+    canEdit: canEditRow(r),
+    canSessions: has('sessions.read'),
+    canDues: has('leaders.dues'),
+    canMembers: has('members.read'),
+    onEdit: (x) =>
+      x.source === 'transfer'
+        ? setTransferDialog({ transfer: x })
+        : x.source === 'count'
+          ? setCountDialog({ box: null, count: x })
+          : setEntryDialog({ direction: x.direction, entry: x }),
+  });
 
   const saved = (res, key) => {
     setEntryDialog(null);
@@ -1248,8 +1277,10 @@ export default function Treasury() {
               )}
 
               <Card>
-                <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
+                {/* Phone: title and export on one line, the filter under them. Wider:
+                    title, filter, export */}
+                <CardHeader className="flex-row flex-wrap items-center gap-3">
+                  <div className="min-w-0 flex-1">
                     <CardTitle>{t('treasury.journal')}</CardTitle>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {t('treasury.movementCount', { count: rows.length })}
@@ -1265,7 +1296,16 @@ export default function Treasury() {
                       { value: 'in', label: t('treasury.filterIn') },
                       { value: 'out', label: t('treasury.filterOut') },
                     ]}
-                    className="flex w-full sm:w-auto"
+                    className="order-last flex w-full sm:order-none sm:w-auto"
+                  />
+                  {/* The file holds what is on screen: the caisse picked (or all of
+                      them) and the direction the journal shows */}
+                  <ExportPdfButton
+                    kind="treasury"
+                    id={0}
+                    query={new URLSearchParams(Object.entries({ box: sel?.key || '', flow }).filter(([, v]) => v)).toString()}
+                    compact
+                    className="shrink-0"
                   />
                 </CardHeader>
                 <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
@@ -1295,24 +1335,18 @@ export default function Treasury() {
                         <ul className="divide-y divide-border">
                           {m.rows.map((r) => (
                             <li key={r.key}>
-                              <JournalRow
-                                r={r}
-                                t={t}
-                                lng={lng}
-                                names={names}
-                                tag={tagOf(r)}
-                                canEdit={canEditRow(r)}
-                                canSessions={has('sessions.read')}
-                                canDues={has('leaders.dues')}
-                                canMembers={has('members.read')}
-                                onEdit={(x) =>
-                                  x.source === 'transfer'
-                                    ? setTransferDialog({ transfer: x })
-                                    : x.source === 'count'
-                                      ? setCountDialog({ box: null, count: x })
-                                      : setEntryDialog({ direction: x.direction, entry: x })
-                                }
-                              />
+                              {r.source === 'session_group' ? (
+                                <SessionRow
+                                  g={r}
+                                  flow={flow}
+                                  t={t}
+                                  tag={tagOf(r)}
+                                  canSessions={has('sessions.read')}
+                                  rowProps={rowProps}
+                                />
+                              ) : (
+                                <JournalRow r={r} t={t} tag={tagOf(r)} {...rowProps(r)} />
+                              )}
                             </li>
                           ))}
                         </ul>
