@@ -416,6 +416,26 @@ export const IconDownload = (p) => (
     <path d="M12 15V3" />
   </Icon>
 );
+// A document and a spreadsheet: the same page, lines of text or cells
+export const IconFileText = (p) => (
+  <Icon {...p}>
+    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+    <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    <path d="M10 9H8" />
+    <path d="M16 13H8" />
+    <path d="M16 17H8" />
+  </Icon>
+);
+export const IconFileSheet = (p) => (
+  <Icon {...p}>
+    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+    <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    <path d="M8 13h2" />
+    <path d="M14 13h2" />
+    <path d="M8 17h2" />
+    <path d="M14 17h2" />
+  </Icon>
+);
 export const IconDroplet = (p) => (
   <Icon {...p}>
     <path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z" />
