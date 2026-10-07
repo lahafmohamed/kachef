@@ -21,13 +21,16 @@ export function SectionProvider({ children }) {
   }, []);
 
   // A pick belongs to whoever made it: signing out (or another account signing in
-  // on this tab) starts again from both أقسام
+  // on this tab) starts again from both أقسام. The account arriving on a tab that had
+  // none keeps it: signing out already cleared it, and the PDF export's Chromium
+  // opens a sheet with the token and the قسم but no cached account
   const lastUser = useRef(user?.id ?? null);
   useEffect(() => {
     const id = user?.id ?? null;
     if (id === lastUser.current) return;
+    const arriving = lastUser.current === null;
     lastUser.current = id;
-    change('');
+    if (!arriving) change('');
   }, [user?.id, change]);
 
   return <SectionContext.Provider value={{ view, setView: change }}>{children}</SectionContext.Provider>;
