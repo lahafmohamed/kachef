@@ -420,7 +420,16 @@
     "confirmRemoveGuest": "Retirer {{name}} des invités ?",
     "guestCount": "{{count}} invité(s)",
     "guestCount_one": "{{count}} invité",
-    "guestCount_other": "{{count}} invités"
+    "guestCount_other": "{{count}} invités",
+    "tabAttendance": "Présence",
+    "tabMoney": "Finances",
+    "moneyResult": "Résultat",
+    "moneyGain": "Gain",
+    "moneyLoss": "Déficit",
+    "moneyEven": "À l’équilibre",
+    "moneyProjected": "Si tous les présents paient :",
+    "moneyFormula": "Résultat = cotisations + dons − dépenses (payées ou pas encore).",
+    "moneyDuesNote": "Hors cotisations mensuelles ({{amount}} encaissés ici) : elles paient le mois, pas la séance."
   },
   "prep": {
     "title": "Fiches de préparation",

@@ -70,3 +70,14 @@ export function byMonth(rows) {
   }
   return months;
 }
+
+/**
+ * A نشاط's result named and coloured: «Gain», «Déficit» or «À l'équilibre». The word
+ * says it, the colour repeats it — the list and the نشاط's page read it the same way.
+ */
+export const resultTone = (n) =>
+  n > 0
+    ? { key: 'session.moneyGain', className: 'text-success' }
+    : n < 0
+      ? { key: 'session.moneyLoss', className: 'text-destructive' }
+      : { key: 'session.moneyEven', className: 'text-muted-foreground' };

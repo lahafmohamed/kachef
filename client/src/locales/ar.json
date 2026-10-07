@@ -479,7 +479,16 @@
     "guestCount_two": "ضيفان",
     "guestCount_few": "{{count}} ضيوف",
     "guestCount_many": "{{count}} ضيفًا",
-    "guestCount_other": "{{count}} ضيف"
+    "guestCount_other": "{{count}} ضيف",
+    "tabAttendance": "الحضور",
+    "tabMoney": "المالية",
+    "moneyResult": "النتيجة",
+    "moneyGain": "ربح",
+    "moneyLoss": "عجز",
+    "moneyEven": "متوازن",
+    "moneyProjected": "إن دفع كل الحاضرين:",
+    "moneyFormula": "النتيجة = الاشتراكات + التبرعات − المصاريف (مدفوعةً أو لم تُدفع بعد).",
+    "moneyDuesNote": "دون الاشتراكات الشهرية ({{amount}} حُصّلت هنا): هي عن الشهر، لا عن النشاط."
   },
   "prep": {
     "title": "بطاقات التحضير",

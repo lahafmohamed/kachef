@@ -3966,7 +3966,14 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
            UNION ALL
            SELECT sl.status FROM session_leaders sl
             WHERE sl.session_id = s.id AND s.kind = 'leaders' AND sl.status IS NOT NULL) m) AS rate,
-        (SELECT COUNT(*) FROM session_guests g WHERE g.session_id = s.id) AS guest_count
+        (SELECT COUNT(*) FROM session_guests g WHERE g.session_id = s.id) AS guest_count,
+        -- مالية النشاط، فيُعرف من القائمة أربح أم خسر: اشتراكاته و تبرعاته، و مصاريفه
+        -- مدفوعةً أو لم تُدفع بعد
+        (SELECT COALESCE(SUM(a.paid), 0) FROM attendance a WHERE a.session_id = s.id) AS money_collected,
+        (SELECT COALESCE(SUM(e.amount), 0) FROM treasury_entries e
+          WHERE e.session_id = s.id AND e.direction = 'in') AS money_donations,
+        (SELECT COALESCE(SUM(e.amount), 0) FROM treasury_entries e
+          WHERE e.session_id = s.id AND e.direction = 'out') AS money_expenses
        FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN leaders l ON l.id = s.leader_id
        WHERE 1=1${sessionScopeSQL(req)}`;
@@ -4005,15 +4012,17 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
     params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
   }
   sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
+  const seesMoney = canSeeSessionExpenses(req);
   const rows = db
     .prepare(sql)
     .all(...params)
-    .map((r) =>
+    .map(({ money_collected: collected, money_donations: donations, money_expenses: expenses, ...r }) =>
       stripFee(req, {
         ...r,
         matalib: JSON.parse(r.matalib || '[]'),
         branch_ids: parseIdList(r.branch_ids),
         group_ids: parseIdList(r.group_ids),
+        money: seesMoney ? { collected, donations, expenses, result: collected + donations - expenses } : null,
       })
     );
   res.json(rows);
@@ -4424,7 +4433,29 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       .all(s.id),
     group_ids: groupIdsOfSession(s.id),
   });
-  res.json(stripRosterFees(req, payload));
+  const out = stripRosterFees(req, payload);
+  // مالية النشاط كاملًا: ما سُجّل فيه على أسطر لا يراها المستخدم — فرق أخرى من نشاط
+  // مشترك، أو مبالغ محجوبة عنه — فتضيف الواجهة إليه ما تراه و تحسب الحصيلة حيّةً
+  if (canSeeSessionExpenses(req)) {
+    const seen = (f) => out.roster.reduce((n, m) => n + f(m), 0);
+    const dues = db.prepare('SELECT COALESCE(SUM(amount), 0) AS n FROM member_dues WHERE session_id = ?').get(s.id).n;
+    // ما بقي على الحاضرين من أجرة النشاط، ليُعرف ما ستكون نتيجته إن دفعوا
+    const outstanding = s.fee > 0
+      ? db
+          .prepare(
+            `SELECT COALESCE(SUM(MAX(0, ? - COALESCE(paid, 0))), 0) AS n FROM attendance
+             WHERE session_id = ? AND status = 'present'`
+          )
+          .get(s.fee, s.id).n
+      : 0;
+    out.money_elsewhere = {
+      collected: sessionSubscriptions(s.id).collected - seen((m) => m.paid || 0),
+      dues: dues - seen((m) => (m.dues?.here || []).reduce((a, h) => a + h.amount, 0)),
+      outstanding:
+        outstanding - (out.fee > 0 ? seen((m) => (m.status === 'present' ? Math.max(0, out.fee - (m.paid || 0)) : 0)) : 0),
+    };
+  }
+  res.json(out);
 });
 
 // عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,

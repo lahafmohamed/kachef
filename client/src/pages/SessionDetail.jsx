@@ -9,8 +9,11 @@ import ExportPdfButton from '../components/ExportPdfButton';
 import { fmtDueMonth } from '../components/LeaderDues';
 import { DuesChip, MemberDuesDialog } from '../components/MemberDues';
 import SessionEditDialog from '../components/SessionEditDialog';
-import SessionExpenses, { SessionDonations } from '../components/SessionExpenses';
+import SessionExpenses, { SessionDonations, SessionMoneyFigures, sessionMoney } from '../components/SessionExpenses';
+import { UnderlineTabs } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
+import { signed } from '../lib/events';
+import { resultTone } from '../lib/treasury';
 import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName } from '../utils';
 import {
   Avatar,
@@ -20,6 +23,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  cn,
   EmptyState,
   ErrorState,
   Input,
@@ -558,6 +562,21 @@ export default function SessionDetail() {
   if (error)
     return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
+  // مالية النشاط، لمن يرى مبالغه أو الصندوق: اشتراكاته و تبرعاته و مصاريفه في تبويب
+  // خاصّ بها. من لا يراها لا تبويب له أصلًا، فالصفحة هي الحضور وحده كما كانت.
+  const money = sessionMoney(session);
+  const tab = money && sp.get('tab') === 'money' ? 'money' : 'attendance';
+  const setTab = (v) =>
+    setSp(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        v === 'money' ? n.set('tab', 'money') : n.delete('tab');
+        return n;
+      },
+      { replace: true }
+    );
+  const moneyTone = money && resultTone(money.result);
+
   // الغياب هو الافتراضي: «المُنجَز» هو من قُلب حاضرًا أو عُذر، و الباقي بانتظار القائد
   const marked = session.roster.filter((m) => m.status === 'present' || m.status === 'excused').length;
   const totalRoster = session.roster.length;
@@ -846,7 +865,7 @@ export default function SessionDetail() {
             </Badge>
           )}
         </div>
-        {(session.leader || session.fee !== null) && (
+        {(session.leader || session.fee !== null || money?.any) && (
           <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
             {session.leader && (
               <div className="flex gap-1.5">
@@ -871,6 +890,21 @@ export default function SessionDetail() {
                 <dd className="font-medium tabular-nums">{fmtAmount(session.fee)}</dd>
               </div>
             )}
+            {/* Won or lost, from the page's first lines: a tap opens the account */}
+            {money?.any && (
+              <div className="flex gap-1.5">
+                <dt className="text-muted-foreground">{t(moneyTone.key)}</dt>
+                <dd>
+                  <button
+                    type="button"
+                    onClick={() => setTab('money')}
+                    className={cn('focus-ring rounded font-semibold tabular-nums hover:underline', moneyTone.className)}
+                  >
+                    <span dir="ltr">{signed(money.result)}</span>
+                  </button>
+                </dd>
+              </div>
+            )}
           </dl>
         )}
       </div>
@@ -891,6 +925,30 @@ export default function SessionDetail() {
         </div>
       )}
 
+      {/* ---------- Présence | Finances ----------
+          Not sticky: the roster's search bar sticks under the app bar, at the same
+          place, and would slide under the row */}
+      {money && (
+        <UnderlineTabs
+          items={[
+            { id: 'attendance', label: t('session.tabAttendance') },
+            { id: 'money', label: t('session.tabMoney') },
+          ]}
+          value={tab}
+          onChange={setTab}
+          label={session.title}
+          idPrefix="session-tab"
+          panelId="session-panel"
+          sticky={false}
+        />
+      )}
+
+      <div
+        className="space-y-4"
+        {...(money && { id: 'session-panel', role: 'tabpanel', 'aria-labelledby': `session-tab-${tab}` })}
+      >
+      {tab === 'attendance' && (
+      <>
       {/* ---------- نشاط عام للفوج: عدد الحضور لكل فرقة ---------- */}
       {session.kind === 'group' && (
         <GroupCountsCard
@@ -1218,15 +1276,19 @@ export default function SessionDetail() {
       </Card>
       )}
 
-      {/* ---------- تبرعات النشاط: ما أُعطي فيه، يدخل صندوق فرقته ---------- */}
-      {session.donations && (
-        <SessionDonations session={session} onChange={(donations) => setSession((s) => ({ ...s, donations }))} />
+      </>
       )}
 
-      {/* ---------- مصاريف النشاط: ما اشتُري له، يخرج من الصندوق ---------- */}
-      {session.expenses && (
-        <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
+      {/* ---------- مالية النشاط: الحصيلة، ثم ما اشتُري له و ما أُعطي فيه ---------- */}
+      {tab === 'money' && (
+        <>
+          <SessionMoneyFigures session={session} money={money} />
+          {/* Spent first: buying for the نشاط is what is written here most */}
+          <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
+          <SessionDonations session={session} onChange={(donations) => setSession((s) => ({ ...s, donations }))} />
+        </>
       )}
+      </div>
 
       {duesMeta && (
         <MemberDuesDialog

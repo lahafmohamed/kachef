@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { signed } from '../lib/events';
+import { resultTone } from '../lib/treasury';
 import { fmtAmount, fmtDate } from '../utils';
 import TreasuryEntryDialog from './TreasuryEntryDialog';
 import {
@@ -9,11 +11,130 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  cn,
   useToast,
+  IconCoins,
   IconHandHeart,
   IconPlus,
   IconReceipt,
 } from './ui';
+
+/**
+ * What a نشاط brought in against what it cost. The activity's own money only: the
+ * monthly dues taken during it belong to the month, not to the نشاط, so they stay
+ * out of the result — named under it, so nobody wonders where they went.
+ * `elsewhere`: what the server counted on lines this page does not show (another
+ * فرقة of a joint نشاط); the roster adds what it shows, so a payment typed in shows
+ * here at once.
+ */
+export function sessionMoney(session) {
+  const elsewhere = session.money_elsewhere;
+  if (!elsewhere || !session.expenses) return null;
+  const sum = (list, f) => list.reduce((n, x) => n + f(x), 0);
+  const collected = elsewhere.collected + sum(session.roster, (m) => m.paid || 0);
+  const donations = sum(session.donations || [], (x) => x.amount);
+  const expenses = sum(session.expenses, (x) => x.amount);
+  // What the présents still owe of the activity's price
+  const outstanding =
+    elsewhere.outstanding +
+    (session.fee > 0
+      ? sum(
+          session.roster.filter((m) => m.status === 'present'),
+          (m) => Math.max(0, session.fee - (m.paid || 0))
+        )
+      : 0);
+  return {
+    collected,
+    donations,
+    donationCount: (session.donations || []).length,
+    expenses,
+    expenseCount: session.expenses.length,
+    owed: sum(session.expenses, (x) => (x.paid_on ? 0 : x.amount)),
+    outstanding,
+    dues: elsewhere.dues + sum(session.roster, (m) => sum(m.dues?.here || [], (h) => h.amount)),
+    result: collected + donations - expenses,
+    // Nothing paid, given or spent: no result to speak of
+    any: collected > 0 || donations > 0 || expenses > 0,
+  };
+}
+
+function Figure({ label, children, className }) {
+  return (
+    <div className={cn('min-w-0 space-y-1.5 bg-card p-4', className)}>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The نشاط's account, as a camp's: cotisations, dons, dépenses, and the bottom line.
+ * Two by two on a phone, the result last, where an account ends.
+ */
+export function SessionMoneyFigures({ session, money }) {
+  const { t } = useTranslation();
+  const tone = resultTone(money.result);
+  const paidFee = session.fee > 0;
+  return (
+    <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border lg:grid-cols-4">
+      <Figure label={t('session.subscriptions')}>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(money.collected)}</p>
+        <p className="text-xs text-muted-foreground">
+          {money.outstanding > 0 ? (
+            <span className="font-medium text-warning">
+              {t('event.outstandingShort', { amount: fmtAmount(money.outstanding) })}
+            </span>
+          ) : money.collected > 0 ? (
+            paidFee && t('event.allCollected')
+          ) : (
+            !paidFee && t('event.free')
+          )}
+        </p>
+      </Figure>
+      <Figure label={t('event.donations')}>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(money.donations)}</p>
+        <p className="text-xs text-muted-foreground">{t('event.donationCount', { count: money.donationCount })}</p>
+      </Figure>
+      <Figure label={t('event.expenses')}>
+        <p className="text-2xl font-bold tabular-nums">{fmtAmount(money.expenses)}</p>
+        <p className="text-xs text-muted-foreground">
+          {money.owed > 0 ? (
+            <span className="font-medium text-warning">
+              {t('treasury.sessionOwed', { amount: fmtAmount(money.owed) })}
+            </span>
+          ) : (
+            t('event.expenseCount', { count: money.expenseCount })
+          )}
+        </p>
+      </Figure>
+      <Figure label={t('session.moneyResult')}>
+        <p className={cn('text-2xl font-bold tabular-nums', tone.className)}>
+          <span dir="ltr">{signed(money.result)}</span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {money.outstanding > 0 ? (
+            <>
+              {t('session.moneyProjected')}{' '}
+              <span dir="ltr" className="font-medium tabular-nums">
+                {signed(money.result + money.outstanding)}
+              </span>
+            </>
+          ) : (
+            <span className={cn('font-medium', tone.className)}>{t(tone.key)}</span>
+          )}
+        </p>
+      </Figure>
+      {/* How the result is made, and the dues that are not in it */}
+      <p className="col-span-2 flex gap-2 bg-card px-4 py-3 text-xs text-muted-foreground lg:col-span-4">
+        <IconCoins className="mt-px h-3.5 w-3.5 shrink-0" />
+        <span>
+          {t('session.moneyFormula')}
+          {money.dues > 0 && <> {t('session.moneyDuesNote', { amount: fmtAmount(money.dues) })}</>}
+        </span>
+      </p>
+    </Card>
+  );
+}
 
 /**
  * The frame both money cards of a نشاط share: a title with the total, a hint while

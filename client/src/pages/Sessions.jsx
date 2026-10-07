@@ -9,6 +9,8 @@ import { useSection } from '../section';
 import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
+import { signed } from '../lib/events';
+import { resultTone } from '../lib/treasury';
 import AmountInput from '../components/AmountInput';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
@@ -35,6 +37,7 @@ import {
   useToast,
   IconCalendar,
   IconCheck,
+  IconCoins,
   IconFilter,
   IconPlus,
   IconShield,
@@ -219,6 +222,28 @@ function AttendanceMeter({ s, t }) {
   );
 }
 
+/**
+ * Won or lost, before the نشاط is opened: cotisations and dons less its dépenses, the
+ * word first — the colour only repeats it. Nothing while no money moved in it, and
+ * nothing for who may not see amounts (the server sends no `money` then).
+ */
+function MoneyLine({ s, t }) {
+  const m = s.money;
+  if (!m || !(m.collected || m.donations || m.expenses)) return null;
+  const tone = resultTone(m.result);
+  return (
+    <p className="mt-2 flex items-baseline justify-between gap-2 text-xs">
+      <span className="flex items-center gap-1.5 text-muted-foreground">
+        <IconCoins className="h-3.5 w-3.5 self-center" />
+        {t(tone.key)}
+      </span>
+      <span dir="ltr" className={cn('text-sm font-semibold tabular-nums', tone.className)}>
+        {signed(m.result)}
+      </span>
+    </p>
+  );
+}
+
 const KIND_TAG = {
   visit: { key: 'session.kindVisit', variant: 'warning' },
   leaders: { key: 'session.kindLeaders', variant: 'info' },
@@ -289,6 +314,7 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
 
         <div className="col-start-2 sm:col-start-3">
           <AttendanceMeter s={s} t={t} />
+          <MoneyLine s={s} t={t} />
         </div>
       </Link>
     </li>
