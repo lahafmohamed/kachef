@@ -9,7 +9,10 @@ import ExportPdfButton from '../components/ExportPdfButton';
 import { fmtDueMonth } from '../components/LeaderDues';
 import { DuesChip, MemberDuesDialog } from '../components/MemberDues';
 import SessionEditDialog from '../components/SessionEditDialog';
+import AttachedFiles from '../components/AttachedFiles';
 import SessionExpenses, { SessionDonations, SessionMoneyFigures, sessionMoney } from '../components/SessionExpenses';
+import SessionEvaluation from '../components/SessionEvaluation';
+import { fmtScore, scoreTone } from '../lib/evaluations';
 import { UnderlineTabs } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
 import { signed } from '../lib/events';
@@ -565,12 +568,22 @@ export default function SessionDetail() {
   // مالية النشاط، لمن يرى مبالغه أو الصندوق: اشتراكاته و تبرعاته و مصاريفه في تبويب
   // خاصّ بها. من لا يراها لا تبويب له أصلًا، فالصفحة هي الحضور وحده كما كانت.
   const money = sessionMoney(session);
-  const tab = money && sp.get('tab') === 'money' ? 'money' : 'attendance';
+  // صور النشاط و ملفاته: تبويب ثالث، لكل من يرى النشاط
+  const tabParam = sp.get('tab');
+  // التقييم: تبويب حين يكون لنوع النشاط استمارة (أو قُيِّم من قبل). «ينتظر تقييمك» لقائد
+  // شارك فيه و لم يقيّمه بعد، و قد مضى — لا للمسؤول: تقييمه اختيار لا ينتظره أحد
+  const evaluation = session.evaluation;
+  const evalPending = !!evaluation?.can_evaluate && !!evaluation.expected && !evaluation.done;
+  const tab =
+    tabParam === 'files' || (money && tabParam === 'money') || (evaluation && tabParam === 'eval')
+      ? tabParam
+      : 'attendance';
+  const fileCount = session.files?.length || 0;
   const setTab = (v) =>
     setSp(
       (prev) => {
         const n = new URLSearchParams(prev);
-        v === 'money' ? n.set('tab', 'money') : n.delete('tab');
+        v === 'attendance' ? n.delete('tab') : n.set('tab', v);
         return n;
       },
       { replace: true }
@@ -865,7 +878,7 @@ export default function SessionDetail() {
             </Badge>
           )}
         </div>
-        {(session.leader || session.fee !== null || money?.any) && (
+        {(session.leader || session.fee !== null || money?.any || evalPending || evaluation?.count > 0) && (
           <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
             {session.leader && (
               <div className="flex gap-1.5">
@@ -905,6 +918,29 @@ export default function SessionDetail() {
                 </dd>
               </div>
             )}
+            {/* The mark the قادة gave — or, for one who led it and has not rated it yet,
+                the way to do it. Hidden from him until then, like on the tab. */}
+            {(evalPending || (evaluation?.count > 0 && evaluation.average !== null)) && (
+              <div className="flex gap-1.5">
+                <dt className="text-muted-foreground">{t('session.tabEval')}</dt>
+                <dd>
+                  <button
+                    type="button"
+                    onClick={() => setTab('eval')}
+                    className={cn(
+                      'focus-ring rounded font-semibold tabular-nums hover:underline',
+                      evalPending ? 'text-primary' : scoreTone(evaluation.average).text
+                    )}
+                  >
+                    {evalPending ? (
+                      t('eval.headerPending')
+                    ) : (
+                      <span dir="ltr">{fmtScore(evaluation.average, i18n.language)}/5</span>
+                    )}
+                  </button>
+                </dd>
+              </div>
+            )}
           </dl>
         )}
       </div>
@@ -928,11 +964,29 @@ export default function SessionDetail() {
       {/* ---------- Présence | Finances ----------
           Not sticky: the roster's search bar sticks under the app bar, at the same
           place, and would slide under the row */}
-      {money && (
-        <UnderlineTabs
+      <UnderlineTabs
           items={[
             { id: 'attendance', label: t('session.tabAttendance') },
-            { id: 'money', label: t('session.tabMoney') },
+            ...(money ? [{ id: 'money', label: t('session.tabMoney') }] : []),
+            ...(evaluation
+              ? [
+                  {
+                    id: 'eval',
+                    // A dot while it waits for this قائد's marks — the word goes to readers
+                    label: evalPending ? (
+                      <>
+                        {t('session.tabEval')}
+                        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-primary" />
+                        <span className="sr-only">— {t('eval.toDo')}</span>
+                      </>
+                    ) : (
+                      t('session.tabEval')
+                    ),
+                    count: evaluation.count > 0 ? evaluation.count : null,
+                  },
+                ]
+              : []),
+            { id: 'files', label: fileCount ? `${t('session.tabFiles')} · ${fileCount}` : t('session.tabFiles') },
           ]}
           value={tab}
           onChange={setTab}
@@ -941,11 +995,12 @@ export default function SessionDetail() {
           panelId="session-panel"
           sticky={false}
         />
-      )}
 
       <div
         className="space-y-4"
-        {...(money && { id: 'session-panel', role: 'tabpanel', 'aria-labelledby': `session-tab-${tab}` })}
+        id="session-panel"
+        role="tabpanel"
+        aria-labelledby={`session-tab-${tab}`}
       >
       {tab === 'attendance' && (
       <>
@@ -1287,6 +1342,23 @@ export default function SessionDetail() {
           <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
           <SessionDonations session={session} onChange={(donations) => setSession((s) => ({ ...s, donations }))} />
         </>
+      )}
+
+      {/* ---------- تقييم القادة للنشاط ---------- */}
+      {tab === 'eval' && (
+        <SessionEvaluation
+          session={session}
+          onChange={(summary) => setSession((s) => ({ ...s, evaluation: summary }))}
+        />
+      )}
+
+      {tab === 'files' && (
+        <AttachedFiles
+          base={`/sessions/${session.id}`}
+          files={session.files}
+          editable={editable}
+          onChange={(files) => setSession((s) => ({ ...s, files }))}
+        />
       )}
       </div>
 

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
 import NewBranchDialog, { AllAgesToggle } from '../components/NewBranchDialog';
+import EvalFormsPanel from '../components/EvalForms';
 import SectionField from '../components/SectionField';
 import {
   cn,
@@ -651,6 +652,11 @@ export default function Settings() {
             </>
           )}
         </CardContent>
+      </SettingsSection>
+
+      {/* ---------- استمارات تقييم الأنشطة ---------- */}
+      <SettingsSection title={t('eval.settingsTitle')}>
+        <EvalFormsPanel />
       </SettingsSection>
 
       {/* ---------- لوائح مكان السكن والمدارس ---------- */}

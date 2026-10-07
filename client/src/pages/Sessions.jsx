@@ -5,12 +5,13 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
-import { useSection } from '../section';
+import { isFeminine, useSection } from '../section';
 import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
 import { signed } from '../lib/events';
 import { resultTone } from '../lib/treasury';
+import { fmtScore, scoreTone } from '../lib/evaluations';
 import AmountInput from '../components/AmountInput';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
@@ -42,6 +43,7 @@ import {
   IconPlus,
   IconShield,
   IconSort,
+  IconStar,
   IconSwap,
   IconX,
 } from '../components/ui';
@@ -114,7 +116,7 @@ function ScopeBadge({ s, lang, t, branchList = [], bothSections = false }) {
         {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
       </Badge>
       {/* No فرقة to tell them apart: with both أقسام listed, the نشاط names its own */}
-      {bothSections && <Badge variant={s.section === 'F' ? 'info' : 'outline'}>{t(`section.${s.section}`)}</Badge>}
+      {bothSections && <Badge variant={isFeminine(s.section) ? 'info' : 'outline'}>{t(`section.${s.section}`)}</Badge>}
       {invited.map((b) => (
         <Badge key={b.id} variant="outline">
           {branchName(b, lang)}
@@ -244,6 +246,36 @@ function MoneyLine({ s, t }) {
   );
 }
 
+/**
+ * The قادة's mark, under the money line: «Évaluation (3) 4,3/5». For a قائد who led the
+ * نشاط and has not rated it yet, «À évaluer» instead — the server hides the others'
+ * average from him until he has.
+ */
+function EvalLine({ s, t, lng }) {
+  const e = s.eval;
+  if (!e) return null;
+  if (e.pending)
+    return (
+      <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-primary">
+        <IconStar className="h-3.5 w-3.5" />
+        {t('eval.toDo')}
+      </p>
+    );
+  if (!e.count || e.average === null) return null;
+  return (
+    <p className="mt-2 flex items-baseline justify-between gap-2 text-xs">
+      <span className="flex items-center gap-1.5 text-muted-foreground">
+        <IconStar className="h-3.5 w-3.5 self-center" />
+        {t('eval.listLabel', { count: e.count })}
+      </span>
+      <span dir="ltr" className={cn('text-sm font-semibold tabular-nums', scoreTone(e.average).text)}>
+        {fmtScore(e.average, lng)}
+        <span className="text-xs font-normal text-muted-foreground">/5</span>
+      </span>
+    </p>
+  );
+}
+
 const KIND_TAG = {
   visit: { key: 'session.kindVisit', variant: 'warning' },
   leaders: { key: 'session.kindLeaders', variant: 'info' },
@@ -315,6 +347,7 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
         <div className="col-start-2 sm:col-start-3">
           <AttendanceMeter s={s} t={t} />
           <MoneyLine s={s} t={t} />
+          <EvalLine s={s} t={t} lng={lang} />
         </div>
       </Link>
     </li>

@@ -24,6 +24,9 @@ const EXCEL_KINDS = new Set([
   'prep',
   'treasury',
   'branch-money',
+  'meeting',
+  'meetings-list',
+  'meeting-decisions',
 ]);
 
 // Up/Down step through the choices the way a menu does; Tab keeps working too

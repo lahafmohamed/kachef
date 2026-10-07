@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, isFeminine } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName, todayISO } from '../utils';
@@ -32,6 +32,7 @@ import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
 import TimePicker from '../components/TimePicker';
 import { UnderlineTabs } from '../components/MemberParts';
+import AttachedFiles from '../components/AttachedFiles';
 import {
   Avatar,
   Badge,
@@ -70,7 +71,7 @@ import {
   IconX,
 } from '../components/ui';
 
-const TABS = ['program', 'staff', 'participants', 'money'];
+const TABS = ['program', 'staff', 'participants', 'money', 'files'];
 
 // The same three marks as a نشاط; absence starts quiet, présence stands out
 const STATUSES = [
@@ -269,7 +270,7 @@ function ParticipantLine({ p, t, lng, section, showBranch = true, showGroup = tr
   const parts =
     kind === 'member'
       ? [showBranch && branchName(p, lng), showGroup && p.group_name]
-      : [t(kind === 'leader' ? (section === 'F' ? 'event.kindLeaderF' : 'event.kindLeader') : 'event.kindGuest')];
+      : [t(kind === 'leader' ? (isFeminine(section) ? 'event.kindLeaderF' : 'event.kindLeader') : 'event.kindGuest')];
   if (p.status === 'inactive') parts.push(t('member.inactive'));
   if (extra) parts.push(extra);
   const text = parts.filter(Boolean).join(' · ');
@@ -696,7 +697,7 @@ function AttendanceDialog({ ev, session, open, onClose, onMark, canMark, onAddPe
   const branchRows = [...new Map(members.map((p) => [p.branch_id, p])).values()];
   const whoOptions = [
     ...branchRows.map((p) => ({ value: `b:${p.branch_id}`, label: branchName(p, lng) })),
-    { value: 'leaders', label: t(ev.section === 'F' ? 'event.group_leaderF' : 'event.group_leader') },
+    { value: 'leaders', label: t(isFeminine(ev.section) ? 'event.group_leaderF' : 'event.group_leader') },
     { value: 'guests', label: t('event.group_guest') },
   ]
     .map((o) => ({ ...o, count: people.filter(whoMatch(o.value)).length }))
@@ -1006,7 +1007,7 @@ function StaffDialog({ ev, staff, presetRole, open, onClose, onSaved, leaders, t
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
-  const fem = ev.section === 'F';
+  const fem = isFeminine(ev.section);
   const g = (key) => t(fem ? [`${key}F`, key] : key);
 
   useEffect(() => {
@@ -1300,7 +1301,7 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
             <section key={kind}>
               <div className="flex items-center gap-2 border-y border-border bg-muted/30 px-4 py-2 sm:px-5">
                 <span className="text-sm font-semibold">
-                  {t(kind === 'leader' && ev.section === 'F' ? 'event.group_leaderF' : `event.group_${kind}`)}
+                  {t(kind === 'leader' && isFeminine(ev.section) ? 'event.group_leaderF' : `event.group_${kind}`)}
                 </span>
                 <span className="text-xs tabular-nums text-muted-foreground">{rows.length}</span>
               </div>
@@ -1514,7 +1515,7 @@ function AddParticipantsDialog({ ev, open, onClose, onAdded, t, lng }) {
               { value: 'member', label: `${t('event.group_member')}${members.length ? ` · ${members.length}` : ''}` },
               {
                 value: 'leader',
-                label: `${t(ev.section === 'F' ? 'event.group_leaderF' : 'event.group_leader')}${leaders.length ? ` · ${leaders.length}` : ''}`,
+                label: `${t(isFeminine(ev.section) ? 'event.group_leaderF' : 'event.group_leader')}${leaders.length ? ` · ${leaders.length}` : ''}`,
               },
               { value: 'guest', label: `${t('event.group_guest')}${guestList.length ? ` · ${guestList.length}` : ''}` },
             ]}
@@ -2526,6 +2527,8 @@ export default function EventDetail() {
           },
         ]
       : []),
+    // صور المخيم و ملفاته: لكل من يراه، و يضيفها من يسجّل الحضور
+    { id: 'files', label: t('event.tabFiles'), count: ev.files?.length || 0 },
   ];
   const openSession = attendanceFor ? ev.sessions.find((s) => s.id === attendanceFor) : null;
 
@@ -2696,6 +2699,16 @@ export default function EventDetail() {
               lng={lng}
               onAdd={(direction) => setFundingDialog({ funding: null, direction })}
               onEdit={(f) => setFundingDialog({ funding: f, direction: f.direction })}
+            />
+          </div>
+        )}
+        {tab === 'files' && (
+          <div className="space-y-4">
+            <AttachedFiles
+              base={`/events/${ev.id}`}
+              files={ev.files}
+              editable={canMark}
+              onChange={(files) => setEv((e) => ({ ...e, files }))}
             />
           </div>
         )}

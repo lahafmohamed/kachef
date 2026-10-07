@@ -1,25 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
-import { useSection } from '../section';
-import { branchName } from '../utils';
+import { SECTIONS, isFeminine, useSection } from '../section';
 import { ChangePasswordDialog } from '../pages/ChangePassword';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './shadcn/popover';
+import { NotificationsBell, NotificationSettingsDialog, PushPrompt, usePushSync } from './Notifications';
 import {
   cn,
-  Button,
   Dialog,
-  EmptyState,
   SegmentedControl,
-  Skeleton,
   useTheme,
   IconAward,
   IconBell,
   IconChevronDown,
   IconHome,
-  IconInbox,
   IconUsers,
   IconCalendar,
   IconClipboard,
@@ -29,6 +24,7 @@ import {
   IconLock,
   IconKey,
   IconLogout,
+  IconMessages,
   IconMore,
   IconShield,
   IconSun,
@@ -45,6 +41,7 @@ const NAV_ITEMS = [
   { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions.read' },
   { to: '/prep-cards', key: 'nav.prepCards', short: 'nav.prepCardsShort', Icon: IconClipboard, perm: 'sessions.read' },
   { to: '/events', key: 'nav.events', short: 'nav.eventsShort', Icon: IconTent, perm: 'sessions.read' },
+  { to: '/meetings', key: 'nav.meetings', short: 'nav.meetings', Icon: IconMessages, perm: 'sessions.read' },
   { to: '/treasury', key: 'nav.treasury', short: 'nav.treasury', Icon: IconWallet, perm: 'treasury.read' },
   { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions.read' },
   { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, perm: 'leaders.read' },
@@ -199,148 +196,6 @@ function BottomNav() {
   );
 }
 
-// created_at is UTC "YYYY-MM-DD HH:MM:SS" — parse as such, show local, latin digits
-const notifTimeFormats = {};
-function fmtNotifTime(createdAt, lng) {
-  const locale = lng === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
-  const f = (notifTimeFormats[locale] ??= new Intl.DateTimeFormat(locale, {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }));
-  return f.format(new Date(createdAt.replace(' ', 'T') + 'Z')).replace(/[‎‏؜]/g, '');
-}
-
-/**
- * جرس إشعارات الأدمن: ما فعله القادة على الأنشطة — إضافة، حضور، منشّطون، أعداد.
- * Polls the unread count once a minute; opening the panel marks everything seen.
- * Rendered only for admins — the server refuses everyone else anyway.
- */
-function NotificationsBell({ variant = 'outline', className, iconClassName }) {
-  const { t, i18n } = useTranslation();
-  const { user } = useAuth();
-  const [open, setOpen] = useState(false);
-  const [unread, setUnread] = useState(0);
-  const [items, setItems] = useState(null);
-  const isAdmin = user?.role === 'admin';
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    let alive = true;
-    const poll = () =>
-      api
-        .get('/notifications')
-        .then((d) => alive && setUnread(d.unread_count))
-        .catch(() => {}); // a failed poll just keeps the previous badge
-    poll();
-    const id = setInterval(poll, 60_000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [isAdmin]);
-
-  if (!isAdmin) return null;
-
-  async function openPanel() {
-    setOpen(true);
-    setItems(null);
-    try {
-      const d = await api.get('/notifications');
-      setItems(d.items);
-      // Everything shown is now seen — the badge restarts from zero
-      await api.post('/notifications/seen');
-      setUnread(0);
-    } catch {
-      setItems([]);
-    }
-  }
-
-  // On an outlined button the count rides the corner; a ghost one has no visible
-  // corner, so the count sits on the bell itself instead of floating off it
-  const badge =
-    unread > 0 ? (
-      <span
-        aria-hidden="true"
-        className={cn(
-          'absolute flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.6875rem] font-bold leading-none tabular-nums text-destructive-foreground ring-2 ring-card',
-          variant === 'ghost' ? 'end-1 top-1' : '-end-1 -top-1'
-        )}
-      >
-        {unread > 9 ? '9+' : unread}
-      </span>
-    ) : null;
-
-  const label = unread > 0 ? t('notif.openUnread', { count: unread }) : t('notif.title');
-
-  return (
-    <>
-      <Button
-        variant={variant}
-        size="icon"
-        onClick={openPanel}
-        aria-label={label}
-        title={label}
-        className={cn('relative', className)}
-      >
-        <IconBell className={iconClassName} />
-        {badge}
-      </Button>
-
-      <Dialog open={open} onClose={() => setOpen(false)} title={t('notif.title')}>
-        {items === null ? (
-          <div className="space-y-2">
-            <Skeleton className="h-12" />
-            <Skeleton className="h-12" />
-          </div>
-        ) : items.length === 0 ? (
-          <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('notif.empty')} />
-        ) : (
-          <ul className="divide-y divide-border">
-            {items.map((n) => {
-              const body = (
-                <>
-                  <span
-                    className={cn(
-                      'mt-1.5 h-2 w-2 shrink-0 rounded-full',
-                      n.unread ? 'bg-primary' : 'bg-transparent'
-                    )}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm">
-                      {t(`notif.${n.type}`, { actor: n.actor })}
-                      {n.session_title && <span className="font-medium"> «{n.session_title}»</span>}
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {[branchName(n, i18n.language), fmtNotifTime(n.created_at, i18n.language)]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </span>
-                  </span>
-                </>
-              );
-              return (
-                <li key={n.id}>
-                  {n.session_id ? (
-                    <Link
-                      to={`/sessions/${n.session_id}`}
-                      onClick={() => setOpen(false)}
-                      className="focus-ring flex items-start gap-2.5 rounded-md px-1 py-2.5 transition-colors hover:bg-accent/50"
-                    >
-                      {body}
-                    </Link>
-                  ) : (
-                    <div className="flex items-start gap-2.5 px-1 py-2.5">{body}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Dialog>
-    </>
-  );
-}
-
 /** `sub` names the قسم on screen under the app name, when there is one to name. */
 function Brand({ className, sub }) {
   const { t } = useTranslation();
@@ -362,7 +217,7 @@ function Brand({ className, sub }) {
 }
 
 /**
- * الكل / الفتيان / الفتيات — for an admin, or an account open on both أقسام. App
+ * الكل / الفتيان / الفتيات / الفرنكوفون — for an admin, or an account open on all أقسام. App
  * remounts every page on a new pick, so it all loads again for that قسم. A detail
  * page or a filtered list of the old قسم would only answer «forbidden» or nothing,
  * so the switch lands on the list page of the same tab.
@@ -373,6 +228,7 @@ function SectionSwitcher({ onSwitched }) {
   const { pathname } = useLocation();
   const { canSwitch, view, setView } = useSection();
   if (!canSwitch) return null;
+  const options = [{ value: '', label: t('section.all') }, ...SECTIONS.map((s) => ({ value: s, label: t(`section.${s}`) }))];
   return (
     <SegmentedControl
       size="sm"
@@ -385,11 +241,9 @@ function SectionSwitcher({ onSwitched }) {
         onSwitched?.();
       }}
       className="flex w-full"
-      options={[
-        { value: '', label: t('section.all') },
-        { value: 'M', label: t('section.M') },
-        { value: 'F', label: t('section.F') },
-      ]}
+      // Five names do not fit side by side in the sidebar: two by two, «Tout» on its own row
+      columns={options.length > 3 ? 2 : undefined}
+      options={options}
     />
   );
 }
@@ -419,8 +273,8 @@ function menuArrowKeys(e) {
 
 const initialsOf = (name) => name.slice(0, 2).toUpperCase();
 
-/** Password, language, theme and the way out: the account popover, sidebar and phone bar alike. */
-function AccountItems({ onChangePassword }) {
+/** Password, notifications, language, theme and the way out: the account popover, sidebar and phone bar alike. */
+function AccountItems({ onChangePassword, onNotifications }) {
   const { t, i18n } = useTranslation();
   const { logout } = useAuth();
   const { theme, toggle } = useTheme();
@@ -430,6 +284,9 @@ function AccountItems({ onChangePassword }) {
     <>
       <MenuItem icon={<IconKey />} onClick={onChangePassword}>
         {t('auth.changePassword')}
+      </MenuItem>
+      <MenuItem icon={<IconBell />} onClick={onNotifications}>
+        {t('push.settings')}
       </MenuItem>
       <MenuItem icon={<IconLanguages />} onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}>
         {isAr ? 'Français' : 'العربية'}
@@ -445,20 +302,33 @@ function AccountItems({ onChangePassword }) {
   );
 }
 
-/** Opening and closing for an account popover, plus the password dialog it leads to. */
+/** Opening and closing for an account popover, plus the dialogs it leads to (password, notifications). */
 function useAccountPopover() {
   const [open, setOpen] = useState(false);
-  const [changing, setChanging] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(null); // 'password' | 'notifications'
   const triggerRef = useRef(null);
-  function changePassword() {
+  function openDialog(which) {
     // Park focus on the trigger before the dialog opens: the dialog hands focus
     // back to whatever held it when it opened, and this item is about to unmount.
     triggerRef.current?.focus();
     setOpen(false);
-    setChanging(true);
+    setDialogOpen(which);
   }
-  const dialog = <ChangePasswordDialog open={changing} onClose={() => setChanging(false)} />;
-  return { open, setOpen, triggerRef, changePassword, dialog };
+  const close = () => setDialogOpen(null);
+  const dialog = (
+    <>
+      <ChangePasswordDialog open={dialogOpen === 'password'} onClose={close} />
+      <NotificationSettingsDialog open={dialogOpen === 'notifications'} onClose={close} />
+    </>
+  );
+  return {
+    open,
+    setOpen,
+    triggerRef,
+    changePassword: () => openDialog('password'),
+    openNotifications: () => openDialog('notifications'),
+    dialog,
+  };
 }
 
 const popoverMotion =
@@ -476,7 +346,7 @@ function useRoleLine() {
   const { fixed } = useSection();
   // حساب في قسم الفتيات حسابُ قائدة
   const role = t(
-    user?.role === 'admin' ? 'admin.roleAdmin' : fixed === 'F' ? 'section.roleUserF' : 'admin.roleUser'
+    user?.role === 'admin' ? 'admin.roleAdmin' : isFeminine(fixed) ? 'section.roleUserF' : 'admin.roleUser'
   );
   return fixed ? `${role} · ${t(`section.name${fixed}`)}` : role;
 }
@@ -486,7 +356,7 @@ function AccountButton() {
   const { user } = useAuth();
   const { canSwitch } = useSection();
   const roleLine = useRoleLine();
-  const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
+  const { open, setOpen, triggerRef, changePassword, openNotifications, dialog } = useAccountPopover();
   if (!user) return null;
   const name = user.display_name || user.username;
   return (
@@ -531,7 +401,7 @@ function AccountButton() {
             <div role="separator" className="-mx-1.5 mb-1.5 h-px bg-border" />
           </>
         )}
-        <AccountItems onChangePassword={changePassword} />
+        <AccountItems onChangePassword={changePassword} onNotifications={openNotifications} />
       </PopoverContent>
       {dialog}
     </Popover>
@@ -549,7 +419,7 @@ function AccountMenu({ children }) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const roleLine = useRoleLine();
-  const { open, setOpen, triggerRef, changePassword, dialog } = useAccountPopover();
+  const { open, setOpen, triggerRef, changePassword, openNotifications, dialog } = useAccountPopover();
   if (!user) return null;
 
   const name = user.display_name || user.username;
@@ -589,7 +459,7 @@ function AccountMenu({ children }) {
         onKeyDown={menuArrowKeys}
         className={cn('w-(--radix-popover-trigger-width)', popoverMotion)}
       >
-        <AccountItems onChangePassword={changePassword} />
+        <AccountItems onChangePassword={changePassword} onNotifications={openNotifications} />
       </PopoverContent>
       {dialog}
     </Popover>
@@ -609,6 +479,7 @@ export default function Layout({ children }) {
   // admin's pick, since the switcher itself sits behind the account button there
   const lockedName = fixed ? t(`section.name${fixed}`) : null;
   const pickedName = section ? t(`section.name${section}`) : null;
+  usePushSync();
 
   return (
     <div className="min-h-dvh">
@@ -663,6 +534,8 @@ export default function Layout({ children }) {
             wide ? 'max-w-[100rem]' : 'max-w-6xl'
           )}
         >
+          {/* Once, above the dashboard: switch push on for this device */}
+          {pathname === '/' && <PushPrompt className="mb-6" />}
           {children}
         </main>
       </div>

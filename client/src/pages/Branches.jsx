@@ -8,6 +8,7 @@ import { useSection } from '../section';
 import { toDate, toISO } from '../lib/date';
 import { avatarName, branchName, fmtAmount, fmtDate, memberName } from '../utils';
 import { OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
+import { ageGroupFor, ageYear as localAgeYear, bornIn, isAgeGroup } from '../lib/ageGroups';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
 import NewBranchDialog from '../components/NewBranchDialog';
@@ -31,6 +32,7 @@ import {
   cn,
   useConfirm,
   useToast,
+  IconArrow,
   IconAward,
   IconCalendar,
   IconCheck,
@@ -43,6 +45,7 @@ import {
   IconPlus,
   IconReceipt,
   IconRefresh,
+  IconSparkles,
   IconTrash,
   IconUnlink,
   IconUsers,
@@ -1232,6 +1235,9 @@ function BranchSessions({ branchId }) {
  * مختلفًا: فتُقسَّم إلى طلائع يُوزَّع عليها العناصر بالاسم، ثم يختار النشاط
  * طلائعه عند إنشائه. التوزيع يُحفظ فور تغييره — صفّ واحد لكل عنصر، فلا زرّ حفظ
  * ينتظر إلى آخر القائمة و لا خطر ضياع ما وُزِّع قبله.
+ *
+ * الطليعة ذات الفئة العمرية (البراعم: ٥–٦، ٦–٧، ٧–٨) تأخذ عناصرها بسنة ميلادهم:
+ * «التوزيع حسب السنّ» يعرض من ليس في طليعة سنّه، ثم ينقلهم — كل أيلول يصعد الجميع.
  */
 function BranchGroups({ branchId }) {
   const { t } = useTranslation();
@@ -1240,8 +1246,11 @@ function BranchGroups({ branchId }) {
   const confirm = useConfirm();
   const res = useFetch(`/branches/${branchId}/groups`);
   const canEdit = can('branches.groups');
-  // null = مغلق، { id, name } = إعادة تسمية، { name } = طليعة جديدة
+  // null = مغلق، { id, name, age_from, age_to } = تعديل، بلا id = طليعة جديدة
   const [editing, setEditing] = useState(null);
+  // نافذة التوزيع حسب السنّ: null = مغلقة، و إلا العناصر المؤشَّرون للنقل
+  const [byAge, setByAge] = useState(null);
+  const [applying, setApplying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dialogError, setDialogError] = useState(null);
   const [query, setQuery] = useState('');
@@ -1272,21 +1281,89 @@ function BranchGroups({ branchId }) {
   const activeCount = members.filter((m) => m.status === 'active').length;
   const unassigned = members.filter((m) => !m.group_id && m.status === 'active').length;
 
+  // سنّ السنة بساعة الخادم، فالمعاينة تطابق ما سيفعله. التوزيع حسب السنّ للعناصر
+  // النشطين وحدهم: من عاد بعد غياب يُوزَّع في المرة التالية.
+  const year = res.data?.age_year ?? localAgeYear();
+  const hasAgeGroups = groups.some(isAgeGroup);
+  const agePlan = { moves: [], undated: [] };
+  if (hasAgeGroups) {
+    for (const m of members) {
+      if (m.status !== 'active') continue;
+      const g = ageGroupFor(m.birth_date, groups, year);
+      if (!g) agePlan.undated.push(m);
+      else if (g.id !== m.group_id) agePlan.moves.push({ member: m, to: g });
+    }
+    // طليعةً طليعة، من الأصغر — و بالاسم داخل كل طليعة كما جاءت من الخادم (الترتيب ثابت)
+    agePlan.moves.sort((a, b) => a.to.age_from - b.to.age_from);
+  }
+  const groupNameOf = (id) => groups.find((g) => g.id === id)?.name || t('branch.groupNone');
+  const ageLabel = (g) =>
+    `${g.age_from}–${g.age_to} ${t('branch.years')} · ${t('branch.groupBornIn', { years: bornIn(g, year) })}`;
+
+  // طليعة جديدة في فرقة مقسَّمة بالسنّ تبدأ بالفئة التي تلي آخرها: ٥–٦ ثم ٦–٧ ثم ٧–٨
+  function newGroup() {
+    const top = Math.max(...groups.filter(isAgeGroup).map((g) => g.age_to));
+    openEditor(Number.isFinite(top) ? { name: '', age_from: top, age_to: top + 1 } : { name: '', age_from: '', age_to: '' });
+  }
+
   async function saveGroup(e) {
     e.preventDefault();
     setDialogError(null);
+    const from = editing.age_from === '' ? null : Number(editing.age_from);
+    const to = editing.age_to === '' ? null : Number(editing.age_to);
+    if ((from === null) !== (to === null)) return setDialogError(t('branch.groupAgeIncomplete'));
+    if (from !== null && !(to > from)) return setDialogError(t('branch.groupAgeInvalid'));
     setSaving(true);
     try {
-      const body = { name: editing.name };
+      const body = { name: editing.name, age_from: from, age_to: to };
       if (editing.id) await api.put(`/branches/${branchId}/groups/${editing.id}`, body);
       else await api.post(`/branches/${branchId}/groups`, body);
       setEditing(null);
       toast.success(t(editing.id ? 'branch.groupSaved' : 'branch.groupCreated'));
       res.reload({ quiet: true });
     } catch (err) {
-      setDialogError(err.message === 'group_exists' ? t('branch.groupExists') : err.message);
+      const code = err.message;
+      setDialogError(
+        code === 'group_exists'
+          ? t('branch.groupExists')
+          : code === 'group_age_overlap'
+            ? t('branch.groupAgeOverlap', { name: err.body?.name })
+            : code === 'invalid_age_range'
+              ? t('branch.groupAgeInvalid')
+              : code
+      );
     } finally {
       setSaving(false);
+    }
+  }
+
+  // كل المقترَحين مؤشَّرون عند الفتح: الحالة العادية أن يُطبَّق التوزيع كله
+  function openByAge() {
+    setByAge(new Set(agePlan.moves.map((mv) => mv.member.id)));
+  }
+
+  function toggleByAge(id) {
+    setByAge((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function applyByAge() {
+    const ids = [...byAge];
+    if (!ids.length) return;
+    setApplying(true);
+    try {
+      const out = await api.post(`/branches/${branchId}/groups/by-age`, { member_ids: ids });
+      setByAge(null);
+      toast.success(t('branch.groupMoved', { count: out.moved }));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setApplying(false);
+      res.reload({ quiet: true });
     }
   }
 
@@ -1382,7 +1459,7 @@ function BranchGroups({ branchId }) {
             </Button>
           )}
           {canEdit && (
-            <Button size="sm" variant="brand" onClick={() => openEditor({ name: '' })}>
+            <Button size="sm" variant="brand" onClick={newGroup}>
               <IconPlus />
               {t('branch.groupNew')}
             </Button>
@@ -1396,11 +1473,28 @@ function BranchGroups({ branchId }) {
         </EmptyState>
       ) : (
         <ul className="divide-y divide-border">
+          {/* من ليس في طليعة سنّه — أول السنة الكشفية يكون الجميع تقريبًا: يصعدون فئةً */}
+          {agePlan.moves.length > 0 && (
+            <li className="flex flex-wrap items-center gap-x-3 gap-y-2 bg-muted/30 px-4 py-3 sm:px-5">
+              <p className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+                <IconSparkles className="h-4 w-4 shrink-0 text-warning" />
+                <span className="min-w-0">{t('branch.groupByAgePending', { count: agePlan.moves.length })}</span>
+              </p>
+              <Button size="sm" variant="outline" className="shrink-0" onClick={openByAge}>
+                {t(canEdit ? 'branch.groupByAge' : 'branch.groupByAgeView')}
+              </Button>
+            </li>
+          )}
           {groups.map((g) => (
             <li key={g.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
               <div className="grid min-w-0 flex-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
                 <div className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
-                  <p className="truncate font-medium">{g.name}</p>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{g.name}</p>
+                    {isAgeGroup(g) && (
+                      <p className="truncate text-xs tabular-nums text-muted-foreground">{ageLabel(g)}</p>
+                    )}
+                  </div>
                   <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {t('branch.groupMembers', { count: g.member_count })}
                   </p>
@@ -1412,9 +1506,11 @@ function BranchGroups({ branchId }) {
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    aria-label={`${t('branch.groupRename')} — ${g.name}`}
-                    title={t('branch.groupRename')}
-                    onClick={() => openEditor({ id: g.id, name: g.name })}
+                    aria-label={`${t('branch.groupEdit')} — ${g.name}`}
+                    title={t('branch.groupEdit')}
+                    onClick={() =>
+                      openEditor({ id: g.id, name: g.name, age_from: g.age_from ?? '', age_to: g.age_to ?? '' })
+                    }
                   >
                     <IconPencil />
                   </Button>
@@ -1574,9 +1670,74 @@ function BranchGroups({ branchId }) {
       </Dialog>
 
       <Dialog
+        open={!!byAge}
+        onClose={() => setByAge(null)}
+        title={t('branch.groupByAgeTitle')}
+        description={t('branch.groupByAgeHint', { year: `${year}-${year + 1}` })}
+        size="lg"
+        footer={
+          canEdit && agePlan.moves.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+              <Button variant="outline" onClick={() => setByAge(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button variant="brand" loading={applying} disabled={!byAge?.size} onClick={applyByAge}>
+                {t('branch.groupByAgeApply', { count: byAge?.size || 0 })}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      >
+        {agePlan.moves.length === 0 ? (
+          <p className="flex items-center gap-2 py-1 text-sm text-success">
+            <IconCheck className="h-4 w-4" />
+            {t('branch.groupByAgeDone')}
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {agePlan.moves.map(({ member: m, to }) => (
+              <li key={m.id} className="flex items-center gap-3 py-2">
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                  {canEdit && (
+                    <input type="checkbox" checked={!!byAge?.has(m.id)} onChange={() => toggleByAge(m.id)} />
+                  )}
+                  <Avatar photo={m.photo} name={avatarName(m)} className="h-8 w-8" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">{memberName(m)}</span>
+                    {/* As in الترفيعات: the arrow is only drawn, and turns with the reading direction */}
+                    <span className="sr-only">
+                      {t('promotion.transition', { from: groupNameOf(m.group_id), to: to.name })}
+                    </span>
+                    <span aria-hidden="true" className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <bdi className="min-w-0 truncate">{groupNameOf(m.group_id)}</bdi>
+                      <IconArrow className="h-3 w-3 shrink-0 rtl:rotate-180" />
+                      <bdi className="min-w-0 truncate font-medium text-foreground">{to.name}</bdi>
+                    </span>
+                  </span>
+                </label>
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                  {String(m.birth_date).slice(0, 4)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {/* بلا تاريخ ميلاد لا سنّ: يبقون حيث هم حتى يُكتب التاريخ في ملفّهم أو يُوزَّعوا يدويًا */}
+        {agePlan.undated.length > 0 && (
+          <div className="mt-4 space-y-1.5 border-t border-border pt-3">
+            <p className="text-sm font-medium">{t('branch.groupByAgeUndated', { count: agePlan.undated.length })}</p>
+            <p className="text-xs text-muted-foreground">{t('branch.groupByAgeUndatedHint')}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {agePlan.undated.map((m) => memberName(m)).join(t('member.listSep'))}
+            </p>
+          </div>
+        )}
+      </Dialog>
+
+      <Dialog
         open={!!editing}
         onClose={() => setEditing(null)}
-        title={t(editing?.id ? 'branch.groupRename' : 'branch.groupNew')}
+        title={t(editing?.id ? 'branch.groupEdit' : 'branch.groupNew')}
         size="sm"
       >
         <form onSubmit={saveGroup} className="space-y-4">
@@ -1591,6 +1752,48 @@ function BranchGroups({ branchId }) {
               value={editing?.name || ''}
               onChange={(e) => setEditing((g) => ({ ...g, name: e.target.value }))}
             />
+          </div>
+          {/* الفئة العمرية اختيارية: بها يُوزَّع العناصر بسنة ميلادهم، و بلا سنّ تبقى
+              الطليعة يدوية (بحارة، برية…). التلميح يقول فورًا مواليد أيّ سنة تأخذ. */}
+          <div className="space-y-1.5">
+            <Label htmlFor="group_age_from">{t('branch.groupAge')}</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="group_age_from"
+                type="number"
+                inputMode="numeric"
+                min="0"
+                max="98"
+                placeholder={t('branch.groupAgeFrom')}
+                aria-label={`${t('branch.groupAge')} — ${t('branch.groupAgeFrom')}`}
+                value={editing?.age_from ?? ''}
+                onChange={(e) => setEditing((g) => ({ ...g, age_from: e.target.value }))}
+              />
+              <span className="text-sm text-muted-foreground">–</span>
+              <Input
+                id="group_age_to"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max="99"
+                placeholder={t('branch.groupAgeTo')}
+                aria-label={`${t('branch.groupAge')} — ${t('branch.groupAgeTo')}`}
+                value={editing?.age_to ?? ''}
+                onChange={(e) => setEditing((g) => ({ ...g, age_to: e.target.value }))}
+              />
+            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {(() => {
+                if (editing?.age_from === '' && editing?.age_to === '') return t('branch.groupAgeManual');
+                const range = {
+                  age_from: editing?.age_from === '' ? NaN : Number(editing?.age_from),
+                  age_to: editing?.age_to === '' ? NaN : Number(editing?.age_to),
+                };
+                return isAgeGroup(range) && range.age_to > range.age_from
+                  ? t('branch.groupAgeBorn', { years: bornIn(range, year) })
+                  : t('branch.groupAgeRule');
+              })()}
+            </p>
           </div>
           {dialogError && <p className="text-sm text-destructive">{dialogError}</p>}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

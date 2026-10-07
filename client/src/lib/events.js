@@ -1,5 +1,6 @@
 import { fmtAmount, fmtDate, memberName } from '../utils';
 import { toDate } from './date';
+import { isFeminine } from '../api';
 
 /**
  * المخيمات و الدورات — the lists and rules both pages share. The server accepts the
@@ -19,7 +20,7 @@ export const STAFF_ROLES = ['gathering', 'secretary', 'media', 'treasurer', 'gea
 export const CORE_STAFF = ['gathering', 'secretary', 'media', 'treasurer'];
 
 // قسم الفتيات says it in the feminine (قائدة التجمع، أمينة السر); French falls back to the plain key
-const gendered = (t, key, section) => t(section === 'F' ? [`${key}F`, key] : key);
+const gendered = (t, key, section) => t(isFeminine(section) ? [`${key}F`, key] : key);
 
 /** «قائد المخيم», «قائد الدورة», «قائد الرحلة» — by the kind of event */
 export const chiefLabel = (t, kind, section) => gendered(t, `event.chief_${kind}`, section);

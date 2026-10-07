@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
-import { useSection } from '../section';
+import { sectionGender, useSection } from '../section';
 import { branchName, fileToDataUrl, memberName, todayISO } from '../utils';
+import { ageGroupFor } from '../lib/ageGroups';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
 import {
@@ -145,10 +146,12 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   const editing = !!member;
   // حساب محصور في قسم (أو عرض محصور فيه) لا يسجّل إلا من جنس هذا القسم: حساب
   // الفتيات لا يختار «ذكر»، و حساب الفتيان لا يختار «أنثى». الخادم يرفض الآخر أيضًا.
+  // جنس القسم المعروض، أو null: لا قسم، أو قسم مختلط
   const { section } = useSection();
+  const lockedSex = sectionGender(section);
   const [form, setForm] = useState(() => {
     const f = editing ? memberToForm(member) : { ...emptyForm(), ...defaults };
-    return section ? { ...f, sex: section } : f;
+    return lockedSex ? { ...f, sex: lockedSex } : f;
   });
   const [error, setError] = useState(null);
   const errorRef = useRef(null);
@@ -164,11 +167,11 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   // A new عنصر's الجنس follows the قسم of the فرقة picked — a فرقة of الفتيات takes
   // girls — until it is set by hand
   const sexTouched = useRef(false);
-  const branchSection = branchList.find((b) => String(b.id) === String(form.branch_id))?.section;
+  const branchSex = sectionGender(branchList.find((b) => String(b.id) === String(form.branch_id))?.section);
   useEffect(() => {
-    if (editing || sexTouched.current || !branchSection) return;
-    setForm((f) => (f.sex === branchSection ? f : { ...f, sex: branchSection }));
-  }, [editing, branchSection]);
+    if (editing || sexTouched.current || !branchSex) return;
+    setForm((f) => (f.sex === branchSex ? f : { ...f, sex: branchSex }));
+  }, [editing, branchSex]);
 
   // The saved-with-error message can sit below the fold of a long form
   useEffect(() => {
@@ -178,12 +181,30 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   // طلائع الفرقة المختارة. نقل العنصر إلى فرقة أخرى يُخرجه من طليعته: الطليعة
   // تخصّ فرقتها، و الخادم يرفض طليعةً من غيرها.
   const branchGroups = branchList.find((b) => String(b.id) === String(form.branch_id))?.groups || [];
-  const setBranch = (e) => setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '' }));
+  // طليعة اختيرت باليد لا يغيّرها السنّ بعد ذلك — إلا أن تتغيّر الفرقة، فاختيارها القديم سقط.
+  // التسجيل من لسان طليعة يأتي بها مختارةً: ذاك اختيار أيضًا.
+  const [groupTouched, setGroupTouched] = useState(
+    () => !editing && defaults?.group_id !== undefined && defaults?.group_id !== ''
+  );
+  const setBranch = (e) => {
+    setGroupTouched(false);
+    setForm((f) => ({ ...f, branch_id: e.target.value, group_id: '' }));
+  };
 
   // تغيير فرقة عنصر مسجَّل يُحفظ في سجلّه، و الخادم يريد سببه: نقلٌ حقيقي (بتاريخه،
   // فحضوره السابق يبقى لفرقته القديمة) أو تصحيحُ فرقةٍ سُجّلت خطأً.
   const [branchChange, setBranchChange] = useState({ reason: '', date: todayISO() });
   const branchChanged = editing && String(form.branch_id) !== String(member.branch_id);
+
+  // فرقة مقسَّمة بالسنّ: الطليعة تتبع سنة الميلاد ما لم تُختر باليد — للتسجيل الجديد، و
+  // لعنصر تتغيّر فرقته أو تاريخ ميلاده. فتح ملفّ قديم لتصحيح هاتفه لا ينقله من طليعته.
+  const ageSuggestion = ageGroupFor(form.birth_date, branchGroups);
+  const followsAge = !groupTouched && (!editing || branchChanged || form.birth_date !== (member.birth_date || ''));
+  const suggestedId = followsAge ? (ageSuggestion?.id ?? null) : null;
+  useEffect(() => {
+    if (suggestedId === null) return;
+    setForm((f) => (String(f.group_id) === String(suggestedId) ? f : { ...f, group_id: suggestedId }));
+  }, [suggestedId]);
 
   // The pickers take plain labels; a value retired from a list still shows on the
   // عنصر who carries it, it simply can no longer be picked again.
@@ -321,7 +342,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
               options={[
                 { value: 'M', label: t('member.male') },
                 { value: 'F', label: t('member.female') },
-              ].filter((o) => !section || o.value === section)}
+              ].filter((o) => !lockedSex || o.value === lockedSex)}
             />
           </div>
           <Field id="birth_date" label={t('member.birthDate')}>
@@ -358,7 +379,14 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
               و هنا يُصحَّح توزيع عنصر واحد وهو يُسجَّل أو يُعدَّل. */}
           {branchGroups.length > 0 && (
             <Field id="group_id" label={t('member.group')}>
-              <Select id="group_id" value={form.group_id ?? ''} onChange={set('group_id')}>
+              <Select
+                id="group_id"
+                value={form.group_id ?? ''}
+                onChange={(e) => {
+                  setGroupTouched(true);
+                  set('group_id')(e);
+                }}
+              >
                 <option value="">{t('member.noGroup')}</option>
                 {branchGroups.map((g) => (
                   <option key={g.id} value={g.id}>
@@ -366,6 +394,9 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
                   </option>
                 ))}
               </Select>
+              {suggestedId !== null && String(form.group_id) === String(suggestedId) && (
+                <p className="text-xs text-muted-foreground">{t('member.groupByAge')}</p>
+              )}
             </Field>
           )}
           {branchChanged && (

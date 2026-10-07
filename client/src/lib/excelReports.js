@@ -1,6 +1,7 @@
 import { api } from '../api';
 import { phoneNumbers } from '../components/MemberParts';
 import { workbookBlob } from './excel';
+import { gendered, isOverdue, timeRange } from './meetings';
 import { FLOWS, INCOME_SOURCES, OUT_CATEGORIES, OUT_FIGURES, boxName, ledgerView, rowText } from './treasury';
 import {
   LEADER_FILTER_KEYS,
@@ -37,6 +38,9 @@ const LABELS = {
   prep: 'print.reportPrep',
   treasury: 'print.reportTreasury',
   'branch-money': 'print.reportBranchMoney',
+  meeting: 'print.reportMeeting',
+  'meetings-list': 'print.reportMeetingsList',
+  'meeting-decisions': 'print.reportMeetingDecisions',
 };
 
 const SESSION_KIND_KEYS = {
@@ -1344,6 +1348,170 @@ async function branchMoneyCard(ctx) {
   return { title: name, sheets };
 }
 
+/* ============================================================
+   الاجتماعات
+   ============================================================ */
+
+/** Where a decision stands, in the words of the page */
+function decisionState(d, t, today) {
+  if (d.status === 'done') return t('meeting.status_done');
+  if (d.status === 'dropped') return t('meeting.status_dropped');
+  return isOverdue(d, today) ? t('meeting.overdue') : t('meeting.status_open');
+}
+
+// The columns every decision table shares; `from`: the meeting it was taken in
+const decisionColumns = (ctx, today, from) => {
+  const { t } = ctx;
+  const x = tools(ctx);
+  return [
+    x.num,
+    { label: t('meeting.decisionText'), value: (d) => d.text },
+    { label: t('meeting.owner'), value: (d) => d.owner },
+    { label: t('meeting.dueDate'), type: 'date', value: (d) => d.due_date },
+    { label: t('meeting.status'), value: (d) => decisionState(d, t, today) },
+    { label: t('excel.doneOn'), type: 'date', value: (d) => (d.status === 'done' ? d.status_at : null) },
+    from && { label: t('meeting.meetingCol'), value: (d) => d.meeting_title },
+    from && { label: t('common.date'), type: 'date', value: (d) => d.meeting_date },
+  ];
+};
+
+async function meetingCard(ctx) {
+  const { id, t, lng, kindLabel, stamp } = ctx;
+  const m = await api.get(`/meetings/${id}`);
+  const today = todayISO();
+  const people = (status, guest = false) =>
+    m.attendees
+      .filter((a) => a.guest === guest && (guest || a.status === status))
+      .map((a) => a.name)
+      .join(t('member.listSep')) || null;
+  const title = `${m.title} — ${m.date}`;
+  const sheets = [
+    {
+      name: t('meeting.minutes'),
+      title: m.title,
+      lines: [kindLabel, stamp],
+      blocks: [
+        {
+          facts: [
+            [t('meeting.kind'), t(`meeting.kind_${m.kind}`)],
+            [t('meeting.purpose'), m.purpose],
+            [t('common.date'), m.date, 'date'],
+            [t('session.time'), timeRange(m)],
+            [t('session.place'), m.place],
+            [t('meeting.scope'), m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')],
+            [gendered(t, 'meeting.chair', m.section), m.chair],
+            [gendered(t, 'meeting.secretary', m.section), m.secretary],
+          ],
+        },
+        {
+          heading: t('meeting.attendance'),
+          // A group nobody is in says nothing: the block goes with its last fact
+          facts: [
+            [gendered(t, 'meeting.groupPresent', m.section), people('present')],
+            [gendered(t, 'meeting.groupExcused', m.section), people('excused')],
+            [gendered(t, 'meeting.groupAbsent', m.section), people('absent')],
+            [t('meeting.groupGuests'), people(null, true)],
+          ].filter(([, v]) => v),
+        },
+        {
+          heading: t('meeting.agenda'),
+          facts: m.items.map((it, i) => [`${i + 1}. ${it.title}`, it.discussion || t('meeting.noDiscussion')]),
+        },
+        {
+          facts: [
+            [t('meeting.notes'), m.notes],
+            [t('meeting.nextDate'), m.next_date, 'date'],
+          ].filter(([, v]) => v),
+        },
+      ],
+    },
+    {
+      name: t('meeting.decisions'),
+      title: t('meeting.decisions'),
+      lines: [m.title, stamp],
+      blocks: [table(m.decisions, decisionColumns(ctx, today, false), { empty: t('meeting.decisionsEmpty') })],
+    },
+  ];
+  if (m.followups.length > 0)
+    sheets.push({
+      name: t('meeting.followups'),
+      title: t('meeting.followups'),
+      lines: [m.title, stamp],
+      blocks: [table(m.followups, decisionColumns(ctx, today, true))],
+    });
+  return { title, sheets };
+}
+
+async function meetingsList(ctx) {
+  const { sp, t, lng, kindLabel, stamp } = ctx;
+  const x = tools(ctx);
+  const list = await api.get(`/meetings?${sp}`);
+  const title = t('meeting.title');
+  return {
+    title,
+    sheets: [
+      {
+        name: title,
+        title,
+        lines: [`${kindLabel} · ${t('meeting.resultCount', { count: list.length })}`, stamp],
+        blocks: [
+          table(
+            list,
+            [
+              x.num,
+              { label: t('common.date'), type: 'date', value: (m) => m.date },
+              { label: t('meeting.startTime'), value: (m) => fmtTime(m.start_time) },
+              { label: t('meeting.endTime'), value: (m) => fmtTime(m.end_time) },
+              { label: t('meeting.subject'), value: (m) => m.title },
+              { label: t('meeting.kind'), value: (m) => t(`meeting.kind_${m.kind}`) },
+              { label: t('meeting.scope'), value: (m) => (m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')) },
+              { label: t('session.place'), value: (m) => m.place },
+              { label: t('meeting.chair'), value: (m) => m.chair },
+              { label: t('meeting.secretary'), value: (m) => m.secretary },
+              { label: t('meeting.groupPresent'), type: 'int', value: (m) => m.present_count },
+              { label: t('meeting.groupExcused'), type: 'int', value: (m) => m.excused_count },
+              { label: t('meeting.groupAbsent'), type: 'int', value: (m) => m.absent_count },
+              { label: t('meeting.groupGuests'), type: 'int', value: (m) => m.guest_count },
+              { label: t('meeting.agenda'), type: 'int', value: (m) => m.item_count },
+              { label: t('meeting.decisions'), type: 'int', value: (m) => m.decision_count },
+              { label: t('meeting.overdue'), type: 'int', value: (m) => m.overdue_count },
+            ],
+            { empty: t('meeting.empty') }
+          ),
+        ],
+      },
+    ],
+  };
+}
+
+async function meetingDecisionsList(ctx) {
+  const { sp, t, lng, kindLabel, stamp } = ctx;
+  const list = await api.get(`/meeting-decisions?${sp}`);
+  const status = ['open', 'done'].includes(sp.get('status')) ? sp.get('status') : 'all';
+  const title = t(`meeting.listTitle_${status}`);
+  const today = todayISO();
+  return {
+    title,
+    sheets: [
+      {
+        name: t('meeting.decisions'),
+        title,
+        lines: [`${kindLabel} · ${t('meeting.decisionCount', { count: list.length })}`, stamp],
+        blocks: [
+          table(
+            list,
+            [
+              ...decisionColumns(ctx, today, true),
+              { label: t('meeting.scope'), value: (d) => (d.branch_id ? branchName(d, lng) : t('meeting.wholeGroup')) },
+            ],
+            { empty: t(`meeting.noDecisions_${status}`) }
+          ),
+        ],
+      },
+    ],
+  };
+}
+
 const BUILDERS = {
   sessions: sessionCard,
   members: memberCard,
@@ -1358,6 +1526,9 @@ const BUILDERS = {
   prep: prepCard,
   treasury: treasuryCard,
   'branch-money': branchMoneyCard,
+  meeting: meetingCard,
+  'meetings-list': meetingsList,
+  'meeting-decisions': meetingDecisionsList,
 };
 
 // Named as the PDF is: «Fiche du membre — Ali Ahmad.xlsx»

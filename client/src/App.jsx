@@ -36,6 +36,8 @@ const PAGES = {
   prepCardDetail: [() => import('./pages/PrepCardDetail'), 'sessions.read'],
   events: [() => import('./pages/Events'), 'sessions.read'],
   eventDetail: [() => import('./pages/EventDetail'), 'sessions.read'],
+  meetings: [() => import('./pages/Meetings'), 'sessions.read'],
+  meetingDetail: [() => import('./pages/MeetingDetail'), 'sessions.read'],
   treasury: [() => import('./pages/Treasury'), 'treasury.read'],
   leaders: [() => import('./pages/Leaders'), 'leaders.read'],
   leaderDetail: [() => import('./pages/LeaderDetail'), null],
@@ -53,6 +55,8 @@ const PrepCards = lazy(PAGES.prepCards[0]);
 const PrepCardDetail = lazy(PAGES.prepCardDetail[0]);
 const Events = lazy(PAGES.events[0]);
 const EventDetail = lazy(PAGES.eventDetail[0]);
+const Meetings = lazy(PAGES.meetings[0]);
+const MeetingDetail = lazy(PAGES.meetingDetail[0]);
 const Treasury = lazy(PAGES.treasury[0]);
 const Promotions = lazy(PAGES.promotions[0]);
 const Leaders = lazy(PAGES.leaders[0]);
@@ -223,6 +227,8 @@ function Shell() {
             {can('sessions.read') && <Route path="/prep-cards/:id" element={<PrepCardDetail />} />}
             {can('sessions.read') && <Route path="/events" element={<Events />} />}
             {can('sessions.read') && <Route path="/events/:id" element={<EventDetail />} />}
+            {can('sessions.read') && <Route path="/meetings" element={<Meetings />} />}
+            {can('sessions.read') && <Route path="/meetings/:id" element={<MeetingDetail />} />}
             {can('treasury.read') && <Route path="/treasury" element={<Treasury />} />}
             {can('promotions.read') && <Route path="/promotions" element={<Promotions />} />}
             {can('leaders.read') && <Route path="/leaders" element={<Leaders />} />}

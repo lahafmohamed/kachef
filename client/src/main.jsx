@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { ThemeProvider } from './components/ui';
+import { PushBridge } from './components/Notifications';
 import './i18n';
 // Self-hosted variable fonts (woff2, subset by unicode-range): Inter carries
 // Latin, Noto Sans Arabic carries Arabic — the stack in index.css pairs them.
@@ -41,6 +42,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <ThemeProvider>
       <BrowserRouter>
         <App />
+        {/* Service worker: a tapped notification opens its page in this tab */}
+        <PushBridge />
       </BrowserRouter>
       <DevAnnotation />
     </ThemeProvider>

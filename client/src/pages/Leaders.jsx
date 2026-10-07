@@ -6,7 +6,7 @@ import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import LeaderDues from '../components/LeaderDues';
 import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
-import { SECTIONS, useSection } from '../section';
+import { SECTIONS, isFeminine, useSection } from '../section';
 import SectionField from '../components/SectionField';
 import {
   LEADER_FILTER_KEYS,
@@ -25,7 +25,7 @@ import SearchSelect from '../components/SearchSelect';
 import Credentials from '../components/Credentials';
 import { RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/shadcn/popover';
-import { USERNAME_PATTERN, USERNAME_RE } from './Admin';
+import { USERNAME_PATTERN, USERNAME_RE } from '../lib/username';
 import {
   Avatar,
   Badge,
@@ -418,7 +418,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
             // فرق الفتيات تقودها قائدات: «قائدة المرشدات»
             ...branches.map(
               (b) =>
-                `${t(b.section === 'F' ? 'leader.branchLeaderF' : 'leader.branchLeader')} ${branchName(b, i18n.language)}`
+                `${t(isFeminine(b.section) ? 'leader.branchLeaderF' : 'leader.branchLeader')} ${branchName(b, i18n.language)}`
             ),
           ]}
         />
@@ -1256,8 +1256,10 @@ function LeaderRow({ l, page, onOpen }) {
                 </span>
               )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
-              {/* Both أقسام in one register: the قائدات say so */}
-              {bothSections && l.section === 'F' && <Badge variant="info">{t('section.F')}</Badge>}
+              {/* All أقسام in one register: whoever is not of الفتيان says which قسم */}
+              {bothSections && l.section !== 'M' && (
+                <Badge variant={isFeminine(l.section) ? 'info' : 'outline'}>{t(`section.${l.section}`)}</Badge>
+              )}
             </div>
             <div className="mt-0.5 truncate text-xs text-muted-foreground">
               {roles.length ? <Parts parts={roles} sep={t('member.listSep')} /> : t('leader.noRole')}
@@ -1709,7 +1711,7 @@ export default function Leaders() {
         (p) => p.list.length > 0
       )
     : [{ section: null, list: tachkila.assignments }];
-  // قسم الفتيات تقوده مسؤولته لا عميد الفوج: رأس تشكيلته «قيادة القسم»
+  // قسم الفتيات و الفرنكوفون يقود كلًّا منهما مسؤوله لا عميد الفوج: رأس تشكيلته «قيادة القسم»
   const renderTachkila = (list, section) =>
     view === 'tree' ? (
       <Card className="p-4 sm:p-6">
@@ -1720,7 +1722,7 @@ export default function Leaders() {
         assignments={list}
         branches={branches}
         page={page}
-        headLabel={(section || onScreen) === 'F' ? t('section.head') : null}
+        headLabel={(section || onScreen) && (section || onScreen) !== 'M' ? t('section.head') : null}
       />
     );
 

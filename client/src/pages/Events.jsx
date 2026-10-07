@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useFetch, useUrlField, useUrlFilters } from '../hooks';
-import { useSection } from '../section';
+import { isFeminine, useSection } from '../section';
 import { branchName, fmtAmount, todayISO } from '../utils';
 import { EVENT_KINDS, KIND_BADGE, dayNumber, eventPhase, fmtDateRange, fmtMonthShort, signed } from '../lib/events';
 import EventFormDialog from '../components/EventForm';
@@ -101,7 +101,7 @@ function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
             {meta.join(' · ')}
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
-            {bothSections && <Badge variant={e.section === 'F' ? 'info' : 'outline'}>{t(`section.${e.section}`)}</Badge>}
+            {bothSections && <Badge variant={isFeminine(e.section) ? 'info' : 'outline'}>{t(`section.${e.section}`)}</Badge>}
             {named.length ? (
               named.map((b) => <Badge key={b.id}>{branchName(b, lang)}</Badge>)
             ) : (

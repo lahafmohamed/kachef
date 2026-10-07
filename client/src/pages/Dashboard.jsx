@@ -31,6 +31,7 @@ import {
   IconClock,
   IconCoins,
   IconPhone,
+  IconStar,
   IconTrendingUp,
   IconUserCheck,
 } from '../components/ui';
@@ -226,6 +227,23 @@ function buildTodos(d, t, f, lng) {
         meta: t('dashboard.todo.unpaidMeta', { date: f.date(u.date), present: u.present, unpaid: u.unpaid }),
         // Straight to who came without paying
         to: `/sessions/${u.session_id}?status=unpaid`,
+      })),
+    });
+
+  // أنشطة قادها صاحب الحساب في الأسبوعين الأخيرين و لم يقيّمها بعد
+  if (d.to_evaluate?.length)
+    todos.push({
+      key: 'evaluate',
+      level: 'week',
+      Icon: IconStar,
+      title: t('dashboard.todo.evaluate'),
+      count: d.to_evaluate.length,
+      items: d.to_evaluate.map((s) => ({
+        key: s.session_id,
+        label: s.title,
+        meta: f.date(s.date),
+        // Straight to the form
+        to: `/sessions/${s.session_id}?tab=eval`,
       })),
     });
 

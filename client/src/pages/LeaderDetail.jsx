@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, isFeminine } from '../api';
 import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
@@ -605,7 +605,7 @@ export default function LeaderDetail() {
             </Card>
           )}
 
-          {tab === 'events' && canEvents && <EventParticipations state={events} feminine={leader.section === 'F'} />}
+          {tab === 'events' && canEvents && <EventParticipations state={events} feminine={isFeminine(leader.section)} />}
 
           {tab === 'history' && (
             <>

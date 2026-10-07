@@ -8,8 +8,19 @@ export const getToken = () => sessionStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => sessionStorage.setItem(TOKEN_KEY, t);
 export const clearToken = () => sessionStorage.removeItem(TOKEN_KEY);
 
-// القسمان: 'M' الفتيان، 'F' الفتيات (see section.jsx)
-export const SECTIONS = ['M', 'F'];
+// الأقسام: 'M' الفتيان، 'F' الفتيات، 'FR' الفرنكوفون الفتيان، 'FRF' الفرنكوفونيات (see section.jsx). Twin of SECTION_DEFS
+// in server/db.js — a new قسم is one line in each, plus its names in the locales
+// (section.<code>, section.name<code>). gender: who its عناصر are (null = mixed), and
+// whether its titles take the feminine (قائدة).
+export const SECTION_DEFS = [
+  { code: 'M', gender: 'M' },
+  { code: 'F', gender: 'F' },
+  { code: 'FR', gender: 'M' },
+  { code: 'FRF', gender: 'F' },
+];
+export const SECTIONS = SECTION_DEFS.map((s) => s.code);
+export const sectionGender = (code) => SECTION_DEFS.find((s) => s.code === code)?.gender ?? null;
+export const isFeminine = (code) => sectionGender(code) === 'F';
 const VIEW_KEY = 'view.section';
 
 /** The قسم picked in the switcher, or '' for both. Tab-scoped, like the session token. */
@@ -84,10 +95,22 @@ async function download(path) {
   return { blob: await res.blob(), filename: m ? decodeURIComponent(m[1]) : null };
 }
 
+/** POST raw bytes (a file upload), with extra headers; JSON back. */
+async function upload(path, body, headers = {}) {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', ...authHeaders(), ...headers },
+    body,
+  });
+  if (!res.ok) throw await failure(res, path);
+  return res.json();
+}
+
 export const api = {
   get: (path, opts) => request(path, opts),
   post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => request(path, { method: 'PUT', body: JSON.stringify(body) }),
   del: (path) => request(path, { method: 'DELETE' }),
   download,
+  upload,
 };

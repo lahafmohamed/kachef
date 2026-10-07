@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { SECTIONS, api } from '../api';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
@@ -38,8 +38,8 @@ function scoutYearOf(iso) {
   return `${start}-${start + 1}`;
 }
 
-// The فوج's own order, as the branches endpoint sorts it: الفتيان first, then the ladder
-const rung = (b) => (b.section === 'F' ? 1000 : 0) + (b.sort_order ?? 0);
+// The فوج's own order, as the branches endpoint sorts it: قسم by قسم (الفتيان first), then the ladder
+const rung = (b) => Math.max(0, SECTIONS.indexOf(b.section)) * 1000 + (b.sort_order ?? 0);
 // By family name, as the عناصر list sorts
 const familyName = (m) => `${m.last_name || ''} ${m.first_name || ''}`;
 

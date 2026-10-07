@@ -22,3 +22,9 @@ skills-lock.json
 .qwen/
 .windsurf/
 skills/
+
+# photos & fichiers des séances
+server/uploads/
+
+# clés VAPID des notifications push (créées au premier démarrage, à côté de la base)
+server/vapid.json

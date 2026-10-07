@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
-import { useSection } from '../section';
+import { isFeminine, useSection } from '../section';
 import { branchName } from '../utils';
+import { USERNAME_PATTERN, USERNAME_RE } from '../lib/username';
 import Credentials from '../components/Credentials';
 import SectionField from '../components/SectionField';
 import {
@@ -140,10 +141,6 @@ function withoutPerm(perms, key) {
   drop(key);
   return [...out];
 }
-
-// Mirrors the server's USERNAME_RE: what a login name may look like
-export const USERNAME_RE = /^[a-z][a-z0-9._-]{2,31}$/;
-export const USERNAME_PATTERN = '[a-z][a-z0-9._\\-]{2,31}';
 
 const EMPTY_USER = {
   username: '',
@@ -402,7 +399,7 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
               className="flex w-full"
               options={[
                 // حساب في قسم الفتيات حسابُ قائدة
-                { value: 'user', label: t(form.section === 'F' ? 'section.roleUserF' : 'admin.roleUser') },
+                { value: 'user', label: t(isFeminine(form.section) ? 'section.roleUserF' : 'admin.roleUser') },
                 { value: 'admin', label: t('admin.roleAdmin') },
               ]}
             />
@@ -565,7 +562,7 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
           </Badge>
         ) : (
           <>
-            <Badge variant={u.section === 'F' ? 'info' : 'outline'}>
+            <Badge variant={isFeminine(u.section) ? 'info' : 'outline'}>
               {t(u.section ? `section.name${u.section}` : 'section.both')}
             </Badge>
             {u.branches === null ? (

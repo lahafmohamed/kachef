@@ -21,6 +21,17 @@ import {
 } from '../lib/treasury';
 import { signed } from '../lib/events';
 import {
+  attendanceCounts,
+  attendeesByStatus,
+  decisionCounts,
+  fmtLongDate,
+  gendered,
+  isOverdue,
+  timeRange,
+  userText,
+} from '../lib/meetings';
+import { attendanceLine } from '../components/MeetingParts';
+import {
   LEADER_FILTER_KEYS,
   activityTypeKey,
   avatarName,
@@ -72,6 +83,10 @@ const KINDS = {
   treasury: { perm: 'treasury.read', label: 'print.reportTreasury', back: '/treasury' },
   // A فرقة's money tab: the id is the فرقة
   'branch-money': { perm: 'branches.read', label: 'print.reportBranchMoney', back: '/branches' },
+  // محضر اجتماع; then the list (id 0, the page's filters in the query) and the follow-up
+  meeting: { perm: 'sessions.read', label: 'print.reportMeeting', back: '/meetings' },
+  'meetings-list': { perm: 'sessions.read', label: 'print.reportMeetingsList', back: '/meetings' },
+  'meeting-decisions': { perm: 'sessions.read', label: 'print.reportMeetingDecisions', back: '/meetings?view=decisions' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -1742,6 +1757,335 @@ function PrepReport({ id, onReady, kindLabel }) {
 }
 
 /* ============================================================
+   الاجتماعات
+   ============================================================ */
+
+// The attendance of the minutes, group by group, in the order they are read out
+const MEETING_GROUPS = [
+  { key: 'present', label: 'meeting.groupPresent' },
+  { key: 'excused', label: 'meeting.groupExcused' },
+  { key: 'absent', label: 'meeting.groupAbsent' },
+  { key: 'guests', label: 'meeting.groupGuests' },
+];
+
+/** Where a decision stands, in words and a mark — late in red while it is still to do */
+function DecisionState({ d, today }) {
+  const { t } = useTranslation();
+  if (d.status === 'done')
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-success">
+        <Mark kind="check" />
+        {d.status_at ? t('meeting.doneOn', { date: fmtDate(d.status_at) }) : t('meeting.status_done')}
+      </span>
+    );
+  if (d.status === 'dropped')
+    return <span className="whitespace-nowrap text-muted-foreground">{t('meeting.status_dropped')}</span>;
+  return isOverdue(d, today) ? (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-destructive">
+      <Mark kind="x" />
+      {t('meeting.overdue')}
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap text-muted-foreground">
+      <Mark kind="circle" />
+      {t('meeting.status_open')}
+    </span>
+  );
+}
+
+/** Two signature lines side by side: who chaired, who wrote it up */
+function Signatures({ labels }) {
+  return (
+    <div className="avoid-break mt-10 grid grid-cols-2 gap-8">
+      {labels.map((label) => (
+        <div key={label}>
+          <div className="h-12 border-b border-foreground/50" />
+          <div className="mt-1 text-[10.5px] text-muted-foreground">{label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * محضر الاجتماع, in the association's order: the heading (subject, why, when, where,
+ * who chaired, who wrote it), the attendance, the follow-up of what earlier meetings
+ * decided, each point of the agenda with what was said, the decisions with whom they
+ * fall to and by when, the recommendations, the next meeting — then both signatures.
+ */
+function MeetingReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const res = useFetch(`/meetings/${id}`);
+  const m = res.data;
+  // The file is named after it: the ISO day keeps a folder of minutes in date order
+  useEffect(() => {
+    if (m) onReady(`${m.title} — ${m.date}`);
+  }, [m, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error || !m) return <LoadError onRetry={res.reload} />;
+
+  const today = todayISO();
+  const groups = attendeesByStatus(m.attendees);
+  const counts = attendanceCounts(m.attendees);
+  const dc = decisionCounts(m.decisions, today);
+  const sep = lng === 'ar' ? '، ' : ', ';
+  const decisionHead = [
+    { label: '#', className: 'w-8' },
+    t('meeting.decisionText'),
+    t('meeting.owner'),
+    t('meeting.dueDate'),
+    t('meeting.status'),
+  ];
+  const decisionRows = (list, from) =>
+    list.map((d, i) => (
+      <tr key={d.id} className="avoid-break">
+        <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+        <td className={cn(td, 'font-medium', d.status === 'dropped' && 'text-muted-foreground line-through')}>
+          <bdi>{userText(d.text)}</bdi>
+          {from && (
+            <div className="text-[11px] font-normal text-muted-foreground">
+              {t('meeting.fromMeeting', { date: fmtDate(d.meeting_date), title: d.meeting_title })}
+            </div>
+          )}
+        </td>
+        <td className={td}>{d.owner || '—'}</td>
+        <td className={tdNum}>{d.due_date ? fmtDate(d.due_date) : '—'}</td>
+        <td className={td}>
+          <DecisionState d={d} today={today} />
+        </td>
+      </tr>
+    ));
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>
+        <bdi>{userText(m.title)}</bdi>
+      </H1>
+      {m.purpose && (
+        <p dir="auto" className="mt-1.5 whitespace-pre-line text-start leading-relaxed text-muted-foreground">
+          {userText(m.purpose)}
+        </p>
+      )}
+      <Tags>
+        <Tag>{t(`meeting.kind_${m.kind}`)}</Tag>
+        <Tag tone="neutral">{m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')}</Tag>
+      </Tags>
+      <div className="mt-4">
+        <Facts
+          items={[
+            [t('common.date'), fmtLongDate(m.date, lng)],
+            // No ltr island, as on the page: in Arabic the start reads first, on the right
+            [t('session.time'), timeRange(m)],
+            [t('session.place'), m.place],
+            [gendered(t, 'meeting.chair', m.section), m.chair],
+            [gendered(t, 'meeting.secretary', m.section), m.secretary],
+          ]}
+        />
+      </div>
+
+      <H2 aside={m.attendees.length ? attendanceLine(counts, t, m.section).join(' · ') : null}>
+        {t('meeting.attendance')}
+      </H2>
+      {m.attendees.length === 0 ? (
+        <p className="text-muted-foreground">{t('meeting.attendanceEmpty')}</p>
+      ) : (
+        <dl className="space-y-1.5">
+          {MEETING_GROUPS.filter((g) => groups[g.key].length > 0).map((g) => (
+            <div key={g.key} className="avoid-break grid grid-cols-[8rem_minmax(0,1fr)] gap-3">
+              <dt className="text-[11px] font-semibold text-muted-foreground">
+                {gendered(t, g.label, m.section)} <span className="tabular-nums">({groups[g.key].length})</span>
+              </dt>
+              <dd>{groups[g.key].map((a) => a.name).join(sep)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {m.followups.length > 0 && (
+        <>
+          <H2 aside={t('meeting.followupsLeft', { count: m.followups.filter((d) => d.status === 'open').length })}>
+            {t('meeting.followups')}
+          </H2>
+          <Table head={decisionHead}>{decisionRows(m.followups, true)}</Table>
+        </>
+      )}
+
+      <H2 aside={m.items.length || null}>{t('meeting.agenda')}</H2>
+      {m.items.length === 0 ? (
+        <p className="text-muted-foreground">{t('meeting.agendaEmpty')}</p>
+      ) : (
+        <ol className="space-y-3">
+          {m.items.map((it, i) => (
+            <li key={it.id} className="avoid-break">
+              <p className="font-semibold">
+                <span className="tabular-nums text-primary">{i + 1}.</span> <bdi>{userText(it.title)}</bdi>
+              </p>
+              {it.discussion ? (
+                <p dir="auto" className="mt-0.5 whitespace-pre-line text-start leading-relaxed">
+                  {userText(it.discussion)}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-muted-foreground">{t('meeting.noDiscussion')}</p>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <H2
+        aside={
+          dc.total
+            ? [
+                t('meeting.decisionCount', { count: dc.total }),
+                dc.overdue > 0 && t('meeting.overdueCount', { count: dc.overdue }),
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : null
+        }
+      >
+        {t('meeting.decisions')}
+      </H2>
+      {m.decisions.length === 0 ? (
+        <p className="text-muted-foreground">{t('meeting.decisionsEmpty')}</p>
+      ) : (
+        <Table head={decisionHead}>{decisionRows(m.decisions, false)}</Table>
+      )}
+
+      {m.notes && (
+        <>
+          <H2>{t('meeting.notes')}</H2>
+          <p dir="auto" className="whitespace-pre-line text-start leading-relaxed">
+            {userText(m.notes)}
+          </p>
+        </>
+      )}
+      {m.next_date && (
+        <p className="avoid-break mt-5">
+          <span className="text-muted-foreground">{t('meeting.nextDate')}</span>{' '}
+          <span className="font-semibold">{fmtLongDate(m.next_date, lng)}</span>
+        </p>
+      )}
+
+      <Signatures
+        labels={[gendered(t, 'meeting.signChair', m.section), gendered(t, 'meeting.signSecretary', m.section)]}
+      />
+    </Sheet>
+  );
+}
+
+function MeetingsListReport({ onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const res = useFetch(`/meetings?${sp}`);
+  const title = t('meeting.title');
+  useEffect(() => {
+    onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={title}
+      count={t('meeting.resultCount', { count: list.length })}
+      empty={t('meeting.empty')}
+      signature={false}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('common.date'),
+        t('meeting.subject'),
+        t('meeting.scope'),
+        t('meeting.chair'),
+        t('meeting.attendance'),
+        t('meeting.decisions'),
+      ]}
+      rows={list.map((m, i) => (
+        <tr key={m.id}>
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdNum}>{fmtDate(m.date)}</td>
+          <td className={cn(td, 'font-medium')}>
+            <bdi>{userText(m.title)}</bdi>
+            <div className="text-[11px] font-normal text-muted-foreground">{t(`meeting.kind_${m.kind}`)}</div>
+          </td>
+          <td className={td}>{m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')}</td>
+          <td className={cn(td, 'text-muted-foreground')}>{m.chair || '—'}</td>
+          <td className={tdNum}>
+            {m.present_count + m.absent_count + m.excused_count + m.guest_count
+              ? gendered(t, 'meeting.presentCount', m.section, { count: m.present_count })
+              : '—'}
+          </td>
+          <td className={tdNum}>
+            {m.decision_count ? t('meeting.decisionCount', { count: m.decision_count }) : '—'}
+            {m.overdue_count > 0 && (
+              <div className="text-[11px] font-semibold text-destructive">
+                {t('meeting.overdueCount', { count: m.overdue_count })}
+              </div>
+            )}
+          </td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+function MeetingDecisionsReport({ onReady, kindLabel }) {
+  const { t } = useTranslation();
+  const [sp] = useSearchParams();
+  const status = ['open', 'done'].includes(sp.get('status')) ? sp.get('status') : 'all';
+  const res = useFetch(`/meeting-decisions?${sp}`);
+  const title = t(`meeting.listTitle_${status}`);
+  useEffect(() => {
+    onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const today = todayISO();
+  const list = res.data || [];
+  return (
+    <ListSheet
+      kindLabel={kindLabel}
+      title={title}
+      count={t('meeting.decisionCount', { count: list.length })}
+      empty={t(`meeting.noDecisions_${status}`)}
+      signature={false}
+      head={[
+        { label: '#', className: 'w-8' },
+        t('meeting.decisionText'),
+        t('meeting.owner'),
+        t('meeting.dueDate'),
+        t('meeting.meetingCol'),
+        t('meeting.status'),
+      ]}
+      rows={list.map((d, i) => (
+        <tr key={d.id} className="avoid-break">
+          <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={cn(td, 'font-medium', d.status === 'dropped' && 'text-muted-foreground line-through')}>
+            <bdi>{userText(d.text)}</bdi>
+          </td>
+          <td className={td}>{d.owner || '—'}</td>
+          <td className={tdNum}>{d.due_date ? fmtDate(d.due_date) : '—'}</td>
+          <td className={cn(td, 'text-muted-foreground')}>
+            <span className="tabular-nums">{fmtDate(d.meeting_date)}</span> · <bdi>{userText(d.meeting_title)}</bdi>
+          </td>
+          <td className={td}>
+            <DecisionState d={d} today={today} />
+          </td>
+        </tr>
+      ))}
+    />
+  );
+}
+
+/* ============================================================
    الصناديق و مالية الفرقة
    ============================================================ */
 
@@ -2205,6 +2549,9 @@ const REPORTS = {
   'prep-list': PrepListReport,
   plan: PlanReport,
   prep: PrepReport,
+  meeting: MeetingReport,
+  'meetings-list': MeetingsListReport,
+  'meeting-decisions': MeetingDecisionsReport,
 };
 
 /* ============================================================

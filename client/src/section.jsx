@@ -1,14 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { SECTIONS, getViewSection, setViewSection as storeViewSection } from './api';
+import { SECTIONS, getViewSection, isFeminine, sectionGender, setViewSection as storeViewSection } from './api';
 import { useAuth } from './auth';
 
 /**
- * القسمان: 'M' الفتيان، 'F' الفتيات. An account locked into one قسم (user.section)
- * sees nothing of the other; the server enforces it on every request. An admin, or
- * an account open on both, sees both and may narrow the whole app to one with the
- * switcher — the choice rides on every request as X-Section (api.js).
+ * الأقسام: 'M' الفتيان، 'F' الفتيات، 'FR' الفرنكوفون الفتيان، 'FRF' الفرنكوفونيات. An account locked into one قسم
+ * (user.section) sees nothing of the others; the server enforces it on every request.
+ * An admin, or an account open on all, sees them all and may narrow the whole app to
+ * one with the switcher — the choice rides on every request as X-Section (api.js).
  */
-export { SECTIONS };
+export { SECTIONS, isFeminine, sectionGender };
 
 const SectionContext = createContext(null);
 

@@ -108,6 +108,13 @@ export const IconTent = (p) => (
     <path d="M2 21h20" />
   </Icon>
 );
+/** الاجتماعات — lucide «messages-square»: what was said, and what came of it */
+export const IconMessages = (p) => (
+  <Icon {...p}>
+    <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+    <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
+  </Icon>
+);
 export const IconTrendingUp = (p) => (
   <Icon {...p}>
     <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
@@ -287,6 +294,12 @@ export const IconAward = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="8" r="6" />
     <path d="M15.5 13.5 17 22l-5-3-5 3 1.5-8.5" />
+  </Icon>
+);
+// تقييم النشاط
+export const IconStar = (p) => (
+  <Icon {...p}>
+    <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
   </Icon>
 );
 export const IconCoins = (p) => (
@@ -1371,7 +1384,7 @@ export function PageHeader({ title, description, children, className }) {
  * Segmented control. Used for attendance marking — the options read as one
  * group to screen readers and each button reports its pressed state.
  */
-export function SegmentedControl({ options, value, onChange, label, size = 'default', className }) {
+export function SegmentedControl({ options, value, onChange, label, size = 'default', columns, className }) {
   const tones = {
     success: 'bg-success text-success-foreground border-success',
     destructive: 'bg-destructive text-destructive-foreground border-destructive',
@@ -1391,7 +1404,16 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
     <div
       role="group"
       aria-label={label}
-      className={cn('inline-flex overflow-hidden rounded-lg border border-border', className)}
+      // `columns`: a grid instead of one row, for more options than a row can hold. The
+      // 1px gap over the border colour draws the lines between cells, across rows too.
+      // The grid goes last so a caller's «flex w-full» cannot undo it (cn keeps the last)
+      className={cn(
+        'overflow-hidden rounded-lg border border-border',
+        !columns && 'inline-flex',
+        className,
+        columns && 'grid gap-px bg-border'
+      )}
+      style={columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}
     >
       {options.map((o, i) => {
         const active = value === o.value;
@@ -1405,7 +1427,9 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
               'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center text-center leading-tight font-medium',
               'transition-[color,background-color,border-color,scale] duration-150 active:scale-[0.96]',
               pad,
-              i > 0 && 'border-s border-border',
+              !columns && i > 0 && 'border-s border-border',
+              // A count the grid cannot fill evenly: the first option («Tout») takes a whole row
+              columns && i === 0 && options.length % columns && 'col-span-full',
               active
                 ? tones[o.tone || 'default']
                 : 'bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'

@@ -12,6 +12,26 @@ db.pragma('foreign_keys = ON');
 const lookupsTableIsNew = !db
   .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lookup_values'")
   .get();
+// Same rule for the evaluation forms: the default one is copied in on the boot that
+// creates the tables, never again — a form the admin deleted stays deleted.
+let evalTablesAreNew = !db
+  .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'eval_forms'")
+  .get();
+
+// ---------- الأقسام ----------
+// كل قسم يُدار وحده: فرقه و قادته و حساباته و تشكيلته و صناديقه و أنشطته. code هو ما
+// يُخزَّن في عمود section من كل جدول. gender: جنس عناصر القسم (null = مختلط)، و به
+// تُؤنَّث التوصيفات (قائدة)؛ lang: لغة التوصيفات التي يولّدها قالب التشكيلة. 'M' هو
+// الفوج نفسه: أماناته في القالب، و القيمة الافتراضية لكل ما سبق الأقسام.
+// التوأم في client/src/api.js. قسم جديد = سطر هنا و سطر هناك، و اسماه في ملفّي
+// الترجمة (section.<code> و section.name<code>) — لا تغيير في الجداول.
+const SECTION_DEFS = [
+  { code: 'M', gender: 'M', lang: 'ar' },
+  { code: 'F', gender: 'F', lang: 'ar' },
+  { code: 'FR', gender: 'M', lang: 'fr' },
+  { code: 'FRF', gender: 'F', lang: 'fr' },
+];
+const sectionDef = (code) => SECTION_DEFS.find((s) => s.code === code) || null;
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS branches (
@@ -22,11 +42,12 @@ CREATE TABLE IF NOT EXISTS branches (
   max_age INTEGER,
   sort_order INTEGER NOT NULL,
   total_requirements INTEGER NOT NULL DEFAULT 0,
-  -- فرقة خاصة لكل الأعمار (الفرنكوفونية): خارج سلّم السنّ، لا ترفيع منها و لا إليها
+  -- فرقة خاصة لكل الأعمار: خارج سلّم السنّ، لا ترفيع منها و لا إليها
   all_ages INTEGER NOT NULL DEFAULT 0,
-  -- القسم: 'M' الفتيان، 'F' الفتيات. حساب مقيَّد بقسم لا يرى فرق القسم الآخر و لا
-  -- عناصرها، و الترفيع يصعد في سلّم قسمه وحده.
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
+  -- القسم (SECTION_DEFS): 'M' الفتيان، 'F' الفتيات، 'FR' الفرنكوفون الفتيان، 'FRF' الفرنكوفونيات. حساب مقيَّد بقسم
+  -- لا يرى فرق غيره و لا عناصرها، و الترفيع يصعد في سلّم قسمه وحده. لا CHECK على
+  -- القيم: الخادم يتحقّق منها، فقسمٌ جديد لا يحتاج إعادة بناء الجداول.
+  section TEXT NOT NULL DEFAULT 'M'
 );
 
 -- مجموعات الفرقة: الفرقة الكبيرة تُقسَّم إلى مجموعات، لأن الحصّة الواحدة لا تسع
@@ -38,6 +59,12 @@ CREATE TABLE IF NOT EXISTS branch_groups (
   -- NOCASE so "Groupe A" and "groupe a" collide instead of becoming two groups
   name TEXT NOT NULL COLLATE NOCASE,
   sort_order INTEGER NOT NULL DEFAULT 0,
+  -- الفئة العمرية للطليعة، اختيارية: «من ٥ إلى ٦» = age_from 5، age_to 6 (الحدّ الأعلى
+  -- غير داخل). السنّ هنا سنّ السنة: ما يبلغه العنصر في السنة الميلادية التي تبدأ فيها
+  -- السنة الكشفية، أي سنة ميلاده — فمواليد السنة الواحدة في طليعة واحدة طوال السنة،
+  -- و يصعدون معًا كل أيلول. NULL = طليعة بلا سنّ (اختصاص، مستوى): توزيعها يدوي.
+  age_from INTEGER,
+  age_to INTEGER,
   UNIQUE(branch_id, name)
 );
 
@@ -118,7 +145,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   attendance_finalized_by TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- قسم النشاط: قسم فرقه، أو القسم الذي أُنشئ فيه نشاط القادة / النشاط العام بلا فرق
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
+  section TEXT NOT NULL DEFAULT 'M'
 );
 
 -- نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل
@@ -150,6 +177,37 @@ CREATE TABLE IF NOT EXISTS session_guests (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_session_guests_session ON session_guests(session_id);
+
+-- صور النشاط و ملفاته (PDF، Excel): الملف نفسه على القرص في uploads/sessions/<id>/،
+-- و هنا اسمه الأصلي و نوعه. thumb_name: مصغّر JPEG للصورة، يُرسل مع الأصل.
+CREATE TABLE IF NOT EXISTS session_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'pdf', 'excel')),
+  original_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  stored_name TEXT NOT NULL,
+  thumb_name TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id);
+
+-- صور المخيم أو التكوين و ملفاته: شكل session_files نفسه، في uploads/events/<id>/
+CREATE TABLE IF NOT EXISTS event_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'pdf', 'excel')),
+  original_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  stored_name TEXT NOT NULL,
+  thumb_name TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_event_files_event ON event_files(event_id);
 
 -- مجموعات الفرقة التي تشارك في نشاط. الفرقة التي لها صف هنا لا يشارك منها إلا
 -- عناصر تلك المجموعات؛ و الفرقة التي لا صف لها تشارك كاملةً — و هي الحالة الوحيدة
@@ -200,7 +258,7 @@ CREATE TABLE IF NOT EXISTS leaders (
   archived_at TEXT,
   archived_by TEXT,
   -- قسم القائد (القائدة في قسم الفتيات): القائد بلا فرقة، فقسمه هو ما يحصره في قسمه
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
+  section TEXT NOT NULL DEFAULT 'M'
 );
 
 -- فرقة القادة: the مطالب list a قائد is followed on. Its content is agreed with
@@ -255,7 +313,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   role_type TEXT NOT NULL DEFAULT 'amana' CHECK (role_type IN ('branch', 'amana')),
   sort_order INTEGER NOT NULL DEFAULT 0,
   -- قسم التوصيف: قسم فرقته إن كان توصيف فرقة (يتبعها إن تغيّر)، و إلا فقسم الأمانة
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))
+  section TEXT NOT NULL DEFAULT 'M'
 );
 
 -- قفل التشكيلة: while a row exists for a year, that year's assignments are frozen.
@@ -302,7 +360,7 @@ CREATE TABLE IF NOT EXISTS users (
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
   -- القسم الذي يُحصر فيه الحساب ('M' الفتيان، 'F' الفتيات)؛ NULL = القسمان. الأدمن يتجاهله.
-  section TEXT CHECK (section IN ('M', 'F'))
+  section TEXT
 );
 
 -- One row per active login; deleting it logs the device out
@@ -469,7 +527,7 @@ CREATE TABLE IF NOT EXISTS events (
   plan TEXT,
   leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
   -- قسم المخيم: قسم فرقه، أو القسم الذي أُنشئ فيه. لا يتغيّر بعد الإنشاء: مشاركوه منه
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL DEFAULT 'M',
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -595,7 +653,7 @@ CREATE TABLE IF NOT EXISTS treasury_entries (
   -- نشاطه ما دام مربوطًا به، و تُحفظ هنا لتبقى إن حُذف النشاط.
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   -- صندوق كل قسم وحده: مصروف النشاط من قسم نشاطه
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL DEFAULT 'M',
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_by TEXT,
@@ -608,7 +666,7 @@ CREATE TABLE IF NOT EXISTS treasury_entries (
 -- صندوق الفوج بلا صفّ لم يُفتح. صفّ واحد للصندوق: فهرس فريد بعد الترحيل.
 CREATE TABLE IF NOT EXISTS treasury_openings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL,
   branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
   date TEXT NOT NULL,
   amount REAL NOT NULL CHECK (amount >= 0),
@@ -620,7 +678,7 @@ CREATE TABLE IF NOT EXISTS treasury_openings (
 -- الصناديق: يخرج من واحد و يدخل الآخر في يومه.
 CREATE TABLE IF NOT EXISTS treasury_transfers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL,
   from_branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   to_branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   amount REAL NOT NULL CHECK (amount > 0),
@@ -638,7 +696,7 @@ CREATE TABLE IF NOT EXISTS treasury_transfers (
 CREATE TABLE IF NOT EXISTS event_fundings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
-  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL,
   -- الصندوق: NULL = صندوق الفوج في قسمه
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   direction TEXT NOT NULL CHECK (direction IN ('to_event', 'from_event')),
@@ -657,7 +715,7 @@ CREATE TABLE IF NOT EXISTS event_fundings (
 -- ثابت بعد الحفظ: ما يُكتب بعدها لا يغيّره، و لا تُحفظ مطابقة بلا فرق.
 CREATE TABLE IF NOT EXISTS treasury_counts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL,
   -- الصندوق: NULL = صندوق الفوج في قسمه
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
   date TEXT NOT NULL,
@@ -685,9 +743,198 @@ CREATE TABLE IF NOT EXISTS member_dues (
   paid_on TEXT NOT NULL,
   session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
   branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
-  section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+  section TEXT NOT NULL DEFAULT 'M',
   recorded_by TEXT,
   recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- الاجتماعات: محضر كل اجتماع — موضوعه و سببه، من حضر و من غاب، ما دار في كل بند من
+-- جدول الأعمال، و ما تقرّر و من ينفّذه و متى. مستقلّ عن الأنشطة: لا عناصر فيه و لا
+-- يدخل أي معدّل حضور. kind بلا CHECK كأنواع المخيمات — التحقّق في الخادم.
+-- بأسماء الجمعية: leaders مجلس قيادة الفوج، branch اجتماع الفرقة، amana جلسة أمانة، prep
+-- جلسة تحضيرية، review جلسة تقييمية، parents لقاء الأهل، other غير ذلك.
+CREATE TABLE IF NOT EXISTS meetings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'leaders',
+  -- الموضوع، ثم سبب الاجتماع إن احتاج إلى شرح
+  title TEXT NOT NULL,
+  purpose TEXT,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  place TEXT,
+  -- اجتماع فرقة بعينها؛ NULL = اجتماع الفوج. حذف الفرقة يُبقي المحضر للفوج
+  branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+  -- قسم الاجتماع: قسم فرقته، أو القسم الذي عُقد فيه. ثابت بعد الإنشاء: حضوره منه
+  section TEXT NOT NULL DEFAULT 'M',
+  -- رئيس الاجتماع و أمين السر (من كتب المحضر): قائد من القسم، أو اسم من خارجه. الاسم
+  -- يُحفظ مع القائد أيضًا، فيبقى المحضر مقروءًا إن حُذف القائد
+  chair_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  chair_name TEXT,
+  secretary_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  secretary_name TEXT,
+  notes TEXT,
+  -- موعد الاجتماع المقبل، إن حُدِّد
+  next_date TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- الحضور: قائد من القسم (حاضر، غائب، غائب بعذر)، أو ضيف من خارج الفوج (ولي أمر، مفوّض
+-- من الجمعية) باسمه — الضيف حاضر دائمًا. لا صف لقائد = لم يُدعَ. name نسخة الاسم: حذف
+-- القائد يُبقي اسمه في المحضر.
+CREATE TABLE IF NOT EXISTS meeting_attendees (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  guest INTEGER NOT NULL DEFAULT 0,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'present' CHECK (status IN ('present', 'absent', 'excused')),
+  CHECK (guest = 0 OR (leader_id IS NULL AND status = 'present')),
+  UNIQUE(meeting_id, leader_id)
+);
+
+-- جدول الأعمال: البنود بترتيبها، و ما دار في كل بند من نقاش
+CREATE TABLE IF NOT EXISTS meeting_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  discussion TEXT
+);
+
+-- القرارات: ما تقرّر، و المسؤول عن تنفيذه (قائد، أو جهة باسمها: أمانة، الأهل…)، و المهلة.
+-- status: open قيد التنفيذ، done نُفِّذ، dropped أُلغي. owner نسخة اسم القائد كالحضور.
+CREATE TABLE IF NOT EXISTS meeting_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  text TEXT NOT NULL,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  owner TEXT,
+  due_date TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'dropped')),
+  status_at TEXT,
+  status_by TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ---------- تقييم الأنشطة ----------
+-- استمارات التقييم: يختارها المسؤول من النماذج الجاهزة (server/evalPresets.js، من منتدى
+-- مهدي الكشفي) أو يبنيها بنفسه. الاسم بالعربية و الفرنسية — القسم الفرنكوفوني يقرؤها
+-- بلغته — و يكفي أحدهما. preset: النموذج الذي نُسخت منه، NULL = مبنيّة يدويًا.
+-- archived: حُذفت بعد أن قُيِّم بها نشاط — تختفي من الإعدادات، و تبقى نتائج تلك الأنشطة.
+CREATE TABLE IF NOT EXISTS eval_forms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name_ar TEXT,
+  name_fr TEXT,
+  preset TEXT,
+  archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- بنود الاستمارة بترتيبها: axis عنوان محور يجمع ما تحته، score مؤشر علامته من 1 إلى 5،
+-- text سؤال مفتوح. البند الذي أُجيب عنه لا يُحذف: يُؤرشف، فيغيب عن التقييمات المقبلة و يبقى
+-- في نتائج ما سبقها.
+CREATE TABLE IF NOT EXISTS eval_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id INTEGER NOT NULL REFERENCES eval_forms(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  type TEXT NOT NULL CHECK (type IN ('axis', 'score', 'text')),
+  label_ar TEXT,
+  label_fr TEXT,
+  archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
+);
+
+-- الاستمارة المعتمدة لكل نوع من الأنشطة (activity، leaders، group، visit): استمارة واحدة
+-- للنوع. لا صف = نوع لا يُقيَّم.
+CREATE TABLE IF NOT EXISTS eval_kind_forms (
+  kind TEXT PRIMARY KEY,
+  form_id INTEGER NOT NULL REFERENCES eval_forms(id) ON DELETE CASCADE
+);
+
+-- تقييم قائد شارك في النشاط: واحد لكل قائد في كل نشاط، يعدّله متى شاء. كل تقييمات النشاط
+-- بالاستمارة نفسها (form_id)، و لو تغيّرت استمارة نوعه بعد أوّلها. average معدّل علاماته،
+-- محفوظًا لتقرأه القوائم بلا حساب. leader_name نسخة الاسم: حذف القائد يُبقي تقييمه.
+-- المسؤول يقيّم أيّ نشاط: بقائده إن رُبط حسابه بقائد، و إلّا بحسابه (leader_id NULL، و
+-- user_id حسابه — واحد لكل حساب في كل نشاط). user_id: الحساب الذي كتب التقييم.
+CREATE TABLE IF NOT EXISTS session_evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  form_id INTEGER REFERENCES eval_forms(id) ON DELETE SET NULL,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  leader_name TEXT NOT NULL,
+  average REAL,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(session_id, leader_id)
+);
+
+-- الإجابات: علامة من 1 إلى 5 لمؤشر، أو نصّ لسؤال مفتوح
+CREATE TABLE IF NOT EXISTS session_evaluation_answers (
+  evaluation_id INTEGER NOT NULL REFERENCES session_evaluations(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL REFERENCES eval_items(id) ON DELETE CASCADE,
+  score INTEGER CHECK (score BETWEEN 1 AND 5),
+  text TEXT,
+  PRIMARY KEY (evaluation_id, item_id)
+);
+
+-- ---------- الإشعارات (server/push.js) ----------
+-- صندوق إشعارات كل حساب: الجرس في الواجهة، و منه يخرج الإشعار إلى أجهزته (Web Push).
+-- text: الإشعار مكتوبًا باللغتين عند إرساله، {"ar": {title, body}, "fr": {…}} — الجهاز يتلقّى
+-- لغته و الجرس يعرض لغة القارئ. url: الصفحة التي يفتحها النقر. read_at NULL = لم يُقرأ.
+CREATE TABLE IF NOT EXISTS user_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  text TEXT NOT NULL,
+  url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, id);
+
+-- جهاز قَبِل الإشعارات لحساب: عنوان خدمة الدفع (Google، Mozilla، Apple)، مفتاحا تشفير
+-- الرسائل، و المفتاح العام VAPID الذي اشترك به. رسالة موقّعة بمفتاح آخر ترفضها الخدمة،
+-- فلا يُرسَل إلا إلى اشتراكات المفتاح الحالي: نسخة من قاعدة الـVPS على حاسوب لا تصل إلى
+-- هواتف القادة. الجهاز الواحد قد يخدم حسابين (أخوان على هاتف واحد)، فالفرادة للزوج.
+-- lang: لغة الواجهة على ذلك الجهاز، و بها يُكتب إشعاره.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  vapid_key TEXT NOT NULL,
+  lang TEXT NOT NULL DEFAULT 'ar' CHECK (lang IN ('ar', 'fr')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_sent_at TEXT,
+  failures INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(endpoint, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+
+-- ما اختاره كل حساب من أنواع الإشعارات: صفٌّ لنوعٍ غيّره عن قيمته الافتراضية وحده، فنوعٌ
+-- يُضاف لاحقًا يصل بقيمته الافتراضية إلى من لم يختر شيئًا.
+CREATE TABLE IF NOT EXISTS notification_prefs (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  PRIMARY KEY (user_id, type)
+);
+
+-- التذكيرات تخرج مرّة واحدة: مفتاحٌ لكل تذكير ('attendance:<session_id>')
+CREATE TABLE IF NOT EXISTS notification_reminders (
+  key TEXT PRIMARY KEY,
+  sent_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
 
@@ -728,24 +975,43 @@ const BRANCH_ROLES_TEMPLATE_F = [
   (b) => `مساعدة قائدة ${b}`,
 ];
 
+// قسمٌ لغته الفرنسية (الفرنكوفون) يقرأ تشكيلته بالفرنسية، باسم الفرقة الفرنسي: Chef Baraem
+const BRANCH_ROLES_TEMPLATE_FR = [
+  (b) => `Chef ${b}`,
+  (b) => `Chef adjoint ${b}`,
+];
+const BRANCH_ROLES_TEMPLATE_FR_F = [
+  (b) => `Cheffe ${b}`,
+  (b) => `Cheffe adjointe ${b}`,
+];
+
+// توصيفا فرقةٍ من هذا القسم: لغتهما لغة القسم، و صيغتهما جنسه
+function branchRoles(b) {
+  const def = sectionDef(b.section);
+  const feminine = def?.gender === 'F';
+  if (def?.lang === 'fr')
+    return (feminine ? BRANCH_ROLES_TEMPLATE_FR_F : BRANCH_ROLES_TEMPLATE_FR).map((make) => make(b.name_fr));
+  return (feminine ? BRANCH_ROLES_TEMPLATE_F : BRANCH_ROLES_TEMPLATE).map((make) => make(b.name_ar));
+}
+
 // [{ title, branch_id, role_type, sort_order, section }] — الأمانات first, then فرقة by فرقة in age order.
 // Branch slots start at 100 so أمانات always sort ahead of them and a whole فرقة keeps its block.
-// The أمانات template is the فوج's own, i.e. قسم الفتيان: قسم الفتيات builds its أمانات by hand.
+// The أمانات template is the فوج's own, i.e. قسم الفتيان: the other أقسام build their أمانات by hand.
 // `section` keeps one قسم only; the sort orders stay those of the full template either way.
 function tachkilaTemplate(section = null) {
-  const rows = (section === 'F' ? [] : AMANAT_TEMPLATE).map((title, i) => ({
+  const rows = (!section || section === 'M' ? AMANAT_TEMPLATE : []).map((title, i) => ({
     title,
     branch_id: null,
     role_type: 'amana',
     sort_order: i,
     section: 'M',
   }));
-  const branches = db.prepare('SELECT id, name_ar, section FROM branches ORDER BY sort_order, id').all();
+  const branches = db.prepare('SELECT id, name_ar, name_fr, section FROM branches ORDER BY sort_order, id').all();
   branches.forEach((b, bi) => {
     if (section && b.section !== section) return;
-    (b.section === 'F' ? BRANCH_ROLES_TEMPLATE_F : BRANCH_ROLES_TEMPLATE).forEach((makeTitle, ri) => {
+    branchRoles(b).forEach((title, ri) => {
       rows.push({
-        title: makeTitle(b.name_ar),
+        title,
         branch_id: b.id,
         role_type: 'branch',
         sort_order: 100 + bi * 10 + ri,
@@ -775,6 +1041,26 @@ function seedLookupsFromMembers() {
     seed('residence_abidjan', 'address_abidjan');
     seed('residence_lebanon', 'address_lebanon');
     seed('school', 'school');
+  })();
+}
+
+// The evaluation feature opens with one form ready: «مؤشرات نجاح النشاط», for the فرق's,
+// the قادة's and the فوج's أنشطة. Copied once, on the boot that creates the tables.
+function seedEvalForms() {
+  if (!evalTablesAreNew) return;
+  evalTablesAreNew = false;
+  const { EVAL_PRESETS, DEFAULT_EVAL_PRESET, DEFAULT_EVAL_KINDS } = require('./evalPresets');
+  const preset = EVAL_PRESETS.find((p) => p.key === DEFAULT_EVAL_PRESET);
+  db.transaction(() => {
+    const formId = db
+      .prepare("INSERT INTO eval_forms (name_ar, name_fr, preset, created_by) VALUES (?, ?, ?, 'seed')")
+      .run(preset.name_ar, preset.name_fr, preset.key).lastInsertRowid;
+    const insertItem = db.prepare(
+      'INSERT INTO eval_items (form_id, position, type, label_ar, label_fr) VALUES (?, ?, ?, ?, ?)'
+    );
+    preset.items.forEach((it, i) => insertItem.run(formId, i, it.type, it.label_ar, it.label_fr));
+    const map = db.prepare('INSERT OR IGNORE INTO eval_kind_forms (kind, form_id) VALUES (?, ?)');
+    for (const kind of DEFAULT_EVAL_KINDS) map.run(kind, formId);
   })();
 }
 
@@ -986,7 +1272,7 @@ function migrateTreasuryOpenings() {
       db.exec(`
         CREATE TABLE treasury_openings_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          section TEXT NOT NULL CHECK (section IN ('M', 'F')),
+          section TEXT NOT NULL,
           branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
           date TEXT NOT NULL,
           amount REAL NOT NULL CHECK (amount >= 0),
@@ -1020,7 +1306,7 @@ function migrateMemberDues() {
           paid_on TEXT NOT NULL,
           session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
           branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
-          section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F')),
+          section TEXT NOT NULL DEFAULT 'M',
           recorded_by TEXT,
           recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -1047,7 +1333,7 @@ function migrateAmanaHelpers() {
   );
   db.transaction(() => {
     for (const y of years)
-      for (const section of ['M', 'F'])
+      for (const { code: section } of SECTION_DEFS)
         for (const [child, parent] of PAIRS) {
           const c = find.get(y, child, section);
           const a = find.get(y, parent, section);
@@ -1057,13 +1343,91 @@ function migrateAmanaHelpers() {
   })();
 }
 
+// Every section column used to carry CHECK (section IN ('M', 'F')), which turns a third قسم
+// away. SQLite cannot change a CHECK in place, so each table that has it is rebuilt from its
+// own stored CREATE statement minus that clause — same columns in the same order, every
+// other constraint kept — then gets its indexes and its AUTOINCREMENT counter back (ids of
+// deleted rows are never handed out again). The values are checked by the server against
+// SECTION_DEFS. Safe to run on every boot: a table without the clause is left alone.
+const SECTION_CHECK = /\s*CHECK\s*\(\s*section\s+IN\s*\(\s*'M'\s*,\s*'F'\s*\)\s*\)/gi;
+
+function dropSectionChecks() {
+  const tables = db
+    .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql LIKE '%section IN%'")
+    .all()
+    .filter((t) => new RegExp(SECTION_CHECK.source, 'i').test(t.sql));
+  if (!tables.length) return;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      const seqOf = db.prepare('SELECT seq FROM sqlite_sequence WHERE name = ?');
+      for (const { name, sql } of tables) {
+        const indexes = db
+          .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL")
+          .all(name)
+          .map((r) => r.sql);
+        const seq = seqOf.get(name)?.seq ?? null;
+        const rebuilt = sql
+          .replace(SECTION_CHECK, '')
+          .replace(/^CREATE TABLE\s+("?)\w+\1\s*\(/i, `CREATE TABLE ${name}_new (`);
+        if (!rebuilt.startsWith(`CREATE TABLE ${name}_new (`)) throw new Error(`cannot rebuild ${name}`);
+        db.exec(rebuilt);
+        db.exec(`INSERT INTO ${name}_new SELECT * FROM ${name}`);
+        db.exec(`DROP TABLE ${name}`);
+        db.exec(`ALTER TABLE ${name}_new RENAME TO ${name}`);
+        for (const ix of indexes) db.exec(ix);
+        if (seq !== null)
+          db.prepare('UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?').run(seq, name);
+      }
+      // Every reference into the rebuilt tables must still resolve, or nothing is kept
+      if (db.pragma('foreign_key_check').length) throw new Error('foreign_key_check failed after dropping section CHECKs');
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+// قسما الفرنكوفون (الفتيان ثم الفتيات) يولدان بسلّم الفوج: الفرق الأربع نفسها، بأعمارها و مطالبها، بأسماء فرنسية
+// (و الاسم العربي يقول لمن هي). مرّة واحدة (user_version): فرقة حُذفت بعدها عمدًا تبقى
+// محذوفة. فرقة «Francophone» القديمة (كل الأعمار) لا تُمسّ: خطّتها و قادتها في التشكيلة
+// قرارٌ للأدمن، يُنقلان بيده.
+const FR_LADDER = [
+  { ar: 'البراعم', fr: 'Baraem' },
+  { ar: 'الأشبال', fr: 'Achbal' },
+  { ar: 'الكشافة', fr: 'Kachafa' },
+  { ar: 'الجوالة', fr: 'Jawala' },
+];
+
+function seedFrancophoneSection() {
+  const version = db.pragma('user_version', { simple: true });
+  if (version >= 2) return;
+  const twin = db.prepare("SELECT * FROM branches WHERE section = 'M' AND all_ages = 0 AND name_ar = ?");
+  const seedLadder = (section, suffix) => {
+    if (db.prepare('SELECT 1 FROM branches WHERE section = ? LIMIT 1').get(section)) return;
+    const insert = db.prepare(
+      `INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages, section)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?)`
+    );
+    for (const { ar, fr } of FR_LADDER) {
+      const b = twin.get(ar);
+      if (b) insert.run(fr, `${ar} (${suffix})`, b.min_age, b.max_age, b.sort_order, b.total_requirements, section);
+    }
+  };
+  db.transaction(() => {
+    // 1: الفرنكوفون (الفتيان)؛ 2: الفرنكوفونيات، بالسلّم نفسه
+    if (version < 1) seedLadder('FR', 'فرنكوفون');
+    seedLadder('FRF', 'فرنكوفونيات');
+    db.pragma('user_version = 2');
+  })();
+}
+
 // Upgrade databases created before the مطالب / activity-details feature
 function migrate() {
   ensureColumn('branches', 'total_requirements', 'total_requirements INTEGER NOT NULL DEFAULT 0');
   ensureColumn('branches', 'all_ages', 'all_ages INTEGER NOT NULL DEFAULT 0');
   // قسم الفتيات جاء بعد الفوج كله: كل ما وُجد قبله من فرق و قادة و أنشطة و توصيفات
   // هو قسم الفتيان، فالقيمة الافتراضية 'M' هي الهجرة نفسها
-  ensureColumn('branches', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
+  ensureColumn('branches', 'section', "section TEXT NOT NULL DEFAULT 'M'");
   // Idle-timeout bookkeeping. ALTER TABLE cannot take datetime('now') as a default,
   // so the column lands nullable and old rows inherit their creation time.
   ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
@@ -1097,7 +1461,7 @@ function migrate() {
   ensureColumn('sessions', 'updated_at', 'updated_at TEXT');
   db.exec("UPDATE sessions SET updated_at = datetime('now') WHERE updated_at IS NULL");
   // After migrateSessions on purpose: its rebuild only knows the older column set
-  ensureColumn('sessions', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
+  ensureColumn('sessions', 'section', "section TEXT NOT NULL DEFAULT 'M'");
   migrateAttendanceRoster();
   // الاشتراك المدفوع لكل عنصر في كل نشاط — بعد إعادة بناء الجدول أعلاه، فالبناء
   // ينسخ الأعمدة التي يعرفها وحدها و كان ليسقط هذا العمود لو زِيد قبله
@@ -1132,7 +1496,7 @@ function migrate() {
   ensureColumn('assignments', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
   ensureColumn('assignments', 'parent_id', 'parent_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL');
   // Before migrateAmanaHelpers, which pairs a أمانة with its أمين inside one قسم
-  ensureColumn('assignments', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
+  ensureColumn('assignments', 'section', "section TEXT NOT NULL DEFAULT 'M'");
   migrateAmanaHelpers();
   // Registration form fields added after the first release — all nullable so old rows stay valid
   ensureColumn('members', 'father_name', 'father_name TEXT');
@@ -1149,6 +1513,9 @@ function migrate() {
   // الميزة. الحذف يُفرَّغ يدويًا قبل DELETE: عمود مُضاف بـ ALTER لا يُعتمد عليه في
   // تنفيذ ON DELETE SET NULL.
   ensureColumn('members', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
+  // الفئة العمرية للطليعة — كل طليعة قائمة تبقى بلا سنّ، أي يدوية كما كانت
+  ensureColumn('branch_groups', 'age_from', 'age_from INTEGER');
+  ensureColumn('branch_groups', 'age_to', 'age_to INTEGER');
   ensureColumn('members', 'archived_at', 'archived_at TEXT');
   ensureColumn('members', 'archived_by', 'archived_by TEXT');
   // After every members column exists, before the members indexes are (re)created below
@@ -1193,7 +1560,7 @@ function migrate() {
     ensureColumn('leaders', col, ddl);
   ensureColumn('leaders', 'archived_at', 'archived_at TEXT');
   ensureColumn('leaders', 'archived_by', 'archived_by TEXT');
-  ensureColumn('leaders', 'section', "section TEXT NOT NULL DEFAULT 'M' CHECK (section IN ('M', 'F'))");
+  ensureColumn('leaders', 'section', "section TEXT NOT NULL DEFAULT 'M'");
 
   ensureColumn('users', 'perms', 'perms TEXT');
   ensureColumn('users', 'leader_id', 'leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL');
@@ -1203,7 +1570,7 @@ function migrate() {
   // قسم الفتيان. Left NULL (both sections) they would see the first قائدات and their
   // أنشطة — so they are pinned to it, once, on the boot that adds the column.
   const usersHadSection = db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'section');
-  ensureColumn('users', 'section', "section TEXT CHECK (section IN ('M', 'F'))");
+  ensureColumn('users', 'section', "section TEXT");
   if (!usersHadSection) db.exec("UPDATE users SET section = 'M' WHERE role != 'admin'");
   // A الصندوق line written before «not paid yet» existed left the box the day it was written
   const entriesHadPaidOn = db
@@ -1288,9 +1655,29 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_treasury_counts_box ON treasury_counts(section, branch_id, date);
     CREATE INDEX IF NOT EXISTS idx_member_dues_box ON member_dues(section, branch_id, paid_on);
     CREATE INDEX IF NOT EXISTS idx_member_dues_session ON member_dues(session_id);
+    CREATE INDEX IF NOT EXISTS idx_meetings_section_date ON meetings(section, date);
+    CREATE INDEX IF NOT EXISTS idx_meeting_attendees_meeting ON meeting_attendees(meeting_id);
+    CREATE INDEX IF NOT EXISTS idx_meeting_attendees_leader ON meeting_attendees(leader_id);
+    CREATE INDEX IF NOT EXISTS idx_meeting_items_meeting ON meeting_items(meeting_id, position);
+    CREATE INDEX IF NOT EXISTS idx_meeting_decisions_meeting ON meeting_decisions(meeting_id, position);
+    CREATE INDEX IF NOT EXISTS idx_meeting_decisions_status ON meeting_decisions(status, due_date);
+    CREATE INDEX IF NOT EXISTS idx_eval_items_form ON eval_items(form_id, position);
+    CREATE INDEX IF NOT EXISTS idx_session_evaluations_session ON session_evaluations(session_id);
+    CREATE INDEX IF NOT EXISTS idx_session_evaluations_leader ON session_evaluations(leader_id);
+    CREATE INDEX IF NOT EXISTS idx_session_evaluation_answers_item ON session_evaluation_answers(item_id);
   `);
+  // L'admin évalue aussi, sans chef lié à son compte: une évaluation par compte et par séance
+  ensureColumn('session_evaluations', 'user_id', 'user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_session_evaluations_user
+       ON session_evaluations(session_id, user_id) WHERE leader_id IS NULL`
+  );
+  seedEvalForms();
 
   migrateBranchRoles();
+  // Last: every table has its final columns by now, and the FR فرق need the CHECK gone
+  dropSectionChecks();
+  seedFrancophoneSection();
 }
 
 function seed() {
@@ -1326,4 +1713,4 @@ function seedLeaders() {
   migrateAmanaHelpers();
 }
 
-module.exports = { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate };
+module.exports = { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef };
