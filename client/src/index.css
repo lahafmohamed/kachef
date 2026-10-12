@@ -546,6 +546,9 @@ input[type="radio"] {
    ============================================================ */
 
 .print-sheet {
+  /* Static faces, imported by PrintReport: a variable font reaches the PDF as Type 3
+     drawings — slow to print, heavy to download */
+  font-family: "Inter", "Noto Sans Arabic", var(--font-sans);
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }

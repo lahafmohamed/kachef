@@ -82,7 +82,9 @@ async function renderPdf({ url, token, lang = 'fr', section = null, timeoutMs = 
       section
     );
     await page.emulateMediaType('print');
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: timeoutMs });
+    // Not 'networkidle0': that adds half a second of quiet to every export, and the
+    // sheet below is the real signal anyway
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     // The sheet only mounts once every fetch is in; an error state marks itself
     const el = await page.waitForSelector('.print-sheet, [data-print-error]', { timeout: timeoutMs });
     const failed = await el.evaluate((n) => n.hasAttribute('data-print-error'));

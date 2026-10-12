@@ -1,5 +1,16 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+// The paper's own faces, static where the app's are variable: Chromium writes a variable
+// font into a PDF as Type 3 drawings, which made every export slow to print and heavy to
+// download. Same files, same glyphs and features — only the four weights the sheets use.
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/inter/600.css';
+import '@fontsource/inter/700.css';
+import '@fontsource/noto-sans-arabic/400.css';
+import '@fontsource/noto-sans-arabic/500.css';
+import '@fontsource/noto-sans-arabic/600.css';
+import '@fontsource/noto-sans-arabic/700.css';
 import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';

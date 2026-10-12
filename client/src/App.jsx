@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, useEffect } from 'react';
+import { Component, Suspense, lazy, useEffect, useState } from 'react';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { DirectionProvider } from '@radix-ui/react-direction';
@@ -65,7 +65,27 @@ const Settings = lazy(PAGES.settings[0]);
 const Admin = lazy(PAGES.admin[0]);
 // Not prefetched: the sheet behind the PDF export, opened on screen only when the
 // server has no Chromium. Chromium itself waits for `.print-sheet`, chunk included.
-const PrintReport = lazy(() => import('./pages/PrintReport'));
+// Not React.lazy either: a Suspense boundary holds resolved content back 300 ms after
+// its fallback, and every PDF sat through that pause. An app opened on a sheet starts
+// the chunk at once, alongside the session check.
+let PrintReport = null;
+const loadPrintReport = () =>
+  import('./pages/PrintReport').then((m) => {
+    PrintReport = m.default;
+    return m.default;
+  });
+if (window.location.pathname.startsWith('/print/')) loadPrintReport().catch(() => {});
+
+function PrintSheet() {
+  const [Page, setPage] = useState(() => PrintReport);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!Page) loadPrintReport().then((P) => setPage(() => P), setError);
+  }, [Page]);
+  // Up to the boundary, whose marker ends the PDF export at once
+  if (error) throw error;
+  return Page ? <Page /> : null;
+}
 
 let prefetched = false;
 
@@ -200,12 +220,10 @@ function Shell() {
     return (
       <ErrorBoundary printError title={t('error.crashTitle')} retryLabel={t('error.reload')}>
         {/* The sheet draws its own toolbar and loading state */}
-        <Suspense fallback={null}>
-          <Routes>
-            <Route path="/print/:kind/:id" element={<PrintReport />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
+        <Routes>
+          <Route path="/print/:kind/:id" element={<PrintSheet />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
       </ErrorBoundary>
     );
 
