@@ -4,8 +4,18 @@ import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useFetch, useUrlField, useUrlFilters } from '../hooks';
 import { isFeminine, useSection } from '../section';
-import { branchName, fmtAmount, todayISO } from '../utils';
-import { EVENT_KINDS, KIND_BADGE, dayNumber, eventPhase, fmtDateRange, fmtMonthShort, signed } from '../lib/events';
+import { fmtAmount, todayISO } from '../utils';
+import {
+  EVENT_KINDS,
+  KIND_BADGE,
+  dayNumber,
+  eventPhase,
+  eventScopeLabels,
+  fmtDateRange,
+  fmtMonthShort,
+  signed,
+} from '../lib/events';
+import { fmtScore, scoreTone } from '../lib/evaluations';
 import EventFormDialog from '../components/EventForm';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
@@ -20,6 +30,7 @@ import {
   Skeleton,
   useToast,
   IconPlus,
+  IconStar,
   IconTent,
 } from '../components/ui';
 
@@ -65,6 +76,33 @@ function MoneyMeter({ e, t }) {
   );
 }
 
+/**
+ * The قادة's mark, among the row's badges: «★ 4,3/5». For a قائد who took part and has not
+ * rated it yet, «À évaluer» instead — the server hides the others' average from him.
+ */
+function EvalBadge({ e, t, lang }) {
+  const ev = e.eval;
+  if (!ev) return null;
+  if (ev.pending)
+    return (
+      <Badge variant="outline" className="border-primary/40 text-primary">
+        <IconStar className="h-3 w-3" />
+        {t('eval.toDo')}
+      </Badge>
+    );
+  if (!ev.count || ev.average === null) return null;
+  return (
+    <Badge variant="outline">
+      <IconStar className="h-3 w-3 text-muted-foreground" />
+      <span className="sr-only">{t('eval.listLabel', { count: ev.count })}</span>
+      <span dir="ltr" className={scoreTone(ev.average).text}>
+        {fmtScore(ev.average, lang)}
+        <span className="font-normal text-muted-foreground">/5</span>
+      </span>
+    </Badge>
+  );
+}
+
 function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
   const days = dayNumber(e, e.end_date);
   const meta = [
@@ -72,7 +110,7 @@ function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
     e.place,
     e.leader_name,
   ].filter(Boolean);
-  const named = e.branch_ids.map((id) => branchList.find((b) => b.id === id)).filter(Boolean);
+  const named = eventScopeLabels(e, branchList, lang);
   return (
     <li>
       <Link
@@ -103,12 +141,13 @@ function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
           <div className="flex flex-wrap items-center gap-1.5">
             {bothSections && <Badge variant={isFeminine(e.section) ? 'info' : 'outline'}>{t(`section.${e.section}`)}</Badge>}
             {named.length ? (
-              named.map((b) => <Badge key={b.id}>{branchName(b, lang)}</Badge>)
+              named.map((b) => <Badge key={b.id}>{b.label}</Badge>)
             ) : (
               <Badge variant="secondary">{t('event.wholeGroup')}</Badge>
             )}
             <Badge variant="outline">{t('event.participantCount', { count: e.participant_count })}</Badge>
             <Badge variant="outline">{t('event.sessionCount', { count: e.session_count })}</Badge>
+            <EvalBadge e={e} t={t} lang={lang} />
           </div>
         </div>
 
@@ -131,8 +170,8 @@ export default function Events() {
   const navigate = useNavigate();
   const toast = useToast();
   const { has } = usePerms();
-  const editable = has('sessions.create');
-  const canFees = has('sessions.read.fees');
+  const editable = has('events.manage');
+  const canFees = has('events.read.fees');
   const { section } = useSection();
 
   const [sp, patch] = useUrlFilters();

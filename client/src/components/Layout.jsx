@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
@@ -13,6 +13,7 @@ import {
   useTheme,
   IconAward,
   IconBell,
+  IconCheck,
   IconChevronDown,
   IconHome,
   IconUsers,
@@ -39,9 +40,9 @@ const NAV_ITEMS = [
   { to: '/branches', key: 'nav.branches', short: 'nav.branches', Icon: IconAward, perm: 'branches.read' },
   { to: '/members', key: 'nav.members', short: 'nav.members', Icon: IconUsers, perm: 'members.read' },
   { to: '/sessions', key: 'nav.sessions', short: 'nav.sessions', Icon: IconCalendar, perm: 'sessions.read' },
-  { to: '/prep-cards', key: 'nav.prepCards', short: 'nav.prepCardsShort', Icon: IconClipboard, perm: 'sessions.read' },
-  { to: '/events', key: 'nav.events', short: 'nav.eventsShort', Icon: IconTent, perm: 'sessions.read' },
-  { to: '/meetings', key: 'nav.meetings', short: 'nav.meetings', Icon: IconMessages, perm: 'sessions.read' },
+  { to: '/prep-cards', key: 'nav.prepCards', short: 'nav.prepCardsShort', Icon: IconClipboard, perm: 'prep.read' },
+  { to: '/events', key: 'nav.events', short: 'nav.eventsShort', Icon: IconTent, perm: 'events.read' },
+  { to: '/meetings', key: 'nav.meetings', short: 'nav.meetings', Icon: IconMessages, perm: 'meetings.read' },
   { to: '/treasury', key: 'nav.treasury', short: 'nav.treasury', Icon: IconWallet, perm: 'treasury.read' },
   { to: '/promotions', key: 'nav.promotions', short: 'nav.promotions', Icon: IconTrendingUp, perm: 'promotions.read' },
   { to: '/leaders', key: 'nav.leaders', short: 'nav.leaders', Icon: IconShield, perm: 'leaders.read' },
@@ -60,6 +61,7 @@ function useNavItems() {
   });
 }
 
+// 36px rows: an admin's twelve pages fit a 1366×639 laptop screen without scrolling
 function SidebarNav() {
   const { t } = useTranslation();
   return useNavItems().map(({ to, key, Icon, end }) => (
@@ -69,26 +71,15 @@ function SidebarNav() {
       end={end}
       className={({ isActive }) =>
         cn(
-          'focus-ring group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-[color,background-color,box-shadow] duration-150',
+          'focus-ring flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-[color,background-color,box-shadow] duration-150',
           isActive
             ? 'ring-inset-light bg-primary text-primary-foreground shadow-brand'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
         )
       }
     >
-      {({ isActive }) => (
-        <>
-          {/* Rail marker on the inline-start edge — reads in RTL too */}
-          <span
-            className={cn(
-              'absolute -start-3 h-5 w-1 rounded-e-full bg-primary transition-[opacity,scale] duration-200',
-              isActive ? 'opacity-0' : 'scale-y-0 opacity-0 group-hover:scale-y-100 group-hover:opacity-100'
-            )}
-          />
-          <Icon className="h-[1.15rem] w-[1.15rem]" />
-          <span className="truncate">{t(key)}</span>
-        </>
-      )}
+      <Icon className="h-[1.15rem] w-[1.15rem]" />
+      <span className="truncate">{t(key)}</span>
     </NavLink>
   ));
 }
@@ -196,37 +187,49 @@ function BottomNav() {
   );
 }
 
-/** `sub` names the قسم on screen under the app name, when there is one to name. */
+/**
+ * `sub` names the قسم on screen under the app name, when there is one to name. A span,
+ * not a div: in the sidebar it is also the face of the قسم menu's button. 44px is the
+ * brand crop on every screen size.
+ */
 function Brand({ className, sub }) {
   const { t } = useTranslation();
   return (
-    <div className={cn('flex items-center gap-2.5', className)}>
-      <img
-        src="/logo-mark.png"
-        alt={t('app.name')}
-        width={90}
-        height={90}
-        className="h-11 w-11 shrink-0 lg:h-[90px] lg:w-[90px]"
-      />
+    <span className={cn('flex items-center gap-2.5', className)}>
+      {/* The name is written right beside it: alt text would only say it twice */}
+      <img src="/logo-mark.png" alt="" width={44} height={44} className="h-11 w-11 shrink-0" />
       <span className="min-w-0">
         <span className="block truncate text-base font-bold tracking-tight text-primary">{t('app.name')}</span>
-        {sub && <span className="block truncate text-xs font-medium text-muted-foreground">{sub}</span>}
+        {/* Two lines before an ellipsis: «Section francophone garçons» is wider than the sidebar's column */}
+        {sub && <span className="line-clamp-2 text-xs font-medium text-muted-foreground">{sub}</span>}
       </span>
-    </div>
+    </span>
   );
 }
 
 /**
- * الكل / الفتيان / الفتيات / الفرنكوفون — for an admin, or an account open on all أقسام. App
- * remounts every page on a new pick, so it all loads again for that قسم. A detail
- * page or a filtered list of the old قسم would only answer «forbidden» or nothing,
- * so the switch lands on the list page of the same tab.
+ * Narrows the whole app to one قسم, or back to all of them. App remounts every page on a
+ * new pick, so it all loads again for that قسم. A detail page or a filtered list of the
+ * old قسم would only answer «forbidden» or nothing, so the switch lands on the list page
+ * of the same tab. Says whether anything changed.
  */
-function SectionSwitcher({ onSwitched }) {
-  const { t } = useTranslation();
+function useSwitchSection() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const { canSwitch, view, setView } = useSection();
+  const { view, setView } = useSection();
+  return (v) => {
+    if (v === view) return false;
+    setView(v);
+    navigate(`/${pathname.split('/')[1] || ''}`);
+    return true;
+  };
+}
+
+/** الكل / الفتيان / الفتيات / الفرنكوفون in the phone's account popover; the sidebar has SectionMenu. */
+function SectionSwitcher({ onSwitched }) {
+  const { t } = useTranslation();
+  const { canSwitch, view } = useSection();
+  const switchTo = useSwitchSection();
   if (!canSwitch) return null;
   const options = [{ value: '', label: t('section.all') }, ...SECTIONS.map((s) => ({ value: s, label: t(`section.${s}`) }))];
   return (
@@ -234,14 +237,9 @@ function SectionSwitcher({ onSwitched }) {
       size="sm"
       label={t('section.label')}
       value={view}
-      onChange={(v) => {
-        if (v === view) return;
-        setView(v);
-        navigate(`/${pathname.split('/')[1] || ''}`);
-        onSwitched?.();
-      }}
+      onChange={(v) => switchTo(v) && onSwitched?.()}
       className="flex w-full"
-      // Five names do not fit side by side in the sidebar: two by two, «Tout» on its own row
+      // Five names do not fit side by side in a 16rem popover: two by two, «Tout» on its own row
       columns={options.length > 3 ? 2 : undefined}
       options={options}
     />
@@ -339,8 +337,11 @@ const popoverMotion =
  * icon buttons left the app name a few letters wide; two leave it whole. The
  * bell stays out of the menu for the same reason as in the sidebar.
  */
-/** «قائد · قسم الفتيات»: the role, and the قسم an account is locked into. */
-function useRoleLine() {
+/**
+ * «قائد · قسم الفتيات»: the role, and the قسم an account is locked into — unless
+ * `withSection` is false, where the قسم is already written above (the sidebar header).
+ */
+function useRoleLine(withSection = true) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { fixed } = useSection();
@@ -348,7 +349,7 @@ function useRoleLine() {
   const role = t(
     user?.role === 'admin' ? 'admin.roleAdmin' : isFeminine(fixed) ? 'section.roleUserF' : 'admin.roleUser'
   );
-  return fixed ? `${role} · ${t(`section.name${fixed}`)}` : role;
+  return fixed && withSection ? `${role} · ${t(`section.name${fixed}`)}` : role;
 }
 
 function AccountButton() {
@@ -409,6 +410,64 @@ function AccountButton() {
 }
 
 /**
+ * Sidebar header for an admin, or an account open on all أقسام: the brand row opens the
+ * قسم menu, the way a workspace switcher does, and names the pick under the app name.
+ * Laid out as a grid, the five choices took 150px of a 639px laptop screen and pushed
+ * the page you are on out of the nav.
+ */
+function SectionMenu() {
+  const { t } = useTranslation();
+  const { view } = useSection();
+  const switchTo = useSwitchSection();
+  const [open, setOpen] = useState(false);
+  const options = [{ value: '', label: t('section.both') }, ...SECTIONS.map((s) => ({ value: s, label: t(`section.${s}`) }))];
+  const current = (options.find((o) => o.value === view) ?? options[0]).label;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${t('section.label')} — ${current}`}
+          className="focus-ring group flex w-full cursor-pointer items-center gap-2 rounded-xl p-1.5 text-start transition-colors hover:bg-accent data-[state=open]:bg-accent"
+        >
+          <Brand className="min-w-0 flex-1" sub={current} />
+          <IconChevronDown className="text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-180" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        aria-label={t('section.label')}
+        onKeyDown={menuArrowKeys}
+        // Lands on the current pick, so Up/Down start from where you are
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          e.target.querySelector('[aria-pressed="true"]')?.focus();
+        }}
+        className={cn('w-(--radix-popover-trigger-width)', popoverMotion)}
+      >
+        <span className="block px-2.5 pb-1.5 pt-1 text-xs font-medium text-muted-foreground">{t('section.label')}</span>
+        {options.map((o) => {
+          const active = o.value === view;
+          return (
+            <MenuItem
+              key={o.value}
+              aria-pressed={active}
+              icon={<IconCheck className={cn('text-primary', !active && 'invisible')} />}
+              onClick={() => {
+                setOpen(false);
+                switchTo(o.value);
+              }}
+            >
+              {o.label}
+            </MenuItem>
+          );
+        })}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
  * Sidebar footer: a single row saying who is signed in, with whatever is passed
  * as children (the bell) beside it. Password, language, theme and sign-out open
  * from that row in a popover instead of stacking up as full-width buttons, so
@@ -418,7 +477,8 @@ function AccountButton() {
 function AccountMenu({ children }) {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const roleLine = useRoleLine();
+  // The header names the قسم; here it only cut the line short («Chef · Section fra…»)
+  const roleLine = useRoleLine(false);
   const { open, setOpen, triggerRef, changePassword, openNotifications, dialog } = useAccountPopover();
   if (!user) return null;
 
@@ -457,7 +517,8 @@ function AccountMenu({ children }) {
         sideOffset={8}
         aria-label={t('nav.account')}
         onKeyDown={menuArrowKeys}
-        className={cn('w-(--radix-popover-trigger-width)', popoverMotion)}
+        // At least the row's width; wider when a label needs it («Réglages des notifications»)
+        className={cn('w-max min-w-(--radix-popover-trigger-width) max-w-80', popoverMotion)}
       >
         <AccountItems onChangePassword={changePassword} onNotifications={openNotifications} />
       </PopoverContent>
@@ -481,6 +542,19 @@ export default function Layout({ children }) {
   const pickedName = section ? t(`section.name${section}`) : null;
   usePushSync();
 
+  // A screen too short for the whole nav still shows the page you are on: scroll
+  // its link into the nav's view (only the nav — the aside is fixed, the page stays put)
+  const navRef = useRef(null);
+  useEffect(() => {
+    const nav = navRef.current;
+    const link = nav?.querySelector('[aria-current="page"]');
+    if (!link) return;
+    const n = nav.getBoundingClientRect();
+    const l = link.getBoundingClientRect();
+    if (l.top < n.top) nav.scrollTop -= n.top - l.top + 8;
+    else if (l.bottom > n.bottom) nav.scrollTop += l.bottom - n.bottom + 8;
+  }, [pathname]);
+
   return (
     <div className="min-h-dvh">
       <a
@@ -492,19 +566,18 @@ export default function Layout({ children }) {
 
       {/* ---------- Desktop sidebar ---------- */}
       <aside className="fixed inset-y-0 start-0 z-40 hidden w-64 flex-col border-e border-border bg-card lg:flex">
-        <div className="flex h-[106px] items-center border-b border-border px-5">
-          <Brand sub={lockedName} />
+        {/* Header, nav and footer rows share one inset, so their hover fills line up */}
+        <div className="border-b border-border px-3 py-2">
+          {canSwitch ? <SectionMenu /> : <Brand className="p-1.5" sub={lockedName} />}
         </div>
-        {canSwitch && (
-          <div className="space-y-1.5 border-b border-border px-3 pb-3 pt-2.5">
-            <span className="block px-1 text-xs font-medium text-muted-foreground">{t('section.label')}</span>
-            <SectionSwitcher />
-          </div>
-        )}
-        <nav aria-label={t('nav.primary')} className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
+        <nav
+          ref={navRef}
+          aria-label={t('nav.primary')}
+          className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2"
+        >
           <SidebarNav />
         </nav>
-        <div className="border-t border-border p-3">
+        <div className="border-t border-border px-3 py-2">
           <AccountMenu>
             <NotificationsBell variant="ghost" />
           </AccountMenu>

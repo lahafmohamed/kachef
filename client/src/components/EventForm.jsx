@@ -33,6 +33,8 @@ const emptyEvent = () => ({
   plan: '',
   leader_id: '',
   branch_ids: [],
+  // طلائع الفرق المختارة. لا طليعة لفرقة = الفرقة كاملةً.
+  group_ids: [],
   // '' = not picked yet: the قسم on screen, else الفتيان. Its فرق win once picked.
   section: '',
 });
@@ -47,6 +49,7 @@ const fromEvent = (e) => ({
   plan: e.plan || '',
   leader_id: e.leader_id ? String(e.leader_id) : '',
   branch_ids: e.branch_ids || [],
+  group_ids: e.group_ids || [],
   section: e.section,
 });
 
@@ -58,6 +61,26 @@ const ERRORS = {
   forbidden: 'event.errForbiddenBranch',
 };
 
+// A فرقة or a طليعة to tick: the check slides in when picked
+function ToggleChip({ on, onClick, children }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={cn(
+        'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+        on
+          ? 'border-primary bg-primary/10 font-medium text-primary'
+          : 'border-input bg-card text-muted-foreground hover:bg-accent'
+      )}
+    >
+      <IconSwap on={on} onIcon={<IconCheck className="h-3.5 w-3.5" />} className="h-3.5 w-3.5" collapse />
+      {children}
+    </button>
+  );
+}
+
 /**
  * المخيم أو الدورة: إنشاء (initial = null) أو تعديل، في نافذة أزرارها ثابتة أسفلها —
  * النموذج طويل، و الحفظ يبقى في متناول الإبهام. The money field shows only to who may
@@ -67,7 +90,7 @@ const ERRORS = {
 export default function EventFormDialog({ open, initial, onClose, onSaved }) {
   const { t, i18n } = useTranslation();
   const { has } = usePerms();
-  const canFees = has('sessions.read.fees');
+  const canFees = has('events.read.fees');
   const { section: onScreen } = useSection();
   const branches = useFetch('/branches', { skip: !open });
   const leaders = useFetch('/leader-options', { skip: !open });
@@ -87,6 +110,9 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
   const firstBranchSection = branchList.find((b) => b.id === form.branch_ids[0])?.section;
   const formSection = initial?.section || onScreen || firstBranchSection || form.section || 'M';
   const sectionBranches = branchList.filter((b) => b.section === formSection);
+  // Only the picked فرق that were split into طلائع offer them
+  const groupedBranches = sectionBranches.filter((b) => form.branch_ids.includes(b.id) && (b.groups || []).length > 0);
+  const shownGroupIds = new Set(branchList.flatMap((b) => (b.groups || []).map((g) => g.id)));
   const leaderOptions = (leaders.data || [])
     .filter((l) => l.section === formSection && (l.status === 'active' || l.id === Number(form.leader_id)))
     .map((l) => ({ value: l.id, label: memberName(l) }));
@@ -94,13 +120,26 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
 
   function pickSection(s) {
     if (s === formSection) return;
-    setForm((f) => ({ ...f, section: s, branch_ids: [], leader_id: '' }));
+    setForm((f) => ({ ...f, section: s, branch_ids: [], group_ids: [], leader_id: '' }));
   }
 
+  // Un-ticking a فرقة drops its طلائع with it: the server refuses a طليعة of a فرقة not picked
   function toggleBranch(id) {
+    setForm((f) => {
+      if (!f.branch_ids.includes(id)) return { ...f, branch_ids: [...f.branch_ids, id] };
+      const dropped = new Set((branchList.find((b) => b.id === id)?.groups || []).map((g) => g.id));
+      return {
+        ...f,
+        branch_ids: f.branch_ids.filter((x) => x !== id),
+        group_ids: f.group_ids.filter((g) => !dropped.has(g)),
+      };
+    });
+  }
+
+  function toggleGroup(id) {
     setForm((f) => ({
       ...f,
-      branch_ids: f.branch_ids.includes(id) ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id],
+      group_ids: f.group_ids.includes(id) ? f.group_ids.filter((x) => x !== id) : [...f.group_ids, id],
     }));
   }
 
@@ -129,6 +168,8 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
         plan: form.plan || null,
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         branch_ids: form.branch_ids.map(Number),
+        // Those of a فرقة this account cannot see are not sent: the server keeps them as they were
+        group_ids: form.group_ids.filter((g) => shownGroupIds.has(g)).map(Number),
         // Read by the server only when the event has no فرقة to take it from
         section: formSection,
         ...(canFees ? { fee: form.fee === '' ? null : Number(form.fee) } : {}),
@@ -147,6 +188,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
       open={open}
       onClose={onClose}
       title={initial ? `${t('common.edit')} — ${initial.title}` : t('event.new')}
+      size="lg"
       footer={
         <div className="space-y-2">
           {error && (
@@ -175,35 +217,40 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
           retryLabel={t('error.retry')}
         />
       ) : (
-        <form id="event-form" onSubmit={save} className="space-y-4">
+        // Rows as in the séance's edit dialog: what, when and where, who leads it and
+        // what it costs — then who may take part, then the plan
+        <form id="event-form" onSubmit={save} className="space-y-5">
           {/* Both أقسام on screen: settled first, it decides which فرق and قادة follow */}
           {!initial && !onScreen && <SectionField value={formSection} onChange={pickSection} />}
 
-          <div className="space-y-1.5">
-            <Label>{t('event.kind')}</Label>
-            <SegmentedControl
-              label={t('event.kind')}
-              value={form.kind}
-              onChange={(v) => setForm((f) => ({ ...f, kind: v }))}
-              options={EVENT_KINDS.map((k) => ({ value: k, label: t(`event.kind_${k}`) }))}
-              className="flex w-full"
-            />
+          {/* What */}
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>{t('event.kind')}</Label>
+              <SegmentedControl
+                label={t('event.kind')}
+                value={form.kind}
+                onChange={(v) => setForm((f) => ({ ...f, kind: v }))}
+                options={EVENT_KINDS.map((k) => ({ value: k, label: t(`event.kind_${k}`) }))}
+                className="flex w-full"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ev_title">{t('event.name')}</Label>
+              <Input
+                id="ev_title"
+                required
+                maxLength={200}
+                autoComplete="off"
+                placeholder={t(`event.namePlaceholder_${form.kind}`)}
+                value={form.title}
+                onChange={set('title')}
+              />
+            </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="ev_title">{t('event.name')}</Label>
-            <Input
-              id="ev_title"
-              required
-              maxLength={200}
-              autoComplete="off"
-              placeholder={t(`event.namePlaceholder_${form.kind}`)}
-              value={form.title}
-              onChange={set('title')}
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
+          {/* When and where — the two days share a row even on a phone */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <div className="space-y-1.5">
               <Label htmlFor="ev_start">{t('event.startDate')}</Label>
               <DatePicker id="ev_start" required clearable={false} value={form.start_date} onChange={pickStart} />
@@ -212,23 +259,15 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
               <Label htmlFor="ev_end">{t('event.endDate')}</Label>
               <DatePicker id="ev_end" required clearable={false} value={form.end_date} onChange={set('end_date')} />
             </div>
-            <div className="space-y-1.5">
+            <div className="col-span-2 space-y-1.5 sm:col-span-1">
               <Label htmlFor="ev_place">{t('session.place')}</Label>
               <Input id="ev_place" maxLength={200} autoComplete="off" value={form.place} onChange={set('place')} />
             </div>
-            {canFees && (
-              <div className="space-y-1.5">
-                <Label htmlFor="ev_fee">{t('event.fee')}</Label>
-                <AmountInput
-                  id="ev_fee"
-                  placeholder={t('event.free')}
-                  value={form.fee}
-                  onChange={set('fee')}
-                />
-                <p className="text-xs text-muted-foreground">{t('event.feeHint')}</p>
-              </div>
-            )}
-            <div className="space-y-1.5 sm:col-span-2">
+          </div>
+
+          {/* Who leads it, and what it costs */}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className={cn('space-y-1.5', canFees ? 'sm:col-span-2' : 'sm:col-span-3')}>
               <Label htmlFor="ev_leader">{chiefLabel(t, form.kind, formSection)}</Label>
               <SearchSelect
                 id="ev_leader"
@@ -242,55 +281,81 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
                 ariaLabel={chiefLabel(t, form.kind, formSection)}
               />
             </div>
+            {canFees && (
+              <div className="space-y-1.5">
+                <Label htmlFor="ev_fee">{t('event.fee')}</Label>
+                <AmountInput
+                  id="ev_fee"
+                  placeholder={t('event.free')}
+                  value={form.fee}
+                  onChange={set('fee')}
+                />
+                <p className="text-xs text-muted-foreground">{t('event.feeHint')}</p>
+              </div>
+            )}
           </div>
 
+          {/* Who may take part: the فرق, then the طلائع of those split into some */}
           {sectionBranches.length > 0 && (
-            <div className="space-y-1.5">
-              <Label>{t('event.branches')}</Label>
-              <div className="flex flex-wrap gap-2" role="group" aria-label={t('event.branches')}>
-                {sectionBranches.map((b) => {
-                  const on = form.branch_ids.includes(b.id);
-                  return (
-                    <button
-                      key={b.id}
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => toggleBranch(b.id)}
-                      className={cn(
-                        'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
-                        on
-                          ? 'border-primary bg-primary/10 font-medium text-primary'
-                          : 'border-input bg-card text-muted-foreground hover:bg-accent'
-                      )}
-                    >
-                      <IconSwap
-                        on={on}
-                        onIcon={<IconCheck className="h-3.5 w-3.5" />}
-                        className="h-3.5 w-3.5"
-                        collapse
-                      />
+            <div className="space-y-4 border-t border-border pt-5">
+              <div className="space-y-1.5">
+                <Label>{t('event.branches')}</Label>
+                <div className="flex flex-wrap gap-2" role="group" aria-label={t('event.branches')}>
+                  {sectionBranches.map((b) => (
+                    <ToggleChip key={b.id} on={form.branch_ids.includes(b.id)} onClick={() => toggleBranch(b.id)}>
                       {branchName(b, i18n.language)}
-                    </button>
-                  );
-                })}
+                    </ToggleChip>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {form.branch_ids.length ? t('event.branchesHint') : t('event.wholeGroupHint')}
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {form.branch_ids.length ? t('event.branchesHint') : t('event.wholeGroupHint')}
-              </p>
+
+              {/* الطلائع: تظهر لكل فرقة مختارة قُسِّمت إليها. لا اختيار = الفرقة كاملةً. */}
+              {groupedBranches.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label>{t('event.groups')}</Label>
+                  <div className="space-y-2">
+                    {groupedBranches.map((b) => (
+                      <div key={b.id} className="flex flex-wrap items-center gap-2">
+                        {groupedBranches.length > 1 && (
+                          <span className="text-xs text-muted-foreground">{branchName(b, i18n.language)}</span>
+                        )}
+                        <div
+                          className="flex flex-wrap gap-2"
+                          role="group"
+                          aria-label={`${t('event.groups')} — ${branchName(b, i18n.language)}`}
+                        >
+                          {b.groups.map((g) => (
+                            <ToggleChip key={g.id} on={form.group_ids.includes(g.id)} onClick={() => toggleGroup(g.id)}>
+                              {g.name}
+                              <span className="text-xs tabular-nums opacity-70">{g.member_count}</span>
+                            </ToggleChip>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t('event.groupsHint')}</p>
+                </div>
+              )}
             </div>
           )}
 
-          <div className="space-y-1.5">
+          {/* Empty, the plan keeps the page's direction: «auto» on nothing reads as LTR
+              and set the Arabic hint against the left edge */}
+          <div className="space-y-1.5 border-t border-border pt-5">
             <Label htmlFor="ev_plan">{t('event.plan')}</Label>
             <Textarea
               id="ev_plan"
-              dir="auto"
-              rows={5}
+              dir={form.plan ? 'auto' : undefined}
+              rows={4}
               maxLength={10000}
+              placeholder={t('event.planHint')}
               value={form.plan}
               onChange={set('plan')}
             />
-            <p className="text-xs text-muted-foreground">{t('event.planHint')}</p>
           </div>
         </form>
       )}

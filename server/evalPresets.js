@@ -174,6 +174,172 @@ const EVAL_PRESETS = [
       text('ملاحظات على المكان', 'Remarques sur le lieu'),
     ],
   },
+
+  // ----- المخيمات و الدورات (target: 'event') -----
+  // يقيّمها قائد المخيم أو الدورة، و هيئته القيادية، و القادة المشاركون فيها. «المتدرّبون»
+  // هنا أيضًا «المشاركون»، و «إدارة التدريب» «قيادة الدورة» كما في دورات قادة الجماعات.
+  {
+    // «ما قبل عملية التخييم، أثناء التخييم، بعد التخييم» و شروط اختيار المكان، مع شروط
+    // البرنامج من «مبادئ إقامة مخيّم كشفيّ» (eid 6312)
+    key: 'camp',
+    target: 'event',
+    name_ar: 'تقييم المخيم',
+    name_fr: 'Évaluation du camp',
+    source: { title: 'المخيم الكشفي', url: `${SOURCE}?eid=3031&cid=19` },
+    items: [
+      axis('قبل المخيم', 'Avant le camp'),
+      score('أُعدّ البرنامج مسبقًا ووافقت عليه القيادة', "Le programme a été préparé à l'avance et approuvé par la direction"),
+      score('اختير المكان واستُكشف ميدانيًا قبل المخيم', 'Le terrain a été choisi et reconnu avant le camp'),
+      score(
+        'بُلِّغ المشاركون البرنامج والأهداف مسبقًا، وأُخذ إذن الأهل خطّيًا',
+        "Programme et objectifs annoncés à l'avance, autorisation écrite des parents"
+      ),
+      score('وُزِّعت المهام على القادة، وعرف كلٌّ منهم واجباته', 'Les tâches ont été réparties, chaque chef savait son rôle'),
+      score('أُعدّت الأدوات والتجهيزات اللازمة', 'Le matériel nécessaire était prêt'),
+      axis('موقع المخيم', 'Le terrain'),
+      score('تتوفّر فيه المياه الصالحة للشرب', "L'eau potable y était disponible"),
+      score('بعيد عن المساكن والمستنقعات والوحل', 'Il était loin des habitations, des marécages et de la boue'),
+      score('الطريق إليه سهلة لإيصال المؤن', "L'accès était facile pour le ravitaillement"),
+      axis('البرنامج', 'Programme'),
+      score('لبّى احتياجات المشاركين وفق خصائص نموّهم', 'Il répondait aux besoins des participants selon leur âge'),
+      score(
+        'جذّاب ومتوازن: كشفي ورياضي وفنّي وثقافي وديني',
+        'Il était attrayant et équilibré : scout, sport, art, culture, religion'
+      ),
+      score('نُفِّذ البرنامج اليومي كما أُعدّ، وعُدِّل بمرونة عند الحاجة', 'Le programme du jour a été suivi, et ajusté au besoin'),
+      score('أُدِّيت الواجبات الدينية في مواعيدها', "Les devoirs religieux ont été accomplis à l'heure"),
+      axis('الحياة في المخيم', 'Vie de camp'),
+      score('وُزِّع العمل على أفراد الطلائع: جلي وخدمة وغير ذلك', 'Les corvées ont été réparties dans les sous-groupes'),
+      score('كان الطعام كافيًا ومتوازنًا ونظيفًا', 'Les repas étaient suffisants, équilibrés et propres'),
+      score('حوفظ على النظافة العامة وعلى الأرض والأشجار', 'Le camp et la nature ont été gardés propres'),
+      axis('بعد المخيم', 'Après le camp'),
+      score('نُظِّفت التجهيزات وحُزمت، ولم يُنسَ شيء منها', "Le matériel a été nettoyé et emballé, rien n'a été oublié"),
+      score('أُعيدت الأرض نظيفةً، بلا أثر يدلّ على المخيم', 'Le terrain a été rendu propre, sans laisser de trace'),
+      axis('أسئلة مفتوحة', 'Questions ouvertes'),
+      STRENGTHS,
+      WEAKNESSES,
+      SUGGESTIONS,
+    ],
+  },
+  {
+    // «واجبات المشارك في المخيم»، و هي أيضًا استمارة «تقييم الأداء السلوكي» في دورات قادة
+    // الجماعات (eid 8829): هنا للمشاركين جملةً، لا لكل واحد منهم
+    key: 'camp_rules',
+    target: 'event',
+    name_ar: 'التزام المشاركين بأنظمة المخيم',
+    name_fr: 'Respect des règles du camp',
+    source: { title: 'واجبات المشارك في المخيم', url: `${SOURCE}?eid=6313&cid=18` },
+    items: [
+      score('تهيّأوا للصلاة قبل الأذان، وشاركوا في البرنامج العبادي', "Prêts pour la prière avant l'appel, présents au programme religieux"),
+      score('تقيّدوا بأوقات المخيم الرسمية', 'Ont respecté les horaires du camp'),
+      score(
+        'حافظوا على نظافتهم الشخصية ونظافة الخيمة والتجهيزات التي تسلّموها',
+        'Ont gardé propres leur personne, leur tente et le matériel reçu'
+      ),
+      score('حرصوا على العمل الجماعي: ترتيب وريادة ونشاطات', 'Ont joué le jeu collectif : rangement, constructions, activités'),
+      score(
+        'رجعوا إلى القيادة عبر العريف عند أيّ خلاف، ولم يتصرّفوا بشكل فردي',
+        "En cas de désaccord, sont passés par leur responsable au lieu d'agir seuls"
+      ),
+      score('ارتدوا الزيّ الكشفي الكامل عند التفتيش وفي ساحة العلم', "Portaient l'uniforme complet à l'inspection et aux couleurs"),
+      score('لبّوا الصافرات فورًا، بلا تباطؤ', 'Ont répondu aux coups de sifflet sans traîner'),
+      score('شاركوا في جميع فقرات البرنامج بفعالية وحماس', 'Ont pris part à tout le programme avec entrain'),
+      score('أبدوا الاحترام والطاعة لقيادة المخيم', 'Ont respecté la direction du camp et suivi ses consignes'),
+      text('عناصر يحتاجون إلى متابعة', 'Membres à suivre'),
+    ],
+  },
+  {
+    // الاستبيان نفسه، أسئلته مؤشرات بصيغة الغائب: يجيب عنه المشارك و المدرّب معًا
+    key: 'course',
+    target: 'event',
+    name_ar: 'رضا المشاركين عن الدورة',
+    name_fr: 'Satisfaction des participants à la formation',
+    source: { title: 'أسئلة استبيان لقياس مستوى الرضا لدى المتدربين', url: `${SOURCE}?eid=4255&cid=24` },
+    items: [
+      axis('التنظيم', 'Organisation'),
+      score('استقبلت قيادة الدورة المشاركين استقبالًا حسنًا', "L'équipe de la formation a bien accueilli les participants"),
+      score('حُضِّرت الدورة تحضيرًا جيّدًا', 'La formation était bien préparée'),
+      score('نُفِّذ البرنامج في مواعيده، بلا تأخير', 'Le programme a tenu ses horaires, sans retard'),
+      score('أُجيب عن الاستفسارات خلال الدورة', 'Les questions posées pendant la formation ont reçu une réponse'),
+      score('أحسنت قيادة الدورة التعامل مع المشاركين', "L'équipe de la formation a bien traité les participants"),
+      axis('هيئة التدريب', 'Équipe de formation'),
+      score('المدرّبون أكفاء', 'Les formateurs étaient compétents'),
+      score('المظهر العام لهيئة التدريب لائق', "La tenue de l'équipe de formation était soignée"),
+      axis('المكان والكلفة', 'Lieu et coût'),
+      score('موقع الدورة مناسب', 'Le lieu de la formation convenait'),
+      score('كلفة الدورة مناسبة للمستوى المالي للمشاركين', 'Le coût était adapté aux moyens des participants'),
+      axis('أسئلة مفتوحة', 'Questions ouvertes'),
+      text('هل تشارك في دورة أخرى؟ إن لا، فلماذا؟', 'Feriez-vous une autre formation ? Sinon, pourquoi ?'),
+      STRENGTHS,
+      WEAKNESSES,
+      SUGGESTIONS,
+    ],
+  },
+  {
+    // المجالات الأربعة: البرنامج، تقدّم المشاركين، أداء المدرّبين، أثر التدريب — مع «تقويم
+    // التدريب» (eid 1131) و «تقييم المدرب» (eid 4277). لقيادة الدورة بعد انتهائها.
+    key: 'training_program',
+    target: 'event',
+    name_ar: 'تقويم البرنامج التدريبي',
+    name_fr: 'Bilan du programme de formation',
+    source: { title: 'مجالات تقويم البرنامج التدريبي', url: `${SOURCE}?eid=1139&cid=24` },
+    items: [
+      axis('البرنامج التدريبي', 'Programme'),
+      score('أهداف الدورة واضحة ومحدّدة', 'Les objectifs étaient clairs et précis'),
+      score('البرنامج يلبّي حاجات المشاركين', 'Le programme répondait aux besoins des participants'),
+      score('المحتوى والمواد التدريبية تخدم الأهداف', 'Le contenu et les supports servaient les objectifs'),
+      score('سار البرنامج بحسب الخطوات المرسومة، وعُدِّل عند الحاجة', 'Le programme a suivi son plan, ajusté quand il le fallait'),
+      score('تحقّقت أهداف الدورة', 'Les objectifs de la formation ont été atteints'),
+      axis('تقدّم المشاركين', 'Progrès des participants'),
+      score('تفاعل المشاركون مع التدريب والأنشطة', 'Les participants se sont investis dans le travail et les activités'),
+      score('تعلّم المشاركون من البرنامج', 'Les participants ont appris de la formation'),
+      score('سعد المشاركون بالبرنامج', 'Les participants ont apprécié la formation'),
+      axis('أداء المدرّبين', 'Formateurs'),
+      score('أتقن المدرّبون الكفايات التدريبية', 'Les formateurs maîtrisaient leur rôle'),
+      score('بسّطوا المعلومات وعرضوها بشكل شيّق', 'Ils ont présenté les contenus simplement et de façon vivante'),
+      score('أداروا الحوار والمناقشات، وأنصتوا للمشاركين', 'Ils ont animé les échanges et écouté les participants'),
+      score('كانوا قدوة في مظهرهم وسلوكهم', "Ils ont donné l'exemple par leur tenue et leur conduite"),
+      axis('أثر الدورة', 'Impact'),
+      score('عدّل المشاركون سلوكهم طبقًا لما تعلّموه', "Les participants ont changé leur pratique selon ce qu'ils ont appris"),
+      score('يظهر أثر الدورة في عمل المشاركين في فرقهم', "L'effet de la formation se voit dans leur travail en unité"),
+      axis('أسئلة مفتوحة', 'Questions ouvertes'),
+      STRENGTHS,
+      WEAKNESSES,
+      // «تسجيل التوصيات ونتائج التقويم حتى يمكن الاستعانة بها في الدورات التالية»
+      text('توصيات للدورات المقبلة', 'Recommandations pour les prochaines formations'),
+    ],
+  },
+  {
+    key: 'training_climate',
+    target: 'event',
+    name_ar: 'البيئة التدريبية المعنوية',
+    name_fr: 'Climat de la formation',
+    source: { title: 'عناصر تقييم البيئة التدريبية المعنوية ومؤشراته', url: `${SOURCE}?eid=4286&cid=24` },
+    items: [
+      axis('إدارة الدورة', 'Direction de la formation'),
+      score('تستعمل قيادة الدورة السلطة عند الضرورة فقط', "L'équipe n'use de son autorité qu'en cas de besoin"),
+      score('تُشرك المشاركين في اتخاذ القرارات', 'Elle associe les participants aux décisions'),
+      axis('الانضباط', 'Discipline'),
+      score('قواعد السلوك واضحة ومتّفق عليها', 'Les règles de conduite étaient claires et convenues'),
+      score('شارك المشاركون في وضعها', 'Les participants ont pris part à leur rédaction'),
+      score('التزموا بها عن قناعة', 'Ils les ont respectées par conviction'),
+      axis('قيادة الدورة والمشاركون', "L'équipe et les participants"),
+      score('تفهم قيادة الدورة حاجات المشاركين وميولهم', "L'équipe comprenait les besoins et les envies des participants"),
+      score('ساد الاحترام المتبادل', 'Le respect était mutuel'),
+      score('التواصل بينهما فعّال', 'La communication passait bien'),
+      axis('المدرّبون والمشاركون', 'Les formateurs et les participants'),
+      score('انفتح المدرّبون على الأفكار وتقبّلوا الآخر', 'Les formateurs étaient ouverts aux idées des autres'),
+      score('عدلوا في التعامل مع المشاركين', 'Ils ont traité les participants avec équité'),
+      axis('المشاركون فيما بينهم', 'Entre participants'),
+      score('تفاعلوا ضمن الجماعات', 'Ils ont travaillé ensemble dans les groupes'),
+      score('بادروا إلى خدمة الآخرين', "Ils ont pris l'initiative d'aider les autres"),
+      score('تعاونوا في الأمور الخدماتية العامة', 'Ils ont coopéré aux services communs'),
+      axis('التحفيز', 'Motivation'),
+      score('نظام التحفيز معلوم لدى المشاركين', "Le système d'encouragements et de sanctions était connu"),
+      score('طُبِّق باستمرار', 'Il a été appliqué de façon constante'),
+      SUGGESTIONS,
+    ],
+  },
 ];
 
 // النموذج الذي تُفتح به الميزة: يُنسخ مرّة واحدة عند إنشاء الجداول، لأنشطة الفرق و القادة
@@ -181,4 +347,8 @@ const EVAL_PRESETS = [
 const DEFAULT_EVAL_PRESET = 'success';
 const DEFAULT_EVAL_KINDS = ['activity', 'leaders', 'group'];
 
-module.exports = { EVAL_PRESETS, DEFAULT_EVAL_PRESET, DEFAULT_EVAL_KINDS };
+// و للمخيمات و الدورات، يوم تُنشأ جداول تقييمها: استمارة لكل نوع، تُنسخ مرّة واحدة. الرحلة
+// و «غير ذلك» بلا استمارة حتى يختار لها المسؤول واحدة.
+const DEFAULT_EVENT_EVAL_PRESETS = { event_camp: 'camp', event_course: 'course' };
+
+module.exports = { EVAL_PRESETS, DEFAULT_EVAL_PRESET, DEFAULT_EVAL_KINDS, DEFAULT_EVENT_EVAL_PRESETS };

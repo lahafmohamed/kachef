@@ -36,19 +36,60 @@ function verifyPassword(password, stored) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Granular permission catalog, grouped by page. Dashboard is always allowed;
-// التشكيلة / settings / admin stay admin-only regardless.
+// Granular permission catalog, grouped by page, as fine as the actions themselves: each
+// key opens one thing. Dashboard is always allowed; accounts and their rights, the فرق
+// themselves, the قادة files and accounts, التشكيلة and the settings stay admin-only.
+// The twin catalog, with its wording, is PERM_GROUPS in client/src/pages/Admin.jsx.
 const PERM_GROUPS = {
   members: [
     'members.read',
+    // الهواتف و العناوين: معطيات شخصية
+    'members.contact',
     'members.create',
     'members.edit',
-    'members.delete',
-    'members.contact',
     // زيادة أو إلغاء مطلب لأي عنصر بشكل يدوي
     'members.matalib',
+    'members.delete',
+    // الاشتراك الشهري للعناصر (member_dues): رؤيته، ثم قبضه
+    'members.dues.read',
+    'members.dues.record',
   ],
-  sessions: ['sessions.read', 'sessions.create', 'sessions.attendance', 'sessions.read.fees'],
+  sessions: [
+    'sessions.read',
+    'sessions.create',
+    'sessions.edit',
+    // الحضور، و القادة (المسؤول و المساعدون)، و الضيوف، و أعداد النشاط العام
+    'sessions.attendance',
+    'sessions.files',
+    // أجرة النشاط و ما دُفع منها، و مصاريفه و تبرعاته
+    'sessions.read.fees',
+    'sessions.money',
+    'sessions.delete',
+  ],
+  prep: ['prep.read', 'prep.manage', 'prep.delete'],
+  events: [
+    'events.read',
+    // المخيم نفسه، برنامجه، هيئته القيادية، مشاركوه
+    'events.manage',
+    // الحضور في جلساته، و صوره و ملفاته
+    'events.attendance',
+    'events.read.fees',
+    // قبض اشتراكات المشاركين
+    'events.payments',
+    // مصاريفه و تبرعاته
+    'events.expenses',
+    'events.delete',
+  ],
+  meetings: [
+    'meetings.read',
+    // المحضر كله: الحضور، جدول الأعمال، المقرّرات
+    'meetings.manage',
+    // متابعة المقرّرات وحدها: نُفِّذ، أُلغي، قيد التنفيذ
+    'meetings.followup',
+    'meetings.delete',
+  ],
+  // نتائج تقييم الأنشطة و المخيمات. التقييم نفسه لمن قاد النشاط أو أخذ في المخيم دورًا.
+  evaluations: ['evaluations.read', 'evaluations.details'],
   // Reading الفرق, plus writing الخطة السنوية of a فرقة and its مجموعات.
   // branches.groups also moves عناصر between مجموعات: تقسيم الفرقة عمل قائدها،
   // و هو تنظيم داخلي لا يمسّ ملف العنصر، فلا يُشترط له members.edit.
@@ -56,13 +97,13 @@ const PERM_GROUPS = {
   promotions: ['promotions.read', 'promotions.apply'],
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
-  leaders: ['leaders.read', 'leaders.progress.self', 'leaders.progress.manage'],
+  leaders: ['leaders.read', 'leaders.contact', 'leaders.progress.self', 'leaders.progress.manage'],
   // اشتراك القادة: يُمنح يدويًا لأشخاص بعينهم. مجموعة مستقلة كي لا يرثه من كانت
   // له صفحة القادة كاملة في صيغة الصلاحيات القديمة.
-  dues: ['leaders.dues'],
-  // الصندوق: رصيد الفوج و حركاته. يُمنح يدويًا لأمين المال — read يرى، manage يكتب
-  // المصاريف و التبرعات و رصيد الافتتاح.
-  treasury: ['treasury.read', 'treasury.manage'],
+  dues: ['leaders.dues', 'leaders.dues.record'],
+  // الصندوق: رصيد الفوج و حركاته. يُمنح يدويًا لأمين المال، عملًا عملًا: المصاريف و
+  // المداخيل، التحويلات (بين الصناديق، و إلى المخيمات)، فتح الصناديق و عدّها.
+  treasury: ['treasury.read', 'treasury.entries', 'treasury.transfers', 'treasury.counts'],
 };
 const ALL_PERMS = Object.values(PERM_GROUPS).flat();
 
@@ -75,17 +116,64 @@ const PERM_DEPENDENCIES = {
   'members.delete': ['members.read'],
   'members.contact': ['members.read'],
   'members.matalib': ['members.read'],
+  'members.dues.read': ['members.read'],
+  'members.dues.record': ['members.dues.read'],
   'sessions.create': ['sessions.read'],
+  'sessions.edit': ['sessions.read'],
   'sessions.attendance': ['sessions.read'],
+  'sessions.files': ['sessions.read'],
   'sessions.read.fees': ['sessions.read'],
+  'sessions.money': ['sessions.read.fees'],
+  'sessions.delete': ['sessions.read'],
+  'prep.manage': ['prep.read'],
+  'prep.delete': ['prep.read'],
+  'events.manage': ['events.read'],
+  'events.attendance': ['events.read'],
+  'events.read.fees': ['events.read'],
+  'events.payments': ['events.read.fees'],
+  'events.expenses': ['events.read.fees'],
+  'events.delete': ['events.read'],
+  'meetings.manage': ['meetings.read'],
+  'meetings.followup': ['meetings.read'],
+  'meetings.delete': ['meetings.read'],
+  'evaluations.details': ['evaluations.read'],
   'branches.plan': ['branches.read'],
   'branches.groups': ['branches.read'],
   'promotions.apply': ['promotions.read', 'members.read'],
+  'leaders.contact': ['leaders.read'],
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
   'leaders.dues': ['leaders.read'],
-  'treasury.manage': ['treasury.read'],
+  'leaders.dues.record': ['leaders.dues'],
+  'treasury.entries': ['treasury.read'],
+  'treasury.transfers': ['treasury.read'],
+  'treasury.counts': ['treasury.read'],
 };
+
+// Keys of an older catalog, read as what they opened then. A stored list is rewritten
+// once (migrateStoredPerms) — these only catch a list sent by an old client.
+const PERM_ALIASES = {
+  'leaders.progress': ['leaders.progress.self'],
+  'treasury.manage': ['treasury.entries', 'treasury.transfers', 'treasury.counts'],
+};
+
+// The catalog of 2026-10-07, before its keys were split (2026-10-08): what each old key
+// also opened, so an account keeps everything it could do. Applied once to every stored
+// list (migrateStoredPerms). Rights that were the admin's alone (deleting a نشاط, a
+// مخيم, a محضر, a بطاقة; the named detail of the evaluations) are not handed out.
+const PERM_SPLIT_2026_10 = [
+  // المخيمات، الاجتماعات، بطاقات التحضير و التقييم كانت تُقرأ بصلاحية الأنشطة
+  [['sessions.read'], ['prep.read', 'events.read', 'meetings.read', 'evaluations.read']],
+  [['sessions.create'], ['sessions.edit', 'prep.manage', 'events.manage', 'meetings.manage', 'meetings.followup']],
+  [['sessions.attendance'], ['sessions.files', 'events.attendance']],
+  [['sessions.read.fees'], ['events.read.fees', 'members.dues.read']],
+  [['sessions.read.fees', 'sessions.attendance'], ['sessions.money', 'events.payments', 'members.dues.record']],
+  [['sessions.read.fees', 'sessions.create'], ['events.payments', 'events.expenses']],
+  [['treasury.read'], ['members.dues.read']],
+  [['treasury.manage'], ['sessions.money', 'members.dues.record']],
+  [['leaders.read'], ['leaders.contact']],
+  [['leaders.dues'], ['leaders.dues.record']],
+];
 
 function expandPerms(keys) {
   const out = new Set(keys);
@@ -102,7 +190,15 @@ function expandPerms(keys) {
   return [...out];
 }
 
-// What the old "view" level of a page used to show (it displayed phones and fees)
+// The pages of the first catalogs — a list of page names, then {page: level} — and the
+// keys each one meant then: the whole page, or what its "view" level showed (phones and fees)
+const LEGACY_PAGES = {
+  members: ['members.read', 'members.create', 'members.edit', 'members.delete', 'members.contact', 'members.matalib'],
+  sessions: ['sessions.read', 'sessions.create', 'sessions.attendance', 'sessions.read.fees'],
+  branches: ['branches.read', 'branches.plan', 'branches.groups'],
+  promotions: ['promotions.read', 'promotions.apply'],
+  leaders: ['leaders.read', 'leaders.progress.self', 'leaders.progress.manage'],
+};
 const LEGACY_VIEW = {
   members: ['members.read', 'members.contact'],
   sessions: ['sessions.read', 'sessions.read.fees'],
@@ -111,26 +207,71 @@ const LEGACY_VIEW = {
   leaders: ['leaders.read'],
 };
 
-// perms went array-of-pages → {page: level} → array of granular keys.
-// Whatever shape is stored, normalize to the granular array.
-function normalizePerms(raw) {
-  if (!raw) return null;
+// Every key a stored value names, whatever its shape, old keys included as they are
+function storedPermKeys(raw) {
   const out = new Set();
   if (Array.isArray(raw)) {
     for (const k of raw) {
-      if (PERM_GROUPS[k]) PERM_GROUPS[k].forEach((p) => out.add(p)); // legacy page name = full page
-      else if (k === 'leaders.progress') out.add('leaders.progress.self');
-      else if (ALL_PERMS.includes(k)) out.add(k);
+      if (LEGACY_PAGES[k]) LEGACY_PAGES[k].forEach((p) => out.add(p));
+      else if (typeof k === 'string') out.add(k);
     }
-  } else if (typeof raw === 'object') {
+  } else if (raw && typeof raw === 'object') {
     for (const [page, level] of Object.entries(raw)) {
-      if (!PERM_GROUPS[page]) continue;
-      if (level === 'edit') PERM_GROUPS[page].forEach((p) => out.add(p));
-      else if (level === 'view') LEGACY_VIEW[page].forEach((p) => out.add(p));
+      if (level === 'edit' && LEGACY_PAGES[page]) LEGACY_PAGES[page].forEach((p) => out.add(p));
+      else if (level === 'view' && LEGACY_VIEW[page]) LEGACY_VIEW[page].forEach((p) => out.add(p));
     }
   }
+  return out;
+}
+
+// Whatever shape is stored or sent, the granular array of today's keys
+function normalizePerms(raw) {
+  if (!raw) return null;
+  const out = new Set();
+  for (const k of storedPermKeys(raw))
+    for (const key of PERM_ALIASES[k] || [k]) if (ALL_PERMS.includes(key)) out.add(key);
   return expandPerms([...out]);
 }
+
+// A list stored before the split of 2026-10-08, with every right it gave kept
+function splitStoredPerms(raw) {
+  const old = storedPermKeys(raw);
+  for (const [needs, gives] of PERM_SPLIT_2026_10)
+    if (needs.every((k) => old.has(k))) gives.forEach((k) => old.add(k));
+  return normalizePerms([...old]);
+}
+
+// Rights that were the admin's alone until the split. «Every right» (perms NULL) now
+// includes them, so an account that had every right keeps exactly what it had.
+const ADMIN_ONLY_BEFORE_SPLIT = ['sessions.delete', 'prep.delete', 'events.delete', 'meetings.delete', 'evaluations.details'];
+
+// Once (user_version 4, after the 3 of db.js), every account's list rewritten in today's
+// keys, keeping all it could do the day before — and nothing more.
+function migrateStoredPerms() {
+  if (db.pragma('user_version', { simple: true }) >= 4) return;
+  const update = db.prepare('UPDATE users SET perms = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const u of db.prepare("SELECT id, perms FROM users WHERE role != 'admin'").all()) {
+      if (u.perms === null) {
+        update.run(JSON.stringify(ALL_PERMS.filter((k) => !ADMIN_ONLY_BEFORE_SPLIT.includes(k))), u.id);
+        continue;
+      }
+      let raw;
+      try {
+        raw = JSON.parse(u.perms);
+      } catch {
+        continue;
+      }
+      // JSON null: every right, as SQL NULL
+      update.run(
+        JSON.stringify(raw === null ? ALL_PERMS.filter((k) => !ADMIN_ONLY_BEFORE_SPLIT.includes(k)) : splitStoredPerms(raw)),
+        u.id
+      );
+    }
+    db.pragma('user_version = 4');
+  })();
+}
+migrateStoredPerms();
 
 // ---------- Usernames ----------
 // A login name is typed on a phone keyboard, dictated over the phone and matched
@@ -270,9 +411,12 @@ const requireAnyPerm = (...keys) => (req, res, next) =>
 
 const auditInsert = db.prepare(
   `INSERT INTO audit_events
-    (actor_user_id, actor, action, entity_type, entity_id, before_json, after_json)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`
+    (actor_user_id, actor, action, entity_type, entity_id, before_json, after_json, session_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 );
+
+// Rows written inside a نشاط carry its session_id: their lines belong to its history too
+const AUDIT_IN_SESSION = new Set(['treasury_entry', 'member_due', 'session_evaluation']);
 
 function auditSnapshot(value) {
   if (value === undefined || value === null) return null;
@@ -283,6 +427,12 @@ function auditSnapshot(value) {
 }
 
 function auditEvent(req, action, entityType, entityId, before = null, after = null) {
+  const sessionId =
+    entityType === 'session'
+      ? Number(entityId)
+      : AUDIT_IN_SESSION.has(entityType)
+        ? ((after ?? before)?.session_id ?? null)
+        : null;
   auditInsert.run(
     req.user?.id || null,
     req.user?.display_name || req.user?.username || 'system',
@@ -290,7 +440,8 @@ function auditEvent(req, action, entityType, entityId, before = null, after = nu
     entityType,
     entityId === undefined || entityId === null ? null : String(entityId),
     auditSnapshot(before),
-    auditSnapshot(after)
+    auditSnapshot(after),
+    sessionId
   );
 }
 
@@ -300,6 +451,15 @@ function stripContact(req, m) {
   if (hasPerm(req, 'members.contact')) return m;
   const out = { ...m };
   for (const f of CONTACT_FIELDS) if (f in out) out[f] = null;
+  return out;
+}
+
+// The same for a قائد's own, with leaders.contact
+const LEADER_CONTACT_FIELDS = ['phone', 'address_abidjan', 'address_lebanon'];
+function stripLeaderContact(req, l) {
+  if (!l || hasPerm(req, 'leaders.contact')) return l;
+  const out = { ...l };
+  for (const f of LEADER_CONTACT_FIELDS) if (f in out) out[f] = null;
   return out;
 }
 
@@ -738,7 +898,10 @@ function branchesFitSection(branchesJson, section) {
 // Accepts every historical shape; stores the granular key array.
 function parsePermList(v) {
   if (v === null || v === undefined || v === '') return null;
-  if (Array.isArray(v) && !v.every((k) => typeof k === 'string' && (ALL_PERMS.includes(k) || PERM_GROUPS[k])))
+  if (
+    Array.isArray(v) &&
+    !v.every((k) => typeof k === 'string' && (ALL_PERMS.includes(k) || PERM_ALIASES[k] || LEGACY_PAGES[k]))
+  )
     return undefined;
   if (!Array.isArray(v) && typeof v !== 'object') return undefined;
   const keys = normalizePerms(v);
@@ -1489,7 +1652,7 @@ app.get('/api/branches/:id/plan', requirePerm('branches.read'), (req, res) => {
 
 // بنود الخطة المتاحة عند إنشاء نشاط: ما لم يُنفَّذ بعد، مرتّبة بالتاريخ. القائد يختار
 // البند فيُملأ الاسم و التاريخ تلقائيًا و يُربط النشاط بالخطة.
-app.get('/api/branches/:id/plan/options', requirePerm('sessions.create'), (req, res) => {
+app.get('/api/branches/:id/plan/options', requireAnyPerm('sessions.create', 'sessions.edit'), (req, res) => {
   const branch = db.prepare('SELECT id FROM branches WHERE id = ?').get(req.params.id);
   if (!branch) return res.status(404).json({ error: 'branch not found' });
   if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
@@ -2438,6 +2601,7 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
     );
   const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'member', created.id, null, created);
+  notifications.memberCreated(req, created);
   res.status(201).json(created);
 });
 
@@ -2833,21 +2997,32 @@ const ACCOUNT_PRESETS = {
   // بلا حذف عناصر، بلا تثبيت ترقيات، بلا أرقام مالية — هذه للأدمن.
   branch: [
     'members.read', 'members.create', 'members.edit', 'members.contact', 'members.matalib',
-    'sessions.read', 'sessions.create', 'sessions.attendance',
+    'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
+    'prep.read', 'prep.manage',
+    'events.read', 'events.manage', 'events.attendance',
+    'meetings.read', 'meetings.manage', 'meetings.followup',
+    'evaluations.read',
     'branches.read', 'branches.plan', 'branches.groups',
     'promotions.read',
-    'leaders.read', 'leaders.progress.self',
+    'leaders.read', 'leaders.contact', 'leaders.progress.self',
   ],
   // أمين: يرى الفوج كله و يسجّل أنشطة و حضورًا، بلا لمس ملفات العناصر
   amana: [
     'members.read',
-    'sessions.read', 'sessions.create', 'sessions.attendance',
+    'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
+    'prep.read', 'prep.manage',
+    'events.read', 'events.manage', 'events.attendance',
+    'meetings.read', 'meetings.manage', 'meetings.followup',
+    'evaluations.read',
     'branches.read',
     'promotions.read',
-    'leaders.read', 'leaders.progress.self',
+    'leaders.read', 'leaders.contact', 'leaders.progress.self',
   ],
   // قراءة فقط — اطّلاع بلا أي كتابة
-  readonly: ['members.read', 'sessions.read', 'branches.read', 'promotions.read', 'leaders.read'],
+  readonly: [
+    'members.read', 'sessions.read', 'prep.read', 'events.read', 'meetings.read', 'evaluations.read',
+    'branches.read', 'promotions.read', 'leaders.read', 'leaders.contact',
+  ],
   // كل الصلاحيات و كل الفرق، من غير إدارة الحسابات (ليس أدمن)
   full: null,
 };
@@ -2938,7 +3113,7 @@ app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) =>
 // opened on both أقسام offer only the قادة of the نشاط's own قسم.
 app.get(
   '/api/leader-options',
-  requireAnyPerm('sessions.read', 'sessions.create', 'sessions.attendance'),
+  requireAnyPerm('sessions.read', 'prep.read', 'events.read', 'meetings.read'),
   (req, res) => {
     res.json(
       db.prepare(
@@ -2988,9 +3163,10 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
   res.json(
     rows.map((l) => ({
       ...publicLeader(
-        req.user.role === 'admin'
-          ? l
-          : { ...l, account_user_id: undefined, account_username: undefined }
+        stripLeaderContact(
+          req,
+          req.user.role === 'admin' ? l : { ...l, account_user_id: undefined, account_username: undefined }
+        )
       ),
       roles: roles[l.id] || [],
       year,
@@ -3051,13 +3227,14 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
   const years = cardYears();
   const selectedYear = years.includes(normYear(req.query.year)) ? normYear(req.query.year) : years[0];
   res.json({
-    ...publicLeader(l),
+    ...publicLeader(stripLeaderContact(req, l)),
     year,
     current_roles: assignments.filter((a) => a.year === year),
     assignments,
     sessions: activities,
     visits,
-    prep_cards: prepCards,
+    // His بطاقات التحضير, for whoever reads the بطاقات
+    prep_cards: hasPerm(req, 'prep.read') ? prepCards : [],
     attendance,
     card_years: years,
     card: progressCard(l.id, selectedYear),
@@ -3180,7 +3357,7 @@ app.post('/api/leaders', requireAdmin, (req, res) => {
 // كل قائد يدفع قيمة ثابتة كل شهر، بالسنة الميلادية (كانون الثاني ← كانون الأول).
 // صفّ في leader_dues = شهر مدفوع؛ غيابه = غير مدفوع. الشهر يُستحقّ متى حلّ، ابتداءً
 // من DUES_START — ما قبله لا يُطالَب به أحد.
-// التسجيل لمن مُنح leaders.dues وحده؛ و كل قائد يرى اشتراكه هو من /api/me/dues.
+// الرؤية لمن مُنح leaders.dues، و التسجيل لمن مُنح leaders.dues.record؛ و كل قائد يرى اشتراكه هو من /api/me/dues.
 
 const LEADER_DUE_MONTHLY = 5000;
 const DUES_START = '2026-01';
@@ -3266,7 +3443,7 @@ function sendLeaderDues(req, res, leaderId) {
     leader_id: leaderId,
     paid: duesOfLeader(leaderId, yearMonths(year)),
     summary: duesSummary(leaderId),
-    can_edit: hasPerm(req, 'leaders.dues'),
+    can_edit: hasPerm(req, 'leaders.dues.record'),
   });
 }
 
@@ -3289,7 +3466,7 @@ app.get('/api/leaders/:id/dues', (req, res) => {
 });
 
 // paid: true يسجّل الشهر مدفوعًا بالقيمة الحالية، false يمحوه
-app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues'), (req, res) => {
+app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues.record'), (req, res) => {
   const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(req.params.id);
   if (!l || !leaderOk(req, l)) return res.status(404).json({ error: 'leader not found' });
   const month = req.params.month;
@@ -3327,9 +3504,8 @@ app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues'), (req, res) 
 const MEMBER_DUE_MONTHLY = 2000;
 const MEMBER_DUES_START = '2026-10';
 
-const canSeeMemberDues = (req) => hasPerm(req, 'sessions.read.fees') || hasPerm(req, 'treasury.read');
-const canWriteMemberDues = (req) =>
-  (hasPerm(req, 'sessions.attendance') && hasPerm(req, 'sessions.read.fees')) || hasPerm(req, 'treasury.manage');
+const canSeeMemberDues = (req) => hasPerm(req, 'members.dues.read');
+const canWriteMemberDues = (req) => hasPerm(req, 'members.dues.record');
 
 // '2026-12' -> '2027-01'
 const nextMonth = (month) => {
@@ -3992,6 +4168,8 @@ const notifications = require('./push')(app, {
     const p = publicUser(u);
     return p.role === 'admin' || !p.perms || p.perms.includes(key);
   },
+  // The next نشاط of a فرقة's annual plan from `today`, for the reminder of its بطاقة
+  nextPlanned: (branchId, today) => planFor(branchId, currentScoutYear()).items.find((i) => i.date >= today) || null,
 });
 
 // ---------- Sessions & attendance ----------
@@ -4171,7 +4349,8 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
             evalForm || evalCount
               ? {
                   count: evalCount,
-                  average: pending && req.user.role !== 'admin' ? null : round2(evalAvg),
+                  average:
+                    (pending && req.user.role !== 'admin') || !hasPerm(req, 'evaluations.read') ? null : round2(evalAvg),
                   pending,
                 }
               : null,
@@ -4316,8 +4495,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       .prepare(
         `INSERT INTO sessions
           (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind,
-           plan_item_id, section)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           plan_item_id, section, created_at, created_by, created_by_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`
       )
       .run(
         String(title).trim(),
@@ -4333,7 +4512,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         leadersCount,
         kind,
         planItemId,
-        section
+        section,
+        actorName(req),
+        req.user.id
       )
       .lastInsertRowid;
     if (leaderRow) insertAnimator.run(sessionId, leaderRow.id, 'main');
@@ -4385,6 +4566,11 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
     for (const name of guestNames) insertGuest.run(sessionId, name, req.user.display_name || req.user.username);
   })();
   const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+  auditEvent(req, 'create', 'session', sessionId, null, {
+    ...row,
+    branch_ids: branchIdsOfSession(sessionId),
+    group_ids: groupIdsOfSession(sessionId),
+  });
   notifyAdmins(req, 'session_create', row);
   notifications.sessionCreated(req, row);
   res.status(201).json({
@@ -4398,7 +4584,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
 // تعديل نشاط بعد إنشائه: تفاصيله وحدها — العنوان، اليوم و الساعة، المكان، الطبيعة،
 // الأجرة، القائد المسؤول، المطالب، عدد القادة. نوعه و فرقه و مجموعاته تبقى كما هي:
 // منها بُنيت لائحة الحضور، و تغييرها يمحو حضورًا مسجّلًا أو يخلط فرقًا لم تُدعَ.
-app.put('/api/sessions/:id', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/sessions/:id', requirePerm('sessions.edit'), (req, res) => {
   const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(intOr(req.params.id));
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
@@ -4475,15 +4661,23 @@ app.put('/api/sessions/:id', requirePerm('sessions.create'), (req, res) => {
 
 // حذف نشاط — أدمن فقط. الحضور و المنشّطون و روابط الخطة تسقط معه (ON DELETE
 // CASCADE)، و إشعاراته تحتفظ بعنوانه المنسوخ (SET NULL) فلا تنكسر.
-app.delete('/api/sessions/:id', requireAdmin, (req, res) => {
-  const s = db.prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.id);
+app.delete('/api/sessions/:id', requirePerm('sessions.delete'), (req, res) => {
+  const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
+  // Granted to a قائد, it reaches the أنشطة of his فرق only
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  const branchIds = branchIdsOfSession(s.id);
+  // Its قادة, read before their rows go with it: a نشاط still ahead is cancelled for them
+  const leaderIds = db.prepare('SELECT leader_id FROM session_leaders WHERE session_id = ?').all(s.id).map((r) => r.leader_id);
   db.transaction(() => {
     // بطاقة التحضير تبقى بعد نشاطها، مفكوكة الربط فقط. يدويًا كي لا يُعتمد على
     // ON DELETE SET NULL في عمود قد يكون أُضيف بـ ALTER.
     db.prepare('UPDATE prep_cards SET session_id = NULL WHERE session_id = ?').run(s.id);
     db.prepare('DELETE FROM sessions WHERE id = ?').run(s.id);
   })();
+  // Its history outlives it (no FK on audit_events.session_id): this is its last line
+  auditEvent(req, 'delete', 'session', s.id, { ...s, branch_ids: branchIds }, null);
+  notifications.sessionCancelled(req, s, branchIds, leaderIds);
   // صوره و ملفاته سقطت من الجدول مع النشاط: تبقى أن تُمحى من القرص
   fs.rm(ownerFilesDir('session', s.id), { recursive: true, force: true }, () => {});
   res.json({ ok: true });
@@ -4576,12 +4770,14 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     guests: guestsOf(s.id),
     // صور النشاط و ملفاته
     files: filesOf('session', s.id),
+    // آخر من غيّر في النشاط، لرأس صفحته — و من أنشأه في created_by. السجلّ كاملًا في تبويبه
+    last_change: lastChangeOf(req, s),
     // التقييم: عدد المقيِّمين و معدّلهم، و هل ينتظر تقييم صاحب الحساب — التفاصيل في تبويبه
     evaluation: evalSummaryOf(req, s),
-    // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها
-    prep_cards: db
-      .prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id')
-      .all(s.id),
+    // بطاقات التحضير المربوطة بهذا النشاط — القائد يفتحها من صفحة نشاطها، إن كان يقرأ البطاقات
+    prep_cards: hasPerm(req, 'prep.read')
+      ? db.prepare('SELECT id, title, date FROM prep_cards WHERE session_id = ? ORDER BY id').all(s.id)
+      : [],
     // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
     my_branch_ids: myBranchIds,
     // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
@@ -4622,7 +4818,9 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
 // عدد الحضور لكل فرقة و عدد القادة في نشاط عام للفوج — corrected after the fact,
 // the same way présence is marked on the other kinds of نشاط.
 app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, title, branch_id, kind, section FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db
+    .prepare('SELECT id, title, branch_id, kind, section, leaders_count FROM sessions WHERE id = ?')
+    .get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   if (s.kind !== 'group') return res.status(400).json({ error: 'not_a_group_activity' });
@@ -4634,10 +4832,16 @@ app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, r
   const leadersCount = raw === undefined || raw === null || raw === '' ? null : Number(raw);
   if (leadersCount !== null && (!Number.isInteger(leadersCount) || leadersCount < 0))
     return res.status(400).json({ error: 'invalid leaders_count' });
+  const snapshot = (leaders) => ({
+    branch_counts: branchCountsOf(s.id).map((c) => ({ branch_id: c.branch_id, count: c.count })),
+    leaders_count: leaders ?? null,
+  });
+  const before = snapshot(s.leaders_count);
   db.transaction(() => {
     saveBranchCounts(s.id, counts);
     db.prepare('UPDATE sessions SET leaders_count = ? WHERE id = ?').run(leadersCount, s.id);
   })();
+  auditEvent(req, 'counts', 'session', s.id, before, snapshot(leadersCount));
   notifyAdmins(req, 'counts', s);
   res.json({ branch_counts: branchCountsOf(s.id), leaders_count: leadersCount });
 });
@@ -4651,20 +4855,28 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
   // منشّطو النشاط من قسمه وحده
   if (!db.prepare('SELECT id FROM leaders WHERE id = ? AND section = ?').get(leader_id, s.section))
     return res.status(400).json({ error: 'invalid leader_id' });
+  const animatorRow = db.prepare(
+    'SELECT leader_id, role, status FROM session_leaders WHERE session_id = ? AND leader_id = ?'
+  );
+  const prev = animatorRow.get(s.id, leader_id) || null;
   if (remove) {
-    db.prepare("DELETE FROM session_leaders WHERE session_id = ? AND leader_id = ? AND role = 'helper'")
+    const r = db
+      .prepare("DELETE FROM session_leaders WHERE session_id = ? AND leader_id = ? AND role = 'helper'")
       .run(s.id, leader_id);
+    if (r.changes) auditEvent(req, 'animator', 'session', s.id, prev, null);
     notifyAdmins(req, 'animators', s);
     return res.json({ ok: true });
   }
   if (status !== null && status !== undefined && !['present', 'absent'].includes(status))
     return res.status(400).json({ error: 'invalid status' });
   // Marking an animator's présence goes through here too: only a new name is news to him
-  const added = !db.prepare('SELECT 1 FROM session_leaders WHERE session_id = ? AND leader_id = ?').get(s.id, leader_id);
+  const added = !prev;
   db.prepare(
     `INSERT INTO session_leaders (session_id, leader_id, role, status) VALUES (?, ?, 'helper', ?)
      ON CONFLICT(session_id, leader_id) DO UPDATE SET status = excluded.status`
   ).run(s.id, leader_id, status ?? null);
+  if (added || (prev.status ?? null) !== (status ?? null))
+    auditEvent(req, 'animator', 'session', s.id, prev, animatorRow.get(s.id, leader_id));
   notifyAdmins(req, 'animators', s);
   if (added) notifications.animatorAdded(req, s.id, leader_id);
   res.json({ ok: true });
@@ -4678,7 +4890,8 @@ app.post('/api/sessions/:id/guests', requirePerm('sessions.attendance'), (req, r
   if (s.kind !== 'leaders') return res.status(400).json({ error: 'not_a_leaders_activity' });
   const name = parseGuestName(req.body?.name);
   if (name === null) return res.status(400).json({ error: 'invalid name' });
-  insertGuest.run(s.id, name, req.user.display_name || req.user.username);
+  const guestId = insertGuest.run(s.id, name, req.user.display_name || req.user.username).lastInsertRowid;
+  auditEvent(req, 'guest', 'session', s.id, null, { id: guestId, name });
   notifyAdmins(req, 'animators', s);
   res.status(201).json({ guests: guestsOf(s.id) });
 });
@@ -4687,10 +4900,12 @@ app.delete('/api/sessions/:id/guests/:guestId', requirePerm('sessions.attendance
   const s = db.prepare('SELECT id, title, branch_id, kind FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
-  const r = db
-    .prepare('DELETE FROM session_guests WHERE id = ? AND session_id = ?')
-    .run(intOr(req.params.guestId), s.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'guest not found' });
+  const guest = db
+    .prepare('SELECT id, name FROM session_guests WHERE id = ? AND session_id = ?')
+    .get(intOr(req.params.guestId), s.id);
+  if (!guest) return res.status(404).json({ error: 'guest not found' });
+  db.prepare('DELETE FROM session_guests WHERE id = ?').run(guest.id);
+  auditEvent(req, 'guest', 'session', s.id, guest, null);
   notifyAdmins(req, 'animators', s);
   res.json({ guests: guestsOf(s.id) });
 });
@@ -4706,8 +4921,9 @@ const FILES_PER_OWNER = 200;
 
 // صاحب الملفات: جدولها، عمود الربط، و مجلّدها تحت UPLOADS_DIR
 const FILE_OWNERS = {
-  session: { table: 'session_files', fk: 'session_id', dir: 'sessions' },
-  event: { table: 'event_files', fk: 'event_id', dir: 'events' },
+  // read: who sees them, write: who adds and removes them
+  session: { table: 'session_files', fk: 'session_id', dir: 'sessions', read: 'sessions.read', write: 'sessions.files' },
+  event: { table: 'event_files', fk: 'event_id', dir: 'events', read: 'events.read', write: 'events.attendance' },
 };
 const ownerFilesDir = (owner, id) => path.join(UPLOADS_DIR, FILE_OWNERS[owner].dir, String(Number(id)));
 
@@ -4760,7 +4976,7 @@ function loadSessionForFiles(req, res) {
  * Lire suit le droit de lecture de la page ; ajouter et retirer, celui de l'appel.
  */
 function fileRoutes(owner, base, load) {
-  const { table, fk } = FILE_OWNERS[owner];
+  const { table, fk, read, write } = FILE_OWNERS[owner];
   const findFile = (req, id) =>
     db.prepare(`SELECT * FROM ${table} WHERE id = ? AND ${fk} = ?`).get(intOr(req.params.fid), id);
 
@@ -4768,7 +4984,7 @@ function fileRoutes(owner, base, load) {
   // base64 الذي يزيد صور الهاتف ثلثًا
   app.post(
     `${base}/files`,
-    requirePerm('sessions.attendance'),
+    requirePerm(write),
     express.raw({ type: () => true, limit: FILE_MAX + THUMB_MAX }),
     (req, res) => {
       const row = load(req, res);
@@ -4807,16 +5023,20 @@ function fileRoutes(owner, base, load) {
         console.error(`${owner} file write failed`, err);
         return res.status(500).json({ error: 'write_failed' });
       }
-      db.prepare(
-        `INSERT INTO ${table} (${fk}, kind, original_name, mime, size, stored_name, thumb_name, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(row.id, type.kind, name, type.mime, file.length, storedName, thumbName, req.user.display_name || req.user.username);
+      const fileId = db
+        .prepare(
+          `INSERT INTO ${table} (${fk}, kind, original_name, mime, size, stored_name, thumb_name, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(row.id, type.kind, name, type.mime, file.length, storedName, thumbName, req.user.display_name || req.user.username)
+        .lastInsertRowid;
+      auditEvent(req, 'add_file', owner, row.id, null, { file_id: fileId, name, kind: type.kind, size: file.length });
       res.status(201).json({ files: filesOf(owner, row.id) });
     }
   );
 
   // ?thumb=1: مصغّر الصورة — ?download=1: تنزيل بدل العرض
-  app.get(`${base}/files/:fid`, requirePerm('sessions.read'), (req, res) => {
+  app.get(`${base}/files/:fid`, requirePerm(read), (req, res) => {
     const row = load(req, res);
     if (!row) return;
     const f = findFile(req, row.id);
@@ -4831,12 +5051,13 @@ function fileRoutes(owner, base, load) {
     res.sendFile(filePath);
   });
 
-  app.delete(`${base}/files/:fid`, requirePerm('sessions.attendance'), (req, res) => {
+  app.delete(`${base}/files/:fid`, requirePerm(write), (req, res) => {
     const row = load(req, res);
     if (!row) return;
     const f = findFile(req, row.id);
     if (!f) return res.status(404).json({ error: 'file not found' });
     db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(f.id);
+    auditEvent(req, 'remove_file', owner, row.id, { file_id: f.id, name: f.original_name, kind: f.kind, size: f.size }, null);
     for (const n of [f.stored_name, f.thumb_name].filter(Boolean))
       fs.rm(path.join(ownerFilesDir(owner, row.id), n), { force: true }, () => {});
     res.json({ files: filesOf(owner, row.id) });
@@ -4866,6 +5087,11 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
     `INSERT INTO attendance (session_id, member_id, paid) VALUES (?, ?, ?)
      ON CONFLICT(session_id, member_id) DO UPDATE SET paid = excluded.paid`
   );
+  // For the history: each عنصر whose status or payment really changed, as it was and as it
+  // is — with the فرقة he counts in here, which decides who may read the line
+  const attendanceRow = db.prepare('SELECT status, paid, branch_id FROM attendance WHERE session_id = ? AND member_id = ?');
+  const was = [];
+  const now = [];
   const run = db.transaction(() => {
     for (const r of records) {
       const withStatus = r.status !== undefined;
@@ -4882,6 +5108,17 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
       // عنصر خارج مجموعات النشاط ليس في قائمته أصلًا — الزيارة مستثناة، فحضورها
       // هو أسماء من زيرَ بعينهم، لا قائمة فرقة تُفلتر.
       if (s.kind !== 'visit' && !memberInSessionGroups(s.id, m)) throw new Error('forbidden_group');
+      const prev = attendanceRow.get(s.id, r.member_id);
+      const ref = { member_id: Number(r.member_id), branch_id: prev?.branch_id ?? m.branch_id };
+      const from = { ...ref };
+      const to = { ...ref };
+      const prevStatus = prev?.status === 'unmarked' ? null : (prev?.status ?? null);
+      if (withStatus && prevStatus !== r.status) [from.status, to.status] = [prevStatus, r.status];
+      if (withPaid && (prev?.paid ?? null) !== paid) [from.paid, to.paid] = [prev?.paid ?? null, paid];
+      if ('status' in to || 'paid' in to) {
+        was.push(from);
+        now.push(to);
+      }
       if (withStatus) upsertStatus.run(s.id, r.member_id, r.status);
       if (withPaid) upsertPaid.run(s.id, r.member_id, paid);
     }
@@ -4894,9 +5131,209 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
       .status(['forbidden_branch', 'forbidden_group', 'forbidden_fees'].includes(e.message) ? 403 : 400)
       .json({ error: e.message });
   }
+  if (now.length) auditEvent(req, 'attendance', 'session', s.id, { attendance: was }, { attendance: now });
   notifyAdmins(req, 'attendance', s);
   // الحصيلة تعود مع كل حفظ: البرنامج يجمعها، فلا يجمعها القائد على ورقة
   res.json({ ok: true, subscriptions: canSeeFees ? sessionSubscriptions(s.id) : null });
+});
+
+// ---------- سجلّ النشاط ----------
+// من أنشأ النشاط، و من غيّر فيه ماذا و متى: أسطر audit_events التي تخصّه (session_id)،
+// مقروءةً تغييراتٍ صغيرة. لكل سطر نوعه، و الحساب، و الوقت، و rows — كلٌّ منها
+// { key, subject, from, to }: null في from = أُضيف، و في to = أُزيل. ما تخفيه الصفحة عن
+// المستخدم يخفيه السجلّ أيضًا: المبالغ عمّن لا يراها، و عناصر فرقٍ لا يراها في نشاط مشترك.
+// أسطر الحساب الواحد المتتالية من النوع نفسه، في ربع ساعة، تصير سطرًا واحدًا بحصيلتها:
+// الحضور يُنقَّط ضغطةً لكل عنصر، و ثلاثون سطرًا «سجّل حضور فلان» تُغرق ما يهمّ.
+
+const HISTORY_FIELDS = ['title', 'date', 'start_time', 'place', 'activity_type', 'fee', 'leader', 'matalib', 'leaders_count'];
+const HISTORY_MERGE_S = 15 * 60;
+
+const historyJSON = (v) => {
+  try {
+    return v ? JSON.parse(v) : null;
+  } catch {
+    return null;
+  }
+};
+const sameValue = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const utcSeconds = (at) => Date.parse(`${String(at).replace(' ', 'T')}Z`) / 1000;
+
+// One audit line as { type, rows } for this reader, or null when it shows him nothing
+function historyEntry(ev, see) {
+  const before = historyJSON(ev.before_json);
+  const after = historyJSON(ev.after_json);
+  // Lines recovered from the admin feed say who and when, never what
+  if (after?.from_feed) {
+    const type = { create: 'created', attendance: 'attendance', counts: 'counts', animator: 'animators' }[ev.action];
+    return type ? { type, rows: [], vague: true } : null;
+  }
+  const row = (key, subject, from, to) => ({ key, subject, from: from ?? null, to: to ?? null });
+  const one = (type, ...args) => ({ type, rows: [row(...args)] });
+  if (ev.entity_type === 'session') {
+    const x = after ?? before ?? {};
+    switch (ev.action) {
+      case 'create':
+        return { type: 'created', rows: [] };
+      case 'update':
+        return {
+          type: 'details',
+          rows: HISTORY_FIELDS.filter((f) => f !== 'fee' || see.fees).map((f) =>
+            f === 'matalib'
+              ? row(`f:${f}`, { field: f }, historyJSON(before?.[f]), historyJSON(after?.[f]))
+              : row(`f:${f}`, { field: f }, before?.[f], after?.[f])
+          ),
+        };
+      case 'attendance': {
+        const was = new Map((before?.attendance || []).map((r) => [r.member_id, r]));
+        const rows = [];
+        for (const r of after?.attendance || []) {
+          if (!see.branch(r.branch_id)) continue;
+          const p = was.get(r.member_id) || {};
+          if ('status' in r) rows.push(row(`a:${r.member_id}`, { field: 'status', member_id: r.member_id }, p.status, r.status));
+          if ('paid' in r && see.fees) rows.push(row(`p:${r.member_id}`, { field: 'paid', member_id: r.member_id }, p.paid, r.paid));
+        }
+        return { type: 'attendance', rows };
+      }
+      case 'counts': {
+        const byBranch = (v) => new Map((v?.branch_counts || []).map((c) => [c.branch_id, c.count]));
+        const [was, now] = [byBranch(before), byBranch(after)];
+        return {
+          type: 'counts',
+          rows: [
+            ...[...new Set([...was.keys(), ...now.keys()])].map((b) =>
+              row(`c:${b}`, { branch_id: b }, was.get(b) ?? 0, now.get(b) ?? 0)
+            ),
+            row('c:leaders', { field: 'leaders_count' }, before?.leaders_count, after?.leaders_count),
+          ],
+        };
+      }
+      case 'animator': {
+        const state = (v) => v && { role: v.role, status: v.status ?? null };
+        return one('animators', `l:${x.leader_id}`, { leader_id: x.leader_id }, state(before), state(after));
+      }
+      case 'guest':
+        return one('guests', `g:${x.id}`, { name: x.name }, before?.name, after?.name);
+      case 'add_file':
+      case 'remove_file':
+        return one('files', `file:${x.file_id}`, { name: x.name, kind: x.kind }, before && true, after && true);
+      default:
+        // 'delete': nobody reads the history of a نشاط that is gone
+        return null;
+    }
+  }
+  const x = after ?? before;
+  if (!x) return null;
+  if (ev.entity_type === 'treasury_entry') {
+    if (!see.money) return null;
+    const state = (v) =>
+      v && { label: v.label, amount: v.amount, category: v.category, date: v.date, paid_on: v.paid_on, owed_to: v.owed_to };
+    return one(x.direction === 'out' ? 'expenses' : 'donations', `e:${ev.entity_id}`, {}, state(before), state(after));
+  }
+  if (ev.entity_type === 'member_due') {
+    if (!see.dues || !see.branch(x.branch_id)) return null;
+    return one('dues', `d:${ev.entity_id}`, { member_id: x.member_id, month: x.month }, before?.amount, after?.amount);
+  }
+  if (ev.entity_type === 'session_evaluation') {
+    // The marks stay in their tab, under its rules: here only who rated and when. `rev`
+    // tells two versions apart, so a second save is a change and not a repeat
+    return one('evaluation', `v:${ev.entity_id}`, { name: x.leader_name }, before && { rev: `${ev.id}-` }, after && { rev: ev.id });
+  }
+  return null;
+}
+
+// The نشاط's history for this reader, oldest first, before names are put on its rows
+function historyItems(req, s) {
+  const scope = allowedBranches(req) ? new Set(myBranchesOfSession(req, s.id)) : null;
+  const see = {
+    fees: hasPerm(req, 'sessions.read.fees'),
+    money: canSeeSessionExpenses(req),
+    dues: canSeeMemberDues(req),
+    branch: (b) => !scope || scope.has(Number(b)),
+  };
+  const events = db
+    .prepare(
+      `SELECT id, actor_user_id, actor, action, entity_type, entity_id, before_json, after_json, created_at
+       FROM audit_events WHERE session_id = ? ORDER BY created_at, id`
+    )
+    .all(s.id);
+  const items = [];
+  for (const ev of events) {
+    const entry = historyEntry(ev, see);
+    if (!entry) continue;
+    const last = items[items.length - 1];
+    if (
+      last &&
+      entry.type !== 'created' &&
+      last.type === entry.type &&
+      !!last.vague === !!entry.vague &&
+      last.actor === ev.actor &&
+      last.actor_user_id === ev.actor_user_id &&
+      utcSeconds(ev.created_at) - utcSeconds(last.at) <= HISTORY_MERGE_S
+    ) {
+      // Same key twice in a burst: where it started, where it ended
+      for (const r of entry.rows) {
+        const seen = last.rows.find((y) => y.key === r.key);
+        if (seen) seen.to = r.to;
+        else last.rows.push(r);
+      }
+      last.at = ev.created_at;
+      continue;
+    }
+    items.push({
+      type: entry.type,
+      actor: ev.actor,
+      actor_user_id: ev.actor_user_id,
+      at: ev.created_at,
+      ...(entry.vague && { vague: true }),
+      rows: entry.rows,
+    });
+  }
+  // What a burst undid (absent, present, absent again) leaves nothing to say
+  return items
+    .map((i) => ({ ...i, rows: i.rows.filter((r) => !sameValue(r.from, r.to)) }))
+    .filter((i) => i.type === 'created' || i.vague || i.rows.length > 0);
+}
+
+// Names on the rows, as they read today: a renamed عنصر reads under his new name
+function nameHistoryRows(items) {
+  const ids = { member_id: new Set(), leader_id: new Set(), branch_id: new Set() };
+  for (const i of items)
+    for (const r of i.rows) for (const k of Object.keys(ids)) if (r.subject[k]) ids[k].add(intOr(r.subject[k]));
+  const byId = (sql, set) =>
+    set.size ? new Map(db.prepare(sql.replace('(?)', `(${[...set].join(',')})`)).all().map((r) => [r.id, r])) : new Map();
+  const members = byId(`SELECT id, ${fullNameSQL('m')} AS name FROM members m WHERE id IN (?)`, ids.member_id);
+  const leaders = byId('SELECT id, first_name, father_name, last_name FROM leaders WHERE id IN (?)', ids.leader_id);
+  const branches = byId('SELECT id, name_fr, name_ar FROM branches WHERE id IN (?)', ids.branch_id);
+  for (const i of items)
+    for (const r of i.rows) {
+      const s = r.subject;
+      if (s.member_id) s.name = members.get(intOr(s.member_id))?.name ?? null;
+      if (s.leader_id) {
+        const l = leaders.get(intOr(s.leader_id));
+        s.name = l ? leaderFullName(l) : null;
+      }
+      if (s.branch_id) {
+        const b = branches.get(intOr(s.branch_id));
+        s.name_fr = b?.name_fr ?? null;
+        s.name_ar = b?.name_ar ?? null;
+      }
+    }
+  return items;
+}
+
+// Who changed the نشاط last, for its header — its creation is said on its own line
+function lastChangeOf(req, s) {
+  const items = historyItems(req, s).filter((i) => i.type !== 'created');
+  const last = items[items.length - 1];
+  return last ? { actor: last.actor, at: last.at } : null;
+}
+
+app.get('/api/sessions/:id/history', requirePerm('sessions.read'), (req, res) => {
+  const s = db.prepare('SELECT id, branch_id, section FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  // Newest first, as it is read
+  res.json({ items: nameHistoryRows(historyItems(req, s)).reverse() });
 });
 
 // ---------- تقييم الأنشطة ----------
@@ -4904,7 +5341,8 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
 // مؤشرات علامتها من 1 إلى 5 مجمّعة في محاور، و أسئلة مفتوحة. النتيجة معدّل المقيِّمين —
 // «تُجمع العلامات و تُقسم على عدد المقيِّمين» كما في استمارات دورات الجمعية.
 const { EVAL_PRESETS } = require('./evalPresets');
-const EVAL_KINDS = ['activity', 'leaders', 'group', 'visit'];
+// أنواع الأنشطة، ثم أنواع المخيمات و الدورات (event_ + EVENT_KINDS، المعرَّفة أبعد في الملف)
+const EVAL_KINDS = ['activity', 'leaders', 'group', 'visit', 'event_camp', 'event_course', 'event_trip', 'event_other'];
 const EVAL_ITEM_TYPES = ['axis', 'score', 'text'];
 const EVAL_NAME_MAX = 120;
 const EVAL_LABEL_MAX = 300;
@@ -4926,16 +5364,6 @@ const evalItemsOf = (formId) =>
     )
     .all(formId);
 
-// الاستمارة التي يُقيَّم بها النشاط: استمارة تقييماته إن وُجدت — فكلّها بالاستمارة نفسها، و لو
-// تغيّرت استمارة نوعه بعد أوّلها — و إلّا المعتمدة لنوعه الآن. null: نوع لا يُقيَّم.
-function evalFormIdOf(session) {
-  const used = db
-    .prepare('SELECT form_id FROM session_evaluations WHERE session_id = ? AND form_id IS NOT NULL ORDER BY id LIMIT 1')
-    .get(session.id);
-  if (used) return used.form_id;
-  return db.prepare('SELECT form_id FROM eval_kind_forms WHERE kind = ?').get(session.kind)?.form_id ?? null;
-}
-
 // من يقيّم النشاط: قادته — المسؤول و المساعدون — ما لم يُسجَّلوا غائبين. نشاط القادة لا صف
 // فيه إلا لمن وُضع حضوره (و للمسؤول)، فمقيِّموه من حضر.
 const evalParticipantsOf = (sessionId) =>
@@ -4948,16 +5376,45 @@ const evalParticipantsOf = (sessionId) =>
     )
     .all(sessionId);
 
+// What is evaluated: a نشاط here, a camp or a course further down (EVENT_EVAL). Each has its
+// own tables of evaluations and answers; the forms are shared.
+const SESSION_EVAL = {
+  kind: 'session',
+  table: 'session_evaluations',
+  answers: 'session_evaluation_answers',
+  fk: 'session_id',
+  audit: 'session_evaluation',
+  kindOf: (s) => s.kind,
+  participantsOf: (s) => evalParticipantsOf(s.id),
+  // Who leads it, told of each new evaluation: its القائد المسؤول
+  leadersOf: (s) =>
+    db.prepare("SELECT leader_id FROM session_leaders WHERE session_id = ? AND role = 'main'").all(s.id).map((r) => r.leader_id),
+  // From the day of the نشاط
+  isOpen: (s) => s.date <= todayISO(),
+};
+
+// الاستمارة التي يُقيَّم بها النشاط: استمارة تقييماته إن وُجدت — فكلّها بالاستمارة نفسها، و لو
+// تغيّرت استمارة نوعه بعد أوّلها — و إلّا المعتمدة لنوعه الآن. null: نوع لا يُقيَّم.
+function evalFormIdOf(s, target = SESSION_EVAL) {
+  const used = db
+    .prepare(
+      `SELECT form_id FROM ${target.table} WHERE ${target.fk} = ? AND form_id IS NOT NULL ORDER BY id LIMIT 1`
+    )
+    .get(s.id);
+  if (used) return used.form_id;
+  return db.prepare('SELECT form_id FROM eval_kind_forms WHERE kind = ?').get(target.kindOf(s))?.form_id ?? null;
+}
+
 // Who is asking, against this نشاط: may he evaluate, has he, and may he see the results yet
-function evalState(req, s) {
-  const formId = evalFormIdOf(s);
+function evalState(req, s, target = SESSION_EVAL) {
+  const formId = evalFormIdOf(s, target);
   const evaluations = db
     .prepare(
       `SELECT id, form_id, leader_id, user_id, leader_name, average, created_at, updated_at
-         FROM session_evaluations WHERE session_id = ? ORDER BY id`
+         FROM ${target.table} WHERE ${target.fk} = ? ORDER BY id`
     )
     .all(s.id);
-  const participants = evalParticipantsOf(s.id);
+  const participants = target.participantsOf(s);
   const isAdmin = req.user.role === 'admin';
   const me = req.user.leader_id ? Number(req.user.leader_id) : null;
   const isParticipant = me !== null && participants.some((p) => p.leader_id === me);
@@ -4966,24 +5423,26 @@ function evalState(req, s) {
     (me !== null && evaluations.find((e) => e.leader_id === me)) ||
     evaluations.find((e) => e.leader_id === null && e.user_id === req.user.id) ||
     null;
-  const open = s.date <= todayISO();
+  const open = target.isOpen(s);
   // قادة النشاط يقيّمونه، و المسؤول يقيّم أيّ نشاط و لو لم يقده — اختيارًا، لا ينتظره أحد
   const canEvaluate = (isParticipant || isAdmin) && open && !!formId;
   // قائد شارك و لم يقيّم بعد لا يرى علامات غيره قبل أن يضع علاماته، كي لا تميل إليها.
   // المسؤول يراها دائمًا.
   const hidden = isParticipant && !mine && !isAdmin;
+  // Without evaluations.read, the results are never shown — one's own marks still are
+  const forbidden = !hasPerm(req, 'evaluations.read');
   const average = round2(mean(evaluations.map((e) => e.average).filter((v) => v !== null)));
-  return { formId, evaluations, participants, isParticipant, mine, open, canEvaluate, hidden, average };
+  return { formId, evaluations, participants, isParticipant, mine, open, canEvaluate, hidden, forbidden, average };
 }
 
 // What the نشاط page and its header need without loading the whole evaluation
-function evalSummaryOf(req, s) {
-  const st = evalState(req, s);
+function evalSummaryOf(req, s, target = SESSION_EVAL) {
+  const st = evalState(req, s, target);
   if (!st.formId && !st.evaluations.length) return null;
   return {
     count: st.evaluations.length,
     participants: st.participants.length,
-    average: st.hidden ? null : st.average,
+    average: st.hidden || st.forbidden ? null : st.average,
     can_evaluate: st.canEvaluate,
     // A قائد who led it is expected to rate it («À évaluer»); for the admin it is optional
     expected: st.isParticipant,
@@ -4992,17 +5451,16 @@ function evalSummaryOf(req, s) {
   };
 }
 
-function evalPayload(req, s) {
-  const st = evalState(req, s);
-  const isAdmin = req.user.role === 'admin';
+function evalPayload(req, s, target = SESSION_EVAL) {
+  const st = evalState(req, s, target);
   const form = st.formId
     ? db.prepare('SELECT id, name_ar, name_fr, preset FROM eval_forms WHERE id = ?').get(st.formId)
     : null;
   const answers = db
     .prepare(
-      `SELECT a.evaluation_id, a.item_id, a.score, a.text FROM session_evaluation_answers a
-         JOIN session_evaluations ev ON ev.id = a.evaluation_id
-        WHERE ev.session_id = ? ORDER BY a.evaluation_id`
+      `SELECT a.evaluation_id, a.item_id, a.score, a.text FROM ${target.answers} a
+         JOIN ${target.table} ev ON ev.id = a.evaluation_id
+        WHERE ev.${target.fk} = ? ORDER BY a.evaluation_id`
     )
     .all(s.id);
   const answered = new Set(answers.map((a) => a.item_id));
@@ -5015,7 +5473,9 @@ function evalPayload(req, s) {
         .map((a) => [a.item_id, { score: a.score, text: a.text }])
     );
   const nameOf = (evaluationId) => st.evaluations.find((e) => e.id === evaluationId)?.leader_name;
-  const results = st.hidden
+  // Who gave which mark: the admin, or an account given evaluations.details
+  const named = hasPerm(req, 'evaluations.details');
+  const results = st.hidden || st.forbidden
     ? null
     : {
         count: st.evaluations.length,
@@ -5038,11 +5498,11 @@ function evalPayload(req, s) {
               item_id: it.id,
               texts: rows
                 .filter((a) => a.text)
-                .map((a) => (isAdmin ? { text: a.text, leader_name: nameOf(a.evaluation_id) } : { text: a.text })),
+                .map((a) => (named ? { text: a.text, leader_name: nameOf(a.evaluation_id) } : { text: a.text })),
             };
           }),
         // كل تقييم باسم صاحبه: للمسؤول وحده
-        by_leader: isAdmin
+        by_leader: named
           ? st.evaluations.map((e) => ({
               id: e.id,
               leader_id: e.leader_id,
@@ -5077,6 +5537,7 @@ function evalPayload(req, s) {
       ? { id: st.mine.id, average: st.mine.average, updated_at: st.mine.updated_at, answers: answersOf(st.mine.id) }
       : null,
     results_hidden: st.hidden,
+    results_forbidden: st.forbidden,
     results,
   };
 }
@@ -5101,39 +5562,38 @@ app.get('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res)
   if (s) res.json(evalPayload(req, s));
 });
 
-// تقييم صاحب الحساب — قائد شارك في النشاط، أو المسؤول: يُنشأ أول مرّة و يُعدَّل بعدها.
-// answers: [{ item_id, score | text }]؛ مؤشر بلا علامة يُترك (لا رأي)، لكن علامة واحدة على الأقل.
-app.put('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res) => {
-  const s = evalSessionOf(req, res);
-  if (!s) return;
-  const st = evalState(req, s);
-  if (!st.isParticipant && req.user.role !== 'admin') return res.status(403).json({ error: 'not_a_participant' });
-  if (!st.open) return res.status(409).json({ error: 'eval_not_open' });
-  if (!st.formId) return res.status(409).json({ error: 'no_eval_form' });
+// تقييم صاحب الحساب — قائد شارك في النشاط (أو في المخيم)، أو المسؤول: يُنشأ أول مرّة و يُعدَّل
+// بعدها. answers: [{ item_id, score | text }]؛ مؤشر بلا علامة يُترك (لا رأي)، لكن علامة واحدة
+// على الأقل. null، أو { status, error } للردّ.
+function saveEvaluation(req, s, target) {
+  const st = evalState(req, s, target);
+  if (!st.isParticipant && req.user.role !== 'admin') return { status: 403, error: 'not_a_participant' };
+  if (!st.open) return { status: 409, error: 'eval_not_open' };
+  if (!st.formId) return { status: 409, error: 'no_eval_form' };
   const live = new Map(
     evalItemsOf(st.formId)
       .filter((it) => !it.archived && it.type !== 'axis')
       .map((it) => [it.id, it])
   );
-  if (!Array.isArray(req.body?.answers)) return res.status(400).json({ error: 'invalid answers' });
+  if (!Array.isArray(req.body?.answers)) return { status: 400, error: 'invalid answers' };
   const rows = [];
   for (const a of req.body.answers) {
     const it = live.get(Number(a?.item_id));
-    if (!it || rows.some((r) => r.item_id === it.id)) return res.status(400).json({ error: 'invalid item_id' });
+    if (!it || rows.some((r) => r.item_id === it.id)) return { status: 400, error: 'invalid item_id' };
     if (it.type === 'score') {
       if (a.score === null || a.score === undefined || a.score === '') continue;
       const v = Number(a.score);
-      if (!Number.isInteger(v) || v < 1 || v > 5) return res.status(400).json({ error: 'invalid score' });
+      if (!Number.isInteger(v) || v < 1 || v > 5) return { status: 400, error: 'invalid score' };
       rows.push({ item_id: it.id, score: v, text: null });
     } else {
       if (a.text !== null && a.text !== undefined && typeof a.text !== 'string')
-        return res.status(400).json({ error: 'invalid text' });
+        return { status: 400, error: 'invalid text' };
       const text = (a.text || '').trim();
-      if (text.length > EVAL_TEXT_MAX) return res.status(400).json({ error: 'text_too_long' });
+      if (text.length > EVAL_TEXT_MAX) return { status: 400, error: 'text_too_long' };
       if (text) rows.push({ item_id: it.id, score: null, text });
     }
   }
-  if (!rows.some((r) => r.score !== null)) return res.status(400).json({ error: 'eval_empty' });
+  if (!rows.some((r) => r.score !== null)) return { status: 400, error: 'eval_empty' };
   // Signed with the قائد of the account; an admin account without one signs with its own name
   const leader = req.user.leader_id
     ? db.prepare('SELECT id, first_name, father_name, last_name FROM leaders WHERE id = ?').get(req.user.leader_id)
@@ -5141,34 +5601,67 @@ app.put('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res)
   const author = req.user.display_name || req.user.username;
   const name = leader ? leaderFullName(leader) : author;
   const created = !st.mine;
+  const evalRow = db.prepare(`SELECT * FROM ${target.table} WHERE id = ?`);
+  const before = created ? null : evalRow.get(st.mine.id);
+  let evaluationId;
   db.transaction(() => {
-    const evaluationId = created
+    evaluationId = created
       ? db
           .prepare(
-            `INSERT INTO session_evaluations (session_id, form_id, leader_id, user_id, leader_name, created_by)
+            `INSERT INTO ${target.table} (${target.fk}, form_id, leader_id, user_id, leader_name, created_by)
              VALUES (?, ?, ?, ?, ?, ?)`
           )
-          .run(s.id, st.formId, leader?.id ?? null, req.user.id, name, author)
-          .lastInsertRowid
+          .run(s.id, st.formId, leader?.id ?? null, req.user.id, name, author).lastInsertRowid
       : st.mine.id;
     // Answers to the form's live items are replaced; those to items archived since stay
     db.prepare(
-      `DELETE FROM session_evaluation_answers WHERE evaluation_id = ?
+      `DELETE FROM ${target.answers} WHERE evaluation_id = ?
          AND item_id IN (SELECT id FROM eval_items WHERE archived = 0)`
     ).run(evaluationId);
     const insert = db.prepare(
-      'INSERT INTO session_evaluation_answers (evaluation_id, item_id, score, text) VALUES (?, ?, ?, ?)'
+      `INSERT INTO ${target.answers} (evaluation_id, item_id, score, text) VALUES (?, ?, ?, ?)`
     );
     for (const r of rows) insert.run(evaluationId, r.item_id, r.score, r.text);
     const avg = db
-      .prepare('SELECT AVG(score) AS a FROM session_evaluation_answers WHERE evaluation_id = ? AND score IS NOT NULL')
+      .prepare(`SELECT AVG(score) AS a FROM ${target.answers} WHERE evaluation_id = ? AND score IS NOT NULL`)
       .get(evaluationId).a;
     db.prepare(
-      "UPDATE session_evaluations SET average = ?, leader_name = ?, updated_at = datetime('now') WHERE id = ?"
+      `UPDATE ${target.table} SET average = ?, leader_name = ?, updated_at = datetime('now') WHERE id = ?`
     ).run(round2(avg), name, evaluationId);
   })();
-  // No admin notification: notifications.type has a CHECK listing its four kinds, and the
-  // list of أنشطة already shows the new mark
+  auditEvent(req, created ? 'create' : 'update', target.audit, evaluationId, before, evalRow.get(evaluationId));
+  // Whoever leads it hears of a new one (the bell, if he asked for it)
+  if (created) {
+    const after = evalState(req, s, target);
+    notifications.evaluationReceived(req, {
+      kind: target.kind,
+      id: s.id,
+      title: s.title,
+      section: s.section,
+      leaderIds: target.leadersOf(s),
+      count: after.evaluations.length,
+      total: after.participants.length,
+    });
+  }
+  return null;
+}
+
+// His own evaluation, withdrawn — under his قائد, or under the account for an admin without
+// one — or, for the admin, anyone's (eid). false: nothing to delete.
+function deleteEvaluation(req, s, target, eid = null) {
+  const id = eid === null ? evalState(req, s, target).mine?.id : eid;
+  const row = id && db.prepare(`SELECT * FROM ${target.table} WHERE id = ? AND ${target.fk} = ?`).get(id, s.id);
+  if (!row) return false;
+  db.prepare(`DELETE FROM ${target.table} WHERE id = ?`).run(row.id);
+  auditEvent(req, 'delete', target.audit, row.id, row, null);
+  return true;
+}
+
+app.put('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res) => {
+  const s = evalSessionOf(req, res);
+  if (!s) return;
+  const err = saveEvaluation(req, s, SESSION_EVAL);
+  if (err) return res.status(err.status).json({ error: err.error });
   res.json(evalPayload(req, s));
 });
 
@@ -5176,20 +5669,15 @@ app.put('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res)
 app.delete('/api/sessions/:id/evaluation', requirePerm('sessions.read'), (req, res) => {
   const s = evalSessionOf(req, res);
   if (!s) return;
-  // His own: under his قائد, or under the account for an admin without one
-  const own = evalState(req, s).mine;
-  if (!own) return res.status(404).json({ error: 'evaluation not found' });
-  db.prepare('DELETE FROM session_evaluations WHERE id = ?').run(own.id);
+  if (!deleteEvaluation(req, s, SESSION_EVAL)) return res.status(404).json({ error: 'evaluation not found' });
   res.json(evalPayload(req, s));
 });
 
 app.delete('/api/sessions/:id/evaluations/:eid', requireAdmin, (req, res) => {
   const s = evalSessionOf(req, res);
   if (!s) return;
-  const ev = db.prepare('SELECT * FROM session_evaluations WHERE id = ? AND session_id = ?').get(req.params.eid, s.id);
-  if (!ev) return res.status(404).json({ error: 'evaluation not found' });
-  db.prepare('DELETE FROM session_evaluations WHERE id = ?').run(ev.id);
-  auditEvent(req, 'delete', 'session_evaluation', ev.id, ev, null);
+  if (!deleteEvaluation(req, s, SESSION_EVAL, intOr(req.params.eid)))
+    return res.status(404).json({ error: 'evaluation not found' });
   res.json(evalPayload(req, s));
 });
 
@@ -5241,6 +5729,11 @@ function setEvalKinds(formId, kinds) {
   for (const k of kinds) upsert.run(k, formId);
 }
 
+// Answers given to an item, in a نشاط or in a camp: once there is one, the item keeps its type
+// and is archived instead of deleted
+const EVAL_ANSWERS_SQL = `SELECT item_id FROM session_evaluation_answers
+  UNION ALL SELECT item_id FROM event_evaluation_answers`;
+
 function evalFormsList() {
   const kinds = db.prepare('SELECT kind, form_id FROM eval_kind_forms').all();
   const usage = db
@@ -5249,8 +5742,14 @@ function evalFormsList() {
          FROM session_evaluations GROUP BY form_id`
     )
     .all();
+  const eventUsage = db
+    .prepare(
+      `SELECT form_id, COUNT(*) AS evaluations, COUNT(DISTINCT event_id) AS events
+         FROM event_evaluations GROUP BY form_id`
+    )
+    .all();
   const answeredOf = db.prepare(
-    `SELECT a.item_id, COUNT(*) AS n FROM session_evaluation_answers a
+    `SELECT a.item_id, COUNT(*) AS n FROM (${EVAL_ANSWERS_SQL}) a
        JOIN eval_items i ON i.id = a.item_id WHERE i.form_id = ? GROUP BY a.item_id`
   );
   return {
@@ -5260,11 +5759,13 @@ function evalFormsList() {
       .map((f) => {
         const answered = new Map(answeredOf.all(f.id).map((r) => [r.item_id, r.n]));
         const used = usage.find((u) => u.form_id === f.id);
+        const usedEv = eventUsage.find((u) => u.form_id === f.id);
         return {
           ...f,
           kinds: kinds.filter((k) => k.form_id === f.id).map((k) => k.kind),
           sessions: used?.sessions || 0,
-          evaluations: used?.evaluations || 0,
+          events: usedEv?.events || 0,
+          evaluations: (used?.evaluations || 0) + (usedEv?.evaluations || 0),
           // answered: how many evaluations already gave this item a mark — its type is then fixed
           items: evalItemsOf(f.id)
             .filter((it) => !it.archived)
@@ -5304,7 +5805,7 @@ app.put('/api/eval-forms/:id', requireAdmin, (req, res) => {
   const existing = evalItemsOf(form.id).filter((it) => !it.archived);
   const byId = new Map(existing.map((it) => [it.id, it]));
   const answeredCount = (itemId) =>
-    db.prepare('SELECT COUNT(*) AS n FROM session_evaluation_answers WHERE item_id = ?').get(itemId).n;
+    db.prepare(`SELECT COUNT(*) AS n FROM (${EVAL_ANSWERS_SQL}) WHERE item_id = ?`).get(itemId).n;
   const kept = new Set();
   for (const it of f.items) {
     if (it.id === null) continue;
@@ -5339,12 +5840,17 @@ app.put('/api/eval-forms/:id', requireAdmin, (req, res) => {
   res.json(evalFormsList());
 });
 
-// Deleted outright while unused; once a نشاط was evaluated with it, archived instead, so
-// that نشاط keeps its results
+// Deleted outright while unused; once a نشاط or a camp was evaluated with it, archived
+// instead, so that it keeps its results
 app.delete('/api/eval-forms/:id', requireAdmin, (req, res) => {
   const form = db.prepare('SELECT * FROM eval_forms WHERE id = ? AND archived = 0').get(req.params.id);
   if (!form) return res.status(404).json({ error: 'form not found' });
-  const used = db.prepare('SELECT COUNT(*) AS n FROM session_evaluations WHERE form_id = ?').get(form.id).n;
+  const used = db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM session_evaluations WHERE form_id = @id)
+            + (SELECT COUNT(*) FROM event_evaluations WHERE form_id = @id) AS n`
+    )
+    .get({ id: form.id }).n;
   db.transaction(() => {
     db.prepare('DELETE FROM eval_kind_forms WHERE form_id = ?').run(form.id);
     if (used) db.prepare("UPDATE eval_forms SET archived = 1, updated_at = datetime('now') WHERE id = ?").run(form.id);
@@ -5352,6 +5858,85 @@ app.delete('/api/eval-forms/:id', requireAdmin, (req, res) => {
   })();
   auditEvent(req, 'delete', 'eval_form', form.id, form, null);
   res.json({ ...evalFormsList(), archived: used > 0 });
+});
+
+// ---------- تقييم المخيمات و الدورات ----------
+// كتقييم النشاط، بالاستمارة المعتمدة لنوع المخيم (event_camp، event_course…). يقيّمه كل قائد
+// أخذ فيه دورًا: قائده، و هيئته القيادية، و القادة المشاركون — «المدرّبون، و المتدرّبون الذين
+// شاركوا في البرنامج، و قيادة النشاط التدريبي فيما بينهم» (تقييم قيادة الأنشطة التدريبية،
+// منتدى مهدي الكشفي) — و المسؤول إن شاء. يُفتح في يومه الأخير: المخيم يُقيَّم كلّه.
+
+// Took part: still on the list (not taken off it), and no présence marked for him yet or present at least once
+const tookPartSQL = (p) => `(${p}.withdrawn_at IS NULL
+    AND (NOT EXISTS (SELECT 1 FROM event_attendance a WHERE a.participant_id = ${p}.id)
+      OR EXISTS (SELECT 1 FROM event_attendance a WHERE a.participant_id = ${p}.id AND a.status = 'present')))`;
+
+// A قائد counts once, under his first role: قائد المخيم, then his post in the هيئة, then
+// participant — and a participant marked absent from every جلسة did not take part
+function eventEvaluatorsOf(eventId) {
+  const rows = db
+    .prepare(
+      `SELECT x.leader_id, x.role, l.first_name, l.father_name, l.last_name FROM (
+         SELECT e.leader_id, 'chief' AS role, 0 AS rank FROM events e WHERE e.id = @event AND e.leader_id IS NOT NULL
+         UNION ALL
+         SELECT st.leader_id, st.role, 1 FROM event_staff st WHERE st.event_id = @event AND st.leader_id IS NOT NULL
+         UNION ALL
+         SELECT p.leader_id, 'participant', 2 FROM event_participants p
+          WHERE p.event_id = @event AND p.leader_id IS NOT NULL AND ${tookPartSQL('p')}
+       ) x JOIN leaders l ON l.id = x.leader_id
+       ORDER BY x.rank, l.last_name, l.first_name`
+    )
+    .all({ event: eventId });
+  const seen = new Set();
+  return rows.filter((r) => !seen.has(r.leader_id) && seen.add(r.leader_id));
+}
+
+// The same test in SQL, for the list: is the قائد `me` (an integer, or NULL) one of them
+const eventEvaluatorSQL = (alias, me) => `(${alias}.leader_id = ${me}
+    OR EXISTS (SELECT 1 FROM event_staff st WHERE st.event_id = ${alias}.id AND st.leader_id = ${me})
+    OR EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ${alias}.id AND p.leader_id = ${me}
+               AND ${tookPartSQL('p')}))`;
+
+const EVENT_EVAL = {
+  kind: 'event',
+  table: 'event_evaluations',
+  answers: 'event_evaluation_answers',
+  fk: 'event_id',
+  audit: 'event_evaluation',
+  kindOf: (ev) => `event_${ev.kind}`,
+  participantsOf: (ev) => eventEvaluatorsOf(ev.id),
+  leadersOf: (ev) => [ev.leader_id],
+  // From its last day
+  isOpen: (ev) => ev.end_date <= todayISO(),
+};
+
+// Written and withdrawn like a نشاط's evaluation: saveEvaluation / deleteEvaluation, with EVENT_EVAL
+app.get('/api/events/:id/evaluation', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (ev) res.json(evalPayload(req, ev, EVENT_EVAL));
+});
+
+app.put('/api/events/:id/evaluation', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const err = saveEvaluation(req, ev, EVENT_EVAL);
+  if (err) return res.status(err.status).json({ error: err.error });
+  res.json(evalPayload(req, ev, EVENT_EVAL));
+});
+
+app.delete('/api/events/:id/evaluation', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  if (!deleteEvaluation(req, ev, EVENT_EVAL)) return res.status(404).json({ error: 'evaluation not found' });
+  res.json(evalPayload(req, ev, EVENT_EVAL));
+});
+
+app.delete('/api/events/:id/evaluations/:eid', requireAdmin, (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  if (!deleteEvaluation(req, ev, EVENT_EVAL, intOr(req.params.eid)))
+    return res.status(404).json({ error: 'evaluation not found' });
+  res.json(evalPayload(req, ev, EVENT_EVAL));
 });
 
 // ---------- بطاقات التحضير ----------
@@ -5426,7 +6011,7 @@ const PREP_CARD_SELECT = `SELECT p.*, b.name_fr AS branch_name_fr, b.name_ar AS 
   LEFT JOIN leaders l ON l.id = p.leader_id
   LEFT JOIN sessions s ON s.id = p.session_id`;
 
-app.get('/api/prep-cards', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/prep-cards', requirePerm('prep.read'), (req, res) => {
   const { q, branch, leader, from, to } = req.query;
   let sql = `${PREP_CARD_SELECT} WHERE 1=1${branchFilterSQL(req, 'p.branch_id')}`;
   const params = [];
@@ -5443,14 +6028,14 @@ app.get('/api/prep-cards', requirePerm('sessions.read'), (req, res) => {
   res.json(db.prepare(sql).all(...params).map(publicPrepCard));
 });
 
-app.get('/api/prep-cards/:id', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/prep-cards/:id', requirePerm('prep.read'), (req, res) => {
   const row = db.prepare(`${PREP_CARD_SELECT} WHERE p.id = ?`).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'prep card not found' });
   if (!branchOk(req, row.branch_id)) return res.status(403).json({ error: 'forbidden' });
   res.json(publicPrepCard(row));
 });
 
-app.post('/api/prep-cards', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/prep-cards', requirePerm('prep.manage'), (req, res) => {
   const parsed = parsePrepCard(req);
   if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
   const id = db
@@ -5465,7 +6050,7 @@ app.post('/api/prep-cards', requirePerm('sessions.create'), (req, res) => {
 });
 
 // قابلة للتعديل في أي وقت — نفس صلاحية الإنشاء، ضمن فرق القائد وحدها
-app.put('/api/prep-cards/:id', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/prep-cards/:id', requirePerm('prep.manage'), (req, res) => {
   const existing = db.prepare('SELECT * FROM prep_cards WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'prep card not found' });
   if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
@@ -5481,20 +6066,20 @@ app.put('/api/prep-cards/:id', requirePerm('sessions.create'), (req, res) => {
   res.json(publicPrepCard(row));
 });
 
-// الحذف للأدمن وحده، كالأنشطة: البطاقة أرشيف لا يمحوه صاحبه
-app.delete('/api/prep-cards/:id', requireAdmin, (req, res) => {
-  const existing = db.prepare('SELECT id FROM prep_cards WHERE id = ?').get(req.params.id);
+// الحذف لمن مُنح prep.delete (الأدمن قبله): البطاقة أرشيف لا يمحوه صاحبه دون إذن، و ضمن فرقه
+app.delete('/api/prep-cards/:id', requirePerm('prep.delete'), (req, res) => {
+  const existing = db.prepare('SELECT id, branch_id FROM prep_cards WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'prep card not found' });
+  if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
   db.prepare('DELETE FROM prep_cards WHERE id = ?').run(existing.id);
   res.status(204).end();
 });
 
 // ---------- المخيمات و الدورات ----------
 // مخيم أو دورة أو رحلة: يوم أو أيام فيها جلسات عدّة، لمجموعة ثابتة من المشاركين، بقيمة
-// اشتراك و مصاريف. صلاحياتها صلاحيات الأنشطة: sessions.read لرؤيتها، sessions.create
-// لإنشائها و تعديل برنامجها و مشاركيها و مصاريفها، sessions.attendance لحضور جلساتها و
-// تسجيل الدفع، و sessions.read.fees للمال كله — من لا يراه لا تصله أرقامه أصلًا، و لا
-// يكتبها. الحذف للأدمن وحده، كالأنشطة.
+// اشتراك و مصاريف. صلاحياتها events.*: read لرؤيتها، manage لإنشائها و تعديل برنامجها و
+// هيئتها و مشاركيها، attendance لحضور جلساتها و صورها، read.fees للمال كله — من لا يراه
+// لا تصله أرقامه أصلًا — payments لقبض الاشتراكات، expenses للمصاريف و التبرعات، delete للحذف.
 
 const EVENT_KINDS = ['camp', 'course', 'trip', 'other'];
 const EXPENSE_CATEGORIES = ['transport', 'food', 'gear', 'venue', 'other'];
@@ -5523,6 +6108,25 @@ const eventBranchIds = (eventId) =>
     .prepare('SELECT branch_id FROM event_branches WHERE event_id = ? ORDER BY branch_id')
     .all(eventId)
     .map((r) => r.branch_id);
+
+const eventGroupIds = (eventId) =>
+  db
+    .prepare('SELECT group_id FROM event_groups WHERE event_id = ? ORDER BY group_id')
+    .all(eventId)
+    .map((r) => r.group_id);
+
+// نفس قاعدة النشاط: فرقةٌ اختيرت لها طليعة أو أكثر لا يُضاف منها إلا عناصر تلك الطلائع،
+// و فرقةٌ لم تُختر لها طليعة تشارك كاملةً. مخيم بلا طلائع يقبل كل عناصر فرقه.
+function memberInEventGroups(eventId, member) {
+  const groups = db
+    .prepare(
+      `SELECT g.id, g.branch_id FROM event_groups eg JOIN branch_groups g ON g.id = eg.group_id
+       WHERE eg.event_id = ?`
+    )
+    .all(eventId);
+  if (!groups.some((g) => g.branch_id === member.branch_id)) return true;
+  return groups.some((g) => g.id === member.group_id);
+}
 
 // كنطاق الأنشطة: قسم الطلب أولًا، ثم فرق الحساب المقيَّد — مخيم بلا فرق (الفوج كله) يمرّ
 function eventScopeSQL(req, alias = 'e') {
@@ -5566,7 +6170,10 @@ const eventDueOf = (p, ev) => p.amount_due ?? ev.fee ?? 0;
 // العدّ بالحال: معفى، دفع (كامل المطلوب أو أكثر)، جزئي، لم يدفع؛ مخيم مجّاني لا حال فيه.
 function eventSummary(ev) {
   const out = { participants: 0, expected: 0, collected: 0, outstanding: 0, paid: 0, partial: 0, unpaid: 0, exempt: 0 };
-  for (const p of db.prepare('SELECT amount_due, paid FROM event_participants WHERE event_id = ?').all(ev.id)) {
+  // Whoever was taken off the list counts for nothing here: not as a participant, not as money due or paid
+  for (const p of db
+    .prepare('SELECT amount_due, paid FROM event_participants WHERE event_id = ? AND withdrawn_at IS NULL')
+    .all(ev.id)) {
     const due = eventDueOf(p, ev);
     const paid = p.paid ?? 0;
     out.participants += 1;
@@ -5607,6 +6214,7 @@ function eventSummary(ev) {
 // المشارك بشكل واحد أيًّا كان: اسم العنصر أو القائد، أو اسم الضيف وحده
 const EVENT_PARTICIPANT_SQL = `
   SELECT p.id, p.member_id, p.leader_id, p.guest_name, p.amount_due, p.paid, p.paid_at, p.recorded_by,
+    p.withdrawn_at, p.withdrawn_by,
     COALESCE(m.first_name, l.first_name) AS first_name,
     COALESCE(m.father_name, l.father_name) AS father_name,
     COALESCE(m.last_name, l.last_name) AS last_name,
@@ -5622,7 +6230,7 @@ const EVENT_PARTICIPANT_SQL = `
   WHERE p.event_id = ?`;
 
 const stripParticipantFees = (req, p) =>
-  hasPerm(req, 'sessions.read.fees') ? p : { ...p, amount_due: null, paid: null, paid_at: null, recorded_by: null };
+  hasPerm(req, 'events.read.fees') ? p : { ...p, amount_due: null, paid: null, paid_at: null, recorded_by: null };
 
 const expensesOf = (eventId) =>
   db
@@ -5667,7 +6275,7 @@ const fundingsOf = (eventId) =>
 // The caisses of the event's قسم the caller holds, with what is in each: where money
 // for it can come from or go back to. None for whoever does not write in caisses.
 function eventFundingBoxes(req, ev) {
-  if (!hasPerm(req, 'treasury.manage')) return [];
+  if (!hasPerm(req, 'treasury.transfers')) return [];
   const openings = openingsOf([ev.section]);
   return treasuryBoxes(req)
     .filter((b) => b.visible && b.section === ev.section)
@@ -5685,15 +6293,20 @@ const donationsOf = (eventId) =>
 // كل ما تعرضه صفحة المخيم في طلب واحد. عناصر الفرق الأخرى لا تصل الحساب المقيَّد —
 // كلائحة النشاط المشترك — و القادة و الضيوف يراهم كل من يرى المخيم.
 function eventPayload(req, ev) {
-  const canFees = hasPerm(req, 'sessions.read.fees');
-  const participants = db
-    .prepare(
-      `${EVENT_PARTICIPANT_SQL}${branchFilterSQL(req, 'm.branch_id')}
-       ORDER BY CASE WHEN p.member_id IS NOT NULL THEN 0 WHEN p.leader_id IS NOT NULL THEN 1 ELSE 2 END,
-         b.sort_order, last_name, first_name, p.guest_name, p.id`
-    )
-    .all(ev.id)
-    .map((p) => stripParticipantFees(req, p));
+  const canFees = hasPerm(req, 'events.read.fees');
+  // The list, and apart from it whoever was taken off it — a عنصر or قائد, whose file says he did
+  // not take part. Same names for the same accounts; the second list reaches no count or payment.
+  const peopleOf = (withdrawn) =>
+    db
+      .prepare(
+        `${EVENT_PARTICIPANT_SQL} AND p.withdrawn_at IS ${withdrawn ? 'NOT ' : ''}NULL${branchFilterSQL(req, 'm.branch_id')}
+         ORDER BY CASE WHEN p.member_id IS NOT NULL THEN 0 WHEN p.leader_id IS NOT NULL THEN 1 ELSE 2 END,
+           b.sort_order, last_name, first_name, p.guest_name, p.id`
+      )
+      .all(ev.id)
+      .map((p) => stripParticipantFees(req, p));
+  const participants = peopleOf(false);
+  const withdrawn = peopleOf(true);
   const visible = new Set(participants.map((p) => p.id));
   return {
     ...ev,
@@ -5702,10 +6315,14 @@ function eventPayload(req, ev) {
       ? db.prepare(`SELECT ${fullNameSQL('l')} AS name FROM leaders l WHERE l.id = ?`).get(ev.leader_id)?.name ?? null
       : null,
     branch_ids: eventBranchIds(ev.id),
+    group_ids: eventGroupIds(ev.id),
     staff: staffOf(ev.id),
     participants,
+    withdrawn,
     // عدد المشاركين كلهم: الحساب المقيَّد يرى أسماء فرقه وحدها، و العدد يبقى عدد المخيم
-    participant_total: db.prepare('SELECT COUNT(*) AS n FROM event_participants WHERE event_id = ?').get(ev.id).n,
+    participant_total: db
+      .prepare('SELECT COUNT(*) AS n FROM event_participants WHERE event_id = ? AND withdrawn_at IS NULL')
+      .get(ev.id).n,
     // جلسة بلا ساعة تأتي بعد جلسات يومها المؤقّتة
     sessions: db
       .prepare("SELECT * FROM event_sessions WHERE event_id = ? ORDER BY date, COALESCE(start_time, '24:00'), id")
@@ -5724,6 +6341,8 @@ function eventPayload(req, ev) {
     fundings: canFees ? fundingsOf(ev.id) : null,
     funding_boxes: canFees ? eventFundingBoxes(req, ev) : [],
     summary: canFees ? eventSummary(ev) : null,
+    // تبويب التقييم و نقطته و العلامة في رأس الصفحة — null إن لم تكن لنوعه استمارة
+    evaluation: evalSummaryOf(req, ev, EVENT_EVAL),
   };
 }
 
@@ -5741,7 +6360,7 @@ function parseEvent(req, existing = null) {
   if (place === undefined || plan === undefined) return { error: 'text too long' };
   // قيمة الاشتراك مال: من لا يراها لا يكتبها، و تعديله للمخيم لا يمحوها
   let fee = existing ? existing.fee : null;
-  if (hasPerm(req, 'sessions.read.fees') && 'fee' in b) {
+  if (hasPerm(req, 'events.read.fees') && 'fee' in b) {
     fee = parsePaid(b.fee);
     if (fee === undefined) return { error: 'invalid fee' };
   }
@@ -5761,6 +6380,20 @@ function parseEvent(req, existing = null) {
   );
   // لا يحفظ حسابٌ مقيَّد مخيمًا لم يعد يراه
   if (scope && branchIds.length && !branchIds.some((id) => scope.has(id))) return { error: 'forbidden', status: 403 };
+  // الطلائع: كل طليعة من فرقة مختارة. و ما في المخيم من طلائع فرقٍ لا يراها الحساب المقيَّد
+  // يبقى كما كان، كالفرق تمامًا.
+  const pickedGroups = positiveIds(b.group_ids);
+  if (pickedGroups === null) return { error: 'invalid group_ids' };
+  const branchOfGroup = db.prepare('SELECT branch_id FROM branch_groups WHERE id = ?');
+  for (const g of pickedGroups) {
+    const row = branchOfGroup.get(g);
+    if (!row || !branchIds.includes(row.branch_id)) return { error: 'invalid group_ids' };
+    if (scope && !scope.has(row.branch_id)) return { error: 'forbidden', status: 403 };
+  }
+  const hiddenGroups = scope && existing
+    ? eventGroupIds(existing.id).filter((g) => !scope.has(branchOfGroup.get(g)?.branch_id))
+    : [];
+  const groupIds = [...new Set([...pickedGroups, ...hiddenGroups])].sort((x, y) => x - y);
   // قسم المخيم: قسم فرقه، و إلا قسم الطلب، و إلا ما اختير في النموذج. ثابت بعد الإنشاء.
   if (b.section !== undefined && b.section !== null && b.section !== '' && !parseSection(b.section))
     return { error: 'invalid section' };
@@ -5785,26 +6418,40 @@ function parseEvent(req, existing = null) {
   return {
     values: { kind, title, start_date: b.start_date, end_date: b.end_date, place, fee, plan, leader_id: leaderId, section },
     branchIds,
+    groupIds,
   };
 }
 
-const setEventBranches = (eventId, branchIds) => {
+const setEventBranches = (eventId, branchIds, groupIds = []) => {
   db.prepare('DELETE FROM event_branches WHERE event_id = ?').run(eventId);
   const insert = db.prepare('INSERT INTO event_branches (event_id, branch_id) VALUES (?, ?)');
   for (const b of branchIds) insert.run(eventId, b);
+  db.prepare('DELETE FROM event_groups WHERE event_id = ?').run(eventId);
+  const insertGroup = db.prepare('INSERT INTO event_groups (event_id, group_id) VALUES (?, ?)');
+  for (const g of groupIds) insertGroup.run(eventId, g);
 };
 
-app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
-  const canFees = hasPerm(req, 'sessions.read.fees');
+app.get('/api/events', requirePerm('events.read'), (req, res) => {
+  const canFees = hasPerm(req, 'events.read.fees');
+  const me = req.user.leader_id ? Number(req.user.leader_id) : 'NULL';
+  const today = todayISO();
   let sql = `SELECT e.*, ${fullNameSQL('l')} AS leader_name,
+      -- التقييم: عدد المقيِّمين و معدّلهم، هل لنوعه استمارة، و هل ينتظر تقييم صاحب الحساب
+      (SELECT COUNT(*) FROM event_evaluations ev WHERE ev.event_id = e.id) AS eval_count,
+      (SELECT AVG(ev.average) FROM event_evaluations ev WHERE ev.event_id = e.id) AS eval_avg,
+      EXISTS (SELECT 1 FROM eval_kind_forms k WHERE k.kind = 'event_' || e.kind) AS eval_form,
+      ${eventEvaluatorSQL('e', me)} AS eval_participant,
+      EXISTS (SELECT 1 FROM event_evaluations ev WHERE ev.event_id = e.id AND ev.leader_id = ${me}) AS eval_mine,
       (SELECT GROUP_CONCAT(eb.branch_id) FROM event_branches eb WHERE eb.event_id = e.id) AS branch_ids,
-      (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id) AS participant_count,
+      (SELECT GROUP_CONCAT(eg.group_id) FROM event_groups eg WHERE eg.event_id = e.id) AS group_ids,
+      (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS participant_count,
       (SELECT COUNT(*) FROM event_sessions s WHERE s.event_id = e.id) AS session_count,
-      (SELECT COALESCE(SUM(p.paid), 0) FROM event_participants p WHERE p.event_id = e.id) AS collected,
+      (SELECT COALESCE(SUM(p.paid), 0) FROM event_participants p
+         WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS collected,
       (SELECT COALESCE(SUM(COALESCE(p.amount_due, e.fee, 0)), 0)
-         FROM event_participants p WHERE p.event_id = e.id) AS expected,
+         FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS expected,
       (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
-         FROM event_participants p WHERE p.event_id = e.id) AS outstanding,
+         FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS outstanding,
       (SELECT COALESCE(SUM(d.amount), 0) FROM event_donations d WHERE d.event_id = e.id) AS donations,
       (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses,
       (SELECT COALESCE(SUM(CASE WHEN f.direction = 'to_event' THEN f.amount ELSE -f.amount END), 0)
@@ -5826,15 +6473,31 @@ app.get('/api/events', requirePerm('sessions.read'), (req, res) => {
     db
       .prepare(sql)
       .all(...params)
-      .map((r) => {
-        const out = { ...r, branch_ids: parseIdList(r.branch_ids) };
+      .map(({ eval_count: evalCount, eval_avg: evalAvg, eval_form: evalForm, eval_participant: evalParticipant,
+          eval_mine: evalMine, ...r }) => {
+        // ينتظر تقييمه: قائد أخذ فيه دورًا، و بلغ يومه الأخير، و لم يقيّمه — فلا يرى معدّل غيره قبلها
+        const pending = !!evalParticipant && !evalMine && r.end_date <= today;
+        const out = {
+          ...r,
+          branch_ids: parseIdList(r.branch_ids),
+          group_ids: parseIdList(r.group_ids),
+          eval:
+            evalForm || evalCount
+              ? {
+                  count: evalCount,
+                  average:
+                    (pending && req.user.role !== 'admin') || !hasPerm(req, 'evaluations.read') ? null : round2(evalAvg),
+                  pending,
+                }
+              : null,
+        };
         if (!canFees) for (const k of money) out[k] = null;
         return out;
       })
   );
 });
 
-app.get('/api/events/:id', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/events/:id', requirePerm('events.read'), (req, res) => {
   const ev = loadEvent(req, res);
   if (ev) res.json(eventPayload(req, ev));
 });
@@ -5844,13 +6507,15 @@ fileRoutes('event', '/api/events/:id', loadEvent);
 
 // مخيمات شخص واحد، لملفّه: ما شارك فيه، و للقائد ما كان مسؤوله و لو لم يكن مشاركًا.
 // حضوره من جلساته المسجَّلة، و دفعه لمن يرى المبالغ. نطاق المخيمات نفسه كلائحتها.
+// من أُزيل من لائحة مخيم يبقى فيه سطره، `withdrawn`: لم يشارك — لا حضور و لا دفع يُعرضان له.
 function personEvents(req, column, id) {
-  const canFees = hasPerm(req, 'sessions.read.fees');
+  const canFees = hasPerm(req, 'events.read.fees');
   const asLeader = column === 'leader_id';
   return db
     .prepare(
       `SELECT e.id, e.kind, e.title, e.start_date, e.end_date, e.place, e.fee, e.section,
-         p.id AS participant_id, p.amount_due, p.paid,
+         CASE WHEN p.withdrawn_at IS NULL THEN p.id END AS participant_id, p.amount_due, p.paid,
+         p.withdrawn_at IS NOT NULL AS withdrawn,
          ${asLeader ? 'e.leader_id = @id' : '0'} AS is_responsible,
          ${asLeader
            ? `(SELECT json_group_array(json_object('role', st.role, 'title', st.title)) FROM event_staff st
@@ -5869,31 +6534,40 @@ function personEvents(req, column, id) {
        ORDER BY e.start_date DESC, e.id DESC`
     )
     .all({ id })
-    .map((r) => ({
-      ...r,
-      is_responsible: !!r.is_responsible,
-      roles: JSON.parse(r.roles).sort((a, b) => STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role)),
-      fee: canFees ? r.fee : null,
-      amount_due: canFees ? r.amount_due : null,
-      paid: canFees ? r.paid : null,
-    }));
+    .map((r) => {
+      const roles = JSON.parse(r.roles).sort((a, b) => STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role));
+      // A قائد taken off the list who still led it or held a post in it did take part, as that
+      const off = !!r.withdrawn && !r.is_responsible && roles.length === 0;
+      const counted = !r.withdrawn;
+      return {
+        ...r,
+        withdrawn: off,
+        is_responsible: !!r.is_responsible,
+        roles,
+        fee: canFees ? r.fee : null,
+        amount_due: canFees && counted ? r.amount_due : null,
+        paid: canFees && counted ? r.paid : null,
+        marked: counted ? r.marked : 0,
+        present: counted ? r.present : 0,
+      };
+    });
 }
 
-app.get('/api/members/:id/events', requirePerm('members.read'), requirePerm('sessions.read'), (req, res) => {
+app.get('/api/members/:id/events', requirePerm('members.read'), requirePerm('events.read'), (req, res) => {
   const m = db.prepare('SELECT id, branch_id FROM members WHERE id = ?').get(intOr(req.params.id));
   if (!m) return res.status(404).json({ error: 'member not found' });
   if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
   res.json(personEvents(req, 'member_id', m.id));
 });
 
-app.get('/api/leaders/:id/events', requirePerm('leaders.read'), requirePerm('sessions.read'), (req, res) => {
+app.get('/api/leaders/:id/events', requirePerm('leaders.read'), requirePerm('events.read'), (req, res) => {
   const l = db.prepare('SELECT id, section FROM leaders WHERE id = ?').get(intOr(req.params.id));
   if (!l) return res.status(404).json({ error: 'leader not found' });
   if (!leaderOk(req, l)) return res.status(403).json({ error: 'forbidden' });
   res.json(personEvents(req, 'leader_id', l.id));
 });
 
-app.post('/api/events', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/events', requirePerm('events.manage'), (req, res) => {
   const parsed = parseEvent(req);
   if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
   const v = parsed.values;
@@ -5906,35 +6580,46 @@ app.post('/api/events', requirePerm('sessions.create'), (req, res) => {
       )
       .run(v.kind, v.title, v.start_date, v.end_date, v.place, v.fee, v.plan, v.leader_id, v.section,
         req.user.display_name || req.user.username).lastInsertRowid;
-    setEventBranches(id, parsed.branchIds);
+    setEventBranches(id, parsed.branchIds, parsed.groupIds);
   })();
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
-  auditEvent(req, 'create', 'event', id, null, { ...ev, branch_ids: parsed.branchIds });
+  auditEvent(req, 'create', 'event', id, null, { ...ev, branch_ids: parsed.branchIds, group_ids: parsed.groupIds });
   notifications.eventCreated(req, ev);
+  notifications.eventRole(req, ev, ev.leader_id, 'chief');
   res.status(201).json(eventPayload(req, ev));
 });
 
-app.put('/api/events/:id', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/events/:id', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const parsed = parseEvent(req, ev);
   if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
   const v = parsed.values;
   const branchesBefore = eventBranchIds(ev.id);
+  const groupsBefore = eventGroupIds(ev.id);
   db.transaction(() => {
     db.prepare(
       `UPDATE events SET kind = ?, title = ?, start_date = ?, end_date = ?, place = ?, fee = ?, plan = ?,
          leader_id = ?, updated_at = datetime('now') WHERE id = ?`
     ).run(v.kind, v.title, v.start_date, v.end_date, v.place, v.fee, v.plan, v.leader_id, ev.id);
-    setEventBranches(ev.id, parsed.branchIds);
+    setEventBranches(ev.id, parsed.branchIds, parsed.groupIds);
   })();
   const updated = db.prepare('SELECT * FROM events WHERE id = ?').get(ev.id);
-  auditEvent(req, 'update', 'event', ev.id, { ...ev, branch_ids: branchesBefore }, { ...updated, branch_ids: parsed.branchIds });
+  auditEvent(
+    req,
+    'update',
+    'event',
+    ev.id,
+    { ...ev, branch_ids: branchesBefore, group_ids: groupsBefore },
+    { ...updated, branch_ids: parsed.branchIds, group_ids: parsed.groupIds }
+  );
+  notifications.eventChanged(req, ev, updated);
+  if (updated.leader_id !== ev.leader_id) notifications.eventRole(req, updated, updated.leader_id, 'chief');
   res.json(eventPayload(req, updated));
 });
 
 // المشاركون و البرنامج و الحضور و المصاريف تسقط معه (ON DELETE CASCADE)
-app.delete('/api/events/:id', requireAdmin, (req, res) => {
+app.delete('/api/events/:id', requirePerm('events.delete'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   db.prepare('DELETE FROM events WHERE id = ?').run(ev.id);
@@ -5946,19 +6631,31 @@ app.delete('/api/events/:id', requireAdmin, (req, res) => {
 
 // من يمكن إضافته: عناصر الفرق المعنية (أو فرق القسم كلها لمخيم الفوج) — و من فرق
 // المستخدم وحدها — و قادة القسم الفعّالون، ما لم يكونوا مشاركين بعد. أسماء فقط.
-app.get('/api/events/:id/candidates', requirePerm('sessions.create'), (req, res) => {
+app.get('/api/events/:id/candidates', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const branchIds = eventBranchIds(ev.id);
   // أرقام الفرق من القاعدة و القسم مُتحقَّق منه، فدمجهما في النص آمن
   const pool = branchIds.length ? `m.branch_id IN (${branchIds.join(',')})` : `b.section = '${ev.section}'`;
+  // Branches narrowed to some طلائع offer only those طلائع' عناصر; the others stay whole
+  const groups = db
+    .prepare(
+      `SELECT g.id, g.branch_id FROM event_groups eg JOIN branch_groups g ON g.id = eg.group_id
+       WHERE eg.event_id = ?`
+    )
+    .all(ev.id);
+  const narrowed = [...new Set(groups.map((g) => g.branch_id))];
+  const byGroup = groups.length
+    ? ` AND (m.branch_id NOT IN (${narrowed.join(',')}) OR m.group_id IN (${groups.map((g) => g.id).join(',')}))`
+    : '';
   const members = db
     .prepare(
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.group_id, g.name AS group_name,
               b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
        FROM members m JOIN branches b ON b.id = m.branch_id LEFT JOIN branch_groups g ON g.id = m.group_id
-       WHERE m.status = 'active' AND ${pool}${branchFilterSQL(req, 'm.branch_id')}
-         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.member_id = m.id)
+       WHERE m.status = 'active' AND ${pool}${byGroup}${branchFilterSQL(req, 'm.branch_id')}
+         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.member_id = m.id
+                           AND p.withdrawn_at IS NULL)
        ORDER BY b.sort_order, b.id, m.last_name, m.first_name`
     )
     .all(ev.id);
@@ -5966,14 +6663,15 @@ app.get('/api/events/:id/candidates', requirePerm('sessions.create'), (req, res)
     .prepare(
       `SELECT l.id, l.first_name, l.father_name, l.last_name FROM leaders l
        WHERE l.status = 'active' AND l.section = ?
-         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.leader_id = l.id)
+         AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.leader_id = l.id
+                           AND p.withdrawn_at IS NULL)
        ORDER BY l.last_name, l.first_name`
     )
     .all(ev.section, ev.id);
   res.json({ members, leaders });
 });
 
-app.post('/api/events/:id/participants', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/events/:id/participants', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const memberIds = positiveIds(req.body?.member_ids);
@@ -5983,11 +6681,17 @@ app.post('/api/events/:id/participants', requirePerm('sessions.create'), (req, r
     return res.status(400).json({ error: 'invalid participants' });
   const branchIds = eventBranchIds(ev.id);
   const memberOf = db.prepare(
-    'SELECT m.id, m.branch_id, m.status, b.section FROM members m JOIN branches b ON b.id = m.branch_id WHERE m.id = ?'
+    'SELECT m.id, m.branch_id, m.group_id, m.status, b.section FROM members m JOIN branches b ON b.id = m.branch_id WHERE m.id = ?'
   );
   for (const id of memberIds) {
     const m = memberOf.get(id);
-    if (!m || m.status !== 'active' || m.section !== ev.section || (branchIds.length && !branchIds.includes(m.branch_id)))
+    if (
+      !m ||
+      m.status !== 'active' ||
+      m.section !== ev.section ||
+      (branchIds.length && !branchIds.includes(m.branch_id)) ||
+      !memberInEventGroups(ev.id, m)
+    )
       return res.status(400).json({ error: 'invalid member_ids' });
     if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden_branch' });
   }
@@ -6001,17 +6705,30 @@ app.post('/api/events/:id/participants', requirePerm('sessions.create'), (req, r
       .all(ev.id)
       .map((r) => r.guest_name.toLowerCase())
   );
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO event_participants (event_id, member_id, leader_id, guest_name) VALUES (?, ?, ?, ?)'
+  // Someone taken off the list earlier comes back on his own row, with what it held (payment,
+  // présences) — not as a second one beside it. A row already on the list changes nothing.
+  const reinstate = 'DO UPDATE SET withdrawn_at = NULL, withdrawn_by = NULL WHERE withdrawn_at IS NOT NULL';
+  const insertMember = db.prepare(
+    `INSERT INTO event_participants (event_id, member_id) VALUES (?, ?) ON CONFLICT(event_id, member_id) ${reinstate}`
   );
+  const insertLeader = db.prepare(
+    `INSERT INTO event_participants (event_id, leader_id) VALUES (?, ?) ON CONFLICT(event_id, leader_id) ${reinstate}`
+  );
+  const insertGuest = db.prepare('INSERT OR IGNORE INTO event_participants (event_id, guest_name) VALUES (?, ?)');
   let added = 0;
+  // The قادة newly registered: each hears it
+  const newLeaders = [];
   db.transaction(() => {
-    for (const id of memberIds) added += insert.run(ev.id, id, null, null).changes;
-    for (const id of leaderIds) added += insert.run(ev.id, null, id, null).changes;
+    for (const id of memberIds) added += insertMember.run(ev.id, id).changes;
+    for (const id of leaderIds)
+      if (insertLeader.run(ev.id, id).changes) {
+        added += 1;
+        newLeaders.push(id);
+      }
     for (const name of guestNames) {
       if (guests.has(name.toLowerCase())) continue;
       guests.add(name.toLowerCase());
-      added += insert.run(ev.id, null, null, name).changes;
+      added += insertGuest.run(ev.id, name).changes;
     }
   })();
   if (added)
@@ -6020,6 +6737,7 @@ app.post('/api/events/:id/participants', requirePerm('sessions.create'), (req, r
       leader_ids: leaderIds,
       guest_names: guestNames,
     });
+  for (const id of newLeaders) notifications.eventRole(req, ev, id, 'participant');
   res.status(201).json(eventPayload(req, ev));
 });
 
@@ -6042,12 +6760,21 @@ function loadParticipant(req, res, ev) {
   return p;
 }
 
-app.delete('/api/events/:id/participants/:pid', requirePerm('sessions.create'), (req, res) => {
+// Taking someone off the list: a عنصر or قائد keeps his row, marked — his file then says he did not
+// take part in this مخيم, and nothing counts him (money, présences, evaluators) until he is added
+// again. A guest has no file to say it in, so he is simply struck off.
+app.delete('/api/events/:id/participants/:pid', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const p = loadParticipant(req, res, ev);
   if (!p) return;
-  db.prepare('DELETE FROM event_participants WHERE id = ?').run(p.id);
+  if (p.withdrawn_at) return res.json(eventPayload(req, ev));
+  if (p.guest_name) db.prepare('DELETE FROM event_participants WHERE id = ?').run(p.id);
+  else
+    db.prepare("UPDATE event_participants SET withdrawn_at = datetime('now'), withdrawn_by = ? WHERE id = ?").run(
+      req.user.display_name || req.user.username,
+      p.id
+    );
   auditEvent(req, 'remove_participant', 'event', ev.id, p, null);
   res.json(eventPayload(req, ev));
 });
@@ -6055,13 +6782,13 @@ app.delete('/api/events/:id/participants/:pid', requirePerm('sessions.create'), 
 // الدفع: paid هو كل ما دفعه المشارك حتى الآن (NULL = لم يدفع). amount_due ما يُطلب منه
 // إن خالف قيمة الاشتراك (0 = معفى، NULL = القيمة نفسها) — شرطٌ من شروط المخيم، فيضعه
 // من يملك تعديله.
-app.put('/api/events/:id/participants/:pid', requirePerm('sessions.read.fees'), (req, res) => {
-  if (!hasPerm(req, 'sessions.attendance') && !hasPerm(req, 'sessions.create'))
-    return res.status(403).json({ error: 'forbidden' });
+app.put('/api/events/:id/participants/:pid', requirePerm('events.payments'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const p = loadParticipant(req, res, ev);
   if (!p) return;
+  // Off the list: nothing is due from him, nothing is taken
+  if (p.withdrawn_at) return res.status(404).json({ error: 'participant not found' });
   const b = req.body || {};
   const sets = [];
   const params = [];
@@ -6072,7 +6799,7 @@ app.put('/api/events/:id/participants/:pid', requirePerm('sessions.read.fees'), 
     params.push(paid, paid, req.user.display_name || req.user.username);
   }
   if ('amount_due' in b) {
-    if (!hasPerm(req, 'sessions.create')) return res.status(403).json({ error: 'forbidden' });
+    if (!hasPerm(req, 'events.manage')) return res.status(403).json({ error: 'forbidden' });
     const due = parsePaid(b.amount_due);
     if (due === undefined) return res.status(400).json({ error: 'invalid amount_due' });
     sets.push('amount_due = ?');
@@ -6112,7 +6839,7 @@ const loadEventSession = (req, res, ev) => {
   return s || null;
 };
 
-app.post('/api/events/:id/sessions', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/events/:id/sessions', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const parsed = parseEventSession(req, ev);
@@ -6124,7 +6851,7 @@ app.post('/api/events/:id/sessions', requirePerm('sessions.create'), (req, res) 
   res.status(201).json(eventPayload(req, ev));
 });
 
-app.put('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/events/:id/sessions/:sid', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const s = loadEventSession(req, res, ev);
@@ -6139,7 +6866,7 @@ app.put('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req, r
 });
 
 // حضورها يسقط معها
-app.delete('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req, res) => {
+app.delete('/api/events/:id/sessions/:sid', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const s = loadEventSession(req, res, ev);
@@ -6150,7 +6877,7 @@ app.delete('/api/events/:id/sessions/:sid', requirePerm('sessions.create'), (req
 });
 
 // حضور جلسة: records = [{ participant_id, status }]، و status = null يمسح التسجيل
-app.post('/api/events/:id/sessions/:sid/attendance', requirePerm('sessions.attendance'), (req, res) => {
+app.post('/api/events/:id/sessions/:sid/attendance', requirePerm('events.attendance'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const s = loadEventSession(req, res, ev);
@@ -6159,7 +6886,7 @@ app.post('/api/events/:id/sessions/:sid/attendance', requirePerm('sessions.atten
   if (records.length === 0 || records.length > 500) return res.status(400).json({ error: 'invalid records' });
   const participantOf = db.prepare(
     `SELECT p.id, p.member_id, m.branch_id FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
-     WHERE p.id = ? AND p.event_id = ?`
+     WHERE p.id = ? AND p.event_id = ? AND p.withdrawn_at IS NULL`
   );
   const upsert = db.prepare(
     `INSERT INTO event_attendance (session_id, participant_id, status) VALUES (?, ?, ?)
@@ -6206,7 +6933,7 @@ const loadExpense = (req, res, ev) => {
 };
 
 // المصاريف مال كذلك: تُكتب بصلاحية تعديل المخيم و رؤية المبالغ معًا
-const requireEventMoney = [requirePerm('sessions.create'), requirePerm('sessions.read.fees')];
+const requireEventMoney = [requirePerm('events.expenses')];
 const expensesPayload = (ev) => ({ expenses: expensesOf(ev.id), summary: eventSummary(ev) });
 
 app.post('/api/events/:id/expenses', ...requireEventMoney, (req, res) => {
@@ -6285,7 +7012,7 @@ const loadStaff = (req, res, ev) => {
   return st || null;
 };
 
-app.post('/api/events/:id/staff', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/events/:id/staff', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const parsed = parseStaff(req, ev);
@@ -6295,10 +7022,11 @@ app.post('/api/events/:id/staff', requirePerm('sessions.create'), (req, res) => 
     .prepare('INSERT INTO event_staff (event_id, role, title, leader_id, name) VALUES (?, ?, ?, ?, ?)')
     .run(ev.id, v.role, v.title, v.leader_id, v.name).lastInsertRowid;
   auditEvent(req, 'create', 'event_staff', id, null, db.prepare('SELECT * FROM event_staff WHERE id = ?').get(id));
+  notifications.eventRole(req, ev, v.leader_id, v.role, v.title);
   res.status(201).json({ staff: staffOf(ev.id) });
 });
 
-app.put('/api/events/:id/staff/:sid', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/events/:id/staff/:sid', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const st = loadStaff(req, res, ev);
@@ -6310,10 +7038,13 @@ app.put('/api/events/:id/staff/:sid', requirePerm('sessions.create'), (req, res)
     v.role, v.title, v.leader_id, v.name, st.id
   );
   auditEvent(req, 'update', 'event_staff', st.id, st, db.prepare('SELECT * FROM event_staff WHERE id = ?').get(st.id));
+  // A new قائد in the post, or the same one given another post
+  if (v.leader_id && (v.leader_id !== st.leader_id || v.role !== st.role))
+    notifications.eventRole(req, ev, v.leader_id, v.role, v.title);
   res.json({ staff: staffOf(ev.id) });
 });
 
-app.delete('/api/events/:id/staff/:sid', requirePerm('sessions.create'), (req, res) => {
+app.delete('/api/events/:id/staff/:sid', requirePerm('events.manage'), (req, res) => {
   const ev = loadEvent(req, res);
   if (!ev) return;
   const st = loadStaff(req, res, ev);
@@ -6408,7 +7139,7 @@ function loadFunding(req, res, ev) {
   return f;
 }
 
-const requireEventCaisse = [requirePerm('treasury.manage'), requirePerm('sessions.read.fees')];
+const requireEventCaisse = [requirePerm('treasury.transfers'), requirePerm('events.read.fees')];
 const fundingsPayload = (req, ev) => ({
   fundings: fundingsOf(ev.id),
   funding_boxes: eventFundingBoxes(req, ev),
@@ -6460,10 +7191,9 @@ app.delete('/api/events/:id/fundings/:fid', ...requireEventCaisse, (req, res) =>
 
 // ---------- الاجتماعات ----------
 // محضر كل اجتماع: الموضوع و سببه، الحضور، بنود جدول الأعمال و ما دار فيها، و القرارات
-// بمسؤوليها و مهلها — ثم متابعة القرارات من اجتماع إلى آخر. صلاحياتها صلاحيات الأنشطة،
-// كالمخيمات و بطاقات التحضير: sessions.read لقراءة المحاضر، sessions.create لكتابتها و
-// متابعة قراراتها. الحذف للأدمن وحده. النطاق كالأنشطة: قسم الطلب أولًا، ثم فرق الحساب
-// المقيَّد — اجتماع الفوج (بلا فرقة) يمرّ.
+// بمسؤوليها و مهلها — ثم متابعة القرارات من اجتماع إلى آخر. صلاحياتها meetings.*: read
+// لقراءة المحاضر، manage لكتابتها، followup لمتابعة قراراتها وحدها، delete لحذفها. النطاق
+// كالأنشطة: قسم الطلب أولًا، ثم فرق الحساب المقيَّد — اجتماع الفوج (بلا فرقة) يمرّ.
 
 const MEETING_KINDS = ['leaders', 'branch', 'amana', 'prep', 'review', 'parents', 'other'];
 const DECISION_STATUSES = ['open', 'done', 'dropped'];
@@ -6471,15 +7201,53 @@ const ATTENDANCE_STATUSES = ['present', 'absent', 'excused'];
 const optionalISODate = (v) => (v === undefined || v === null || v === '' ? null : validISODate(v) ? v : undefined);
 const leaderFullName = (l) => [l.first_name, l.father_name, l.last_name].filter(Boolean).join(' ');
 
+// الفرق المعنية بالاجتماع في meeting_branches؛ لا صف = اجتماع الفوج. meetings.branch_id هو
+// الفرقة الرئيسية فقط (أولى المختارة) — تعتمد عليها متابعة الاجتماع السابق، كما في الأنشطة.
+const meetingBranchIds = (meetingId) =>
+  db
+    .prepare('SELECT branch_id FROM meeting_branches WHERE meeting_id = ? ORDER BY branch_id')
+    .all(meetingId)
+    .map((r) => r.branch_id);
+
+// كنطاق الأنشطة: قسم الطلب أولًا، ثم فرق الحساب المقيَّد — اجتماع بلا فرق (الفوج) يمرّ
 const meetingScopeSQL = (req, alias = 'm') => {
   const section = activeSection(req);
-  return `${section ? ` AND ${alias}.section = '${section}'` : ''}${branchFilterSQL(req, `${alias}.branch_id`)}`;
+  const bySection = section ? ` AND ${alias}.section = '${section}'` : '';
+  const scope = allowedBranches(req);
+  if (!scope) return bySection;
+  const ids = [...scope].map(Number).filter(Number.isInteger);
+  return `${bySection} AND (NOT EXISTS (SELECT 1 FROM meeting_branches mb WHERE mb.meeting_id = ${alias}.id)
+      OR EXISTS (SELECT 1 FROM meeting_branches mb WHERE mb.meeting_id = ${alias}.id
+                 AND mb.branch_id IN (${ids.length ? ids.join(',') : -1})))`;
 };
 
 const meetingOk = (req, m) => {
   const section = activeSection(req);
-  return (!section || m.section === section) && branchOk(req, m.branch_id);
+  if (section && m.section !== section) return false;
+  const scope = allowedBranches(req);
+  if (!scope) return true;
+  const ids = meetingBranchIds(m.id);
+  return ids.length === 0 || ids.some((b) => scope.has(b));
 };
+
+// كل اجتماع مع فرقه ({ id, name_fr, name_ar }) و أرقامها
+function withMeetingBranches(rows) {
+  const by = new Map();
+  const links = db
+    .prepare(
+      `SELECT mb.meeting_id, b.id, b.name_fr, b.name_ar FROM meeting_branches mb
+       JOIN branches b ON b.id = mb.branch_id ORDER BY b.sort_order, b.id`
+    )
+    .all();
+  for (const r of links) {
+    if (!by.has(r.meeting_id)) by.set(r.meeting_id, []);
+    by.get(r.meeting_id).push({ id: r.id, name_fr: r.name_fr, name_ar: r.name_ar });
+  }
+  return rows.map((m) => {
+    const branches = by.get(m.id) || [];
+    return { ...m, branches, branch_ids: branches.map((b) => b.id) };
+  });
+}
 
 // الاجتماع المطلوب بعد التحقّق من نطاقه، أو null بعد ردّ 404 / 403
 function loadMeeting(req, res) {
@@ -6559,7 +7327,7 @@ function followupsOf(m) {
 
 // المحضر كله في طلب واحد
 const meetingPayload = (m) => ({
-  ...db.prepare(`SELECT ${MEETING_COLUMNS} ${MEETING_JOINS} WHERE m.id = ?`).get(m.id),
+  ...withMeetingBranches([db.prepare(`SELECT ${MEETING_COLUMNS} ${MEETING_JOINS} WHERE m.id = ?`).get(m.id)])[0],
   attendees: attendeesOf(m.id),
   followups: followupsOf(m),
   items: itemsOf(m.id),
@@ -6600,18 +7368,33 @@ function parseMeeting(req, existing = null) {
   if (purpose === undefined || place === undefined || notes === undefined) return { error: 'text too long' };
   const nextDate = optionalISODate(b.next_date);
   if (nextDate === undefined) return { error: 'invalid next_date' };
-  // اجتماع فرقة: من فرق المستخدم. بلا فرقة: اجتماع الفوج
-  let branchId = null;
-  if (b.branch_id !== undefined && b.branch_id !== null && b.branch_id !== '') {
-    branchId = Number(b.branch_id);
-    if (!Number.isInteger(branchId) || !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
-      return { error: 'invalid branch_id' };
-    if (!branchOk(req, branchId)) return { error: 'forbidden', status: 403 };
+  // الفرق المعنية: كل فرقة من فرق المستخدم؛ و ما في الاجتماع من فرق لا يراها (النموذج لم
+  // يعرضها له) يبقى كما كان. بلا فرق: اجتماع الفوج. branch_id القديم يُقبل فرقةً وحيدة.
+  const raw = Array.isArray(b.branch_ids)
+    ? b.branch_ids
+    : b.branch_id !== undefined && b.branch_id !== null && b.branch_id !== ''
+      ? [b.branch_id]
+      : [];
+  const picked = [...new Set(raw.map(Number))];
+  const before = existing ? meetingBranchIds(existing.id) : [];
+  for (const id of picked) {
+    if (!Number.isInteger(id) || !db.prepare('SELECT id FROM branches WHERE id = ?').get(id))
+      return { error: 'invalid branch_ids' };
+    if (!before.includes(id) && !branchOk(req, id)) return { error: 'forbidden', status: 403 };
   }
+  const scope = allowedBranches(req);
+  const branchIds = [...new Set([...picked, ...(scope ? before.filter((id) => !scope.has(id)) : [])])].sort(
+    (x, y) => x - y
+  );
+  // لا يحفظ حسابٌ مقيَّد اجتماعًا لم يعد يراه
+  if (scope && branchIds.length && !branchIds.some((id) => scope.has(id))) return { error: 'forbidden', status: 403 };
+  const branchId = branchIds[0] ?? null;
   if (b.section !== undefined && b.section !== null && b.section !== '' && !parseSection(b.section))
     return { error: 'invalid section' };
   // قسم الاجتماع: قسم فرقته، و إلا قسم الطلب، و إلا ما اختير في النموذج. ثابت بعد الإنشاء
-  const branchSection = branchId ? sectionOfBranch(branchId) : null;
+  const branchSections = [...new Set(branchIds.map(sectionOfBranch))];
+  if (branchSections.length > 1) return { error: 'mixed_sections' };
+  const branchSection = branchSections[0] || null;
   const section = existing ? existing.section : branchSection || activeSection(req) || parseSection(b.section) || 'M';
   if (branchSection && branchSection !== section) return { error: 'mixed_sections' };
   const chair = parsePerson(b.chair_id, b.chair_name, section, existing?.chair_id);
@@ -6636,8 +7419,15 @@ function parseMeeting(req, existing = null) {
       notes,
       next_date: nextDate,
     },
+    branchIds,
   };
 }
+
+const setMeetingBranches = (meetingId, branchIds) => {
+  db.prepare('DELETE FROM meeting_branches WHERE meeting_id = ?').run(meetingId);
+  const insert = db.prepare('INSERT INTO meeting_branches (meeting_id, branch_id) VALUES (?, ?)');
+  for (const b of branchIds) insert.run(meetingId, b);
+};
 
 // جدول الأعمال يُكتب عند الإنشاء سطرًا لكل بند؛ ما دار فيها يُكتب بعدها
 function parseAgenda(v) {
@@ -6647,7 +7437,7 @@ function parseAgenda(v) {
   return titles.includes(undefined) ? null : titles.filter(Boolean);
 }
 
-app.get('/api/meetings', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/meetings', requirePerm('meetings.read'), (req, res) => {
   const { q, kind, branch, from, to } = req.query;
   const params = { today: todayISO() };
   const count = (table, where) => `(SELECT COUNT(*) FROM ${table} x WHERE x.meeting_id = m.id AND ${where})`;
@@ -6667,8 +7457,9 @@ app.get('/api/meetings', requirePerm('sessions.read'), (req, res) => {
     params.kind = kind;
   }
   // 'group' = اجتماعات الفوج وحدها
-  if (branch === 'group') sql += ' AND m.branch_id IS NULL';
-  else if (branch) sql += ` AND m.branch_id = ${intOr(branch)}`;
+  if (branch === 'group') sql += ' AND NOT EXISTS (SELECT 1 FROM meeting_branches f WHERE f.meeting_id = m.id)';
+  else if (branch)
+    sql += ` AND EXISTS (SELECT 1 FROM meeting_branches f WHERE f.meeting_id = m.id AND f.branch_id = ${intOr(branch)})`;
   if (validISODate(from)) {
     sql += ' AND m.date >= @from';
     params.from = from;
@@ -6685,12 +7476,12 @@ app.get('/api/meetings', requirePerm('sessions.read'), (req, res) => {
       OR EXISTS (SELECT 1 FROM meeting_decisions d WHERE d.meeting_id = m.id AND d.text LIKE @q))`;
   }
   sql += " ORDER BY m.date DESC, COALESCE(m.start_time, '') DESC, m.id DESC";
-  res.json(db.prepare(sql).all(params));
+  res.json(withMeetingBranches(db.prepare(sql).all(params)));
 });
 
 // متابعة القرارات عبر الاجتماعات: ما لم يُنفَّذ أولًا بمهله (الأقرب فالأبعد، و بلا مهلة
 // آخرًا)، ثم المنفَّذ و الملغى من الأحدث. status: open | done | dropped | all
-app.get('/api/meeting-decisions', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/meeting-decisions', requirePerm('meetings.read'), (req, res) => {
   const { status, q, leader } = req.query;
   const params = {};
   let sql = `SELECT ${DECISION_COLUMNS}, m.title AS meeting_title, m.date AS meeting_date, m.kind AS meeting_kind,
@@ -6714,12 +7505,12 @@ app.get('/api/meeting-decisions', requirePerm('sessions.read'), (req, res) => {
   res.json(db.prepare(sql).all(params));
 });
 
-app.get('/api/meetings/:id', requirePerm('sessions.read'), (req, res) => {
+app.get('/api/meetings/:id', requirePerm('meetings.read'), (req, res) => {
   const m = loadMeeting(req, res);
   if (m) res.json(meetingPayload(m));
 });
 
-app.post('/api/meetings', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/meetings', requirePerm('meetings.manage'), (req, res) => {
   const parsed = parseMeeting(req);
   if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
   const agenda = parseAgenda(req.body?.agenda);
@@ -6737,31 +7528,37 @@ app.post('/api/meetings', requirePerm('sessions.create'), (req, res) => {
       .run({ ...v, actor: actorName(req) }).lastInsertRowid;
     const insert = db.prepare('INSERT INTO meeting_items (meeting_id, position, title) VALUES (?, ?, ?)');
     agenda.forEach((title, i) => insert.run(id, i + 1, title));
+    setMeetingBranches(id, parsed.branchIds);
   })();
   const m = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id);
-  auditEvent(req, 'create', 'meeting', id, null, { ...m, agenda });
+  auditEvent(req, 'create', 'meeting', id, null, { ...m, branch_ids: parsed.branchIds, agenda });
+  notifications.meetingCreated(req, m, parsed.branchIds);
   res.status(201).json(meetingPayload(m));
 });
 
-app.put('/api/meetings/:id', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/meetings/:id', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const parsed = parseMeeting(req, m);
   if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error });
-  db.prepare(
-    `UPDATE meetings SET kind = @kind, title = @title, purpose = @purpose, date = @date, start_time = @start_time,
-       end_time = @end_time, place = @place, branch_id = @branch_id, chair_id = @chair_id, chair_name = @chair_name,
-       secretary_id = @secretary_id, secretary_name = @secretary_name, notes = @notes, next_date = @next_date,
-       updated_at = datetime('now'), updated_by = @actor
-     WHERE id = @id`
-  ).run({ ...parsed.values, actor: actorName(req), id: m.id });
-  const updated = db.prepare('SELECT * FROM meetings WHERE id = ?').get(m.id);
-  auditEvent(req, 'update', 'meeting', m.id, m, updated);
+  const beforeUpdate = { ...m, branch_ids: meetingBranchIds(m.id) };
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE meetings SET kind = @kind, title = @title, purpose = @purpose, date = @date, start_time = @start_time,
+         end_time = @end_time, place = @place, branch_id = @branch_id, chair_id = @chair_id, chair_name = @chair_name,
+         secretary_id = @secretary_id, secretary_name = @secretary_name, notes = @notes, next_date = @next_date,
+         updated_at = datetime('now'), updated_by = @actor
+       WHERE id = @id`
+    ).run({ ...parsed.values, actor: actorName(req), id: m.id });
+    setMeetingBranches(m.id, parsed.branchIds);
+  })();
+  const updated = { ...db.prepare('SELECT * FROM meetings WHERE id = ?').get(m.id), branch_ids: parsed.branchIds };
+  auditEvent(req, 'update', 'meeting', m.id, beforeUpdate, updated);
   res.json(meetingPayload(updated));
 });
 
 // الحضور و البنود و القرارات تسقط معه (ON DELETE CASCADE)
-app.delete('/api/meetings/:id', requireAdmin, (req, res) => {
+app.delete('/api/meetings/:id', requirePerm('meetings.delete'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const before = meetingPayload(m);
@@ -6772,7 +7569,7 @@ app.delete('/api/meetings/:id', requireAdmin, (req, res) => {
 
 // الحضور كله دفعة واحدة، كما في نافذة التسجيل: قادة القسم بحالاتهم (من لا حالة له لم
 // يُدعَ) ثم أسماء الضيوف. قائدٌ أُرشف يبقى إن كان في المحضر من قبل، و لا يُضاف من جديد.
-app.put('/api/meetings/:id/attendance', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/meetings/:id/attendance', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const b = req.body || {};
@@ -6827,7 +7624,7 @@ const loadItem = (req, res, m) => {
   return it || null;
 };
 
-app.post('/api/meetings/:id/items', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/meetings/:id/items', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const parsed = parseItem(req);
@@ -6846,7 +7643,7 @@ app.post('/api/meetings/:id/items', requirePerm('sessions.create'), (req, res) =
   res.status(201).json({ items: itemsOf(m.id) });
 });
 
-app.put('/api/meetings/:id/items/:iid', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/meetings/:id/items/:iid', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const it = loadItem(req, res, m);
@@ -6866,7 +7663,7 @@ app.put('/api/meetings/:id/items/:iid', requirePerm('sessions.create'), (req, re
 });
 
 // Removing one closes the gap: the points that follow move up a number
-app.delete('/api/meetings/:id/items/:iid', requirePerm('sessions.create'), (req, res) => {
+app.delete('/api/meetings/:id/items/:iid', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const it = loadItem(req, res, m);
@@ -6903,7 +7700,7 @@ const loadDecision = (req, res, m) => {
 const decisionById = (id) =>
   db.prepare(`SELECT ${DECISION_COLUMNS} FROM meeting_decisions d LEFT JOIN leaders o ON o.id = d.leader_id WHERE d.id = ?`).get(id);
 
-app.post('/api/meetings/:id/decisions', requirePerm('sessions.create'), (req, res) => {
+app.post('/api/meetings/:id/decisions', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const parsed = parseDecision(req, m);
@@ -6926,10 +7723,11 @@ app.post('/api/meetings/:id/decisions', requirePerm('sessions.create'), (req, re
     touchMeeting(req, m.id);
   })();
   auditEvent(req, 'create', 'meeting_decision', id, null, decisionById(id));
+  notifications.decisionAssigned(req, m, decisionById(id));
   res.status(201).json({ decisions: decisionsOf(m.id) });
 });
 
-app.put('/api/meetings/:id/decisions/:did', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/meetings/:id/decisions/:did', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const d = loadDecision(req, res, m);
@@ -6952,11 +7750,13 @@ app.put('/api/meetings/:id/decisions/:did', requirePerm('sessions.create'), (req
     touchMeeting(req, m.id);
   })();
   auditEvent(req, 'update', 'meeting_decision', d.id, d, decisionById(d.id));
+  // Passed on to another قائد
+  if (v.leader_id && v.leader_id !== d.leader_id) notifications.decisionAssigned(req, m, decisionById(d.id));
   res.json({ decisions: decisionsOf(m.id) });
 });
 
 // Only the state — the follow-up list ticks a decision off without reopening its form
-app.put('/api/meetings/:id/decisions/:did/status', requirePerm('sessions.create'), (req, res) => {
+app.put('/api/meetings/:id/decisions/:did/status', requirePerm('meetings.followup'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const d = loadDecision(req, res, m);
@@ -6978,7 +7778,7 @@ app.put('/api/meetings/:id/decisions/:did/status', requirePerm('sessions.create'
   res.json({ decision: decisionById(d.id), decisions: decisionsOf(m.id) });
 });
 
-app.delete('/api/meetings/:id/decisions/:did', requirePerm('sessions.create'), (req, res) => {
+app.delete('/api/meetings/:id/decisions/:did', requirePerm('meetings.manage'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const d = loadDecision(req, res, m);
@@ -7048,7 +7848,7 @@ function treasuryBoxes(req) {
   ]);
 }
 
-// A box the caller sees — and, with treasury.manage, writes in — or null
+// A box the caller sees — and, with treasury.entries / transfers / counts, writes in — or null
 const visibleBox = (req, key) => treasuryBoxes(req).find((b) => b.visible && b.key === key) || null;
 
 const openingsOf = (sections) =>
@@ -7355,7 +8155,10 @@ function treasuryPayload(req) {
     },
     rows: rows.sort(rowOrder),
     owed: owed.sort((a, b) => (a.spent_on !== b.spent_on ? (a.spent_on < b.spent_on ? -1 : 1) : a.id - b.id)),
-    can_manage: hasPerm(req, 'treasury.manage'),
+    // What the caller may write in the caisses, action by action
+    can_entries: hasPerm(req, 'treasury.entries'),
+    can_transfers: hasPerm(req, 'treasury.transfers'),
+    can_counts: hasPerm(req, 'treasury.counts'),
   };
 }
 
@@ -7367,7 +8170,7 @@ app.get('/api/treasury', requirePerm('treasury.read'), (req, res) => {
 const bodyBox = (req) => visibleBox(req, req.body?.box ?? activeSection(req));
 
 // رصيد الافتتاح: المبلغ الذي عُدّ في الصندوق صباح ذلك اليوم. يُصحَّح متى لزم.
-app.put('/api/treasury/opening', requirePerm('treasury.manage'), (req, res) => {
+app.put('/api/treasury/opening', requirePerm('treasury.counts'), (req, res) => {
   const box = bodyBox(req);
   if (!box) return res.status(400).json({ error: 'invalid box' });
   const amount = parsePaid(req.body?.amount);
@@ -7473,7 +8276,9 @@ const insertEntry = (req, v, section, sessionId = null) => {
       section,
       actorName(req)
     ).lastInsertRowid;
-  auditEvent(req, 'create', 'treasury_entry', id, null, entryById(id));
+  const entry = entryById(id);
+  auditEvent(req, 'create', 'treasury_entry', id, null, entry);
+  notifications.treasuryEntry(req, { ...entry, id, section, branch_id: v.branch_id ?? null });
 };
 
 const updateEntry = (req, e, v) => {
@@ -7501,7 +8306,7 @@ const deleteEntry = (req, e) => {
   auditEvent(req, 'delete', 'treasury_entry', e.id, e, null);
 };
 
-app.post('/api/treasury/entries', requirePerm('treasury.manage'), (req, res) => {
+app.post('/api/treasury/entries', requirePerm('treasury.entries'), (req, res) => {
   const box = bodyBox(req);
   if (!box) return res.status(400).json({ error: 'invalid box' });
   const parsed = parseTreasuryEntry(req, req.body?.direction);
@@ -7512,7 +8317,7 @@ app.post('/api/treasury/entries', requirePerm('treasury.manage'), (req, res) => 
 
 // Moves a line to another box the caller holds, when asked. A نشاط's مصروف stays in
 // its نشاط's فرقة's box.
-app.put('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.put('/api/treasury/entries/:xid', requirePerm('treasury.entries'), (req, res) => {
   const [e, box] = loadEntry(req, res);
   if (!e) return;
   const parsed = parseTreasuryEntry(req, e.direction);
@@ -7531,7 +8336,7 @@ app.put('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res)
 });
 
 // تسديد مصروف لم يُدفع: يخرج من صندوقه في ذلك اليوم (اليوم إن لم يُذكر)
-app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.manage'), (req, res) => {
+app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.entries'), (req, res) => {
   const [e] = loadEntry(req, res);
   if (!e) return;
   if (e.direction !== 'out' || e.paid_on) return res.status(400).json({ error: 'not owed' });
@@ -7544,7 +8349,7 @@ app.post('/api/treasury/entries/:xid/pay', requirePerm('treasury.manage'), (req,
   res.json(treasuryPayload(req));
 });
 
-app.delete('/api/treasury/entries/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.delete('/api/treasury/entries/:xid', requirePerm('treasury.entries'), (req, res) => {
   const [e] = loadEntry(req, res);
   if (!e) return;
   deleteEntry(req, e);
@@ -7590,7 +8395,7 @@ function loadTransfer(req, res) {
   return t;
 }
 
-app.post('/api/treasury/transfers', requirePerm('treasury.manage'), (req, res) => {
+app.post('/api/treasury/transfers', requirePerm('treasury.transfers'), (req, res) => {
   const parsed = parseTransfer(req);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   const v = parsed.values;
@@ -7604,7 +8409,7 @@ app.post('/api/treasury/transfers', requirePerm('treasury.manage'), (req, res) =
   res.status(201).json(treasuryPayload(req));
 });
 
-app.put('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.put('/api/treasury/transfers/:xid', requirePerm('treasury.transfers'), (req, res) => {
   const t = loadTransfer(req, res);
   if (!t) return;
   const parsed = parseTransfer(req);
@@ -7619,7 +8424,7 @@ app.put('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req, re
   res.json(treasuryPayload(req));
 });
 
-app.delete('/api/treasury/transfers/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.delete('/api/treasury/transfers/:xid', requirePerm('treasury.transfers'), (req, res) => {
   const t = loadTransfer(req, res);
   if (!t) return;
   db.prepare('DELETE FROM treasury_transfers WHERE id = ?').run(t.id);
@@ -7676,7 +8481,7 @@ function loadCount(req, res) {
   return [c, box];
 }
 
-app.post('/api/treasury/counts', requirePerm('treasury.manage'), (req, res) => {
+app.post('/api/treasury/counts', requirePerm('treasury.counts'), (req, res) => {
   const box = bodyBox(req);
   if (!box) return res.status(400).json({ error: 'invalid box' });
   const parsed = parseCount(req, box);
@@ -7692,7 +8497,7 @@ app.post('/api/treasury/counts', requirePerm('treasury.manage'), (req, res) => {
   res.status(201).json(treasuryPayload(req));
 });
 
-app.put('/api/treasury/counts/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.put('/api/treasury/counts/:xid', requirePerm('treasury.counts'), (req, res) => {
   const [c, box] = loadCount(req, res);
   if (!c) return;
   const parsed = parseCount(req, box, c);
@@ -7707,7 +8512,7 @@ app.put('/api/treasury/counts/:xid', requirePerm('treasury.manage'), (req, res) 
   res.json(treasuryPayload(req));
 });
 
-app.delete('/api/treasury/counts/:xid', requirePerm('treasury.manage'), (req, res) => {
+app.delete('/api/treasury/counts/:xid', requirePerm('treasury.counts'), (req, res) => {
   const [c] = loadCount(req, res);
   if (!c) return;
   db.prepare('DELETE FROM treasury_counts WHERE id = ?').run(c.id);
@@ -7728,8 +8533,8 @@ const sessionEntriesOf = (sessionId, direction) =>
     .map(entryRow);
 
 const canSeeSessionExpenses = (req) => hasPerm(req, 'sessions.read.fees') || hasPerm(req, 'treasury.read');
-const canWriteSessionExpenses = (req) =>
-  (hasPerm(req, 'sessions.attendance') && hasPerm(req, 'sessions.read.fees')) || hasPerm(req, 'treasury.manage');
+// The قائد who records the نشاط's money, or the أمين المال who records every caisse's
+const canWriteSessionExpenses = (req) => hasPerm(req, 'sessions.money') || hasPerm(req, 'treasury.entries');
 
 const requireSessionMoney = (req, res, next) =>
   canWriteSessionExpenses(req) ? next() : res.status(403).json({ error: 'forbidden' });
@@ -7835,7 +8640,7 @@ app.get('/api/branches/:id/money', requirePerm('branches.read'), (req, res) => {
           start: l.start?.date ?? null,
           balance: l.balance,
           owed: l.owedTotal,
-          can_write: hasPerm(req, 'treasury.manage'),
+          can_write: hasPerm(req, 'treasury.entries'),
         }
       : null,
   });
@@ -7973,7 +8778,7 @@ app.get('/api/dashboard', (req, res) => {
           .all(today)
           .reverse()
           .map((r) => ({ date: r.date, rate: rateOf(r.present, r.marked) }));
-        out.upcoming_prep = upcomingPrep.all(b.id, today);
+        out.upcoming_prep = hasPerm(req, 'prep.read') ? upcomingPrep.all(b.id, today) : null;
       }
       if (canPlan) {
         // Achievement is derived from the أنشطة, as on the فرق page
@@ -8065,6 +8870,23 @@ app.get('/api/dashboard', (req, res) => {
           .all(req.user.leader_id, today, today)
       : [];
 
+  // و المخيمات و الدورات التي أخذ فيها دورًا، انتهت في الأسبوعين الأخيرين، و لم يقيّمها بعد
+  const me = Number(req.user.leader_id);
+  const eventsToEvaluate =
+    hasPerm(req, 'events.read') && Number.isInteger(me) && me > 0
+      ? db
+          .prepare(
+            `SELECT e.id AS event_id, e.title, e.kind, e.end_date FROM events e
+             WHERE ${eventEvaluatorSQL('e', me)}
+               AND e.end_date <= @today AND e.end_date >= date(@today, '-${EVAL_REMIND_DAYS} days')
+               AND NOT EXISTS (SELECT 1 FROM event_evaluations ev WHERE ev.event_id = e.id AND ev.leader_id = @me)
+               AND (EXISTS (SELECT 1 FROM eval_kind_forms k WHERE k.kind = 'event_' || e.kind)
+                    OR EXISTS (SELECT 1 FROM event_evaluations ev WHERE ev.event_id = e.id))${eventScopeSQL(req)}
+             ORDER BY e.end_date DESC, e.id DESC LIMIT 10`
+          )
+          .all({ today, me })
+      : [];
+
   const recent = canSessions
     ? db
         .prepare(
@@ -8119,6 +8941,7 @@ app.get('/api/dashboard', (req, res) => {
     unmarked,
     unpaid,
     to_evaluate: toEvaluate,
+    events_to_evaluate: eventsToEvaluate,
     recent,
     promotions,
     birthdays: upcomingBirthdays().filter((b) =>
@@ -8147,18 +8970,18 @@ const PDF_KINDS = {
   'members-list': 'members.read',
   'leaders-list': 'leaders.read',
   'sessions-list': 'sessions.read',
-  'prep-list': 'sessions.read',
+  'prep-list': 'prep.read',
   // خطة الفرقة السنوية: الرقم فرقة، و ?year= السنة الكشفية
   plan: 'branches.read',
-  prep: 'sessions.read',
+  prep: 'prep.read',
   // الصناديق: الرقم 0، و ?box= الصندوق المختار (بلا box: كلها) و ?flow= in|out كما في الصفحة
   treasury: 'treasury.read',
   // مالية الفرقة: الرقم فرقة. ما يُرى منها (المبالغ، الصندوق) يقرّره /branches/:id/money
   'branch-money': 'branches.read',
   // محضر اجتماع، ثم قائمة الاجتماعات (الرقم 0 و المرشِّحات في الاستعلام) و متابعة القرارات
-  meeting: 'sessions.read',
-  'meetings-list': 'sessions.read',
-  'meeting-decisions': 'sessions.read',
+  meeting: 'meetings.read',
+  'meetings-list': 'meetings.read',
+  'meeting-decisions': 'meetings.read',
 };
 // Filters the list sheets read from the query string — nothing else reaches Chromium's URL
 const printQuery = (q) => {

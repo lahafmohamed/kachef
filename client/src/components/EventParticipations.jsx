@@ -14,18 +14,18 @@ import {
   payState,
   staffRoleLabel,
 } from '../lib/events';
-import { Badge, Card, EmptyState, ErrorState, Skeleton, IconCoins, IconShield, IconTent } from './ui';
+import { Badge, Card, EmptyState, ErrorState, Skeleton, IconCoins, IconShield, IconTent, IconX } from './ui';
 
 /**
  * المخيمات و الدورات في ملفّ عنصر أو قائد: كل مخيم شارك فيه — و للقائد ما كان قائده
  * المسؤول أو تولّى فيه مسؤولية (أمين السر، قائد التجمع…) — بأيامه، و حضوره في جلساته، و
- * دفعه لمن يرى المبالغ. `feminine` يؤنّث
+ * دفعه لمن يرى المبالغ. و المخيم الذي أُزيل من لائحته يبقى فيها: «لم يشارك». `feminine` يؤنّث
  * الأفعال و الصفات (عنصر من الفتيات، قائدة).
  */
 export default function EventParticipations({ state, feminine = false }) {
   const { t, i18n } = useTranslation();
   const { has } = usePerms();
-  const canFees = has('sessions.read.fees');
+  const canFees = has('events.read.fees');
   const lang = i18n.language;
   // The feminine Arabic wording when there is one; French and the rest fall back to the plain key
   const tg = (key, opts) => t(feminine ? [`${key}F`, key] : key, opts);
@@ -108,8 +108,15 @@ export default function EventParticipations({ state, feminine = false }) {
                 </div>
 
                 {/* His part in it: in charge, how many جلسات he attended, what he paid */}
-                {(e.is_responsible || e.roles?.length > 0 || e.marked > 0 || pay) && (
+                {(e.is_responsible || e.roles?.length > 0 || e.marked > 0 || pay || e.withdrawn) && (
                   <div className="col-start-2 flex flex-wrap items-center gap-1.5 sm:col-start-3 sm:justify-end">
+                    {/* Taken off its list: no présence or payment to show, only that he was not part of it */}
+                    {e.withdrawn && (
+                      <Badge variant="outline">
+                        <IconX className="h-3 w-3" />
+                        {tg('event.notParticipated')}
+                      </Badge>
+                    )}
                     {e.is_responsible && (
                       <Badge variant="info">
                         <IconShield className="h-3 w-3" />

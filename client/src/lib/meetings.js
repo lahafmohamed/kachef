@@ -1,5 +1,5 @@
 import { isFeminine } from '../api';
-import { fmtTime } from '../utils';
+import { branchName, fmtTime } from '../utils';
 import { toDate } from './date';
 
 /**
@@ -8,7 +8,9 @@ import { toDate } from './date';
  * association's own names (montadamahdi.net): مجلس قيادة الفوج، الجلسات الاختصاصية
  * للأمانات، جلسة تحضيرية، جلسة تقييمية…
  */
-export const MEETING_KINDS = ['leaders', 'branch', 'amana', 'prep', 'review', 'parents', 'other'];
+export const MEETING_KINDS = ['leaders', 'branch', 'amana', 'other'];
+// No longer offered, but minutes already written under them keep their heading
+export const LEGACY_MEETING_KINDS = ['prep', 'review', 'parents'];
 export const DECISION_STATUSES = ['open', 'done', 'dropped'];
 
 // A tint per kind, so a meeting with the parents reads apart from the leaders' own
@@ -21,6 +23,13 @@ export const MEETING_KIND_BADGE = {
   parents: 'success',
   other: 'outline',
 };
+
+/** The فرق a meeting is about, by name — [] for the whole فوج */
+export const meetingBranchNames = (m, lng) => (m.branches || []).map((b) => branchName(b, lng));
+
+/** «الأشبال، الطلائع», or the whole-فوج word when no فرقة is named */
+export const meetingScope = (m, lng, t) =>
+  meetingBranchNames(m, lng).join(lng === 'ar' ? '، ' : ', ') || t('meeting.wholeGroup');
 
 export const DECISION_BADGE = { open: 'outline', done: 'success', dropped: 'secondary' };
 

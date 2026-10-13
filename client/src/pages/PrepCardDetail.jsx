@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { useAuth, usePerms } from '../auth';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { branchName, fmtDate, fmtTime } from '../utils';
@@ -43,10 +43,9 @@ export default function PrepCardDetail() {
   const back = useBack('/prep-cards');
   const toast = useToast();
   const confirm = useConfirm();
-  const { user } = useAuth();
   const { has } = usePerms();
-  const editable = has('sessions.create');
-  const isAdmin = user?.role === 'admin';
+  const editable = has('prep.manage');
+  const canDelete = has('prep.delete');
 
   const { data: card, setData: setCard, loading, error, reload } = useFetch(`/prep-cards/${id}`);
   const [editing, setEditing] = useState(false);
@@ -110,7 +109,7 @@ export default function PrepCardDetail() {
             <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
           </Button>
         )}
-        {isAdmin && (
+        {canDelete && (
           <Button
             variant="destructive-ghost"
             size="sm"

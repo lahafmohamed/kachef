@@ -40,7 +40,7 @@ export default function PrepCards() {
   const navigate = useNavigate();
   const toast = useToast();
   const { has } = usePerms();
-  const editable = has('sessions.create');
+  const editable = has('prep.manage');
 
   const [q, setQ] = useState('');
   const [branch, setBranch] = useState('');

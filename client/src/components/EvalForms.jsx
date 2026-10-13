@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
-import { EVAL_KIND_KEYS, EVAL_KINDS, evalText, groupByAxis } from '../lib/evaluations';
+import { EVAL_KIND_GROUPS, EVAL_KIND_KEYS, EVENT_EVAL_KINDS, evalText, groupByAxis } from '../lib/evaluations';
 import {
   Badge,
   Button,
@@ -20,8 +20,38 @@ import {
   IconLink,
   IconPencil,
   IconPlus,
+  IconTent,
   IconTrash,
 } from './ui';
+
+const ALL_KINDS = EVAL_KIND_GROUPS.flatMap((g) => g.kinds);
+
+// A kind's name standing alone: «Autre» must say it is a camp's, not a séance's
+const kindName = (t, kind) =>
+  EVENT_EVAL_KINDS.includes(kind)
+    ? t('eval.eventKindLabel', { kind: t(EVAL_KIND_KEYS[kind]) })
+    : t(EVAL_KIND_KEYS[kind]);
+
+/** A kind on a form's badge: a camp's or a course's kind carries a tent instead of words. */
+function KindLabel({ kind }) {
+  const { t } = useTranslation();
+  if (!EVENT_EVAL_KINDS.includes(kind)) return t(EVAL_KIND_KEYS[kind]);
+  return (
+    <span className="inline-flex items-center gap-1">
+      <IconTent aria-hidden="true" className="h-3.5 w-3.5" />
+      <span aria-hidden="true">{t(EVAL_KIND_KEYS[kind])}</span>
+      <span className="sr-only">{kindName(t, kind)}</span>
+    </span>
+  );
+}
+
+/** «Séances évaluées : 3 · Camps et formations : 1», or «Pas encore utilisée». */
+function usageText(t, f) {
+  const parts = [];
+  if (f.sessions) parts.push(t('eval.usedIn', { count: f.sessions }));
+  if (f.events) parts.push(t('eval.usedInEvents', { count: f.events }));
+  return parts.length ? parts.join(' · ') : t('eval.unused');
+}
 
 const ITEM_TYPES = ['axis', 'score', 'text'];
 const TYPE_KEYS = { axis: 'eval.typeAxis', score: 'eval.typeScore', text: 'eval.typeText' };
@@ -107,24 +137,37 @@ export default function EvalFormsPanel() {
     <CardContent className="space-y-4">
       <p className="text-sm text-muted-foreground">{t('eval.settingsHint')}</p>
 
-      {/* Which form each kind of نشاط is rated with, at a glance */}
+      {/* Which form each kind of نشاط, then of camp and course, is rated with, at a glance */}
       <div className="rounded-lg border border-border">
         <p className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
           {t('eval.kindsTitle')}
         </p>
-        <dl className="divide-y divide-border">
-          {EVAL_KINDS.map((kind) => {
-            const f = formOfKind(kind);
-            return (
-              <div key={kind} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm">
-                <dt className="text-muted-foreground">{t(EVAL_KIND_KEYS[kind])}</dt>
-                <dd className={cn('font-medium', !f && 'font-normal text-muted-foreground')}>
-                  {f ? <bdi>{evalText(f, 'name', lng)}</bdi> : t('eval.noEval')}
-                </dd>
-              </div>
-            );
-          })}
-        </dl>
+        {EVAL_KIND_GROUPS.map((g) => (
+          <section key={g.key} aria-labelledby={`eval-kinds-${g.key}`}>
+            <h3
+              id={`eval-kinds-${g.key}`}
+              className="border-b border-border bg-muted/40 px-3 py-1.5 text-xs font-semibold"
+            >
+              {t(g.title)}
+            </h3>
+            <dl className="divide-y divide-border border-b border-border last:border-b-0">
+              {g.kinds.map((kind) => {
+                const f = formOfKind(kind);
+                return (
+                  <div
+                    key={kind}
+                    className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm"
+                  >
+                    <dt className="text-muted-foreground">{t(EVAL_KIND_KEYS[kind])}</dt>
+                    <dd className={cn('font-medium', !f && 'font-normal text-muted-foreground')}>
+                      {f ? <bdi>{evalText(f, 'name', lng)}</bdi> : t('eval.noEval')}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </section>
+        ))}
       </div>
 
       {data.forms.length > 0 && (
@@ -143,15 +186,13 @@ export default function EvalFormsPanel() {
                   <p className="text-xs text-muted-foreground">
                     <span className="whitespace-nowrap">{t('eval.formCounts', { scores, texts })}</span>
                     {' · '}
-                    <span className="whitespace-nowrap">
-                      {f.evaluations ? t('eval.usedIn', { count: f.sessions }) : t('eval.unused')}
-                    </span>
+                    <span>{usageText(t, f)}</span>
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {f.kinds.length ? (
-                      EVAL_KINDS.filter((k) => f.kinds.includes(k)).map((k) => (
+                      ALL_KINDS.filter((k) => f.kinds.includes(k)).map((k) => (
                         <Badge key={k} variant="secondary">
-                          {t(EVAL_KIND_KEYS[k])}
+                          <KindLabel kind={k} />
                         </Badge>
                       ))
                     ) : (
@@ -217,9 +258,16 @@ export default function EvalFormsPanel() {
   );
 }
 
-/** The presets, each with its source on montadamahdi.net and a look at its indicators. */
+/**
+ * The presets, each with its source on montadamahdi.net and a look at its indicators:
+ * those written for a نشاط, then those for camps and courses.
+ */
 function PresetPicker({ open, presets, onClose, onPick, onBlank }) {
   const { t } = useTranslation();
+  const groups = EVAL_KIND_GROUPS.map((g) => ({
+    ...g,
+    presets: presets.filter((p) => (p.target || 'session') === g.key),
+  })).filter((g) => g.presets.length > 0);
   return (
     <Dialog
       open={open}
@@ -240,11 +288,21 @@ function PresetPicker({ open, presets, onClose, onPick, onBlank }) {
         </div>
       }
     >
-      <ul className="space-y-3">
-        {presets.map((p) => (
-          <PresetOption key={p.key} preset={p} onPick={() => onPick(p)} />
+      <div className="space-y-5">
+        {groups.map((g) => (
+          <section key={g.key} aria-labelledby={`eval-presets-${g.key}`} className="space-y-2">
+            <h3 id={`eval-presets-${g.key}`} className="flex items-center gap-1.5 text-sm font-semibold">
+              {g.key === 'event' && <IconTent aria-hidden="true" className="h-4 w-4 text-muted-foreground" />}
+              {t(g.title)}
+            </h3>
+            <ul className="space-y-3">
+              {g.presets.map((p) => (
+                <PresetOption key={p.key} preset={p} onPick={() => onPick(p)} />
+              ))}
+            </ul>
+          </section>
         ))}
-      </ul>
+      </div>
     </Dialog>
   );
 }
@@ -440,30 +498,37 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
 
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium">{t('eval.usedFor')}</legend>
-            <div className="flex flex-wrap gap-1.5">
-              {EVAL_KINDS.map((k) => {
-                const on = d.kinds.includes(k);
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => toggleKind(k)}
-                    className={cn(
-                      'focus-ring inline-flex min-h-10 cursor-pointer items-center rounded-full border px-3.5 text-sm transition-colors sm:min-h-9',
-                      on
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                    )}
-                  >
-                    {t(EVAL_KIND_KEYS[k])}
-                  </button>
-                );
-              })}
-            </div>
+            {EVAL_KIND_GROUPS.map((g) => (
+              <div key={g.key} role="group" aria-labelledby={`${formId}-kinds-${g.key}`} className="space-y-1.5">
+                <p id={`${formId}-kinds-${g.key}`} className="text-xs text-muted-foreground">
+                  {t(g.title)}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {g.kinds.map((k) => {
+                    const on = d.kinds.includes(k);
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggleKind(k)}
+                        className={cn(
+                          'focus-ring inline-flex min-h-10 cursor-pointer items-center rounded-full border px-3.5 text-sm transition-colors sm:min-h-9',
+                          on
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                        )}
+                      >
+                        {t(EVAL_KIND_KEYS[k])}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
             {moves.map((m) => (
               <p key={m.kind} className="text-xs text-warning">
-                {t('eval.kindMoves', { kind: t(EVAL_KIND_KEYS[m.kind]), form: evalText(m.from, 'name', lng) })}
+                {t('eval.kindMoves', { kind: kindName(t, m.kind), form: evalText(m.from, 'name', lng) })}
               </p>
             ))}
           </fieldset>

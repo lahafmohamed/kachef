@@ -695,10 +695,21 @@ export function Input({ className, ...props }) {
   );
 }
 
-export function Textarea({ className, ...props }) {
+/* fieldBase pins a field to h-11 and sm:h-10: both are reset, or every textarea sat at
+   min-h-20 on a desktop whatever its `rows`. It grows with its text (field-sizing) up
+   to max-h-80 and only then scrolls, so a long note is not read through a slot inside a
+   scrolling dialog. `rows` stays the smallest height: field-sizing alone shrinks an
+   empty one to a line. Browsers without field-sizing fall back on `rows`. */
+export function Textarea({ className, rows, style, ...props }) {
   return (
     <textarea
-      className={cn(fieldBase, 'h-auto min-h-20 py-2 placeholder:text-muted-foreground', className)}
+      rows={rows}
+      className={cn(
+        fieldBase,
+        'h-auto max-h-80 min-h-20 py-2 field-sizing-content placeholder:text-muted-foreground sm:h-auto',
+        className
+      )}
+      style={rows ? { minHeight: `max(5rem, calc(${rows}lh + 1rem + 2px))`, ...style } : style}
       {...props}
     />
   );

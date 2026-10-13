@@ -303,7 +303,7 @@ export default function LeaderDetail() {
   // الاشتراك الشهري: لمن يملك صلاحيته، و للقائد نفسه في صفحته
   const canSeeDues = has('leaders.dues') || Number(user?.leader_id) === Number(id);
   // المخيمات و الدورات: لمن يرى المخيمات
-  const canEvents = has('sessions.read');
+  const canEvents = has('events.read');
   const allowed = (v) => (v !== 'dues' || canSeeDues) && (v !== 'events' || canEvents);
   const tab = TABS.includes(sp.get('tab')) && allowed(sp.get('tab')) ? sp.get('tab') : 'activities';
   const setTab = (next) =>
@@ -499,7 +499,10 @@ export default function LeaderDetail() {
             { id: 'activities', label: t('leader.colActivities'), count: leader.sessions.length + visits.length },
             { id: 'card', label: t('leader.colCard'), count: card.total ? `${card.done_count}/${card.total}` : null },
             ...(canSeeDues ? [{ id: 'dues', label: t('dues.tab') }] : []),
-            ...(canEvents ? [{ id: 'events', label: t('nav.events'), count: events.data?.length || null }] : []),
+            // A camp he was taken off the list of is in his file, but not among those he took part in
+            ...(canEvents
+              ? [{ id: 'events', label: t('nav.events'), count: events.data?.filter((e) => !e.withdrawn).length || null }]
+              : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}

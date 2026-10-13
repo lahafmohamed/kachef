@@ -32,12 +32,12 @@ const PAGES = {
   members: [() => import('./pages/Members'), 'members.read'],
   memberDetail: [() => import('./pages/MemberDetail'), 'members.read'],
   branches: [() => import('./pages/Branches'), 'branches.read'],
-  prepCards: [() => import('./pages/PrepCards'), 'sessions.read'],
-  prepCardDetail: [() => import('./pages/PrepCardDetail'), 'sessions.read'],
-  events: [() => import('./pages/Events'), 'sessions.read'],
-  eventDetail: [() => import('./pages/EventDetail'), 'sessions.read'],
-  meetings: [() => import('./pages/Meetings'), 'sessions.read'],
-  meetingDetail: [() => import('./pages/MeetingDetail'), 'sessions.read'],
+  prepCards: [() => import('./pages/PrepCards'), 'prep.read'],
+  prepCardDetail: [() => import('./pages/PrepCardDetail'), 'prep.read'],
+  events: [() => import('./pages/Events'), 'events.read'],
+  eventDetail: [() => import('./pages/EventDetail'), 'events.read'],
+  meetings: [() => import('./pages/Meetings'), 'meetings.read'],
+  meetingDetail: [() => import('./pages/MeetingDetail'), 'meetings.read'],
   treasury: [() => import('./pages/Treasury'), 'treasury.read'],
   leaders: [() => import('./pages/Leaders'), 'leaders.read'],
   leaderDetail: [() => import('./pages/LeaderDetail'), null],
@@ -241,12 +241,12 @@ function Shell() {
             {can('members.read') && <Route path="/members/:id" element={<MemberDetail />} />}
             {can('sessions.read') && <Route path="/sessions" element={<Sessions />} />}
             {can('sessions.read') && <Route path="/sessions/:id" element={<SessionDetail />} />}
-            {can('sessions.read') && <Route path="/prep-cards" element={<PrepCards />} />}
-            {can('sessions.read') && <Route path="/prep-cards/:id" element={<PrepCardDetail />} />}
-            {can('sessions.read') && <Route path="/events" element={<Events />} />}
-            {can('sessions.read') && <Route path="/events/:id" element={<EventDetail />} />}
-            {can('sessions.read') && <Route path="/meetings" element={<Meetings />} />}
-            {can('sessions.read') && <Route path="/meetings/:id" element={<MeetingDetail />} />}
+            {can('prep.read') && <Route path="/prep-cards" element={<PrepCards />} />}
+            {can('prep.read') && <Route path="/prep-cards/:id" element={<PrepCardDetail />} />}
+            {can('events.read') && <Route path="/events" element={<Events />} />}
+            {can('events.read') && <Route path="/events/:id" element={<EventDetail />} />}
+            {can('meetings.read') && <Route path="/meetings" element={<Meetings />} />}
+            {can('meetings.read') && <Route path="/meetings/:id" element={<MeetingDetail />} />}
             {can('treasury.read') && <Route path="/treasury" element={<Treasury />} />}
             {can('promotions.read') && <Route path="/promotions" element={<Promotions />} />}
             {can('leaders.read') && <Route path="/leaders" element={<Leaders />} />}

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
@@ -12,6 +12,7 @@ import SessionEditDialog from '../components/SessionEditDialog';
 import AttachedFiles from '../components/AttachedFiles';
 import SessionExpenses, { SessionDonations, SessionMoneyFigures, sessionMoney } from '../components/SessionExpenses';
 import SessionEvaluation from '../components/SessionEvaluation';
+import SessionHistory, { fmtAtDate, fmtWhen } from '../components/SessionHistory';
 import { fmtScore, scoreTone } from '../lib/evaluations';
 import { UnderlineTabs } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
@@ -303,14 +304,31 @@ export default function SessionDetail() {
   // و تسجيل الدفع يحتاج الصلاحيتين معًا (وضع الحضور + رؤية المبالغ)
   const canSeeFees = has('sessions.read.fees');
   const payEditable = editable && canSeeFees;
-  const isAdmin = user?.role === 'admin';
+  // Photos and files, and deleting the نشاط: rights of their own
+  const canFiles = has('sessions.files');
+  const canDelete = has('sessions.delete');
   const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
+  // This account just changed the séance: the header's «last change» says so without
+  // reading the whole page back (the tap paths patch it locally, the others reload)
+  const touched = (patch = {}) =>
+    setSession((s) =>
+      s
+        ? {
+            ...s,
+            ...patch,
+            last_change: {
+              actor: user?.display_name || user?.username,
+              at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            },
+          }
+        : s
+    );
   const leaders = useFetch('/leaders');
   // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
   const branches = useFetch('/branches');
   const [bulkBusy, setBulkBusy] = useState(false);
-  // تعديل تفاصيل النشاط بعد إنشائه — لمن يُنشئ الأنشطة
-  const canEditSession = has('sessions.create');
+  // تعديل تفاصيل النشاط بعد إنشائه — لمن مُنح تعديل الأنشطة
+  const canEditSession = has('sessions.edit');
   const [editingSession, setEditingSession] = useState(false);
   // فلترة عرض اللائحة (لا تمسّ الحضور المسجّل، عرضٌ فقط)
   const [filterBranch, setFilterBranch] = useState('');
@@ -346,6 +364,7 @@ export default function SessionDetail() {
     }));
     try {
       await api.post(`/sessions/${id}/attendance`, { member_id: memberId, status });
+      touched();
     } catch (err) {
       setSession(prev);
       toast.error(attendanceError(t, err));
@@ -364,6 +383,7 @@ export default function SessionDetail() {
     }));
     try {
       await api.post(`/sessions/${id}/attendance`, { member_id: memberId, paid: amount });
+      touched();
     } catch (err) {
       setSession(prev);
       toast.error(attendanceError(t, err));
@@ -516,6 +536,7 @@ export default function SessionDetail() {
     }));
     try {
       await api.post(`/sessions/${id}/animators`, { leader_id: leaderId, status });
+      touched();
     } catch (err) {
       setSession(prev);
       toast.error(attendanceError(t, err));
@@ -574,8 +595,13 @@ export default function SessionDetail() {
   // شارك فيه و لم يقيّمه بعد، و قد مضى — لا للمسؤول: تقييمه اختيار لا ينتظره أحد
   const evaluation = session.evaluation;
   const evalPending = !!evaluation?.can_evaluate && !!evaluation.expected && !evaluation.done;
+  // Historique: qui a créé la séance et qui y a changé quoi — pour tout lecteur, filtré
+  // par le serveur comme le reste de la page
   const tab =
-    tabParam === 'files' || (money && tabParam === 'money') || (evaluation && tabParam === 'eval')
+    tabParam === 'files' ||
+    tabParam === 'history' ||
+    (money && tabParam === 'money') ||
+    (evaluation && tabParam === 'eval')
       ? tabParam
       : 'attendance';
   const fileCount = session.files?.length || 0;
@@ -799,7 +825,7 @@ export default function SessionDetail() {
             </Button>
           )}
           <ExportPdfButton kind="sessions" id={session.id} compact />
-          {isAdmin && (
+          {canDelete && (
             <Button
               variant="destructive-ghost"
               size="sm"
@@ -943,6 +969,30 @@ export default function SessionDetail() {
             )}
           </dl>
         )}
+        {/* Which account created it, which one touched it last: a tap opens the history */}
+        {(session.created_by || session.last_change) && (
+          <button
+            type="button"
+            onClick={() => setTab('history')}
+            className="focus-ring -my-1 block rounded py-1 text-start text-xs leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {session.created_by && (
+              <Trans
+                i18nKey={session.created_at ? 'history.createdBy' : 'history.createdByOnly'}
+                values={{ name: session.created_by, date: session.created_at && fmtAtDate(session.created_at) }}
+                components={{ b: <bdi className="font-medium text-foreground" /> }}
+              />
+            )}
+            {session.created_by && session.last_change && <span aria-hidden="true"> · </span>}
+            {session.last_change && (
+              <Trans
+                i18nKey="history.lastChange"
+                values={{ name: session.last_change.actor, when: fmtWhen(session.last_change.at, i18n.language, t) }}
+                components={{ b: <bdi className="font-medium text-foreground" /> }}
+              />
+            )}
+          </button>
+        )}
       </div>
 
       {/* ---------- بطاقات التحضير المربوطة بهذا النشاط ---------- */}
@@ -987,6 +1037,7 @@ export default function SessionDetail() {
                 ]
               : []),
             { id: 'files', label: fileCount ? `${t('session.tabFiles')} · ${fileCount}` : t('session.tabFiles') },
+            { id: 'history', label: t('session.tabHistory') },
           ]}
           value={tab}
           onChange={setTab}
@@ -1146,7 +1197,7 @@ export default function SessionDetail() {
         <GuestsCard
           session={session}
           editable={editable}
-          onChange={(guests) => setSession((s) => ({ ...s, guests }))}
+          onChange={(guests) => touched({ guests })}
         />
       )}
 
@@ -1339,8 +1390,8 @@ export default function SessionDetail() {
         <>
           <SessionMoneyFigures session={session} money={money} />
           {/* Spent first: buying for the نشاط is what is written here most */}
-          <SessionExpenses session={session} onChange={(expenses) => setSession((s) => ({ ...s, expenses }))} />
-          <SessionDonations session={session} onChange={(donations) => setSession((s) => ({ ...s, donations }))} />
+          <SessionExpenses session={session} onChange={(expenses) => touched({ expenses })} />
+          <SessionDonations session={session} onChange={(donations) => touched({ donations })} />
         </>
       )}
 
@@ -1348,7 +1399,7 @@ export default function SessionDetail() {
       {tab === 'eval' && (
         <SessionEvaluation
           session={session}
-          onChange={(summary) => setSession((s) => ({ ...s, evaluation: summary }))}
+          onChange={(summary) => touched({ evaluation: summary })}
         />
       )}
 
@@ -1356,10 +1407,11 @@ export default function SessionDetail() {
         <AttachedFiles
           base={`/sessions/${session.id}`}
           files={session.files}
-          editable={editable}
-          onChange={(files) => setSession((s) => ({ ...s, files }))}
+          editable={canFiles}
+          onChange={(files) => touched({ files })}
         />
       )}
+      {tab === 'history' && <SessionHistory session={session} />}
       </div>
 
       {duesMeta && (

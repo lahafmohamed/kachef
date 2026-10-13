@@ -4,12 +4,12 @@ import { api } from '../api';
 import { useFetch } from '../hooks';
 import { useSection } from '../section';
 import { branchName, memberName, todayISO } from '../utils';
-import { MEETING_KINDS, gendered } from '../lib/meetings';
+import { LEGACY_MEETING_KINDS, MEETING_KINDS, gendered } from '../lib/meetings';
 import Combobox from './Combobox';
 import DatePicker from './DatePicker';
 import SectionField from './SectionField';
 import TimePicker from './TimePicker';
-import { Button, Dialog, ErrorState, Input, Label, SegmentedControl, Select, Textarea } from './ui';
+import { Button, Dialog, ErrorState, IconCheck, IconSwap, Input, Label, SegmentedControl, Textarea, cn } from './ui';
 
 const nobody = { id: null, name: '' };
 
@@ -21,7 +21,7 @@ const emptyMeeting = (previous) => ({
   start_time: '',
   end_time: '',
   place: previous?.place || '',
-  branch_id: '',
+  branch_ids: [],
   // '' = not picked yet: the قسم on screen, else the last meeting's, else الفتيان. Its
   // فرقة wins once picked.
   section: previous?.section || '',
@@ -41,7 +41,7 @@ const fromMeeting = (m) => ({
   start_time: m.start_time || '',
   end_time: m.end_time || '',
   place: m.place || '',
-  branch_id: m.branch_id ? String(m.branch_id) : '',
+  branch_ids: m.branch_ids || [],
   section: m.section,
   chair: { id: m.chair_id, name: m.chair || '' },
   secretary: { id: m.secretary_id, name: m.secretary || '' },
@@ -114,7 +114,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const branchList = branches.data || [];
-  const branchSection = branchList.find((b) => String(b.id) === form.branch_id)?.section;
+  const branchSection = branchList.find((b) => b.id === form.branch_ids[0])?.section;
   const formSection = initial?.section || onScreen || branchSection || form.section || 'M';
   const sectionBranches = branchList.filter((b) => b.section === formSection);
   const keep = [form.chair.id, form.secretary.id];
@@ -137,7 +137,14 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
   // Another قسم: its own فرق and قادة, so whatever was picked from the old one goes
   function pickSection(s) {
     if (s === formSection) return;
-    setForm((f) => ({ ...f, section: s, branch_id: '', chair: nobody, secretary: nobody }));
+    setForm((f) => ({ ...f, section: s, branch_ids: [], chair: nobody, secretary: nobody }));
+  }
+
+  function toggleBranch(id) {
+    setForm((f) => ({
+      ...f,
+      branch_ids: f.branch_ids.includes(id) ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id],
+    }));
   }
 
   async function save(e) {
@@ -157,7 +164,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
         start_time: form.start_time || null,
         end_time: form.end_time || null,
         place: form.place || null,
-        branch_id: form.branch_id ? Number(form.branch_id) : null,
+        branch_ids: form.branch_ids.map(Number),
         // Read by the server only when the meeting has no فرقة to take it from
         section: formSection,
         ...personBody('chair', form.chair, leaderList),
@@ -218,8 +225,10 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
               label={t('meeting.kind')}
               value={form.kind}
               onChange={(v) => setForm((f) => ({ ...f, kind: v }))}
-              options={MEETING_KINDS.map((k) => ({ value: k, label: t(`meeting.kind_${k}`) }))}
-              columns={3}
+              options={(LEGACY_MEETING_KINDS.includes(form.kind) ? [...MEETING_KINDS, form.kind] : MEETING_KINDS).map(
+                (k) => ({ value: k, label: t(`meeting.kind_${k}`) }),
+              )}
+              columns={2}
               className="w-full"
             />
           </div>
@@ -237,18 +246,21 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
             />
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="mt_purpose">{t('meeting.purpose')}</Label>
-            <Textarea
-              id="mt_purpose"
-              dir="auto"
-              rows={2}
-              maxLength={2000}
-              placeholder={t('meeting.purposeHint')}
-              value={form.purpose}
-              onChange={set('purpose')}
-            />
-          </div>
+          {/* Subject and reason are one box now; a reason written before stays editable */}
+          {initial?.purpose && (
+            <div className="space-y-1.5">
+              <Label htmlFor="mt_purpose">{t('meeting.purpose')}</Label>
+              <Textarea
+                id="mt_purpose"
+                dir="auto"
+                rows={2}
+                maxLength={2000}
+                placeholder={t('meeting.purposeHint')}
+                value={form.purpose}
+                onChange={set('purpose')}
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <div className="col-span-2 space-y-1.5 sm:col-span-1">
@@ -265,21 +277,39 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
             </div>
           </div>
 
+          {sectionBranches.length > 0 && (
+            <div className="space-y-1.5">
+              <Label>{t('meeting.scope')}</Label>
+              <div className="flex flex-wrap gap-2" role="group" aria-label={t('meeting.scope')}>
+                {sectionBranches.map((b) => {
+                  const on = form.branch_ids.includes(b.id);
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => toggleBranch(b.id)}
+                      className={cn(
+                        'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                        on
+                          ? 'border-primary bg-primary/10 font-medium text-primary'
+                          : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                      )}
+                    >
+                      <IconSwap on={on} onIcon={<IconCheck className="h-3.5 w-3.5" />} className="h-3.5 w-3.5" collapse />
+                      {branchName(b, i18n.language)}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">{t('meeting.scopeHint')}</p>
+            </div>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="mt_place">{t('session.place')}</Label>
               <Input id="mt_place" maxLength={200} autoComplete="off" value={form.place} onChange={set('place')} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="mt_branch">{t('meeting.scope')}</Label>
-              <Select id="mt_branch" value={form.branch_id} onChange={set('branch_id')}>
-                <option value="">{t('meeting.wholeGroup')}</option>
-                {sectionBranches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {branchName(b, i18n.language)}
-                  </option>
-                ))}
-              </Select>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="mt_chair">{gendered(t, 'meeting.chair', formSection)}</Label>

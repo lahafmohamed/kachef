@@ -145,7 +145,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   attendance_finalized_by TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- قسم النشاط: قسم فرقه، أو القسم الذي أُنشئ فيه نشاط القادة / النشاط العام بلا فرق
-  section TEXT NOT NULL DEFAULT 'M'
+  section TEXT NOT NULL DEFAULT 'M',
+  -- الحساب الذي أنشأ النشاط، و متى. NULL: نشاط أقدم من تسجيلهما لم يُعرف صاحبه.
+  -- created_by نسخة الاسم: حذف الحساب يُبقيه
+  created_at TEXT,
+  created_by TEXT,
+  created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- نشاط عام للفوج: عدد الحضور لكل فرقة بالتفصيل
@@ -408,7 +413,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
   entity_id TEXT,
   before_json TEXT,
   after_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- النشاط الذي يخصّه السطر، لسجلّه: النشاط نفسه، أو ما كُتب فيه (حضور، مصروف، اشتراك…).
+  -- بلا مفتاح خارجي: سجلّ نشاطٍ حُذف يبقى، و حذفه آخر أسطره
+  session_id INTEGER
 );
 
 -- إشعارات للأدمن: قائد أضاف نشاطًا أو عدّل حضوره/منشّطيه/أعداده. Rows are written only
@@ -539,6 +547,14 @@ CREATE TABLE IF NOT EXISTS event_branches (
   event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   PRIMARY KEY (event_id, branch_id)
+);
+
+-- طلائع الفرق المعنية بالمخيم، كـ session_groups للنشاط: الفرقة التي لها صف هنا لا يُضاف
+-- منها إلا عناصر تلك الطلائع؛ و التي لا صف لها تشارك كاملةً — فكل مخيم قديم يبقى كما هو.
+CREATE TABLE IF NOT EXISTS event_groups (
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES branch_groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (event_id, group_id)
 );
 
 -- المشاركون: عنصر، أو قائد، أو ضيف من خارج البرنامج (اسمه فقط) — واحد من الثلاثة.
@@ -782,6 +798,14 @@ CREATE TABLE IF NOT EXISTS meetings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- الفرق المعنية بالاجتماع؛ لا صف = اجتماع الفوج. meetings.branch_id تبقى الفرقة الرئيسية
+-- (أولى المختارة) — كجدول event_branches للمخيمات.
+CREATE TABLE IF NOT EXISTS meeting_branches (
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  PRIMARY KEY (meeting_id, branch_id)
+);
+
 -- الحضور: قائد من القسم (حاضر، غائب، غائب بعذر)، أو ضيف من خارج الفوج (ولي أمر، مفوّض
 -- من الجمعية) باسمه — الضيف حاضر دائمًا. لا صف لقائد = لم يُدعَ. name نسخة الاسم: حذف
 -- القائد يُبقي اسمه في المحضر.
@@ -851,8 +875,9 @@ CREATE TABLE IF NOT EXISTS eval_items (
   archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
 );
 
--- الاستمارة المعتمدة لكل نوع من الأنشطة (activity، leaders، group، visit): استمارة واحدة
--- للنوع. لا صف = نوع لا يُقيَّم.
+-- الاستمارة المعتمدة لكل نوع من الأنشطة (activity، leaders، group، visit) و من المخيمات و
+-- الدورات (event_camp، event_course، event_trip، event_other): استمارة واحدة للنوع. لا صف =
+-- نوع لا يُقيَّم.
 CREATE TABLE IF NOT EXISTS eval_kind_forms (
   kind TEXT PRIMARY KEY,
   form_id INTEGER NOT NULL REFERENCES eval_forms(id) ON DELETE CASCADE
@@ -880,6 +905,30 @@ CREATE TABLE IF NOT EXISTS session_evaluations (
 -- الإجابات: علامة من 1 إلى 5 لمؤشر، أو نصّ لسؤال مفتوح
 CREATE TABLE IF NOT EXISTS session_evaluation_answers (
   evaluation_id INTEGER NOT NULL REFERENCES session_evaluations(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL REFERENCES eval_items(id) ON DELETE CASCADE,
+  score INTEGER CHECK (score BETWEEN 1 AND 5),
+  text TEXT,
+  PRIMARY KEY (evaluation_id, item_id)
+);
+
+-- تقييم المخيمات و الدورات: كتقييم النشاط تمامًا، من القادة الذين أخذوا فيه دورًا — قائده، و
+-- هيئته القيادية، و القادة المشاركون — و من المسؤول. بالاستمارات نفسها (eval_forms).
+CREATE TABLE IF NOT EXISTS event_evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  form_id INTEGER REFERENCES eval_forms(id) ON DELETE SET NULL,
+  leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  leader_name TEXT NOT NULL,
+  average REAL,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(event_id, leader_id)
+);
+
+CREATE TABLE IF NOT EXISTS event_evaluation_answers (
+  evaluation_id INTEGER NOT NULL REFERENCES event_evaluations(id) ON DELETE CASCADE,
   item_id INTEGER NOT NULL REFERENCES eval_items(id) ON DELETE CASCADE,
   score INTEGER CHECK (score BETWEEN 1 AND 5),
   text TEXT,
@@ -1061,6 +1110,33 @@ function seedEvalForms() {
     preset.items.forEach((it, i) => insertItem.run(formId, i, it.type, it.label_ar, it.label_fr));
     const map = db.prepare('INSERT OR IGNORE INTO eval_kind_forms (kind, form_id) VALUES (?, ?)');
     for (const kind of DEFAULT_EVAL_KINDS) map.run(kind, formId);
+  })();
+}
+
+// The camps and the courses get theirs once, on the boot their evaluations arrive with:
+// «تقييم المخيم» and «رضا المشاركين عن الدورة». A kind the admin already gave a form keeps
+// it, and a form deleted afterwards stays deleted. Marked by user_version 3 (after the
+// francophone sections' 2), not by «the table is new»: a script loading this file without
+// migrate() would create the table and the seed would never come.
+function seedEventEvalForms() {
+  if (db.pragma('user_version', { simple: true }) >= 3) return;
+  const { EVAL_PRESETS, DEFAULT_EVENT_EVAL_PRESETS } = require('./evalPresets');
+  db.transaction(() => {
+    const insertForm = db.prepare(
+      "INSERT INTO eval_forms (name_ar, name_fr, preset, created_by) VALUES (?, ?, ?, 'seed')"
+    );
+    const insertItem = db.prepare(
+      'INSERT INTO eval_items (form_id, position, type, label_ar, label_fr) VALUES (?, ?, ?, ?, ?)'
+    );
+    const map = db.prepare('INSERT INTO eval_kind_forms (kind, form_id) VALUES (?, ?)');
+    for (const [kind, key] of Object.entries(DEFAULT_EVENT_EVAL_PRESETS)) {
+      if (db.prepare('SELECT 1 FROM eval_kind_forms WHERE kind = ?').get(kind)) continue;
+      const preset = EVAL_PRESETS.find((p) => p.key === key);
+      const formId = insertForm.run(preset.name_ar, preset.name_fr, preset.key).lastInsertRowid;
+      preset.items.forEach((it, i) => insertItem.run(formId, i, it.type, it.label_ar, it.label_fr));
+      map.run(kind, formId);
+    }
+    db.pragma('user_version = 3');
   })();
 }
 
@@ -1486,11 +1562,17 @@ function migrate() {
       SELECT id, branch_id FROM sessions WHERE branch_id IS NOT NULL;
     INSERT OR IGNORE INTO session_plan_items (session_id, plan_item_id)
       SELECT id, plan_item_id FROM sessions WHERE plan_item_id IS NOT NULL;
+    INSERT OR IGNORE INTO meeting_branches (meeting_id, branch_id)
+      SELECT id, branch_id FROM meetings WHERE branch_id IS NOT NULL;
   `);
   ensureColumn('promotions', 'matalib', "matalib TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('promotions', 'reversed_at', 'reversed_at TEXT');
   ensureColumn('promotions', 'reversed_by', 'reversed_by TEXT');
   ensureColumn('promotions', 'reversal_reason', 'reversal_reason TEXT');
+  // A عنصر or قائد taken off a مخيم's list stays on it, marked: his file says he did not take part.
+  // Every count, payment and evaluator ignores a row with withdrawn_at; adding him again clears it.
+  ensureColumn('event_participants', 'withdrawn_at', 'withdrawn_at TEXT');
+  ensureColumn('event_participants', 'withdrawn_by', 'withdrawn_by TEXT');
   migrateAssignments();
   // Added after migrateAssignments on purpose: its rebuild only knows the older column set
   ensureColumn('assignments', 'group_id', 'group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL');
@@ -1665,6 +1747,12 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_session_evaluations_session ON session_evaluations(session_id);
     CREATE INDEX IF NOT EXISTS idx_session_evaluations_leader ON session_evaluations(leader_id);
     CREATE INDEX IF NOT EXISTS idx_session_evaluation_answers_item ON session_evaluation_answers(item_id);
+    CREATE INDEX IF NOT EXISTS idx_event_evaluations_event ON event_evaluations(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_evaluations_leader ON event_evaluations(leader_id);
+    CREATE INDEX IF NOT EXISTS idx_event_evaluation_answers_item ON event_evaluation_answers(item_id);
+    -- Same rule as the séances: one evaluation per account when it has no قائد (the admin)
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_event_evaluations_user
+      ON event_evaluations(event_id, user_id) WHERE leader_id IS NULL;
   `);
   // L'admin évalue aussi, sans chef lié à son compte: une évaluation par compte et par séance
   ensureColumn('session_evaluations', 'user_id', 'user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -1674,10 +1762,45 @@ function migrate() {
   );
   seedEvalForms();
 
+  // سجلّ النشاط (GET /api/sessions/:id/history): من أنشأه، و كل ما تغيّر فيه بعدها.
+  // مرّة واحدة، يوم يُضاف العمود، يُستردّ ما عُرف قبله: أسطر audit_events تُربط بنشاطها،
+  // و إشعارات الأدمن (ما فعله القادة، آخر 200 سطر) تصير أسطرًا بلا تفاصيل، و منها يُعرف
+  // صاحب النشاط. نشاطٌ أنشأه المسؤول قبل ذلك يبقى بلا صاحب معروف.
+  const auditHadSession = db.prepare('PRAGMA table_info(audit_events)').all().some((c) => c.name === 'session_id');
+  ensureColumn('audit_events', 'session_id', 'session_id INTEGER');
+  ensureColumn('sessions', 'created_at', 'created_at TEXT');
+  ensureColumn('sessions', 'created_by', 'created_by TEXT');
+  ensureColumn('sessions', 'created_by_user_id', 'created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  if (!auditHadSession)
+    db.transaction(() => {
+      db.exec(`
+        UPDATE audit_events SET session_id = CAST(entity_id AS INTEGER) WHERE entity_type = 'session';
+        UPDATE audit_events SET session_id = json_extract(COALESCE(after_json, before_json), '$.session_id')
+          WHERE entity_type IN ('treasury_entry', 'member_due', 'session_evaluation')
+            AND json_valid(COALESCE(after_json, before_json));
+        UPDATE sessions SET created_at = n.created_at, created_by = n.actor,
+            created_by_user_id = (SELECT u.id FROM users u WHERE u.id = n.actor_user_id)
+          FROM notifications n
+          WHERE n.type = 'session_create' AND n.session_id = sessions.id AND sessions.created_by IS NULL;
+        INSERT INTO audit_events (actor_user_id, actor, action, entity_type, entity_id, after_json, created_at, session_id)
+          SELECT (SELECT u.id FROM users u WHERE u.id = n.actor_user_id), n.actor,
+                 CASE n.type WHEN 'session_create' THEN 'create' WHEN 'animators' THEN 'animator' ELSE n.type END,
+                 'session', CAST(n.session_id AS TEXT), '{"from_feed":true}', n.created_at, n.session_id
+          FROM notifications n WHERE n.session_id IN (SELECT id FROM sessions)
+          ORDER BY n.created_at, n.id;
+      `);
+    })();
+  // The rowid rides at the end of every entry: (session_id, created_at, id) order for free
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id, created_at) WHERE session_id IS NOT NULL'
+  );
+
   migrateBranchRoles();
   // Last: every table has its final columns by now, and the FR فرق need the CHECK gone
   dropSectionChecks();
   seedFrancophoneSection();
+  // After it: user_version 2 is its mark, 3 this one's
+  seedEventEvalForms();
 }
 
 function seed() {

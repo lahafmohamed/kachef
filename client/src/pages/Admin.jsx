@@ -6,6 +6,17 @@ import { useDebounced, useFetch } from '../hooks';
 import { isFeminine, useSection } from '../section';
 import { branchName } from '../utils';
 import { USERNAME_PATTERN, USERNAME_RE } from '../lib/username';
+import {
+  ALL_PERM_KEYS,
+  DEFAULT_PERMS,
+  PERM_GROUPS,
+  PERM_PRESET_KEYS,
+  permHintKey,
+  permLabelKey,
+  presetPerms,
+  withoutPerm,
+  withPerm,
+} from '../lib/perms';
 import Credentials from '../components/Credentials';
 import SectionField from '../components/SectionField';
 import {
@@ -26,6 +37,7 @@ import {
   useToast,
   IconAlert,
   IconCheck,
+  IconChevronDown,
   IconKey,
   IconPencil,
   IconPlus,
@@ -37,118 +49,14 @@ import {
   IconUsers,
 } from '../components/ui';
 
-// Granular permission catalog, grouped by page — must mirror the server's PERM_GROUPS
-const PERM_GROUPS = [
-  {
-    page: 'nav.members',
-    items: [
-      { key: 'members.read', label: 'admin.permAccess' },
-      { key: 'members.contact', label: 'admin.permMembersContact' },
-      { key: 'members.create', label: 'admin.permMembersCreate' },
-      { key: 'members.edit', label: 'admin.permMembersEdit' },
-      { key: 'members.delete', label: 'admin.permMembersDelete' },
-      { key: 'members.matalib', label: 'admin.permMembersMatalib' },
-    ],
-  },
-  {
-    page: 'nav.sessions',
-    // المخيمات و الدورات ride on these same keys
-    note: 'admin.permSessionsNote',
-    items: [
-      { key: 'sessions.read', label: 'admin.permAccess' },
-      { key: 'sessions.read.fees', label: 'admin.permSessionsFees' },
-      { key: 'sessions.create', label: 'admin.permSessionsCreate' },
-      { key: 'sessions.attendance', label: 'admin.permSessionsAttendance' },
-    ],
-  },
-  {
-    page: 'nav.branches',
-    items: [
-      { key: 'branches.read', label: 'admin.permAccess' },
-      { key: 'branches.plan', label: 'admin.permBranchesPlan' },
-      { key: 'branches.groups', label: 'admin.permBranchesGroups' },
-    ],
-  },
-  {
-    page: 'nav.promotions',
-    items: [
-      { key: 'promotions.read', label: 'admin.permAccess' },
-      { key: 'promotions.apply', label: 'admin.permPromotionsApply' },
-    ],
-  },
-  {
-    page: 'nav.leaders',
-    // التشكيلة stays read-only here: only an admin ever changes it. Filling in
-    // بطاقة تقدم القائد is a separate, grantable action.
-    items: [
-      { key: 'leaders.read', label: 'admin.permLeadersRead' },
-      { key: 'leaders.progress.self', label: 'admin.permLeadersProgressSelf' },
-      { key: 'leaders.progress.manage', label: 'admin.permLeadersProgress' },
-      { key: 'leaders.dues', label: 'admin.permLeadersDues' },
-    ],
-  },
-  {
-    page: 'nav.treasury',
-    items: [
-      { key: 'treasury.read', label: 'admin.permTreasuryRead' },
-      { key: 'treasury.manage', label: 'admin.permTreasuryManage' },
-    ],
-  },
-];
-
-const ALL_PERM_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
-
-// What each permission builds on — mirrors the server's PERM_DEPENDENCIES, which adds
-// the missing ones on save anyway. The ticks follow it, so the form never shows a set
-// the server would not keep: ticking one ticks its prerequisites, unticking one unticks
-// what needs it.
-const PERM_DEPENDENCIES = {
-  'members.create': ['members.read'],
-  'members.edit': ['members.read'],
-  'members.delete': ['members.read'],
-  'members.contact': ['members.read'],
-  'members.matalib': ['members.read'],
-  'sessions.create': ['sessions.read'],
-  'sessions.attendance': ['sessions.read'],
-  'sessions.read.fees': ['sessions.read'],
-  'branches.plan': ['branches.read'],
-  'branches.groups': ['branches.read'],
-  'promotions.apply': ['promotions.read', 'members.read'],
-  'leaders.progress.self': ['leaders.read'],
-  'leaders.progress.manage': ['leaders.read'],
-  'leaders.dues': ['leaders.read'],
-  'treasury.manage': ['treasury.read'],
-};
-
-function withPerm(perms, key) {
-  const out = new Set(perms);
-  const add = (k) => {
-    if (out.has(k)) return;
-    out.add(k);
-    (PERM_DEPENDENCIES[k] || []).forEach(add);
-  };
-  out.delete(key);
-  add(key);
-  return [...out];
-}
-
-function withoutPerm(perms, key) {
-  const out = new Set(perms);
-  const drop = (k) => {
-    if (!out.delete(k)) return;
-    for (const [dependent, needs] of Object.entries(PERM_DEPENDENCIES)) if (needs.includes(k)) drop(dependent);
-  };
-  drop(key);
-  return [...out];
-}
-
 const EMPTY_USER = {
   username: '',
   display_name: '',
   role: 'user',
   branches: [],
-  // Everything but the الصندوق: money is handed to the أمين المال by hand, never by default
-  perms: ALL_PERM_KEYS.filter((k) => !k.startsWith('treasury.')),
+  // Everything but the caisses and the dues, which are handed to the أمين المال by hand,
+  // and what deletes or names who rated what — ticked one by one
+  perms: DEFAULT_PERMS,
   // 'M' | 'F' | '' (both أقسام) — the form opens on the قسم being looked at
   section: 'M',
 };
@@ -274,19 +182,6 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
   function setSection(s) {
     const keep = new Set(branchesOfSection(s).map((b) => b.id));
     setForm((f) => ({ ...f, section: s, branches: f.branches.filter((id) => keep.has(id)) }));
-  }
-
-  function togglePerm(key) {
-    setForm((f) => ({ ...f, perms: f.perms.includes(key) ? withoutPerm(f.perms, key) : withPerm(f.perms, key) }));
-  }
-
-  // Group header checkbox: everything of the page on, or everything off
-  function toggleGroup(group) {
-    const keys = group.items.map((i) => i.key);
-    setForm((f) => {
-      const all = keys.every((k) => f.perms.includes(k));
-      return { ...f, perms: all ? keys.reduce(withoutPerm, f.perms) : keys.reduce(withPerm, f.perms) };
-    });
   }
 
   function describe(err) {
@@ -450,62 +345,142 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
       </div>
 
       {/* ---------- What the account may do, page by page ---------- */}
-      {form.role === 'user' && (
-        <div className="space-y-2 border-t border-border pt-5">
-          <div className="space-y-0.5">
-            <Label>{t('admin.allowedPages')}</Label>
-            <p className="text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
-          </div>
-          <div className="space-y-2.5">
-            {PERM_GROUPS.map((g) => {
-              const checkedCount = g.items.filter((i) => form.perms.includes(i.key)).length;
-              return (
-                <div key={g.page} className="overflow-hidden rounded-xl border border-border">
-                  <label className="flex min-h-11 cursor-pointer items-center gap-2.5 bg-muted/40 px-3 text-sm font-semibold transition-colors hover:bg-muted/70 sm:min-h-10">
-                    <input
-                      type="checkbox"
-                      checked={checkedCount === g.items.length}
-                      ref={(el) => el && (el.indeterminate = checkedCount > 0 && checkedCount < g.items.length)}
-                      onChange={() => toggleGroup(g)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      {t(g.page)}
-                      {g.note && <span className="ms-1.5 text-xs font-normal text-muted-foreground">· {t(g.note)}</span>}
-                    </span>
-                    <span
-                      className={cn(
-                        'text-xs font-medium tabular-nums',
-                        checkedCount ? 'text-primary' : 'text-muted-foreground'
-                      )}
-                    >
-                      {checkedCount}/{g.items.length}
-                    </span>
-                  </label>
-                  {/* One line per right, two columns from sm up. The key itself stays
-                      out of sight — a hover title for whoever needs it */}
-                  <div className="grid gap-0.5 border-t border-border p-1.5 sm:grid-cols-2">
-                    {g.items.map((i) => (
-                      <label
-                        key={i.key}
-                        title={i.key}
-                        className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60 sm:min-h-9"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={form.perms.includes(i.key)}
-                          onChange={() => togglePerm(i.key)}
-                        />
-                        <span className="min-w-0 flex-1 leading-snug">{t(i.label)}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {form.role === 'user' && <PermsEditor perms={form.perms} onChange={(perms) => setForm((f) => ({ ...f, perms }))} />}
     </form>
+  );
+}
+
+/**
+ * The rights of an account, page by page: a ready-made set to start from, then each page
+ * folded to its count — opened, one line per right with what it opens. A page's header
+ * box ticks or unticks it all; the prerequisites follow (perms.js).
+ */
+function PermsEditor({ perms, onChange }) {
+  const { t, i18n } = useTranslation();
+  const [open, setOpen] = useState(() => new Set());
+  const has = new Set(perms);
+  const toggle = (key) => onChange(has.has(key) ? withoutPerm(perms, key) : withPerm(perms, key));
+  const toggleGroup = (g) =>
+    onChange(g.keys.every((k) => has.has(k)) ? g.keys.reduce(withoutPerm, perms) : g.keys.reduce(withPerm, perms));
+  const flip = (id) =>
+    setOpen((s) => {
+      const next = new Set(s);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const allOpen = open.size === PERM_GROUPS.length;
+  // The ready-made set these ticks are exactly, if any
+  const preset = PERM_PRESET_KEYS.find((p) => {
+    const keys = presetPerms(p);
+    return keys.length === has.size && keys.every((k) => has.has(k));
+  });
+
+  return (
+    <div className="space-y-3 border-t border-border pt-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <Label>{t('admin.allowedPages')}</Label>
+        <span className="text-xs font-medium tabular-nums text-muted-foreground">
+          {t('admin.permCount', { count: has.size, total: ALL_PERM_KEYS.length })}
+        </span>
+        <p className="w-full text-xs text-muted-foreground">{t('admin.pagesHint')}</p>
+      </div>
+
+      {/* Start from a ready-made set, then adjust */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium">{t('admin.permPresets')}</p>
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label={t('admin.permPresets')}>
+          {PERM_PRESET_KEYS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              aria-pressed={preset === p}
+              onClick={() => onChange(presetPerms(p))}
+              className={cn(
+                'focus-ring inline-flex min-h-10 items-center rounded-full border px-3 text-sm transition-colors sm:min-h-9',
+                preset === p
+                  ? 'border-primary bg-primary/10 font-medium text-primary'
+                  : 'border-input bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+              )}
+            >
+              {t(`leader.preset_${p}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setOpen(allOpen ? new Set() : new Set(PERM_GROUPS.map((g) => g.id)))}
+            className="focus-ring inline-flex min-h-9 items-center rounded text-xs font-medium text-primary hover:underline"
+          >
+            {t(allOpen ? 'admin.permCollapseAll' : 'admin.permExpandAll')}
+          </button>
+        </div>
+        {PERM_GROUPS.map((g) => {
+          const checked = g.keys.filter((k) => has.has(k)).length;
+          const isOpen = open.has(g.id);
+          const title = t(`admin.permGroup.${g.id}`);
+          return (
+            <div key={g.id} className="overflow-hidden rounded-xl border border-border">
+              <div className="flex items-center gap-1 bg-muted/40 pe-1">
+                <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-2.5 ps-3 text-sm font-semibold sm:min-h-10">
+                  <input
+                    type="checkbox"
+                    checked={checked === g.keys.length}
+                    ref={(el) => el && (el.indeterminate = checked > 0 && checked < g.keys.length)}
+                    onChange={() => toggleGroup(g)}
+                  />
+                  <span className="min-w-0 flex-1">{title}</span>
+                </label>
+                <span className={cn('text-xs font-medium tabular-nums', checked ? 'text-primary' : 'text-muted-foreground')}>
+                  {checked}/{g.keys.length}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-expanded={isOpen}
+                  aria-controls={`perm-group-${g.id}`}
+                  aria-label={t(isOpen ? 'admin.permCollapse' : 'admin.permExpand', { group: title })}
+                  onClick={() => flip(g.id)}
+                >
+                  <IconChevronDown className={cn('transition-[rotate] duration-200', isOpen && 'rotate-180')} />
+                </Button>
+              </div>
+              {/* One line per right, two columns from sm up. The key itself stays out of
+                  sight — a hover title for whoever needs it */}
+              {isOpen && (
+                <div id={`perm-group-${g.id}`} className="grid gap-0.5 border-t border-border p-1.5 sm:grid-cols-2">
+                  {g.keys.map((key) => {
+                    const hint = i18n.exists(permHintKey(key)) ? t(permHintKey(key)) : null;
+                    return (
+                      <label
+                        key={key}
+                        title={key}
+                        className="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-accent/60 sm:min-h-9"
+                      >
+                        <input type="checkbox" className="mt-0.5" checked={has.has(key)} onChange={() => toggle(key)} />
+                        <span className="min-w-0 flex-1 leading-snug">
+                          {t(permLabelKey(key))}
+                          {hint && <span className="mt-0.5 block text-xs text-muted-foreground">{hint}</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <IconShield className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>{t('admin.permAdminOnly')}</span>
+      </p>
+    </div>
   );
 }
 

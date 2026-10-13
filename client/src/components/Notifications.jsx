@@ -17,12 +17,19 @@ import {
   useToast,
   IconAlert,
   IconBell,
+  IconCake,
   IconCalendar,
   IconClipboard,
+  IconClock,
+  IconCoins,
   IconInbox,
+  IconMessages,
   IconSettings,
+  IconStar,
   IconTent,
   IconUserCheck,
+  IconUsers,
+  IconWallet,
 } from './ui';
 
 /*
@@ -126,10 +133,27 @@ export function PushBridge() {
 const TYPE_ICONS = {
   session_created: IconCalendar,
   session_changed: IconCalendar,
+  session_cancelled: IconCalendar,
   session_animator: IconUserCheck,
   attendance_missing: IconClipboard,
+  prep_missing: IconClipboard,
   event_created: IconTent,
+  event_changed: IconTent,
+  event_role: IconTent,
+  event_reminder: IconTent,
+  meeting_created: IconMessages,
+  decision_assigned: IconMessages,
+  decision_due: IconClock,
+  evaluation_pending: IconStar,
+  evaluation_received: IconStar,
+  birthday: IconCake,
+  member_created: IconUsers,
+  treasury_entry: IconWallet,
+  leader_dues: IconCoins,
 };
+
+// The settings list them module by module, in this order (server/push.js TYPES.group)
+const TYPE_GROUPS = ['sessions', 'events', 'meetings', 'evaluations', 'people', 'money'];
 
 function InboxItem({ n, onOpen }) {
   const { t, i18n } = useTranslation();
@@ -631,14 +655,20 @@ export function NotificationSettingsDialog({ open, onClose }) {
   const mine = restricted
     ? (branches.data || []).filter((b) => user.branches.includes(b.id)).map((b) => branchName(b, i18n.language))
     : [];
-  const hints = {
-    session_created:
-      restricted && mine.length
+  // A line under the types whose label does not say when or for whom
+  const hintOf = (type) =>
+    type === 'session_created'
+      ? restricted && mine.length
         ? t('push.typeHint.session_createdBranches', { branches: mine.join(i18n.language === 'ar' ? '، ' : ', ') })
-        : t('push.typeHint.session_createdAll'),
-    session_animator: t('push.typeHint.session_animator'),
-    attendance_missing: t('push.typeHint.attendance_missing'),
-  };
+        : t('push.typeHint.session_createdAll')
+      : i18n.exists(`push.typeHint.${type}`)
+        ? t(`push.typeHint.${type}`)
+        : null;
+  const groups = prefs.data
+    ? TYPE_GROUPS.map((g) => ({ g, types: prefs.data.types.filter((p) => (p.group || 'sessions') === g) })).filter(
+        (x) => x.types.length > 0
+      )
+    : [];
 
   async function toggle(type, enabled) {
     const previous = prefs.data;
@@ -671,18 +701,27 @@ export function NotificationSettingsDialog({ open, onClose }) {
               <Skeleton className="h-40 rounded-xl" />
             )
           ) : (
-            <ul className="divide-y divide-border rounded-xl border border-border">
-              {prefs.data.types.map((p) => (
-                <TypeRow
-                  key={p.type}
-                  type={p.type}
-                  enabled={p.enabled}
-                  hint={hints[p.type]}
-                  saving={saving === p.type}
-                  onChange={(v) => toggle(p.type, v)}
-                />
+            <div className="space-y-4">
+              {groups.map(({ g, types }) => (
+                <section key={g} aria-labelledby={`push-group-${g}`} className="space-y-1.5">
+                  <h4 id={`push-group-${g}`} className="px-1 text-xs font-medium text-muted-foreground">
+                    {t(`push.group.${g}`)}
+                  </h4>
+                  <ul className="divide-y divide-border rounded-xl border border-border">
+                    {types.map((p) => (
+                      <TypeRow
+                        key={p.type}
+                        type={p.type}
+                        enabled={p.enabled}
+                        hint={hintOf(p.type)}
+                        saving={saving === p.type}
+                        onChange={(v) => toggle(p.type, v)}
+                      />
+                    ))}
+                  </ul>
+                </section>
               ))}
-            </ul>
+            </div>
           )}
           <p className="text-xs text-muted-foreground">{t('push.typesNote')}</p>
         </section>

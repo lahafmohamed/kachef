@@ -1,4 +1,4 @@
-import { fmtAmount, fmtDate, memberName } from '../utils';
+import { branchName, fmtAmount, fmtDate, memberName } from '../utils';
 import { toDate } from './date';
 import { isFeminine } from '../api';
 
@@ -28,6 +28,22 @@ export const chiefLabel = (t, kind, section) => gendered(t, `event.chief_${kind}
 /** A post's name: from the list, or its own title for «مسؤولية أخرى» */
 export const staffRoleLabel = (t, role, title, section) =>
   role === 'other' ? title : gendered(t, `event.role_${role}`, section);
+
+/**
+ * The فرق an event concerns, as badge labels: «الأشبال», or «الأشبال · طليعة 1، طليعة 2» when
+ * only some of its طلائع take part. Empty = the whole فوج.
+ */
+export function eventScopeLabels(ev, branchList, lng) {
+  const picked = new Set(ev.group_ids || []);
+  const sep = lng === 'ar' ? '، ' : ', ';
+  return (ev.branch_ids || [])
+    .map((id) => branchList.find((b) => b.id === id))
+    .filter(Boolean)
+    .map((b) => {
+      const groups = (b.groups || []).filter((g) => picked.has(g.id)).map((g) => g.name);
+      return { id: b.id, label: groups.length ? `${branchName(b, lng)} · ${groups.join(sep)}` : branchName(b, lng) };
+    });
+}
 
 // A tint per kind, so a دورة reads apart from a مخيم down the list
 export const KIND_BADGE = { camp: 'default', course: 'info', trip: 'warning', other: 'secondary' };

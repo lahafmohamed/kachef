@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -32,6 +32,19 @@ import {
 } from './ui';
 
 const TEXT_MAX = 2000;
+// Evaluators shown before «show all»: a camp can have sixty قادة, a نشاط has a few
+const EVALUATORS_SHOWN = 12;
+
+// What is being evaluated: a نشاط («session») or a camp or course («event», with its kind).
+// The wording follows it: eval.event.formTitle_course, then eval.event.formTitle, then
+// eval.formTitle — a نشاط reads the plain eval.* keys.
+const EvalScope = createContext({ scope: 'session', kind: undefined });
+
+function useEvalT() {
+  const { t } = useTranslation();
+  const { scope, kind } = useContext(EvalScope);
+  return (key, opts) => t([`eval.${scope}.${key}`, `eval.${key}`], kind ? { context: kind, ...opts } : opts);
+}
 
 // What the page's header and tab show, rebuilt from a fresh evaluation payload
 export function evalSummary(p) {
@@ -47,12 +60,13 @@ export function evalSummary(p) {
   };
 }
 
-const evalError = (t, err) =>
+// tt: the scope's own wording (useEvalT)
+const evalError = (tt, err) =>
   ({
-    eval_empty: t('eval.errorEmpty'),
-    eval_not_open: t('eval.errorNotOpen'),
-    not_a_participant: t('eval.errorNotParticipant'),
-    no_eval_form: t('eval.noFormTitle'),
+    eval_empty: tt('errorEmpty'),
+    eval_not_open: tt('errorNotOpen'),
+    not_a_participant: tt('errorNotParticipant'),
+    no_eval_form: tt('noFormTitle'),
   })[err.message] || err.message;
 
 /**
@@ -62,12 +76,32 @@ const evalError = (t, err) =>
  * results only once his own marks are in. The admin may rate any نشاط too, on demand.
  */
 export default function SessionEvaluation({ session, onChange }) {
-  const { t, i18n } = useTranslation();
-  const lng = i18n.language;
+  return (
+    <EvalScope.Provider value={{ scope: 'session', kind: undefined }}>
+      <Evaluation path={`/sessions/${session.id}`} date={session.date} onChange={onChange} />
+    </EvalScope.Provider>
+  );
+}
+
+/**
+ * The same tab for a camp or a course: rated by its قائد, its الهيئة القيادية and the قادة
+ * who took part, from its last day on.
+ */
+export function EventEvaluation({ event, onChange }) {
+  return (
+    <EvalScope.Provider value={{ scope: 'event', kind: event.kind }}>
+      <Evaluation path={`/events/${event.id}`} date={event.end_date} onChange={onChange} />
+    </EvalScope.Provider>
+  );
+}
+
+function Evaluation({ path, date, onChange }) {
+  const { t } = useTranslation();
+  const tt = useEvalT();
   const toast = useToast();
   const confirm = useConfirm();
   const isAdmin = useAuth().user?.role === 'admin';
-  const { data, setData, loading, error, reload } = useFetch(`/sessions/${session.id}/evaluation`);
+  const { data, setData, loading, error, reload } = useFetch(`${path}/evaluation`);
   const [editing, setEditing] = useState(false);
 
   function apply(payload) {
@@ -86,7 +120,7 @@ export default function SessionEvaluation({ session, onChange }) {
     )
       return;
     try {
-      apply(await api.del(`/sessions/${session.id}/evaluation`));
+      apply(await api.del(`${path}/evaluation`));
       toast.success(t('eval.withdrawn'));
     } catch (err) {
       toast.error(err.message);
@@ -103,7 +137,7 @@ export default function SessionEvaluation({ session, onChange }) {
     )
       return;
     try {
-      apply(await api.del(`/sessions/${session.id}/evaluations/${e.id}`));
+      apply(await api.del(`${path}/evaluations/${e.id}`));
       toast.success(t('eval.deleted'));
     } catch (err) {
       toast.error(err.message);
@@ -125,7 +159,7 @@ export default function SessionEvaluation({ session, onChange }) {
   if (!data.form)
     return (
       <Card>
-        <EmptyState icon={<IconStar className="h-6 w-6" />} title={t('eval.noFormTitle')}>
+        <EmptyState icon={<IconStar className="h-6 w-6" />} title={tt('noFormTitle')}>
           {isAdmin ? (
             <>
               {t('eval.noFormAdmin')}{' '}
@@ -150,7 +184,7 @@ export default function SessionEvaluation({ session, onChange }) {
         <Card>
           <CardContent className="flex items-start gap-3 p-4 text-sm sm:p-5">
             <IconClock className="mt-0.5 h-4 w-4 text-muted-foreground" />
-            <span>{t('eval.notOpen', { date: fmtDate(session.date) })}</span>
+            <span>{tt('notOpen', { date: fmtDate(date) })}</span>
           </CardContent>
         </Card>
       )}
@@ -162,7 +196,7 @@ export default function SessionEvaluation({ session, onChange }) {
               <span className="bg-brand-soft flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-primary">
                 <IconStar className="h-5 w-5" />
               </span>
-              <p className="min-w-0 text-sm">{t('eval.adminOffer')}</p>
+              <p className="min-w-0 text-sm">{tt('adminOffer')}</p>
             </div>
             <Button size="sm" onClick={() => setEditing(true)} className="w-full sm:w-auto">
               {t('eval.start')}
@@ -175,7 +209,7 @@ export default function SessionEvaluation({ session, onChange }) {
         <EvaluationForm
           form={data.form}
           mine={data.mine}
-          sessionId={session.id}
+          path={path}
           onSaved={apply}
           onCancel={data.mine || !data.expected ? () => setEditing(false) : null}
         />
@@ -206,8 +240,9 @@ function ScaleLegend() {
   );
 }
 
-function EvaluationForm({ form, mine, sessionId, onSaved, onCancel }) {
+function EvaluationForm({ form, mine, path, onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
+  const tt = useEvalT();
   const lng = i18n.language;
   const toast = useToast();
   // Archived items stay in the results of the أنشطة that answered them, never in a new form
@@ -235,7 +270,7 @@ function EvaluationForm({ form, mine, sessionId, onSaved, onCancel }) {
     }
     setSaving(true);
     try {
-      const payload = await api.put(`/sessions/${sessionId}/evaluation`, {
+      const payload = await api.put(`${path}/evaluation`, {
         answers: live
           .filter((it) => it.type !== 'axis')
           .map((it) =>
@@ -245,7 +280,7 @@ function EvaluationForm({ form, mine, sessionId, onSaved, onCancel }) {
       toast.success(t(mine ? 'eval.updated' : 'eval.saved'));
       onSaved(payload);
     } catch (err) {
-      toast.error(evalError(t, err));
+      toast.error(evalError(tt, err));
     } finally {
       setSaving(false);
     }
@@ -256,7 +291,7 @@ function EvaluationForm({ form, mine, sessionId, onSaved, onCancel }) {
       <CardHeader className="gap-2">
         <CardTitle className="flex items-center gap-2">
           <IconStar className="h-4 w-4 text-primary" />
-          {t(mine ? 'eval.editTitle' : 'eval.formTitle')}
+          {mine ? t('eval.editTitle') : tt('formTitle')}
         </CardTitle>
         <CardDescription>
           {t('eval.formIntro')} <bdi className="font-medium text-foreground">{evalText(form, 'name', lng)}</bdi>
@@ -372,6 +407,7 @@ function ScoreRow({ item, value, onChange }) {
 
 function MineCard({ mine, onEdit, onWithdraw }) {
   const { t, i18n } = useTranslation();
+  const tt = useEvalT();
   return (
     <Card>
       <CardContent className="flex flex-wrap items-center gap-x-4 gap-y-3 p-4 sm:p-5">
@@ -382,7 +418,7 @@ function MineCard({ mine, onEdit, onWithdraw }) {
             <IconCheck className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <p className="text-sm font-semibold">{t('eval.mineDone')}</p>
+            <p className="text-sm font-semibold">{tt('mineDone')}</p>
             <p className="text-xs text-muted-foreground">
               {t('eval.mineMeta', { date: fmtDate(mine.updated_at) })}{' '}
               <span dir="ltr" className="font-medium tabular-nums text-foreground">
@@ -431,13 +467,20 @@ function ScoreBig({ value }) {
 
 function Participants({ list }) {
   const { t } = useTranslation();
+  const tt = useEvalT();
+  const [all, setAll] = useState(false);
   const done = list.filter((p) => p.done).length;
-  if (list.length === 0) return <p className="text-sm text-muted-foreground">{t('eval.noParticipants')}</p>;
+  if (list.length === 0) return <p className="text-sm text-muted-foreground">{tt('noParticipants')}</p>;
+  // A long list (a camp's or a course's قادة) puts those who rated first, and shows a
+  // dozen until asked — a few more never hide behind a button
+  const long = list.length > EVALUATORS_SHOWN + 3;
+  const ordered = long ? [...list.filter((p) => p.done), ...list.filter((p) => !p.done)] : list;
+  const shown = long && !all ? ordered.slice(0, EVALUATORS_SHOWN) : ordered;
   return (
     <div className="space-y-2">
       <p className="text-sm font-medium tabular-nums">{t('eval.participation', { done, total: list.length })}</p>
       <ul className="flex flex-wrap gap-1.5">
-        {list.map((p, i) => (
+        {shown.map((p, i) => (
           <li
             key={p.leader_id ?? `x${i}`}
             className={cn(
@@ -454,6 +497,17 @@ function Participants({ list }) {
             <span className="sr-only">— {t(p.done ? 'eval.didEvaluate' : 'eval.notYet')}</span>
           </li>
         ))}
+        {shown.length < ordered.length && (
+          <li>
+            <button
+              type="button"
+              onClick={() => setAll(true)}
+              className="focus-ring inline-flex min-h-8 cursor-pointer items-center rounded-full px-2.5 py-1 text-xs font-medium text-primary hover:underline"
+            >
+              {t('eval.showAllEvaluators', { count: ordered.length - shown.length })}
+            </button>
+          </li>
+        )}
       </ul>
     </div>
   );
@@ -461,6 +515,7 @@ function Participants({ list }) {
 
 function ResultsCard({ data }) {
   const { t, i18n } = useTranslation();
+  const tt = useEvalT();
   const lng = i18n.language;
   const r = data.results;
   const stat = (id) => r?.items.find((x) => x.item_id === id);
@@ -484,10 +539,11 @@ function ResultsCard({ data }) {
       <CardContent className="space-y-5">
         <Participants list={data.participants} />
 
-        {data.results_hidden ? (
+        {data.results_forbidden || data.results_hidden ? (
           <p className="flex items-start gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">
             <IconStar className="mt-0.5 h-4 w-4 shrink-0" />
-            {t('eval.hiddenUntilYours')}
+            {/* No right to the results at all, or not before one's own marks */}
+            {t(data.results_forbidden ? 'eval.resultsForbidden' : 'eval.hiddenUntilYours')}
           </p>
         ) : !r?.count ? (
           <p className="text-sm text-muted-foreground">{t('eval.noneYet')}</p>
@@ -547,7 +603,7 @@ function ResultsCard({ data }) {
         )}
 
         {!data.can_evaluate && data.open && !data.mine && (
-          <p className="text-xs text-muted-foreground">{t('eval.whoEvaluates')}</p>
+          <p className="text-xs text-muted-foreground">{tt('whoEvaluates')}</p>
         )}
       </CardContent>
     </Card>

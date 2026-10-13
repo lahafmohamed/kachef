@@ -148,7 +148,7 @@ const lineButton =
  * came in and what went out since it was opened. Under one box's balance, when and
  * with how much it started. Beside it, the أمين المال balances it against a count.
  */
-function Figures({ fig, box, name, canManage, onOpening, onCount, t }) {
+function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
   const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: fig.income[k] })).filter(
     (i) => i.amount > 0
   );
@@ -169,7 +169,7 @@ function Figures({ fig, box, name, canManage, onOpening, onCount, t }) {
           <p className={cn('min-w-0 text-3xl font-bold tracking-tight tabular-nums', fig.balance < 0 && 'text-destructive')}>
             <span dir="ltr">{money(fig.balance)}</span>
           </p>
-          {canManage && (
+          {canCount && (
             <Button size="sm" variant="outline" onClick={() => onCount(box)} className="shrink-0">
               <IconScale />
               {t('treasury.countAction')}
@@ -188,7 +188,7 @@ function Figures({ fig, box, name, canManage, onOpening, onCount, t }) {
           </p>
         )}
         {startText &&
-          (canManage ? (
+          (canCount ? (
             <button
               type="button"
               onClick={() => onOpening(box)}
@@ -235,7 +235,7 @@ const NESTED_PAD = 'py-2.5 ps-16 pe-11 sm:ps-[4.25rem] sm:pe-12';
  * `nested`: one of a نشاط's movements, opened under its line — which already says the
  * day and the نشاط, and stands for the icon. A مصروف of it still owed is one of them.
  */
-function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canMembers, onEdit, nested = false }) {
+function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canEvents, canDues, canMembers, onEdit, nested = false }) {
   const { title, meta, isIn, move, owed } = rowText(r, { t, lng, names, nested });
   const Icon =
     r.source === 'transfer'
@@ -302,7 +302,7 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canDues, canM
       </button>
     );
   // Written and corrected on the camp's page, where its money is
-  if (r.source === 'event' && r.event_id && canSessions)
+  if (r.source === 'event' && r.event_id && canEvents)
     return (
       <Link to={`/events/${r.event_id}?tab=money`} className={ROW_CLASS}>
         {body}
@@ -1101,7 +1101,11 @@ export default function Treasury() {
   const [countDialog, setCountDialog] = useState(null);
 
   const data = ledger.data;
-  const canManage = !!data?.can_manage;
+  // What this account writes in the caisses, action by action (treasury.entries / transfers / counts)
+  const canEntries = !!data?.can_entries;
+  const canTransfers = !!data?.can_transfers;
+  const canCounts = !!data?.can_counts;
+  const canManage = canEntries || canTransfers || canCounts;
   // The caisse on screen: one asked for in the address, else all of them together —
   // or the only one there is; its lines in the direction asked for
   const { boxes, byKey, held, multi, sel, owed, rows, months, fig } = ledgerView(data, {
@@ -1120,7 +1124,12 @@ export default function Treasury() {
   // All caisses on screen: each line says whose it is
   const tagOf = (r) => (!sel && multi && r.direction !== 'move' ? shortOf(byKey[r.box]) : null);
   // A transfer is corrected by whoever holds the caisse it left
-  const canEditRow = (r) => canManage && (r.source !== 'transfer' || !!byKey[r.from]?.visible);
+  const canEditRow = (r) =>
+    r.source === 'transfer'
+      ? canTransfers && !!byKey[r.from]?.visible
+      : r.source === 'count'
+        ? canCounts
+        : canEntries;
   // Somewhere to send money: another caisse of a held one's قسم
   const canTransfer = held.some((h) => boxes.some((b) => b.section === h.section && b.key !== h.key));
   const writeBox = sel?.key || held.find((b) => b.start)?.key || held[0]?.key;
@@ -1130,6 +1139,7 @@ export default function Treasury() {
     names,
     canEdit: canEditRow(r),
     canSessions: has('sessions.read'),
+    canEvents: has('events.read'),
     canDues: has('leaders.dues'),
     canMembers: has('members.read'),
     onEdit: (x) =>
@@ -1155,11 +1165,13 @@ export default function Treasury() {
       <PageHeader title={t('treasury.title')} description={t('treasury.subtitle')}>
         {canManage && anyOpen && (
           <>
-            <Button variant="outline" onClick={() => setEntryDialog({ direction: 'in', entry: null })}>
-              <IconHandHeart />
-              {t('treasury.addIncome')}
-            </Button>
-            {canTransfer && (
+            {canEntries && (
+              <Button variant="outline" onClick={() => setEntryDialog({ direction: 'in', entry: null })}>
+                <IconHandHeart />
+                {t('treasury.addIncome')}
+              </Button>
+            )}
+            {canTransfers && canTransfer && (
               <Button
                 variant="outline"
                 onClick={() => setTransferDialog({ transfer: null })}
@@ -1171,11 +1183,13 @@ export default function Treasury() {
               </Button>
             )}
             {/* «Ajouter une dépense» beside «Don ou recette» outgrows a phone's row */}
-            <Button variant="brand" onClick={() => setEntryDialog({ direction: 'out', entry: null })}>
-              <IconPlus />
-              <span className="sm:hidden">{t('treasury.addExpenseShort')}</span>
-              <span className="hidden sm:inline">{t('treasury.addExpense')}</span>
-            </Button>
+            {canEntries && (
+              <Button variant="brand" onClick={() => setEntryDialog({ direction: 'out', entry: null })}>
+                <IconPlus />
+                <span className="sm:hidden">{t('treasury.addExpenseShort')}</span>
+                <span className="hidden sm:inline">{t('treasury.addExpense')}</span>
+              </Button>
+            )}
           </>
         )}
       </PageHeader>
@@ -1190,7 +1204,7 @@ export default function Treasury() {
             icon={<IconWallet className="h-6 w-6" />}
             title={t('treasury.notOpenTitle')}
             action={
-              canManage && (
+              canCounts && (
                 <Button variant="brand" onClick={() => setOpeningDialog({ box: null })}>
                   <IconWallet />
                   {t('treasury.openAction')}
@@ -1198,7 +1212,7 @@ export default function Treasury() {
               )
             }
           >
-            {t(canManage ? 'treasury.notOpenHint' : 'treasury.notOpenReadonly')}
+            {t(canCounts ? 'treasury.notOpenHint' : 'treasury.notOpenReadonly')}
           </EmptyState>
         </Card>
       ) : (
@@ -1240,7 +1254,7 @@ export default function Treasury() {
                 icon={<IconWallet className="h-6 w-6" />}
                 title={t('treasury.boxNotOpenTitle', { name: nameOf(sel.key) })}
                 action={
-                  canManage && (
+                  canCounts && (
                     <Button variant="brand" onClick={() => setOpeningDialog({ box: sel })}>
                       <IconWallet />
                       {t('treasury.openAction')}
@@ -1248,7 +1262,7 @@ export default function Treasury() {
                   )
                 }
               >
-                {t(canManage ? 'treasury.notOpenHint' : 'treasury.notOpenReadonly')}
+                {t(canCounts ? 'treasury.notOpenHint' : 'treasury.notOpenReadonly')}
               </EmptyState>
             </Card>
           ) : (
@@ -1258,7 +1272,7 @@ export default function Treasury() {
                 box={sel}
                 // No tiles to say whose caisse this is: the only one the قائد holds
                 name={!multi && sel ? shortOf(sel) : null}
-                canManage={canManage}
+                canCount={canCounts}
                 onOpening={(box) => setOpeningDialog({ box })}
                 onCount={(box) => setCountDialog({ box, count: null })}
                 t={t}
@@ -1270,7 +1284,7 @@ export default function Treasury() {
                   total={owed.reduce((n, x) => n + x.amount, 0)}
                   t={t}
                   tagOf={tagOf}
-                  canManage={canManage}
+                  canManage={canEntries}
                   onEdit={(entry) => setEntryDialog({ direction: 'out', entry })}
                   onPay={setPaying}
                 />

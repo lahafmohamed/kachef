@@ -247,6 +247,22 @@ function buildTodos(d, t, f, lng) {
       })),
     });
 
+  // و المخيمات و الدورات التي أخذ فيها دورًا، انتهت في الأسبوعين الأخيرين
+  if (d.events_to_evaluate?.length)
+    todos.push({
+      key: 'evaluate-events',
+      level: 'week',
+      Icon: IconStar,
+      title: t('dashboard.todo.evaluateEvents'),
+      count: d.events_to_evaluate.length,
+      items: d.events_to_evaluate.map((e) => ({
+        key: e.event_id,
+        label: e.title,
+        meta: `${t(`event.kind_${e.kind}`)} · ${f.date(e.end_date)}`,
+        to: `/events/${e.event_id}?tab=eval`,
+      })),
+    });
+
   if (d.followup?.length)
     todos.push({
       key: 'followup',

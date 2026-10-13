@@ -1,7 +1,7 @@
 import { api } from '../api';
 import { phoneNumbers } from '../components/MemberParts';
 import { workbookBlob } from './excel';
-import { gendered, isOverdue, timeRange } from './meetings';
+import { gendered, isOverdue, meetingScope, timeRange } from './meetings';
 import { FLOWS, INCOME_SOURCES, OUT_CATEGORIES, OUT_FIGURES, boxName, ledgerView, rowText } from './treasury';
 import {
   LEADER_FILTER_KEYS,
@@ -1398,7 +1398,7 @@ async function meetingCard(ctx) {
             [t('common.date'), m.date, 'date'],
             [t('session.time'), timeRange(m)],
             [t('session.place'), m.place],
-            [t('meeting.scope'), m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')],
+            [t('meeting.scope'), meetingScope(m, lng, t)],
             [gendered(t, 'meeting.chair', m.section), m.chair],
             [gendered(t, 'meeting.secretary', m.section), m.secretary],
           ],
@@ -1464,7 +1464,7 @@ async function meetingsList(ctx) {
               { label: t('meeting.endTime'), value: (m) => fmtTime(m.end_time) },
               { label: t('meeting.subject'), value: (m) => m.title },
               { label: t('meeting.kind'), value: (m) => t(`meeting.kind_${m.kind}`) },
-              { label: t('meeting.scope'), value: (m) => (m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')) },
+              { label: t('meeting.scope'), value: (m) => meetingScope(m, lng, t) },
               { label: t('session.place'), value: (m) => m.place },
               { label: t('meeting.chair'), value: (m) => m.chair },
               { label: t('meeting.secretary'), value: (m) => m.secretary },

@@ -3,12 +3,23 @@
 
 // Kinds of نشاط a form can be used for, in the order the settings list them
 export const EVAL_KINDS = ['activity', 'leaders', 'group', 'visit'];
+// … and kinds of camps and courses (server: 'event_' + events.kind)
+export const EVENT_EVAL_KINDS = ['event_camp', 'event_course', 'event_trip', 'event_other'];
 export const EVAL_KIND_KEYS = {
   activity: 'session.kindActivity',
   leaders: 'session.kindLeaders',
   group: 'session.kindGroup',
   visit: 'session.kindVisit',
+  event_camp: 'event.kind_camp',
+  event_course: 'event.kind_course',
+  event_trip: 'event.kind_trip',
+  event_other: 'event.kind_other',
 };
+// The two families of kinds, as the settings show them: séances, then camps and courses
+export const EVAL_KIND_GROUPS = [
+  { key: 'session', title: 'eval.forSessions', kinds: EVAL_KINDS },
+  { key: 'event', title: 'eval.forEvents', kinds: EVENT_EVAL_KINDS },
+];
 
 // The association's marks: «تُعطى العلامة الكاملة إذا تحقّق المؤشر بالكامل، و تتناقص حسب
 // مستوى تحقيقه» — 1 ضعيف … 5 ممتاز

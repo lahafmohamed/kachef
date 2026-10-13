@@ -20,21 +20,52 @@ const INBOX_MAX = 100;
 const LIST_LIMIT = 50;
 // 8 pm in Abidjan (GMT all year): the Saturday نشاط is long over, the evening still young
 const REMINDER_HOUR = Number(process.env.NOTIFY_REMINDER_HOUR ?? 20);
+// Birthdays are news of the morning
+const BIRTHDAY_HOUR = Number(process.env.NOTIFY_BIRTHDAY_HOUR ?? 7);
+// A قائد's own monthly اشتراك, once a month, a few days in
+const DUES_REMINDER_DAY = Number(process.env.NOTIFY_DUES_DAY ?? 5);
+const DUES_REMINDER_HOUR = 10;
+const DUES_START = '2026-01';
+// بطاقة التحضير of the next planned نشاط, this many days before it
+const PREP_DAYS_AHEAD = 2;
 const REMINDER_EVERY_MS = 10 * 60 * 1000;
 const DAY_S = 24 * 60 * 60;
 const DEVICES_MAX = 10;
 
 // What an account can be told, and whether it hears it before choosing anything.
-// `perm`: a type never reaches an account that could not open what it points to.
+// `group`: where the settings list it. `perm`: a type never reaches an account that could
+// not open what it points to — one key, several (any of them), or null (every account).
 // `leader`: personal to a قائد — only for accounts tied to their قائد file.
 const TYPES = {
-  session_created: { perm: 'sessions.read', on: () => true },
-  session_changed: { perm: 'sessions.read', on: () => true },
-  session_animator: { perm: 'sessions.read', leader: true, on: () => true },
+  // ----- الأنشطة -----
+  session_created: { group: 'sessions', perm: 'sessions.read', on: () => true },
+  session_changed: { group: 'sessions', perm: 'sessions.read', on: () => true },
+  session_cancelled: { group: 'sessions', perm: 'sessions.read', on: () => true },
+  session_animator: { group: 'sessions', perm: 'sessions.read', leader: true, on: () => true },
   // The قادة of the فرقة are the ones who mark it: on for an account tied to فرق, off
   // for the admin and the accounts that see every فرقة, who would get one per فرقة.
-  attendance_missing: { perm: 'sessions.attendance', on: (u) => ownBranches(u) !== null },
-  event_created: { perm: 'sessions.read', on: () => true },
+  attendance_missing: { group: 'sessions', perm: 'sessions.attendance', on: (u) => ownBranches(u) !== null },
+  // Same reasoning: the بطاقة is written by the فرقة's قادة
+  prep_missing: { group: 'sessions', perm: 'prep.manage', on: (u) => ownBranches(u) !== null },
+  // ----- المخيمات و الدورات -----
+  event_created: { group: 'events', perm: 'events.read', on: () => true },
+  event_changed: { group: 'events', perm: 'events.read', on: () => true },
+  event_role: { group: 'events', perm: 'events.read', leader: true, on: () => true },
+  event_reminder: { group: 'events', perm: 'events.read', leader: true, on: () => true },
+  // ----- الاجتماعات -----
+  meeting_created: { group: 'meetings', perm: 'meetings.read', on: () => true },
+  decision_assigned: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
+  decision_due: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
+  // ----- التقييم -----
+  evaluation_pending: { group: 'evaluations', perm: ['sessions.read', 'events.read'], leader: true, on: () => true },
+  // Quiet until asked for: a نشاط of twelve قادة would ring twelve times
+  evaluation_received: { group: 'evaluations', perm: 'evaluations.read', leader: true, on: () => false },
+  // ----- العناصر و القادة -----
+  birthday: { group: 'people', perm: ['members.read', 'leaders.read'], on: (u) => ownBranches(u) !== null },
+  member_created: { group: 'people', perm: 'members.read', on: () => false },
+  // ----- المال -----
+  treasury_entry: { group: 'money', perm: 'treasury.read', on: () => false },
+  leader_dues: { group: 'money', perm: null, leader: true, on: () => false },
 };
 
 // ---------- VAPID ----------
@@ -97,10 +128,29 @@ function wants(u, type) {
   return row ? !!row.enabled : TYPES[type].on(u);
 }
 
-module.exports = function setupNotifications(app, { canUser }) {
+module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
+  const allowedBy = (u, perm) =>
+    perm === null || (Array.isArray(perm) ? perm.some((p) => canUser(u, p)) : canUser(u, perm));
   // Types this account can receive at all — the settings list shows only these
   const typesFor = (u) =>
-    Object.keys(TYPES).filter((type) => canUser(u, TYPES[type].perm) && (!TYPES[type].leader || u.leader_id));
+    Object.keys(TYPES).filter((type) => allowedBy(u, TYPES[type].perm) && (!TYPES[type].leader || u.leader_id));
+
+  // One account, about something of `section`: may it hear this type, and does it want to?
+  // `perm`: the right the thing itself needs, when the type covers several modules.
+  const hears = (u, type, section, perm = null) =>
+    seesSection(u, section) && typesFor(u).includes(type) && wants(u, type) && (!perm || canUser(u, perm));
+
+  const usersOfLeaders = (leaderIds) => {
+    const ids = [...new Set(leaderIds.filter(Boolean).map(Number))];
+    return ids.length
+      ? db
+          .prepare(
+            `SELECT id, username, display_name, role, branches, perms, section, leader_id FROM users
+             WHERE active = 1 AND leader_id IN (${ids.map(() => '?').join(',')})`
+          )
+          .all(...ids)
+      : [];
+  };
 
   /**
    * The accounts that follow something of `section` touching `branchIds`: accounts tied
@@ -400,6 +450,261 @@ module.exports = function setupNotifications(app, { canUser }) {
     });
   }
 
+  /**
+   * A نشاط still ahead was deleted: it will not take place. Whoever followed it hears it,
+   * and its قادة too even when they follow other فرق. `leaderIds`: its قادة, read before
+   * the rows went with it.
+   */
+  function sessionCancelled(req, session, branchIds, leaderIds) {
+    if (!KIND_NEW[session.kind] || session.date < todayISO()) return;
+    const ids = session.kind === 'activity' ? branchIds : [];
+    const users = audience({ section: session.section, branchIds: ids, type: 'session_cancelled', except: req.user.id });
+    const told = new Set(users.map((u) => u.id));
+    for (const u of usersOfLeaders(leaderIds))
+      if (u.id !== req.user.id && !told.has(u.id) && hears(u, 'session_cancelled', session.section)) {
+        told.add(u.id);
+        users.push(u);
+      }
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    deliver(users, {
+      type: 'session_cancelled',
+      url: '/sessions',
+      tag: `s${session.id}`,
+      text: (lang) => ({
+        title: titleWith(lang === 'ar' ? 'أُلغي نشاط' : 'Séance annulée', branchNames(ids, lang)),
+        body: `${joinLine(`«${session.title}»`, fmtWhen(session.date, session.start_time, lang))}\n${
+          lang === 'ar' ? `${fem ? 'ألغته' : 'ألغاه'} ${actor}` : `Annulée par ${actor}`
+        }`,
+      }),
+    });
+  }
+
+  // The مخيم's words: «المخيم» names it in Arabic, and its gender agrees with the verbs
+  const EVENT_WORD = {
+    camp: { ar: 'المخيم', fem: false, fr: 'le camp', frIn: 'au camp' },
+    course: { ar: 'الدورة', fem: true, fr: 'la formation', frIn: 'à la formation' },
+    trip: { ar: 'الرحلة', fem: true, fr: 'la sortie', frIn: 'à la sortie' },
+    other: { ar: 'الفعالية', fem: true, fr: "l'événement", frIn: "à l'événement" },
+  };
+  const eventWord = (ev) => EVENT_WORD[ev.kind] || EVENT_WORD.other;
+  const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const eventBranchIdsOf = (eventId) =>
+    db
+      .prepare('SELECT branch_id FROM event_branches WHERE event_id = ? ORDER BY branch_id')
+      .all(eventId)
+      .map((r) => r.branch_id);
+
+  /** A مخيم not over yet moved to other days or another place. */
+  function eventChanged(req, before, after) {
+    const today = todayISO();
+    if (after.end_date < today && before.end_date < today) return;
+    const moved = after.start_date !== before.start_date || after.end_date !== before.end_date;
+    const newPlace = after.place && after.place !== before.place;
+    if (!moved && !newPlace) return;
+    const branchIds = eventBranchIdsOf(after.id);
+    const users = audience({ section: after.section, branchIds, type: 'event_changed', except: req.user.id });
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    const w = eventWord(after);
+    deliver(users, {
+      type: 'event_changed',
+      url: `/events/${after.id}`,
+      tag: `e${after.id}`,
+      ttl: 7 * DAY_S,
+      text: (lang) => ({
+        title: titleWith(
+          lang === 'ar'
+            ? `${moved ? 'تغيّر موعد' : 'تغيّر مكان'} ${w.ar}`
+            : moved
+              ? `${capital(w.fr)} change de dates`
+              : `${capital(w.fr)} change de lieu`,
+          branchNames(branchIds, lang)
+        ),
+        body: `${joinLine(`«${after.title}»`, fmtRange(after.start_date, after.end_date, lang), after.place)}\n${
+          lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifié par ${actor}`
+        }`,
+      }),
+    });
+  }
+
+  // الهيئة القيادية, as the مخيم's page names its posts — a قائدة's in the feminine
+  const STAFF_WORD = {
+    gathering: { ar: 'قائد التجمع', arF: 'قائدة التجمع', fr: 'chef de rassemblement', frF: 'cheffe de rassemblement' },
+    secretary: { ar: 'أمين السر', arF: 'أمينة السر', fr: 'secrétaire', frF: 'secrétaire' },
+    media: { ar: 'أمين الإعلام', arF: 'أمينة الإعلام', fr: 'responsable médias', frF: 'responsable médias' },
+    treasurer: { ar: 'أمين الصندوق', arF: 'أمينة الصندوق', fr: 'trésorier', frF: 'trésorière' },
+    gear: { ar: 'أمين التجهيزات', arF: 'أمينة التجهيزات', fr: 'responsable matériel', frF: 'responsable matériel' },
+    trainer: { ar: 'مدرّب', arF: 'مدرّبة', fr: 'formateur', frF: 'formatrice' },
+    assistant: { ar: 'معاون', arF: 'معاونة', fr: 'assistant', frF: 'assistante' },
+    medic: { ar: 'مسعف', arF: 'مسعفة', fr: 'secouriste', frF: 'secouriste' },
+  };
+  const CHIEF_FR = {
+    camp: ['chef du camp', 'cheffe du camp'],
+    course: ['chef de la formation', 'cheffe de la formation'],
+    trip: ['chef de la sortie', 'cheffe de la sortie'],
+    other: ['chef responsable', 'cheffe responsable'],
+  };
+
+  /**
+   * A قائد given a place in a مخيم still ahead or going on, by someone else: its chief
+   * (role 'chief'), a post of its هيئة (role = the post, `title` for «other»), or a
+   * participant (role 'participant').
+   */
+  function eventRole(req, ev, leaderId, role, title = null) {
+    if (!leaderId || ev.end_date < todayISO()) return;
+    const users = usersOfLeaders([leaderId]).filter(
+      (u) => u.id !== req.user.id && hears(u, 'event_role', ev.section)
+    );
+    const w = eventWord(ev);
+    deliver(users, {
+      type: 'event_role',
+      url: `/events/${ev.id}`,
+      tag: `e${ev.id}`,
+      ttl: 7 * DAY_S,
+      text: (lang, u) => {
+        const fem = feminine(u);
+        let head;
+        if (role === 'chief')
+          head =
+            lang === 'ar'
+              ? `${fem ? 'أنتِ قائدة' : 'أنت قائد'} ${w.ar}`
+              : `Vous êtes ${(CHIEF_FR[ev.kind] || CHIEF_FR.other)[fem ? 1 : 0]}`;
+        else if (role === 'participant')
+          head =
+            lang === 'ar'
+              ? `${fem ? 'سُجِّلتِ' : 'سُجِّلتَ'} في ${w.ar}`
+              : `Vous êtes ${fem ? 'inscrite' : 'inscrit'} ${w.frIn}`;
+        else {
+          const s = STAFF_WORD[role];
+          const post = s ? (lang === 'ar' ? (fem ? s.arF : s.ar) : fem ? s.frF : s.fr) : title || '';
+          head = lang === 'ar' ? `${fem ? 'أنتِ' : 'أنت'} ${post} في ${w.ar}` : `Vous êtes ${post} — ${w.fr}`;
+        }
+        return { title: head, body: joinLine(`«${ev.title}»`, fmtRange(ev.start_date, ev.end_date, lang), ev.place) };
+      },
+    });
+  }
+
+  // A new محضر or a planned اجتماع, for whoever follows its فرق (or its whole قسم)
+  function meetingCreated(req, m, branchIds) {
+    const users = audience({ section: m.section, branchIds, type: 'meeting_created', except: req.user.id });
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    deliver(users, {
+      type: 'meeting_created',
+      url: `/meetings/${m.id}`,
+      tag: `m${m.id}`,
+      ttl: 7 * DAY_S,
+      text: (lang) => ({
+        title: titleWith(lang === 'ar' ? 'اجتماع جديد' : 'Nouvelle réunion', branchNames(branchIds, lang)),
+        body: `${joinLine(`«${m.title}»`, fmtWhen(m.date, m.start_time, lang), m.place)}\n${
+          lang === 'ar' ? `${fem ? 'أضافته' : 'أضافه'} ${actor}` : `Ajoutée par ${actor}`
+        }`,
+      }),
+    });
+  }
+
+  const decisionBody = (d, meetingTitle, lang) =>
+    joinLine(
+      `«${d.text}»`,
+      d.due_date ? (lang === 'ar' ? `قبل ${fmtDay(d.due_date, lang)}` : `pour le ${fmtDay(d.due_date, lang)}`) : null,
+      meetingTitle
+    );
+
+  /** An مقرّر handed to a قائد (new, or passed on to him), by someone else. */
+  function decisionAssigned(req, m, d) {
+    if (!d.leader_id || d.status !== 'open') return;
+    const users = usersOfLeaders([d.leader_id]).filter(
+      (u) => u.id !== req.user.id && hears(u, 'decision_assigned', m.section)
+    );
+    deliver(users, {
+      type: 'decision_assigned',
+      url: `/meetings/${m.id}`,
+      tag: `d${d.id}`,
+      ttl: 7 * DAY_S,
+      text: (lang) => ({ title: lang === 'ar' ? 'تكليف جديد' : 'Nouvelle tâche', body: decisionBody(d, m.title, lang) }),
+    });
+  }
+
+  /**
+   * A new evaluation of a نشاط or a مخيم, for whoever leads it (its القائد المسؤول, its
+   * قائد المخيم). Without the evaluator's name: the marks stay anonymous to them.
+   */
+  function evaluationReceived(req, { kind, id, title, section, leaderIds, count, total }) {
+    const users = usersOfLeaders(leaderIds).filter(
+      (u) => u.id !== req.user.id && Number(u.leader_id) !== Number(req.user.leader_id) &&
+        hears(u, 'evaluation_received', section, kind === 'session' ? 'sessions.read' : 'events.read')
+    );
+    deliver(users, {
+      type: 'evaluation_received',
+      url: kind === 'session' ? `/sessions/${id}?tab=eval` : `/events/${id}?tab=eval`,
+      tag: `${kind === 'session' ? 's' : 'e'}${id}-eval`,
+      text: (lang) => ({
+        title:
+          lang === 'ar'
+            ? kind === 'session' ? 'تقييم جديد لنشاطك' : 'تقييم جديد'
+            : kind === 'session' ? 'Nouvelle évaluation de votre séance' : 'Nouvelle évaluation',
+        body: joinLine(
+          `«${title}»`,
+          lang === 'ar' ? `المقيِّمون: ${count} من ${total}` : `évaluateurs : ${count} sur ${total}`
+        ),
+      }),
+    });
+  }
+
+  /** A new عنصر in a فرقة, for its other قادة. */
+  function memberCreated(req, m) {
+    const section = db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
+    if (!section) return;
+    const users = audience({ section, branchIds: [m.branch_id], type: 'member_created', except: req.user.id });
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    const name = [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ');
+    deliver(users, {
+      type: 'member_created',
+      url: `/members/${m.id}`,
+      tag: `mb${m.id}`,
+      text: (lang) => ({
+        title: titleWith(lang === 'ar' ? 'عنصر جديد' : 'Nouveau membre', branchNames([m.branch_id], lang)),
+        body: `${name}\n${lang === 'ar' ? `${fem ? 'سجّلته' : 'سجّله'} ${actor}` : `Inscrit par ${actor}`}`,
+      }),
+    });
+  }
+
+  const fmtAmount = (n) => `${new Intl.NumberFormat('fr-FR').format(n).replace(/\s/g, ' ')} F`;
+
+  /**
+   * An expense or an income written in a caisse, for whoever reads that caisse: a فرقة's
+   * by the accounts of that فرقة (or of every one), the فوج's by those of every فرقة.
+   */
+  function treasuryEntry(req, e) {
+    const users = activeUsers.all().filter((u) => {
+      if (u.id === req.user.id || !hears(u, 'treasury_entry', e.section)) return false;
+      const own = ownBranches(u);
+      return own === null || (e.branch_id !== null && own.includes(e.branch_id));
+    });
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    const box = (lang) =>
+      e.branch_id ? branchNames([e.branch_id], lang) : lang === 'ar' ? 'صندوق الفوج' : 'Caisse du groupe';
+    deliver(users, {
+      type: 'treasury_entry',
+      url: '/treasury',
+      tag: `t${e.id}`,
+      text: (lang) => ({
+        title: titleWith(
+          e.direction === 'out'
+            ? lang === 'ar' ? 'مصروف جديد' : 'Nouvelle dépense'
+            : lang === 'ar' ? 'مدخول جديد' : 'Nouvelle entrée',
+          box(lang)
+        ),
+        body: `${joinLine(e.label, fmtAmount(e.amount))}\n${
+          lang === 'ar' ? `${fem ? 'سجّلته' : 'سجّله'} ${actor}` : `Enregistrée par ${actor}`
+        }`,
+      }),
+    });
+  }
+
   // ---------- Reminders ----------
   // The evening of a فرقة's نشاط, its قادة hear it if nobody is marked present yet: the
   // roster starts all absent, so an untouched one reads as a نشاط nobody came to, and
@@ -452,12 +757,287 @@ module.exports = function setupNotifications(app, { canUser }) {
     return sent;
   }
 
-  function runReminders() {
-    try {
-      attendanceReminders();
-    } catch (e) {
-      console.error('notification reminders failed:', e.message);
+  const isoDay = (now, offset) => {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() + offset);
+    return d.toISOString().slice(0, 10);
+  };
+  // Claimed before sending: a crash halfway never sends the same reminder twice
+  const claim = (key) => markReminder.run(key).changes > 0;
+
+  // Who takes part in a مخيم, by قائد: its chief, its هيئة, the قادة who registered (and were
+  // not taken off the list) and were not marked absent from every جلسة — the same as its evaluators
+  const eventLeaderIds = (eventId) =>
+    db
+      .prepare(
+        `SELECT leader_id FROM events WHERE id = @id AND leader_id IS NOT NULL
+         UNION SELECT leader_id FROM event_staff WHERE event_id = @id AND leader_id IS NOT NULL
+         UNION SELECT p.leader_id FROM event_participants p WHERE p.event_id = @id AND p.leader_id IS NOT NULL
+           AND p.withdrawn_at IS NULL
+           AND (NOT EXISTS (SELECT 1 FROM event_attendance a WHERE a.participant_id = p.id)
+                OR EXISTS (SELECT 1 FROM event_attendance a WHERE a.participant_id = p.id AND a.status = 'present'))`
+      )
+      .all({ id: eventId })
+      .map((r) => r.leader_id);
+
+  /** The evening before a مخيم starts, the قادة who take part in it. */
+  function eventReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR) return 0;
+    let sent = 0;
+    for (const ev of db.prepare('SELECT * FROM events WHERE start_date = ?').all(isoDay(now, 1))) {
+      if (!claim(`event-start:${ev.id}`)) continue;
+      const w = eventWord(ev);
+      const users = usersOfLeaders(eventLeaderIds(ev.id)).filter((u) => hears(u, 'event_reminder', ev.section));
+      sent += users.length;
+      deliver(users, {
+        type: 'event_reminder',
+        url: `/events/${ev.id}`,
+        tag: `e${ev.id}`,
+        ttl: DAY_S,
+        text: (lang) => ({
+          title:
+            lang === 'ar'
+              ? `${w.fem ? 'تبدأ' : 'يبدأ'} ${w.ar} غدًا`
+              : `${capital(w.fr)} ${ev.kind === 'trip' ? 'a lieu' : 'commence'} demain`,
+          body: joinLine(`«${ev.title}»`, ev.place),
+        }),
+      });
     }
+    return sent;
+  }
+
+  /** An open مقرّر due tomorrow, and once more the day after its date has passed. */
+  function decisionReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR) return 0;
+    let sent = 0;
+    const rows = db
+      .prepare(
+        `SELECT d.*, m.title AS meeting_title, m.section FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+         WHERE d.status = 'open' AND d.leader_id IS NOT NULL AND d.due_date IN (?, ?)`
+      )
+      .all(isoDay(now, 1), isoDay(now, -1));
+    for (const d of rows) {
+      const late = d.due_date < now.toISOString().slice(0, 10);
+      if (!claim(`decision-${late ? 'late' : 'due'}:${d.id}`)) continue;
+      const users = usersOfLeaders([d.leader_id]).filter((u) => hears(u, 'decision_due', d.section));
+      sent += users.length;
+      deliver(users, {
+        type: 'decision_due',
+        url: `/meetings/${d.meeting_id}`,
+        tag: `d${d.id}`,
+        ttl: DAY_S,
+        text: (lang) => ({
+          title: late
+            ? lang === 'ar' ? 'تكليف متأخّر' : 'Tâche en retard'
+            : lang === 'ar' ? 'تكليف موعده غدًا' : 'Tâche à rendre demain',
+          body: decisionBody(d, d.meeting_title, lang),
+        }),
+      });
+    }
+    return sent;
+  }
+
+  /**
+   * The evening after a نشاط, its قادة who have not rated it yet; the evening after a
+   * مخيم's last day, the same for its قادة. Only where a form is set for its kind (or it
+   * was rated already).
+   */
+  function evaluationReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR) return 0;
+    const yesterday = isoDay(now, -1);
+    let sent = 0;
+    const sessions = db
+      .prepare(
+        `SELECT s.* FROM sessions s WHERE s.date = ?
+           AND (EXISTS (SELECT 1 FROM eval_kind_forms k WHERE k.kind = s.kind)
+                OR EXISTS (SELECT 1 FROM session_evaluations ev WHERE ev.session_id = s.id))`
+      )
+      .all(yesterday);
+    for (const s of sessions) {
+      const leaderIds = db
+        .prepare(
+          `SELECT sl.leader_id FROM session_leaders sl WHERE sl.session_id = ? AND COALESCE(sl.status, '') != 'absent'
+             AND NOT EXISTS (SELECT 1 FROM session_evaluations ev WHERE ev.session_id = sl.session_id AND ev.leader_id = sl.leader_id)`
+        )
+        .all(s.id)
+        .map((r) => r.leader_id);
+      const users = usersOfLeaders(leaderIds).filter(
+        (u) => hears(u, 'evaluation_pending', s.section, 'sessions.read') && claim(`eval:s${s.id}:${u.id}`)
+      );
+      sent += users.length;
+      deliver(users, {
+        type: 'evaluation_pending',
+        url: `/sessions/${s.id}?tab=eval`,
+        tag: `s${s.id}-eval`,
+        ttl: 2 * DAY_S,
+        text: (lang) => ({
+          title: lang === 'ar' ? 'قيِّم نشاط الأمس' : "Évaluez la séance d'hier",
+          body: `«${s.title}»`,
+        }),
+      });
+    }
+    const events = db
+      .prepare(
+        `SELECT e.* FROM events e WHERE e.end_date = ?
+           AND (EXISTS (SELECT 1 FROM eval_kind_forms k WHERE k.kind = 'event_' || e.kind)
+                OR EXISTS (SELECT 1 FROM event_evaluations ev WHERE ev.event_id = e.id))`
+      )
+      .all(yesterday);
+    for (const ev of events) {
+      const rated = new Set(
+        db.prepare('SELECT leader_id FROM event_evaluations WHERE event_id = ? AND leader_id IS NOT NULL').all(ev.id).map((r) => r.leader_id)
+      );
+      const w = eventWord(ev);
+      const users = usersOfLeaders(eventLeaderIds(ev.id).filter((id) => !rated.has(id))).filter(
+        (u) => hears(u, 'evaluation_pending', ev.section, 'events.read') && claim(`eval:e${ev.id}:${u.id}`)
+      );
+      sent += users.length;
+      deliver(users, {
+        type: 'evaluation_pending',
+        url: `/events/${ev.id}?tab=eval`,
+        tag: `e${ev.id}-eval`,
+        ttl: 3 * DAY_S,
+        text: (lang) => ({
+          title: lang === 'ar' ? `قيِّم ${w.ar}` : `Évaluez ${w.fr}`,
+          body: `«${ev.title}»`,
+        }),
+      });
+    }
+    return sent;
+  }
+
+  /**
+   * The next planned نشاط of a فرقة, PREP_DAYS_AHEAD days away, without its بطاقة التحضير
+   * yet: its قادة hear it once.
+   */
+  function prepReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR || !nextPlanned) return 0;
+    const today = now.toISOString().slice(0, 10);
+    const target = isoDay(now, PREP_DAYS_AHEAD);
+    let sent = 0;
+    for (const b of db.prepare('SELECT id, section FROM branches').all()) {
+      const next = nextPlanned(b.id, today);
+      if (!next || next.date !== target) continue;
+      if (db.prepare('SELECT 1 FROM prep_cards WHERE branch_id = ? AND date = ?').get(b.id, target)) continue;
+      if (!claim(`prep:${b.id}:${target}`)) continue;
+      const users = audience({ section: b.section, branchIds: [b.id], type: 'prep_missing' });
+      sent += users.length;
+      deliver(users, {
+        type: 'prep_missing',
+        url: '/prep-cards',
+        tag: `prep${b.id}`,
+        ttl: 2 * DAY_S,
+        text: (lang) => ({
+          title: titleWith(lang === 'ar' ? 'بطاقة التحضير لم تُكتب بعد' : 'Fiche de préparation à rédiger', branchNames([b.id], lang)),
+          body: joinLine(`«${next.title}»`, fmtDay(next.date, lang)),
+        }),
+      });
+    }
+    return sent;
+  }
+
+  /**
+   * The morning's birthdays: the عناصر of the فرق an account follows, and the قادة of its
+   * قسم — one notification each, with their names.
+   */
+  function birthdayReminders(now = new Date()) {
+    if (now.getUTCHours() < BIRTHDAY_HOUR) return 0;
+    const today = now.toISOString().slice(0, 10);
+    if (!claim(`birthday:${today}`)) return 0;
+    const md = today.slice(5);
+    const members = db
+      .prepare(
+        `SELECT m.first_name, m.father_name, m.last_name, m.branch_id, b.section FROM members m
+         JOIN branches b ON b.id = m.branch_id WHERE m.status = 'active' AND substr(m.birth_date, 6, 5) = ?`
+      )
+      .all(md);
+    const leaders = db
+      .prepare(
+        `SELECT first_name, father_name, last_name, section FROM leaders
+         WHERE status = 'active' AND substr(birth_date, 6, 5) = ?`
+      )
+      .all(md);
+    if (!members.length && !leaders.length) return 0;
+    const fullName = (p) => [p.first_name, p.last_name].filter(Boolean).join(' ');
+    const names = new Map();
+    for (const u of activeUsers.all()) {
+      if (!typesFor(u).includes('birthday') || !wants(u, 'birthday')) continue;
+      const own = ownBranches(u);
+      const list = [
+        ...(canUser(u, 'members.read')
+          ? members.filter((m) => seesSection(u, m.section) && (own === null || own.includes(m.branch_id)))
+          : []),
+        ...(canUser(u, 'leaders.read') ? leaders.filter((l) => seesSection(u, l.section)) : []),
+      ].map(fullName);
+      if (list.length) names.set(u.id, list);
+    }
+    const users = activeUsers.all().filter((u) => names.has(u.id));
+    deliver(users, {
+      type: 'birthday',
+      url: '/',
+      tag: `birthday-${today}`,
+      ttl: 16 * 60 * 60,
+      text: (lang, u) => {
+        const list = names.get(u.id);
+        const shown = list.slice(0, 4).join(lang === 'ar' ? '، ' : ', ');
+        const more = list.length - 4;
+        return {
+          title:
+            lang === 'ar'
+              ? list.length > 1 ? 'أعياد ميلاد اليوم' : 'عيد ميلاد اليوم'
+              : list.length > 1 ? "Anniversaires aujourd'hui" : "Anniversaire aujourd'hui",
+          body: more > 0 ? (lang === 'ar' ? `${shown} و ${more} آخرون` : `${shown} et ${more} autres`) : shown,
+        };
+      },
+    });
+    return users.length;
+  }
+
+  /** A قائد whose اشتراك of the month is not recorded yet, a few days into the month. */
+  function duesReminders(now = new Date()) {
+    if (now.getUTCDate() !== DUES_REMINDER_DAY || now.getUTCHours() < DUES_REMINDER_HOUR) return 0;
+    const month = now.toISOString().slice(0, 7);
+    if (month < DUES_START) return 0;
+    const users = db
+      .prepare(
+        `SELECT u.id, u.username, u.display_name, u.role, u.branches, u.perms, u.section, u.leader_id FROM users u
+         WHERE u.active = 1 AND u.leader_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM leader_dues d WHERE d.leader_id = u.leader_id AND d.month = ?)`
+      )
+      .all(month)
+      .filter((u) => typesFor(u).includes('leader_dues') && wants(u, 'leader_dues') && claim(`dues:${month}:${u.id}`));
+    const monthName = (lang) => fmt(lang, { month: 'long', year: 'numeric' }, new Date(`${month}-15T12:00:00Z`));
+    deliver(users, {
+      type: 'leader_dues',
+      url: '/',
+      tag: `dues-${month}`,
+      ttl: 3 * DAY_S,
+      text: (lang) => ({
+        title: lang === 'ar' ? 'اشتراك الشهر' : 'Cotisation du mois',
+        body:
+          lang === 'ar'
+            ? `لم يُسجَّل اشتراك ${monthName(lang)} بعد.`
+            : `La cotisation de ${monthName(lang)} n'est pas encore enregistrée.`,
+      }),
+    });
+    return users.length;
+  }
+
+  function runReminders() {
+    for (const job of [
+      attendanceReminders,
+      eventReminders,
+      decisionReminders,
+      evaluationReminders,
+      prepReminders,
+      birthdayReminders,
+      duesReminders,
+    ])
+      try {
+        job();
+      } catch (e) {
+        console.error(`notification reminders (${job.name}) failed:`, e.message);
+      }
   }
   setTimeout(runReminders, 60 * 1000).unref();
   setInterval(runReminders, REMINDER_EVERY_MS).unref();
@@ -614,7 +1194,7 @@ module.exports = function setupNotifications(app, { canUser }) {
   // ---------- Preferences ----------
 
   const prefsPayload = (u) => ({
-    types: typesFor(u).map((type) => ({ type, enabled: wants(u, type), default: TYPES[type].on(u) })),
+    types: typesFor(u).map((type) => ({ type, group: TYPES[type].group, enabled: wants(u, type), default: TYPES[type].on(u) })),
     push_available: !!vapid,
   });
 
@@ -646,5 +1226,26 @@ module.exports = function setupNotifications(app, { canUser }) {
     res.json(prefsPayload(u));
   });
 
-  return { sessionCreated, sessionChanged, animatorAdded, eventCreated, attendanceReminders };
+  return {
+    sessionCreated,
+    sessionChanged,
+    sessionCancelled,
+    animatorAdded,
+    eventCreated,
+    eventChanged,
+    eventRole,
+    meetingCreated,
+    decisionAssigned,
+    evaluationReceived,
+    memberCreated,
+    treasuryEntry,
+    // The reminders, callable with a given time (tests)
+    attendanceReminders,
+    eventReminders,
+    decisionReminders,
+    evaluationReminders,
+    prepReminders,
+    birthdayReminders,
+    duesReminders,
+  };
 };

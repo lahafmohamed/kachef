@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api, isFeminine } from '../api';
-import { useAuth, usePerms } from '../auth';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
@@ -16,6 +16,7 @@ import {
   dayNumber,
   dueOf,
   eventPhase,
+  eventScopeLabels,
   fmtDateRange,
   participantKind,
   participantName,
@@ -33,6 +34,8 @@ import SearchSelect from '../components/SearchSelect';
 import TimePicker from '../components/TimePicker';
 import { UnderlineTabs } from '../components/MemberParts';
 import AttachedFiles from '../components/AttachedFiles';
+import { EventEvaluation } from '../components/SessionEvaluation';
+import { fmtScore, scoreTone } from '../lib/evaluations';
 import {
   Avatar,
   Badge,
@@ -57,6 +60,7 @@ import {
   IconBack,
   IconCalendar,
   IconCheckAll,
+  IconChevronDown,
   IconClipboard,
   IconCoins,
   IconHandHeart,
@@ -65,13 +69,14 @@ import {
   IconPlus,
   IconSearch,
   IconShield,
+  IconStar,
   IconTrash,
   IconUsers,
   IconWallet,
   IconX,
 } from '../components/ui';
 
-const TABS = ['program', 'staff', 'participants', 'money', 'files'];
+const TABS = ['program', 'staff', 'participants', 'money', 'eval', 'files'];
 
 // The same three marks as a نشاط; absence starts quiet, présence stands out
 const STATUSES = [
@@ -1217,7 +1222,7 @@ function PayChip({ p, ev, t, onOpen }) {
 
 const PAY_FILTERS = ['paid', 'partial', 'unpaid', 'exempt'];
 
-function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, onPay, onRemove }) {
+function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, onPay, onRemove, onRestore }) {
   const [query, setQuery] = useState('');
   const [payFilter, setPayFilter] = useState('');
   const people = ev.participants;
@@ -1358,7 +1363,82 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
           ))
         )}
       </CardContent>
+      <WithdrawnParticipants
+        ev={ev}
+        t={t}
+        lng={lng}
+        canEdit={canEdit}
+        canFees={canFees}
+        links={links}
+        showBranch={showBranch}
+        onRestore={onRestore}
+      />
     </Card>
+  );
+}
+
+/**
+ * من أُزيل من اللائحة: لم يشارك، و ملفّه يقول ذلك. زرّ واحد يعيده بدفعه و حضوره كما كانا — لمن
+ * أُزيل خطأً. Folded away: it is the exception, not the list.
+ */
+function WithdrawnParticipants({ ev, t, lng, canEdit, canFees, links, showBranch, onRestore }) {
+  const rows = ev.withdrawn || [];
+  if (rows.length === 0) return null;
+  return (
+    <details className="group border-t border-border">
+      <summary className="focus-ring flex cursor-pointer select-none list-none items-center gap-2 px-4 py-3 hover:bg-accent/40 focus-visible:[outline-offset:-2px]! sm:px-5 [&::-webkit-details-marker]:hidden">
+        <span className="text-sm font-semibold">{t('event.withdrawn')}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">{rows.length}</span>
+        <IconChevronDown className="ms-auto h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <p className="px-4 pb-3 text-xs text-muted-foreground sm:px-5">{t('event.withdrawnHint')}</p>
+      <ul className="divide-y divide-border border-t border-border">
+        {rows.map((p) => {
+          const name = participantName(p);
+          const kind = participantKind(p);
+          const to =
+            kind === 'member' && links.members
+              ? `/members/${p.member_id}`
+              : kind === 'leader' && links.leaders
+                ? `/leaders/${p.leader_id}`
+                : null;
+          // Who took him off and when — and the payment that no longer counts, until he is back
+          const trail = [
+            p.withdrawn_by && t('event.withdrawnBy', { name: p.withdrawn_by, date: fmtDate(p.withdrawn_at) }),
+            canFees && p.paid > 0 && t('event.withdrawnPaid', { amount: fmtAmount(p.paid) }),
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return (
+            <li key={p.id} className="flex items-center gap-3 px-4 py-2.5 sm:px-5">
+              <ParticipantAvatar p={p} />
+              <div className="min-w-0 flex-1">
+                {to ? (
+                  <Link to={to} className="focus-ring block truncate rounded font-medium hover:text-primary hover:underline">
+                    {name}
+                  </Link>
+                ) : (
+                  <span className="block truncate font-medium">{name}</span>
+                )}
+                <ParticipantLine p={p} t={t} lng={lng} section={ev.section} showBranch={showBranch} />
+                {trail && <span className="block text-xs text-muted-foreground">{trail}</span>}
+              </div>
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => onRestore(p)}
+                  aria-label={t('event.restoreParticipant', { name })}
+                >
+                  {t('event.restore')}
+                </Button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </details>
   );
 }
 
@@ -2405,13 +2485,14 @@ export default function EventDetail() {
   const back = useBack('/events');
   const toast = useToast();
   const confirm = useConfirm();
-  const { user } = useAuth();
   const { has } = usePerms();
-  const isAdmin = user?.role === 'admin';
-  const canEdit = has('sessions.create');
-  const canMark = has('sessions.attendance');
-  const canFees = has('sessions.read.fees');
-  const canPay = canFees && (canMark || canEdit);
+  // Each part of the مخيم has its own right (events.*)
+  const canEdit = has('events.manage');
+  const canMark = has('events.attendance');
+  const canFees = has('events.read.fees');
+  const canPay = has('events.payments');
+  const canSpend = has('events.expenses');
+  const canDelete = has('events.delete');
 
   const { data: ev, setData: setEv, loading, error, reload } = useFetch(`/events/${id}`);
   const branches = useFetch('/branches');
@@ -2420,7 +2501,12 @@ export default function EventDetail() {
   const [sp, setSp] = useSearchParams();
   // «expenses» was the money tab's name before the donations joined it
   const wanted = sp.get('tab') === 'expenses' ? 'money' : sp.get('tab');
-  const tab = TABS.includes(wanted) && (wanted !== 'money' || canFees) ? wanted : 'program';
+  // التقييم: تبويب حين يكون لنوعه استمارة (أو قُيِّم من قبل). «بانتظارك» لقائد أخذ فيه دورًا و لم
+  // يقيّمه بعد، و قد بلغ يومه الأخير — لا للمسؤول: تقييمه اختيار لا ينتظره أحد
+  const evaluation = ev?.evaluation ?? null;
+  const evalPending = !!evaluation?.can_evaluate && !!evaluation.expected && !evaluation.done;
+  const tab =
+    TABS.includes(wanted) && (wanted !== 'money' || canFees) && (wanted !== 'eval' || evaluation) ? wanted : 'program';
   const setTab = (v) =>
     setSp(
       (prev) => {
@@ -2449,7 +2535,7 @@ export default function EventDetail() {
     return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
   const branchList = branches.data || [];
-  const named = ev.branch_ids.map((bid) => branchList.find((b) => b.id === bid)).filter(Boolean);
+  const named = eventScopeLabels(ev, branchList, lng);
   const today = todayISO();
   const phase = eventPhase(ev, today);
   const totalDays = dayNumber(ev, ev.end_date);
@@ -2477,11 +2563,15 @@ export default function EventDetail() {
   async function removeParticipant(p) {
     const name = participantName(p);
     const paidSome = p.paid > 0;
+    // A عنصر or قائد stays on record as «did not take part»; a guest has no file, he is struck off
+    const kept = !p.guest_name;
+    const key = `event.${kept ? 'withdraw' : 'remove'}${paidSome ? 'Paid' : ''}Confirm`;
     if (
       !(await confirm({
         title: t('event.removeParticipant'),
-        message: t(paidSome ? 'event.removePaidConfirm' : 'event.removeConfirm', {
+        message: t(isFeminine(ev.section) ? [`${key}F`, key] : key, {
           name,
+          title: ev.title,
           amount: fmtAmount(p.paid),
         }),
         confirmLabel: t('event.remove'),
@@ -2491,6 +2581,22 @@ export default function EventDetail() {
     try {
       setEv(await api.del(`/events/${ev.id}/participants/${p.id}`));
       toast.success(t('event.participantRemoved', { name }));
+    } catch (err) {
+      toast.error(errorText(t, err));
+    }
+  }
+
+  // Putting someone taken off the list back on goes through the same route as adding him
+  async function restoreParticipant(p) {
+    const name = participantName(p);
+    try {
+      setEv(
+        await api.post(
+          `/events/${ev.id}/participants`,
+          p.member_id ? { member_ids: [p.member_id] } : { leader_ids: [p.leader_id] }
+        )
+      );
+      toast.success(t('event.participantRestored', { name }));
     } catch (err) {
       toast.error(errorText(t, err));
     }
@@ -2527,6 +2633,24 @@ export default function EventDetail() {
           },
         ]
       : []),
+    ...(evaluation
+      ? [
+          {
+            id: 'eval',
+            // A dot while it waits for this قائد's marks — the word goes to readers
+            label: evalPending ? (
+              <>
+                {t('session.tabEval')}
+                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-primary" />
+                <span className="sr-only">— {t('eval.toDo')}</span>
+              </>
+            ) : (
+              t('session.tabEval')
+            ),
+            count: evaluation.count > 0 ? evaluation.count : null,
+          },
+        ]
+      : []),
     // صور المخيم و ملفاته: لكل من يراه، و يضيفها من يسجّل الحضور
     { id: 'files', label: t('event.tabFiles'), count: ev.files?.length || 0 },
   ];
@@ -2553,7 +2677,7 @@ export default function EventDetail() {
               <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
             </Button>
           )}
-          {isAdmin && (
+          {canDelete && (
             <Button
               variant="destructive-ghost"
               size="sm"
@@ -2618,10 +2742,34 @@ export default function EventDetail() {
               )}
             </span>
           )}
+          {/* The mark its قادة gave — or, for one who has not rated it yet, the way to do it.
+              Hidden from him until then, like on the tab. */}
+          {(evalPending || (evaluation?.count > 0 && evaluation.average !== null)) && (
+            <button
+              type="button"
+              onClick={() => setTab('eval')}
+              className={cn(
+                'focus-ring -my-1 flex min-h-8 items-center gap-1.5 rounded py-1 font-medium hover:underline',
+                evalPending ? 'text-primary' : 'text-muted-foreground'
+              )}
+            >
+              <IconStar className="h-3.5 w-3.5" />
+              {evalPending ? (
+                t('eval.toDo')
+              ) : (
+                <>
+                  <span className="sr-only">{t('session.tabEval')}</span>
+                  <span dir="ltr" className={cn('font-semibold tabular-nums', scoreTone(evaluation.average).text)}>
+                    {fmtScore(evaluation.average, lng)}/5
+                  </span>
+                </>
+              )}
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {named.length ? (
-            named.map((b) => <Badge key={b.id}>{branchName(b, lng)}</Badge>)
+            named.map((b) => <Badge key={b.id}>{b.label}</Badge>)
           ) : (
             <Badge variant="secondary">{t('event.wholeGroup')}</Badge>
           )}
@@ -2675,6 +2823,7 @@ export default function EventDetail() {
             onAdd={() => setAdding(true)}
             onPay={setPaying}
             onRemove={removeParticipant}
+            onRestore={restoreParticipant}
           />
         )}
         {tab === 'money' && canFees && (
@@ -2682,14 +2831,14 @@ export default function EventDetail() {
             <ExpensesTab
               ev={ev}
               t={t}
-              canWrite={canEdit}
+              canWrite={canSpend}
               onAdd={() => setExpenseDialog({ expense: null })}
               onEdit={(x) => setExpenseDialog({ expense: x })}
             />
             <DonationsCard
               ev={ev}
               t={t}
-              canWrite={canEdit}
+              canWrite={canSpend}
               onAdd={() => setDonationDialog({ donation: null })}
               onEdit={(d) => setDonationDialog({ donation: d })}
             />
@@ -2700,6 +2849,11 @@ export default function EventDetail() {
               onAdd={(direction) => setFundingDialog({ funding: null, direction })}
               onEdit={(f) => setFundingDialog({ funding: f, direction: f.direction })}
             />
+          </div>
+        )}
+        {tab === 'eval' && evaluation && (
+          <div className="space-y-4">
+            <EventEvaluation event={ev} onChange={(summary) => setEv((e) => ({ ...e, evaluation: summary }))} />
           </div>
         )}
         {tab === 'files' && (

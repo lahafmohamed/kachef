@@ -176,9 +176,9 @@ export default function MemberDetail() {
   // lignes, un clic de travers suffisait à sortir quelqu'un des activités.
   const canArchive = has('members.delete');
   // المخيمات و الدورات: لمن يرى المخيمات
-  const canEvents = has('sessions.read');
-  // الاشتراك الشهري: لمن يرى مبالغ الأنشطة أو الصندوق
-  const canDues = has('sessions.read.fees') || has('treasury.read');
+  const canEvents = has('events.read');
+  // الاشتراك الشهري: لمن مُنح رؤيته
+  const canDues = has('members.dues.read');
   const [sp, setSp] = useSearchParams();
   const asked = sp.get('tab');
   const tab =
@@ -478,7 +478,10 @@ export default function MemberDetail() {
           items={[
             { id: 'attendance', label: t('member.attendance') },
             { id: 'matalib', label: t('member.matalib') },
-            ...(canEvents ? [{ id: 'events', label: t('nav.events'), count: events.data?.length || null }] : []),
+            // A camp he was taken off the list of is in his file, but not among those he took part in
+            ...(canEvents
+              ? [{ id: 'events', label: t('nav.events'), count: events.data?.filter((e) => !e.withdrawn).length || null }]
+              : []),
             ...(canDues ? [{ id: 'dues', label: t('member.duesTab') }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },

@@ -38,6 +38,7 @@ import {
   fmtLongDate,
   gendered,
   isOverdue,
+  meetingScope,
   timeRange,
   userText,
 } from '../lib/meetings';
@@ -87,17 +88,17 @@ const KINDS = {
   'members-list': { perm: 'members.read', label: 'print.reportMembersList', back: '/members' },
   'leaders-list': { perm: 'leaders.read', label: 'print.reportLeadersList', back: '/leaders' },
   'sessions-list': { perm: 'sessions.read', label: 'print.reportSessionsList', back: '/sessions' },
-  'prep-list': { perm: 'sessions.read', label: 'print.reportPrepList', back: '/prep-cards' },
+  'prep-list': { perm: 'prep.read', label: 'print.reportPrepList', back: '/prep-cards' },
   plan: { perm: 'branches.read', label: 'print.reportPlan', back: '/branches' },
-  prep: { perm: 'sessions.read', label: 'print.reportPrep', back: '/prep-cards' },
+  prep: { perm: 'prep.read', label: 'print.reportPrep', back: '/prep-cards' },
   // الصناديق: id 0, the caisse (?box=) and direction (?flow=) the page showed
   treasury: { perm: 'treasury.read', label: 'print.reportTreasury', back: '/treasury' },
   // A فرقة's money tab: the id is the فرقة
   'branch-money': { perm: 'branches.read', label: 'print.reportBranchMoney', back: '/branches' },
   // محضر اجتماع; then the list (id 0, the page's filters in the query) and the follow-up
-  meeting: { perm: 'sessions.read', label: 'print.reportMeeting', back: '/meetings' },
-  'meetings-list': { perm: 'sessions.read', label: 'print.reportMeetingsList', back: '/meetings' },
-  'meeting-decisions': { perm: 'sessions.read', label: 'print.reportMeetingDecisions', back: '/meetings?view=decisions' },
+  meeting: { perm: 'meetings.read', label: 'print.reportMeeting', back: '/meetings' },
+  'meetings-list': { perm: 'meetings.read', label: 'print.reportMeetingsList', back: '/meetings' },
+  'meeting-decisions': { perm: 'meetings.read', label: 'print.reportMeetingDecisions', back: '/meetings?view=decisions' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -1881,7 +1882,7 @@ function MeetingReport({ id, onReady, kindLabel }) {
       )}
       <Tags>
         <Tag>{t(`meeting.kind_${m.kind}`)}</Tag>
-        <Tag tone="neutral">{m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')}</Tag>
+        <Tag tone="neutral">{meetingScope(m, lng, t)}</Tag>
       </Tags>
       <div className="mt-4">
         <Facts
@@ -2025,7 +2026,7 @@ function MeetingsListReport({ onReady, kindLabel }) {
             <bdi>{userText(m.title)}</bdi>
             <div className="text-[11px] font-normal text-muted-foreground">{t(`meeting.kind_${m.kind}`)}</div>
           </td>
-          <td className={td}>{m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')}</td>
+          <td className={td}>{meetingScope(m, lng, t)}</td>
           <td className={cn(td, 'text-muted-foreground')}>{m.chair || '—'}</td>
           <td className={tdNum}>
             {m.present_count + m.absent_count + m.excused_count + m.guest_count

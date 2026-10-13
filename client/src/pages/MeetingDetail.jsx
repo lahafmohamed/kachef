@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { useAuth, usePerms } from '../auth';
+import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { isFeminine, useSection } from '../section';
 import {
@@ -494,15 +494,16 @@ function ItemDialog({ m, item, open, onClose, onSaved, t }) {
 /**
  * One decision of the minutes: its tick, what was decided, who carries it out and by
  * when. `number`: its place in this meeting's list; `from`: the earlier meeting it
- * comes from, on the follow-up card. Writers get the pencil, on this meeting's own.
+ * comes from, on the follow-up card. Writers get the pencil, on this meeting's own; the
+ * tick is the follow-up's (meetings.followup), which may be granted alone.
  */
-function DecisionItem({ d, t, today, number, canEdit, busy, onToggle, onEdit }) {
+function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle, onEdit }) {
   return (
     <li className="flex items-start gap-1.5 py-1">
       <DecisionCheck
         status={d.status}
         busy={busy}
-        onToggle={canEdit ? () => onToggle(d) : null}
+        onToggle={canFollow ? () => onToggle(d) : null}
         label={t(d.status === 'done' ? 'meeting.markOpen' : 'meeting.markDone', { text: d.text })}
       />
       <div className="min-w-0 flex-1 py-2">
@@ -537,7 +538,7 @@ function DecisionItem({ d, t, today, number, canEdit, busy, onToggle, onEdit }) 
  * «متابعة تكاليف الجلسة الماضية»: what earlier meetings of the same فوج or فرقة decided and
  * is still to do, with what got done since the last one — ticked off here, in the meeting.
  */
-function FollowupsCard({ m, t, today, canEdit, busy, onToggle }) {
+function FollowupsCard({ m, t, today, canFollow, busy, onToggle }) {
   if (!m.followups.length) return null;
   const left = m.followups.filter((d) => d.status === 'open').length;
   // Sent oldest meeting first: one heading per meeting, its decisions under it
@@ -573,7 +574,7 @@ function FollowupsCard({ m, t, today, canEdit, busy, onToggle }) {
                   d={d}
                   t={t}
                   today={today}
-                  canEdit={canEdit}
+                  canFollow={canFollow}
                   busy={busy === d.id}
                   onToggle={onToggle}
                 />
@@ -586,7 +587,7 @@ function FollowupsCard({ m, t, today, canEdit, busy, onToggle }) {
   );
 }
 
-function DecisionsCard({ m, t, today, canEdit, busy, onToggle, onAdd, onEdit }) {
+function DecisionsCard({ m, t, today, canEdit, canFollow, busy, onToggle, onAdd, onEdit }) {
   const c = decisionCounts(m.decisions, today);
   return (
     <Card>
@@ -625,6 +626,7 @@ function DecisionsCard({ m, t, today, canEdit, busy, onToggle, onAdd, onEdit }) 
                 today={today}
                 number={i + 1}
                 canEdit={canEdit}
+                canFollow={canFollow}
                 busy={busy === d.id}
                 onToggle={onToggle}
                 onEdit={onEdit}
@@ -805,10 +807,10 @@ export default function MeetingDetail() {
   const back = useBack('/meetings');
   const toast = useToast();
   const confirm = useConfirm();
-  const { user } = useAuth();
   const { has } = usePerms();
-  const canEdit = has('sessions.create');
-  const isAdmin = user?.role === 'admin';
+  const canEdit = has('meetings.manage');
+  const canFollow = has('meetings.followup');
+  const canDelete = has('meetings.delete');
   const { section } = useSection();
 
   const { data: m, setData: setM, loading, error, reload } = useFetch(`/meetings/${id}`);
@@ -895,7 +897,7 @@ export default function MeetingDetail() {
               <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
             </Button>
           )}
-          {isAdmin && (
+          {canDelete && (
             <Button
               variant="destructive-ghost"
               size="sm"
@@ -930,7 +932,15 @@ export default function MeetingDetail() {
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <MeetingKindBadge kind={m.kind} t={t} />
-            <Badge variant="outline">{m.branch_id ? branchName(m, lng) : t('meeting.wholeGroup')}</Badge>
+            {m.branches.length > 0 ? (
+              m.branches.map((b) => (
+                <Badge key={b.id} variant="outline">
+                  {branchName(b, lng)}
+                </Badge>
+              ))
+            ) : (
+              <Badge variant="outline">{t('meeting.wholeGroup')}</Badge>
+            )}
             {!section && <Badge variant={isFeminine(m.section) ? 'info' : 'outline'}>{t(`section.${m.section}`)}</Badge>}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
@@ -969,7 +979,7 @@ export default function MeetingDetail() {
 
       <AttendanceCard m={m} t={t} canEdit={canEdit} onEdit={() => setAttendanceOpen(true)} />
 
-      <FollowupsCard m={m} t={t} today={today} canEdit={canEdit} busy={busy} onToggle={toggle} />
+      <FollowupsCard m={m} t={t} today={today} canFollow={canFollow} busy={busy} onToggle={toggle} />
 
       <AgendaCard
         m={m}
@@ -984,6 +994,7 @@ export default function MeetingDetail() {
         t={t}
         today={today}
         canEdit={canEdit}
+        canFollow={canFollow}
         busy={busy}
         onToggle={toggle}
         onAdd={() => setDecisionDialog({ decision: null })}
