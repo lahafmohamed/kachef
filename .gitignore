@@ -28,3 +28,6 @@ server/uploads/
 
 # clés VAPID des notifications push (créées au premier démarrage, à côté de la base)
 server/vapid.json
+
+# captures d'écran des vérifications (montrent des noms de membres)
+captures/
