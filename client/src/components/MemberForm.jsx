@@ -77,11 +77,13 @@ function Field({ id, label, className, children }) {
   );
 }
 
+// The heading is a size above the field labels (text-sm medium): at the same size,
+// «الانتساب» over «الفرقة» read as two labels stacked rather than a group and its field
 function Section({ title, children }) {
   const id = useId();
   return (
     <section aria-labelledby={id} className="space-y-3">
-      <h3 id={id} className="text-sm font-semibold text-foreground">
+      <h3 id={id} className="text-base font-semibold text-foreground">
         {title}
       </h3>
       {children}
@@ -314,8 +316,9 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
           </div>
         </div>
 
-        {/* Order of the الاسم الثلاثي, as it reads everywhere else */}
-        <div className="grid gap-3 sm:grid-cols-3">
+        {/* Order of the الاسم الثلاثي, as it reads everywhere else. grid-cols-1 on phones:
+            an implicit column grows to a long picked value and widens the sheet */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field id="first_name" label={t('member.firstName')}>
             <Input id="first_name" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
           </Field>
@@ -327,10 +330,11 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
           </Field>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             {/* Label, not a block span: the same inline line box as its neighbours' labels */}
             <Label>{t('member.sex')}</Label>
+            {/* min-h-10: as tall as the date field beside it on wider screens */}
             <SegmentedControl
               label={t('member.sex')}
               value={form.sex}
@@ -338,7 +342,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
                 sexTouched.current = true;
                 setForm((f) => ({ ...f, sex: v }));
               }}
-              className="flex w-full"
+              className="flex w-full sm:min-h-10"
               options={[
                 { value: 'M', label: t('member.male') },
                 { value: 'F', label: t('member.female') },
@@ -365,7 +369,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
       </Section>
 
       <Section title={t('member.sectionEnrolment')}>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field id="branch_id" label={t('member.branch')}>
             <Select id="branch_id" required value={form.branch_id} onChange={setBranch}>
               {branchList.map((b) => (
@@ -433,7 +437,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
       </Section>
 
       <Section title={t(canContact ? 'member.sectionFamily' : 'member.sectionFamilyNoContact')}>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field id="mother_name" label={t('member.motherName')} className="sm:col-span-2">
             <Input id="mother_name" autoComplete="off" value={form.mother_name || ''} onChange={set('mother_name')} />
           </Field>
@@ -457,7 +461,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
           would split its people across two filters. A missing value is added from
           here — it joins the list, so the next تسجيل finds it ready. */}
       <Section title={t(canContact ? 'member.sectionHome' : 'member.school')}>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {canContact && (
             <>
               <Field id="address_abidjan" label={t('member.addressAbidjan')}>

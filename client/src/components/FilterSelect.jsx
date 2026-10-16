@@ -5,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from './shadcn/select';
+import { cn } from '../lib/utils';
 
 /**
  * Thin wrapper over the shadcn Select for the common filter case:
@@ -25,7 +26,9 @@ export default function FilterSelect({
 }) {
   return (
     <Select value={value === '' ? ALL : String(value)} onValueChange={(v) => onChange(v === ALL ? '' : v)}>
-      <SelectTrigger className={className} aria-label={ariaLabel} icon={icon}>
+      {/* «All» reads as the resting state, muted like SearchSelect's and DateRangePicker's,
+          so only a filter actually in use stands out in the row */}
+      <SelectTrigger className={cn(value === '' && 'text-muted-foreground', className)} aria-label={ariaLabel} icon={icon}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

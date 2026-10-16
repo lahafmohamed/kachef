@@ -39,6 +39,7 @@ import {
   IconHome,
   IconPencil,
   IconPhone,
+  IconUsers,
   IconX,
 } from '../components/ui';
 
@@ -57,12 +58,15 @@ const fmtMonth = (iso, lng) =>
   new Intl.DateTimeFormat(intlLocale(lng), { month: 'long', year: 'numeric' }).format(toDate(iso));
 const fmtWeekday = (iso, lng) => new Intl.DateTimeFormat(intlLocale(lng), { weekday: 'short' }).format(toDate(iso));
 
-/** Mixed scripts in one line: each part keeps its own direction. */
+/**
+ * Mixed scripts in one line: each part keeps its own direction. The «·» holds on to the
+ * part before it, like a comma, so no wrapped line opens on a lone «·»; a short part stays whole.
+ */
 function Parts({ parts }) {
   return parts.filter(Boolean).map((p, i) => (
     <span key={i}>
-      {i > 0 && <span aria-hidden="true"> · </span>}
-      <bdi>{p}</bdi>
+      {i > 0 && <span aria-hidden="true">{'\u00a0· '}</span>}
+      <bdi className={String(p).length <= 24 ? 'whitespace-nowrap' : undefined}>{p}</bdi>
     </span>
   ));
 }
@@ -136,16 +140,20 @@ function Fact({ label, children }) {
   return (
     <div className="min-w-0">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn('mt-0.5 text-sm', empty ? 'text-muted-foreground' : 'font-medium')}>{empty ? '—' : children}</dd>
+      <dd className={cn('mt-0.5 text-sm break-words', empty ? 'text-muted-foreground' : 'font-medium')}>
+        {empty ? '—' : children}
+      </dd>
     </div>
   );
 }
 
+// Two columns from the phone up: short facts one under the other made a phone scroll
+// a whole screen per group; a long address wraps inside its column
 function FactGroup({ title, children }) {
   return (
     <section className="space-y-3 p-4 sm:p-5">
       <h3 className="text-sm font-semibold">{title}</h3>
-      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">{children}</dl>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-4 sm:gap-x-6">{children}</dl>
     </section>
   );
 }
@@ -198,7 +206,7 @@ export default function MemberDetail() {
   const [historyQuery, setHistoryQuery] = useState('');
   // '' | present | absent | excused — «which ones did he miss?» is the question parents ask
   const [historyStatus, setHistoryStatus] = useState('');
-  const { data: member, setData: setMember, loading, error, reload } = useFetch(`/members/${id}`);
+  const { data: member, setData: setMember, loading, error, errorStatus, reload } = useFetch(`/members/${id}`);
   const events = useFetch(`/members/${id}/events`, { skip: !canEvents });
 
   // state: 'granted' | 'revoked' | 'auto' (auto drops the manual correction)
@@ -247,6 +255,22 @@ export default function MemberDetail() {
   }
 
   if (loading) return <SkeletonPage rows={4} />;
+  // A member that is not there to show — an old link, or one outside this account's قسم
+  // (404 / 403): no retry brings him back, the way out does
+  if (errorStatus === 404 || errorStatus === 403)
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('member.title')}
+        </Button>
+        <Card>
+          <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+            {t('error.notFoundBody')}
+          </EmptyState>
+        </Card>
+      </div>
+    );
   if (error) return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
   const { stats } = member;
@@ -345,8 +369,10 @@ export default function MemberDetail() {
             )}
           />
           <div className="min-w-0 flex-1 pt-1">
-            <h1 id="member-name" dir="auto" className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl rtl:text-right">
-              {name}
+            {/* The name isolated, the heading in the page's direction: an Arabic name on the
+                French page starts beside the avatar, under it the line that places him */}
+            <h1 id="member-name" className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl">
+              <bdi>{name}</bdi>
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
               <span>
@@ -354,7 +380,7 @@ export default function MemberDetail() {
                   parts={[
                     branchLabel,
                     member.group_name,
-                    member.age != null && `${member.age} ${t('common.years')}`,
+                    member.age != null && t('common.age', { count: member.age }),
                     t(member.sex === 'M' ? 'member.male' : 'member.female'),
                   ]}
                 />
@@ -386,7 +412,7 @@ export default function MemberDetail() {
         {/* One tile per number, full width on phones: two side by side left a 360px
             screen cutting the digits — and a phone number with an ellipsis is useless */}
         {contacts.length > 0 && (
-          <ul className="grid gap-2 sm:flex sm:flex-wrap">
+          <ul className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
             {contacts.flatMap((c) =>
               c.numbers.map((n, i) => (
                 <li key={`${c.who}-${i}`} className="flex min-w-0 gap-2">
@@ -635,7 +661,8 @@ export default function MemberDetail() {
                 <Fact label={t('member.birthDate')}>
                   {member.birth_date && (
                     <span className="tabular-nums">
-                      {fmtDate(member.birth_date)} · {member.age} {t('common.years')}
+                      {fmtDate(member.birth_date)}
+                      {member.age != null && ` · ${t('common.age', { count: member.age })}`}
                     </span>
                   )}
                 </Fact>

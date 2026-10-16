@@ -55,10 +55,14 @@ export function DecisionCheck({ status, onToggle, label, busy = false }) {
   );
 }
 
+// The dated facts: short, and never split («Avant / le 26/10/2026») even on a phone
+const WHOLE_FACTS = new Set(['due', 'done', 'dropped']);
+
 /**
  * Who carries a decision out and by when — the deadline in red once passed while it is
  * still to do — or the day it was done or dropped. `extra`: more facts after those (the
- * meeting it came from, on the follow-up list). Each fact stays whole when the line wraps.
+ * meeting it came from, on the follow-up list). Each fact stays whole when the line wraps;
+ * on a phone a name or an extra may still wrap within itself, a date never does.
  */
 export function DecisionMeta({ d, t, today, extra = [] }) {
   const late = isOverdue(d, today);
@@ -85,7 +89,7 @@ export function DecisionMeta({ d, t, today, extra = [] }) {
       {facts.map((f, i) => (
         <Fragment key={i}>
           {i > 0 && ' · '}
-          <bdi className="whitespace-nowrap max-sm:whitespace-normal">{f}</bdi>
+          <bdi className={cn('whitespace-nowrap', !WHOLE_FACTS.has(f.key) && 'max-sm:whitespace-normal')}>{f}</bdi>
         </Fragment>
       ))}
     </p>

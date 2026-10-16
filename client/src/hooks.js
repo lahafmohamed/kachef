@@ -10,6 +10,9 @@ import { api } from './api';
 export function useFetch(path, { skip = false, section } = {}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  // The HTTP status beside the message: a 404/403 (deleted record, old link) is not a
+  // network failure, and a page shouldn't offer a retry that can never work
+  const [errorStatus, setErrorStatus] = useState(null);
   const [loading, setLoading] = useState(!skip);
   const alive = useRef(true);
 
@@ -25,12 +28,16 @@ export function useFetch(path, { skip = false, section } = {}) {
       if (skip || !path) return;
       if (!quiet) setLoading(true);
       setError(null);
+      setErrorStatus(null);
       try {
         // `section` overrides the قسم switcher for this one list ('' = both أقسام)
         const res = await api.get(path, { section });
         if (alive.current) setData(res);
       } catch (err) {
-        if (alive.current) setError(err.message || 'error');
+        if (alive.current) {
+          setError(err.message || 'error');
+          setErrorStatus(err.status ?? null);
+        }
       } finally {
         if (alive.current) setLoading(false);
       }
@@ -42,7 +49,7 @@ export function useFetch(path, { skip = false, section } = {}) {
     reload();
   }, [reload]);
 
-  return { data, error, loading, reload, setData };
+  return { data, error, errorStatus, loading, reload, setData };
 }
 
 /** Debounce any fast-changing value (search inputs). */

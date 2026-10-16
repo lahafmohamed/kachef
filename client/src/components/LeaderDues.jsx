@@ -60,8 +60,9 @@ export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name, s
       ? [t('dues.recordedBy', { name: paid.recorded_by || '—', amount: fmtAmount(paid.amount) }), paid.session_title]
       : [];
   const title = [label, ...lines].filter(Boolean).join('\n');
+  // 44px on phones, like every tap target; 36px once a pointer screen allows it
   const cls = cn(
-    'flex h-9 w-9 items-center justify-center rounded-lg border text-xs transition-[color,background-color,border-color,box-shadow,scale]',
+    'flex h-11 w-11 items-center justify-center rounded-lg border text-xs transition-[color,background-color,border-color,box-shadow,scale] sm:h-9 sm:w-9',
     full
       ? 'border-success/40 bg-success/15 text-success'
       : part
@@ -74,7 +75,7 @@ export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name, s
   const mark = full ? (
     <IconCheck className="h-4 w-4" />
   ) : part ? (
-    <span className="text-[10px] font-semibold tabular-nums">{fmtAmount(part, { unit: false })}</span>
+    <span className="text-[0.6875rem] font-semibold tabular-nums">{fmtAmount(part, { unit: false })}</span>
   ) : (
     '·'
   );
@@ -205,13 +206,22 @@ export default function LeaderDues() {
           placeholder={t('session.searchLeader')}
           className="sm:w-72 sm:flex-none"
         />
-        <Select className="sm:w-auto" value={show} onChange={(e) => setShow(e.target.value)} aria-label={t('dues.filter')}>
-          <option value="">{t('dues.filterAll')}</option>
-          <option value="late">{t('dues.filterLate')}</option>
-          <option value="ok">{t('dues.filterOk')}</option>
-        </Select>
-        <span className="grow" />
-        <DuesYearSelect years={data.years} value={data.year} onChange={setYear} t={t} />
+        {/* Phones: the filter and the year share a line instead of a row each;
+            from sm up the wrapper steps aside and all sit in one row */}
+        <div className="flex gap-2 sm:contents">
+          <Select
+            className="min-w-0 flex-1 sm:w-auto sm:flex-none"
+            value={show}
+            onChange={(e) => setShow(e.target.value)}
+            aria-label={t('dues.filter')}
+          >
+            <option value="">{t('dues.filterAll')}</option>
+            <option value="late">{t('dues.filterLate')}</option>
+            <option value="ok">{t('dues.filterOk')}</option>
+          </Select>
+          <span className="hidden grow sm:block" />
+          <DuesYearSelect years={data.years} value={data.year} onChange={setYear} t={t} />
+        </div>
       </div>
 
       <Card className="overflow-hidden">
@@ -219,7 +229,9 @@ export default function LeaderDues() {
           <EmptyState
             icon={rows.length ? <IconSearch className="h-6 w-6" /> : <IconCoins className="h-6 w-6" />}
             title={t(rows.length ? 'common.noResults' : 'dues.empty')}
-          />
+          >
+            {rows.length ? t('common.noResultsHint') : null}
+          </EmptyState>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-separate border-spacing-0 text-sm">
@@ -360,7 +372,8 @@ export function DuesBody({ data, title, bare = false, onYear, onCell = null, sel
   const paidCount = months.filter((m) => paid[m] && paid[m].full !== false).length;
   const paidThisYear = months.reduce((n, m) => n + (paid[m]?.amount || 0), 0);
   const unpaid = summary.unpaid_months;
-  const monthLabel = (m) => `${fmtDueMonth(m, lng, 'long')} ${m.slice(0, 4)}`;
+  // No-break spaces: «تشرين الأول 2026» never splits across two lines
+  const monthLabel = (m) => `${fmtDueMonth(m, lng, 'long')} ${m.slice(0, 4)}`.replace(/ /g, '\u00a0');
 
   const Wrapper = bare ? 'div' : Card;
   return (

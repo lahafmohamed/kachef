@@ -12,6 +12,7 @@ import {
   Card,
   Dialog,
   EmptyState,
+  ErrorState,
   SegmentedControl,
   Skeleton,
   useToast,
@@ -219,7 +220,12 @@ function ActivityItem({ n, onOpen }) {
         <span className="block text-sm">
           {n.unread && <span className="sr-only">{t('push.unread')} — </span>}
           {t(`notif.${n.type}`, { actor: n.actor })}
-          {n.session_title && <span className="font-medium"> «{n.session_title}»</span>}
+          {/* Isolated: a title in the other script, or one that opens on a number, keeps its own order in the line */}
+          {n.session_title && (
+            <span className="font-medium">
+              {' '}«<bdi>{n.session_title}</bdi>»
+            </span>
+          )}
         </span>
         <span className="block text-xs text-muted-foreground">
           {[branchName(n, i18n.language), fmtAgo(n.created_at, i18n.language, t('push.justNow'))]
@@ -246,12 +252,19 @@ function ActivityItem({ n, onOpen }) {
   );
 }
 
+// Shaped like the rows it stands in for: an icon, a title, a line of detail
 function ListSkeleton() {
   return (
-    <div className="space-y-3 py-1">
-      <Skeleton className="h-14" />
-      <Skeleton className="h-14" />
-      <Skeleton className="h-14" />
+    <div className="py-1" aria-busy="true">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="flex items-start gap-3 py-3">
+          <Skeleton className="h-9 w-9 shrink-0 rounded-full" />
+          <div className="min-w-0 flex-1 space-y-2 pt-1">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-1/2" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -289,22 +302,24 @@ function NotificationsPanel({ open, onClose, counts, onSettings, isAdmin }) {
   // Each list is marked read once per opening, the first time it is on screen
   const marked = useRef({ mine: false, activity: false });
 
+  // One list, fetched afresh: on opening, and again from the error state's retry
+  function load(which) {
+    const [path, set] = which === 'activity' ? ['/notifications', setActivity] : ['/me/notifications', setMine];
+    set(null);
+    api
+      .get(path)
+      .then((d) => set(d.items))
+      .catch(() => set('error'));
+  }
+
   // Opening: the tab that has news first, both lists fetched fresh
   useEffect(() => {
     if (!open) return;
     setTab(isAdmin && !counts.unread && counts.activity_unread ? 'activity' : 'mine');
-    setMine(null);
-    setActivity(null);
     marked.current = { mine: false, activity: false };
-    api
-      .get('/me/notifications')
-      .then((d) => setMine(d.items))
-      .catch(() => setMine('error'));
-    if (isAdmin)
-      api
-        .get('/notifications')
-        .then((d) => setActivity(d.items))
-        .catch(() => setActivity('error'));
+    load('mine');
+    if (isAdmin) load('activity');
+    else setActivity(null);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- once per opening
 
   // What is on screen is now read: the badge restarts from zero. The rows keep their
@@ -368,10 +383,10 @@ function NotificationsPanel({ open, onClose, counts, onSettings, isAdmin }) {
       {list === null ? (
         <ListSkeleton />
       ) : list === 'error' ? (
-        <EmptyState icon={<IconAlert className="h-6 w-6" />} title={t('error.loadFailed')} />
+        <ErrorState message={t('error.loadFailed')} onRetry={() => load(tab)} retryLabel={t('error.retry')} />
       ) : list.length === 0 ? (
         <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('push.empty')}>
-          {tab === 'mine' ? t('push.emptyHint') : null}
+          {t(tab === 'mine' ? 'push.emptyHint' : 'push.emptyActivityHint')}
         </EmptyState>
       ) : (
         <ul className={cn('-mx-2', tab === 'activity' && 'divide-y divide-border')}>
@@ -507,7 +522,10 @@ export function NotificationsBell({ variant = 'outline', className, iconClassNam
 
 // ---------- settings ----------
 
-/** An on/off switch: the row's label names it, the change applies at once. */
+/**
+ * An on/off switch: the row's label names it, the change applies at once. Drawn 48×28;
+ * the invisible ::after takes the tap target to 44px tall without growing the row.
+ */
 function Switch({ id, checked, onChange, disabled, describedBy }) {
   return (
     <button
@@ -519,7 +537,7 @@ function Switch({ id, checked, onChange, disabled, describedBy }) {
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'focus-ring relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200',
+        'focus-ring relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200 after:absolute after:-inset-x-1 after:-inset-y-2',
         'disabled:cursor-default disabled:opacity-50',
         checked ? 'border-primary bg-primary' : 'border-border bg-muted'
       )}
@@ -694,12 +712,10 @@ export function NotificationSettingsDialog({ open, onClose }) {
         </section>
         <section className="space-y-2">
           <h3 className="text-sm font-semibold">{t('push.typesTitle')}</h3>
-          {prefs.loading || !prefs.data ? (
-            prefs.error ? (
-              <EmptyState icon={<IconAlert className="h-6 w-6" />} title={t('error.loadFailed')} className="py-8" />
-            ) : (
-              <Skeleton className="h-40 rounded-xl" />
-            )
+          {prefs.error && !prefs.data ? (
+            <ErrorState message={t('error.loadFailed')} onRetry={() => prefs.reload()} retryLabel={t('error.retry')} />
+          ) : prefs.loading || !prefs.data ? (
+            <Skeleton className="h-40 rounded-xl" />
           ) : (
             <div className="space-y-4">
               {groups.map(({ g, types }) => (
@@ -763,7 +779,9 @@ export function PushPrompt({ className }) {
     setHidden(true);
   }
   return (
-    <Card className={cn('flex flex-wrap items-center gap-x-4 gap-y-3 p-4', className)}>
+    // Top-aligned on a phone, where the text runs to three or four lines: the icon sits by
+    // the title instead of floating halfway down the paragraph
+    <Card className={cn('flex flex-wrap items-start gap-x-4 gap-y-3 p-4 sm:items-center', className)}>
       <span className="bg-brand-soft flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-primary ring-1 ring-primary/15">
         <IconBell className="h-5 w-5" />
       </span>

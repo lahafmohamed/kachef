@@ -70,6 +70,7 @@ import {
   IconSearch,
   IconShield,
   IconStar,
+  IconTent,
   IconTrash,
   IconUsers,
   IconWallet,
@@ -173,6 +174,9 @@ function EventFigures({ ev, t }) {
     s.unpaid && t('event.stateUnpaidCount', { count: s.unpaid }),
     s.exempt && t('event.stateExemptCount', { count: s.exempt }),
   ].filter(Boolean);
+  // «مجّاني» only when it is: a camp with a fee and nobody on its list yet asks nothing
+  // so far, it is not free
+  const free = !(ev.fee > 0);
   // Money from the caisses gets its own figure once there is any: six figures then
   // fill three rows on a phone, so the balance no longer takes a whole one
   const funds = s.funding_count > 0;
@@ -181,37 +185,41 @@ function EventFigures({ ev, t }) {
       <Figure label={t('event.participants')}>
         <p className="text-2xl font-bold tabular-nums">{s.participants}</p>
         {/* Each state stays whole: a half-cut «لم / يدفعوا» across two lines reads as nothing */}
-        <p className="text-xs text-muted-foreground">
-          {states.length
-            ? states.map((x, i) => (
-                // The separator stays outside the unbreakable part: the line breaks there
-                <Fragment key={x}>
-                  {i > 0 && ' · '}
-                  <span className="whitespace-nowrap">{x}</span>
-                </Fragment>
-              ))
-            : t('event.free')}
-        </p>
+        {(states.length > 0 || free) && (
+          <p className="text-xs text-muted-foreground">
+            {states.length
+              ? states.map((x, i) => (
+                  // The separator stays outside the unbreakable part: the line breaks there
+                  <Fragment key={x}>
+                    {i > 0 && ' · '}
+                    <span className="whitespace-nowrap">{x}</span>
+                  </Fragment>
+                ))
+              : t('event.free')}
+          </p>
+        )}
       </Figure>
       {/* The expected sum on its own line: «117,500 / 190,000» at this size breaks in two on a phone */}
       <Figure label={t('event.collected')}>
         <p className="text-2xl font-bold tabular-nums">{fmtAmount(s.collected)}</p>
         {s.expected > 0 && <ShareBar value={pct} tone={s.outstanding === 0 ? 'success' : 'primary'} />}
-        <p className="text-xs text-muted-foreground">
-          {s.expected > 0 ? (
-            <>
-              <span className="whitespace-nowrap">{t('event.ofExpected', { amount: fmtAmount(s.expected) })}</span>
-              {' · '}
-              <span className={cn('whitespace-nowrap', s.outstanding > 0 && 'font-medium text-warning')}>
-                {s.outstanding > 0
-                  ? t('event.outstandingShort', { amount: fmtAmount(s.outstanding) })
-                  : t('event.allCollected')}
-              </span>
-            </>
-          ) : (
-            t('event.free')
-          )}
-        </p>
+        {(s.expected > 0 || free) && (
+          <p className="text-xs text-muted-foreground">
+            {s.expected > 0 ? (
+              <>
+                <span className="whitespace-nowrap">{t('event.ofExpected', { amount: fmtAmount(s.expected) })}</span>
+                {' · '}
+                <span className={cn('whitespace-nowrap', s.outstanding > 0 && 'font-medium text-warning')}>
+                  {s.outstanding > 0
+                    ? t('event.outstandingShort', { amount: fmtAmount(s.outstanding) })
+                    : t('event.allCollected')}
+                </span>
+              </>
+            ) : (
+              t('event.free')
+            )}
+          </p>
+        )}
       </Figure>
       {/* What came in beside what went out: on a phone the two share a row */}
       <Figure label={t('event.donations')}>
@@ -245,15 +253,21 @@ function EventFigures({ ev, t }) {
         >
           <span dir="ltr">{signed(s.balance)}</span>
         </p>
-        <p className="text-xs text-muted-foreground">
-          {s.outstanding > 0 ? (
-            <>
-              {t('event.projected')} <span dir="ltr" className="font-medium tabular-nums">{signed(s.expected + s.donations + s.funded - s.returned - s.expenses)}</span>
-            </>
-          ) : (
-            t(s.balance < 0 ? 'event.deficit' : 'event.surplus')
-          )}
-        </p>
+        {/* An even account — nothing in, nothing out yet — is neither a surplus nor a deficit */}
+        {(s.outstanding > 0 || s.balance !== 0) && (
+          <p className="text-xs text-muted-foreground">
+            {s.outstanding > 0 ? (
+              <>
+                {t('event.projected')}{' '}
+                <span dir="ltr" className="whitespace-nowrap font-medium tabular-nums">
+                  {signed(s.expected + s.donations + s.funded - s.returned - s.expenses)}
+                </span>
+              </>
+            ) : (
+              t(s.balance < 0 ? 'event.deficit' : 'event.surplus')
+            )}
+          </p>
+        )}
       </Figure>
     </Card>
   );
@@ -278,8 +292,20 @@ function ParticipantLine({ p, t, lng, section, showBranch = true, showGroup = tr
       : [t(kind === 'leader' ? (isFeminine(section) ? 'event.kindLeaderF' : 'event.kindLeader') : 'event.kindGuest')];
   if (p.status === 'inactive') parts.push(t('member.inactive'));
   if (extra) parts.push(extra);
-  const text = parts.filter(Boolean).join(' · ');
-  return text ? <span className="block truncate text-xs text-muted-foreground">{text}</span> : null;
+  const facts = parts.filter(Boolean);
+  if (!facts.length) return null;
+  // Each fact whole and isolated, the line breaking between them: an Arabic طليعة beside
+  // «3/5 séances» would otherwise swap places, and «سداسي الأ…» says nothing
+  return (
+    <span className="block text-xs text-muted-foreground">
+      {facts.map((x, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          <bdi className={x.length <= 24 ? 'whitespace-nowrap' : '[overflow-wrap:anywhere]'}>{x}</bdi>
+        </Fragment>
+      ))}
+    </span>
+  );
 }
 
 // More than one فرقة among the عناصر taking part: only then is the فرقة worth naming
@@ -978,7 +1004,7 @@ function StaffTab({ ev, t, canEdit, canLeaders, onAssign, onEdit, onEditChief })
                   </span>
                 </span>
               ) : (
-                <span className="text-sm text-muted-foreground/80">{t('event.unassigned')}</span>
+                <span className="text-sm text-muted-foreground">{t('event.unassigned')}</span>
               )}
               {canEdit &&
                 (r.person ? (
@@ -1214,7 +1240,8 @@ function PayChip({ p, ev, t, onOpen }) {
         (state === 'unpaid' || state === 'free') && 'text-muted-foreground'
       )}
     >
-      <IconCoins className="h-3.5 w-3.5" />
+      {/* The amount says it is money: on a phone the coin's room goes to the name */}
+      <IconCoins className="hidden h-3.5 w-3.5 sm:block" />
       {label}
     </Button>
   );
@@ -1320,17 +1347,21 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
                         ? `/leaders/${p.leader_id}`
                         : null;
                   // One line on a phone too: name and who he is on the inline-start, his
-                  // payment and the way out of the list on the inline-end
+                  // payment and the way out of the list on the inline-end. The name wraps
+                  // rather than ending in «أحمد عب…» beside the payment.
                   return (
                     <li key={p.id} className="flex items-center gap-3 px-4 py-2.5 sm:px-5">
                       <ParticipantAvatar p={p} />
                       <div className="min-w-0 flex-1">
                         {to ? (
-                          <Link to={to} className="focus-ring block truncate rounded font-medium hover:text-primary hover:underline">
+                          <Link
+                            to={to}
+                            className="focus-ring block rounded font-medium [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                          >
                             {name}
                           </Link>
                         ) : (
-                          <span className="block truncate font-medium">{name}</span>
+                          <span className="block font-medium [overflow-wrap:anywhere]">{name}</span>
                         )}
                         <ParticipantLine
                           p={p}
@@ -1414,11 +1445,14 @@ function WithdrawnParticipants({ ev, t, lng, canEdit, canFees, links, showBranch
               <ParticipantAvatar p={p} />
               <div className="min-w-0 flex-1">
                 {to ? (
-                  <Link to={to} className="focus-ring block truncate rounded font-medium hover:text-primary hover:underline">
+                  <Link
+                    to={to}
+                    className="focus-ring block rounded font-medium [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                  >
                     {name}
                   </Link>
                 ) : (
-                  <span className="block truncate font-medium">{name}</span>
+                  <span className="block font-medium [overflow-wrap:anywhere]">{name}</span>
                 )}
                 <ParticipantLine p={p} t={t} lng={lng} section={ev.section} showBranch={showBranch} />
                 {trail && <span className="block text-xs text-muted-foreground">{trail}</span>}
@@ -1663,13 +1697,13 @@ function AddParticipantsDialog({ ev, open, onClose, onAdded, t, lng }) {
                   {guests.map((name) => (
                     <li
                       key={name}
-                      className="inline-flex min-h-9 items-center gap-1 rounded-full border border-border bg-card ps-3 text-sm"
+                      className="inline-flex min-h-11 items-center gap-1 rounded-full border border-border bg-card ps-3 text-sm sm:min-h-9"
                     >
                       {name}
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-9 w-9 rounded-full text-muted-foreground"
+                        className="rounded-full text-muted-foreground"
                         onClick={() => setGuests((g) => g.filter((x) => x !== name))}
                         aria-label={`${t('common.delete')} — ${name}`}
                       >
@@ -2016,11 +2050,13 @@ function ExpenseDialog({ ev, expense, open, onClose, onSaved, t }) {
               ))}
             </Select>
           </div>
-          <div className="space-y-1.5">
+          {/* The whole width on a phone: half of it cut the date to «16/10/20…» beside its
+              clear button, and «paid by» to half its hint */}
+          <div className="col-span-2 space-y-1.5 sm:col-span-1">
             <Label htmlFor="ex_date">{t('common.date')}</Label>
             <DatePicker id="ex_date" value={form.date} onChange={set('date')} />
           </div>
-          <div className="space-y-1.5">
+          <div className="col-span-2 space-y-1.5 sm:col-span-1">
             <Label htmlFor="ex_by">{t('event.paidBy')}</Label>
             <Input
               id="ex_by"
@@ -2075,7 +2111,9 @@ function FundingsCard({ ev, t, lng, onAdd, onEdit }) {
           {list.length === 0 && <p className="mt-1 text-sm text-muted-foreground">{t('event.fundingsHint')}</p>}
         </div>
         {boxes.length > 0 && (
-          <div className="flex gap-2">
+          // Side by side while both fit; on a narrow phone «Rendre à une caisse» takes the next
+          // line instead of running out of the card
+          <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={() => onAdd('to_event')} className="flex-1 sm:flex-none">
               <IconPlus />
               {t('event.fundingTake')}
@@ -2432,7 +2470,8 @@ function DonationDialog({ ev, donation, open, onClose, onSaved, t }) {
       }
     >
       <form id="event-donation-form" onSubmit={save} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+        {/* Stacked on a phone: at half width the date was cut beside its clear button */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="dn_amount">{t('event.amount')}</Label>
             <AmountInput
@@ -2494,7 +2533,7 @@ export default function EventDetail() {
   const canSpend = has('events.expenses');
   const canDelete = has('events.delete');
 
-  const { data: ev, setData: setEv, loading, error, reload } = useFetch(`/events/${id}`);
+  const { data: ev, setData: setEv, loading, error, errorStatus, reload } = useFetch(`/events/${id}`);
   const branches = useFetch('/branches');
   const leaders = useFetch('/leader-options', { skip: !canEdit });
 
@@ -2531,6 +2570,22 @@ export default function EventDetail() {
   const [staffDialog, setStaffDialog] = useState(null);
 
   if (loading) return <SkeletonPage rows={5} />;
+  // A مخيم that is gone (deleted, or an old link) is no connection problem: a retry cannot
+  // bring it back — the way out can. (errorStatus: the HTTP status of a failed load.)
+  if (errorStatus === 404 || errorStatus === 403)
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('common.back')}
+        </Button>
+        <Card>
+          <EmptyState icon={<IconTent className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+            {t('error.notFoundBody')}
+          </EmptyState>
+        </Card>
+      </div>
+    );
   if (error)
     return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
@@ -2703,7 +2758,9 @@ export default function EventDetail() {
           )}
         </div>
         <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{ev.title}</h1>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+        {/* On a phone the leader's name and the mark are finger-sized (44px) without pushing
+            the lines apart; the 12px between lines keeps one's target off the other's words */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-muted-foreground sm:gap-y-1">
           <span className="flex items-center gap-1.5 tabular-nums">
             <IconCalendar className="h-3.5 w-3.5" />
             {fmtDateRange(ev.start_date, ev.end_date)}
@@ -2721,7 +2778,7 @@ export default function EventDetail() {
               {ev.leader_id && has('leaders.read') ? (
                 <Link
                   to={`/leaders/${ev.leader_id}`}
-                  className="focus-ring rounded font-medium text-foreground hover:text-primary hover:underline"
+                  className="focus-ring -my-3 flex min-h-11 items-center rounded font-medium text-foreground hover:text-primary hover:underline sm:-my-1 sm:min-h-8"
                 >
                   {ev.leader_name}
                 </Link>
@@ -2749,7 +2806,7 @@ export default function EventDetail() {
               type="button"
               onClick={() => setTab('eval')}
               className={cn(
-                'focus-ring -my-1 flex min-h-8 items-center gap-1.5 rounded py-1 font-medium hover:underline',
+                'focus-ring -my-3 flex min-h-11 items-center gap-1.5 rounded py-1 font-medium hover:underline sm:-my-1 sm:min-h-8',
                 evalPending ? 'text-primary' : 'text-muted-foreground'
               )}
             >

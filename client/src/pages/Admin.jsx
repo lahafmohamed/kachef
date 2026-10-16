@@ -31,7 +31,7 @@ import {
   Label,
   PageHeader,
   SegmentedControl,
-  SkeletonPage,
+  Skeleton,
   cn,
   useConfirm,
   useToast,
@@ -314,32 +314,44 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
         {form.role === 'user' && (
           <div className="space-y-1.5">
             <Label>{t('admin.allowedBranches')}</Label>
-            {/* The same toggle chips as the فرق of a نشاط */}
-            <div className="flex flex-wrap gap-2" role="group" aria-label={t('admin.allowedBranches')}>
-              {visibleBranches.map((b) => {
-                const on = form.branches.includes(b.id);
-                return (
-                  <button
-                    key={b.id}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => toggleBranch(b.id)}
-                    className={cn(
-                      'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
-                      on
-                        ? 'border-primary bg-primary/10 font-medium text-primary'
-                        : 'border-input bg-card text-muted-foreground hover:bg-accent'
-                    )}
-                  >
-                    <IconSwap on={on} onIcon={<IconCheck className="h-3.5 w-3.5" />} className="h-3.5 w-3.5" collapse />
-                    {branchName(b, i18n.language)}
-                    {/* Both أقسام listed together: say which one each فرقة belongs to */}
-                    {!form.section && <span className="text-xs opacity-70">· {t(`section.${b.section}`)}</span>}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-xs text-muted-foreground">{t('admin.branchesHint')}</p>
+            {/* A قسم without فرق yet (the girls' one, at first): say so, instead of a
+                label over nothing and a hint about ticks there are none of */}
+            {visibleBranches.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                {t('admin.noBranchesInSection')}
+              </p>
+            ) : (
+              <>
+                {/* The same toggle chips as the فرق of a نشاط */}
+                <div className="flex flex-wrap gap-2" role="group" aria-label={t('admin.allowedBranches')}>
+                  {visibleBranches.map((b) => {
+                    const on = form.branches.includes(b.id);
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggleBranch(b.id)}
+                        className={cn(
+                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                          on
+                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            : 'border-input bg-card text-muted-foreground hover:bg-accent'
+                        )}
+                      >
+                        <IconSwap on={on} onIcon={<IconCheck className="h-3.5 w-3.5" />} className="h-3.5 w-3.5" collapse />
+                        {branchName(b, i18n.language)}
+                        {/* Both أقسام listed together: say which one each فرقة belongs to */}
+                        {!form.section && (
+                          <span className="text-xs text-muted-foreground">· {t(`section.${b.section}`)}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">{t('admin.branchesHint')}</p>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -388,7 +400,8 @@ function PermsEditor({ perms, onChange }) {
       {/* Start from a ready-made set, then adjust */}
       <div className="space-y-1.5">
         <p className="text-xs font-medium">{t('admin.permPresets')}</p>
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label={t('admin.permPresets')}>
+        {/* Same gap and height as the فرق chips above: 44px on a phone */}
+        <div className="flex flex-wrap gap-2" role="group" aria-label={t('admin.permPresets')}>
           {PERM_PRESET_KEYS.map((p) => (
             <button
               key={p}
@@ -396,7 +409,7 @@ function PermsEditor({ perms, onChange }) {
               aria-pressed={preset === p}
               onClick={() => onChange(presetPerms(p))}
               className={cn(
-                'focus-ring inline-flex min-h-10 items-center rounded-full border px-3 text-sm transition-colors sm:min-h-9',
+                'focus-ring inline-flex min-h-11 items-center rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
                 preset === p
                   ? 'border-primary bg-primary/10 font-medium text-primary'
                   : 'border-input bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
@@ -410,10 +423,11 @@ function PermsEditor({ perms, onChange }) {
 
       <div className="space-y-2">
         <div className="flex justify-end">
+          {/* A 44px target on a phone; the negative margin keeps the words on the cards' edge */}
           <button
             type="button"
             onClick={() => setOpen(allOpen ? new Set() : new Set(PERM_GROUPS.map((g) => g.id)))}
-            className="focus-ring inline-flex min-h-9 items-center rounded text-xs font-medium text-primary hover:underline"
+            className="focus-ring -me-2 inline-flex min-h-11 items-center rounded-md px-2 text-xs font-medium text-primary hover:underline sm:min-h-9"
           >
             {t(allOpen ? 'admin.permCollapseAll' : 'admin.permExpandAll')}
           </button>
@@ -452,7 +466,7 @@ function PermsEditor({ perms, onChange }) {
               {/* One line per right, two columns from sm up. The key itself stays out of
                   sight — a hover title for whoever needs it */}
               {isOpen && (
-                <div id={`perm-group-${g.id}`} className="grid gap-0.5 border-t border-border p-1.5 sm:grid-cols-2">
+                <div id={`perm-group-${g.id}`} className="grid grid-cols-1 gap-0.5 border-t border-border p-1.5 sm:grid-cols-2">
                   {g.keys.map((key) => {
                     const hint = i18n.exists(permHintKey(key)) ? t(permHintKey(key)) : null;
                     return (
@@ -491,6 +505,8 @@ function PermsEditor({ perms, onChange }) {
 function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }) {
   const { t } = useTranslation();
   const isSelf = u.id === me.id;
+  // The icon buttons say what they do; this tells a screen reader whose account it is
+  const nameId = `user-${u.id}-name`;
   return (
     <li
       className={cn(
@@ -505,9 +521,13 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
         {initials(u)}
       </span>
       <div className="min-w-0">
-        <div className="truncate font-medium">
-          {u.display_name || u.username}
-          {isSelf && <span className="ms-2 text-xs font-normal text-muted-foreground">{t('admin.you')}</span>}
+        {/* A long name truncates; «(vous)» stays whole beside it. dir=auto: a Latin
+            name in Arabic keeps its start and loses its end, not the other way round */}
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span id={nameId} dir="auto" className="min-w-0 truncate font-medium">
+            {u.display_name || u.username}
+          </span>
+          {isSelf && <span className="shrink-0 text-xs text-muted-foreground">{t('admin.you')}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span className="font-mono" dir="ltr">
@@ -561,12 +581,20 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
             size="icon"
             onClick={() => onReactivate(u)}
             aria-label={t('admin.reactivate')}
+            aria-describedby={nameId}
             title={t('admin.reactivate')}
           >
             <IconUserCheck className="text-success" />
           </Button>
         )}
-        <Button variant="ghost" size="icon" onClick={() => onEdit(u)} aria-label={t('common.edit')} title={t('common.edit')}>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => onEdit(u)}
+          aria-label={t('common.edit')}
+          aria-describedby={nameId}
+          title={t('common.edit')}
+        >
           <IconPencil />
         </Button>
         <Button
@@ -575,12 +603,38 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
           disabled={isSelf}
           onClick={() => (u.active ? onDeactivate(u) : onDelete(u))}
           aria-label={t(u.active ? 'admin.deactivate' : 'admin.deletePermanently')}
+          aria-describedby={nameId}
           title={t(u.active ? 'admin.deactivate' : 'admin.deletePermanently')}
         >
           <IconTrash />
         </Button>
       </div>
     </li>
+  );
+}
+
+/** The accounts card while it loads: same rows, so nothing jumps when they arrive. */
+function UsersSkeleton() {
+  return (
+    <Card aria-busy="true" aria-live="polite">
+      <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
+        <div className="divide-y divide-border">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="flex items-start gap-3 px-4 py-3 sm:items-center sm:px-5">
+              <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-3.5 w-2/5" />
+                <Skeleton className="h-3 w-1/4" />
+                {/* Phones: the badges sit under the name */}
+                <Skeleton className="h-5 w-24 rounded-full sm:hidden" />
+              </div>
+              <Skeleton className="hidden h-5 w-20 rounded-full sm:block" />
+              <Skeleton className="h-10 w-24 shrink-0 sm:h-8 sm:w-20" />
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -601,9 +655,13 @@ export default function Admin() {
   // { username, password } right after a creation or a reset — shown exactly once
   const [credentials, setCredentials] = useState(null);
 
-  if (users.loading) return <SkeletonPage />;
-  if (users.error)
-    return <ErrorState message={t('error.loadFailed')} onRetry={users.reload} retryLabel={t('error.retry')} />;
+  // The badges name the فرق and the form lists them: the page waits for both lists
+  const loading = users.loading || branches.loading;
+  const failed = !loading && (users.error || branches.error);
+  const retry = () => {
+    if (users.error) users.reload();
+    if (branches.error) branches.reload();
+  };
 
   // The switcher narrows the list too: the accounts of that قسم, plus the admins and
   // the accounts open on both, which belong to either
@@ -690,28 +748,40 @@ export default function Admin() {
 
   return (
     <div className="space-y-6">
+      {/* The header stays while the list loads or fails; a form opened before the
+          فرق arrive would offer none, so the button waits for them */}
       <PageHeader title={t('admin.title')} description={t('admin.subtitle')}>
-        <Button variant="brand" onClick={() => openForm({ ...EMPTY_USER, section: view || 'M' })}>
+        <Button
+          variant="brand"
+          disabled={loading || !!failed}
+          onClick={() => openForm({ ...EMPTY_USER, section: view || 'M' })}
+        >
           <IconPlus />
           {t('admin.addUser')}
         </Button>
       </PageHeader>
 
-      <Card>
-        <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
-          {activeUsers.length === 0 ? (
-            <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('admin.noUsers')} />
-          ) : (
-            <ul className="divide-y divide-border">
-              {activeUsers.map((u) => (
-                <UserRow key={u.id} u={u} {...rowProps} />
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+      {loading ? (
+        <UsersSkeleton />
+      ) : failed ? (
+        <ErrorState message={t('error.loadFailed')} onRetry={retry} retryLabel={t('error.retry')} />
+      ) : (
+        <Card>
+          <CardContent className="p-0 pb-2 sm:p-0 sm:pb-2">
+            {activeUsers.length === 0 ? (
+              <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('admin.noUsers')} />
+            ) : (
+              <ul className="divide-y divide-border">
+                {activeUsers.map((u) => (
+                  <UserRow key={u.id} u={u} {...rowProps} />
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      {inactiveUsers.length > 0 && (
+      {!loading && !failed && inactiveUsers.length > 0 && (
         <section className="space-y-2">
           <div className="px-1">
             <h2 className="text-sm font-semibold text-muted-foreground">

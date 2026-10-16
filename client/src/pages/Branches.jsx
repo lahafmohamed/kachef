@@ -192,7 +192,7 @@ function MonthStrip({ stats, value, onChange }) {
     <div
       role="group"
       aria-label={t('common.month')}
-      className="no-scrollbar relative -mx-3 flex gap-1.5 overflow-x-auto px-3 py-0.5 sm:mx-0 sm:grid sm:grid-cols-6 sm:overflow-visible sm:px-0"
+      className="no-scrollbar relative -mx-3 flex scroll-px-3 gap-1.5 overflow-x-auto px-3 py-0.5 sm:mx-0 sm:grid sm:scroll-px-0 sm:grid-cols-6 sm:overflow-visible sm:px-0"
     >
       {stats.map((s) => {
         const on = s.month === value;
@@ -237,13 +237,15 @@ function MonthStrip({ stats, value, onChange }) {
 /** خانة اليوم: سبوت الشهر ثابتة، و اليوم الإضافي يُختار من أيام الشهر الحرّة. */
 function DayCell({ row, index, days, canEdit, onDate }) {
   const { t, i18n } = useTranslation();
-  // An extra day stays changeable; the Saturdays of the month are fixed rows
+  // An extra day stays changeable; the Saturdays of the month are fixed rows.
+  // The picker never narrows below its longest label («الخميس، 08/10»): squeezed,
+  // it cut off the day itself.
   return row.extra && canEdit ? (
     <Select
       value={row.date}
       onChange={(e) => onDate(index, e.target.value)}
       aria-label={t('common.date')}
-      className="h-11 sm:h-9"
+      className="h-11 min-w-[9.25rem] sm:h-9"
     >
       {days.map((d) => (
         <option key={d} value={d}>
@@ -272,7 +274,7 @@ function BaseNote({ base, removed, showDate, canEdit, onRestore, className }) {
         {showDate && <span className="tabular-nums"> · {fmtDay(base.date, i18n.language)}</span>}
       </span>
       {canEdit && (
-        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onRestore(base.id)}>
+        <Button size="sm" variant="ghost" className="px-2 sm:h-7" onClick={() => onRestore(base.id)}>
           <IconRefresh />
           {t('branch.planRestore')}
         </Button>
@@ -293,51 +295,58 @@ function PlanRow({ row, index, days, canEdit, validated, removedHere, today, onT
   const late = planned && !row.session && row.date < today;
 
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:px-5 sm:py-2.5">
-      <div className="min-w-0 sm:col-start-1 sm:row-start-1">
-        <DayCell row={row} index={index} days={days} canEdit={canEdit} onDate={onDate} />
+    <li className="grid grid-cols-1 items-center gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[9.25rem_minmax(0,1fr)_auto] sm:px-5 sm:py-2.5">
+      {/* Phones: the day and the status share a line, and the status drops under the
+          day when an extra day's picker leaves it no room — side by side they
+          overlapped. From sm up the wrapper steps aside and both take their column,
+          the first one as wide as the picker's longest day. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:contents">
+        <div className="min-w-0 sm:col-start-1 sm:row-start-1">
+          <DayCell row={row} index={index} days={days} canEdit={canEdit} onDate={onDate} />
+        </div>
+
+        <div className="ms-auto flex items-center justify-end gap-1.5 sm:col-start-3 sm:row-start-1">
+          {/* أُضيف بعد اعتماد الخطة */}
+          {validated && !row.base && planned && <Badge variant="info">{t('branch.planAdded')}</Badge>}
+          {row.session ? (
+            // The pill stays small; on a phone its tap area reaches the line's full height
+            <Link
+              to={`/sessions/${row.session.id}`}
+              className="focus-ring relative inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-success/25 bg-success/12 px-2.5 py-0.5 text-xs font-medium tabular-nums text-success before:absolute before:inset-x-0 before:-inset-y-3 before:content-[''] hover:bg-success/20 sm:before:content-none"
+            >
+              <IconCheck className="h-3 w-3" />
+              {fmtDate(row.session.date)}
+            </Link>
+          ) : planned ? (
+            <span className={cn('inline-flex items-center gap-1 text-xs', late ? 'font-medium text-warning' : 'text-muted-foreground')}>
+              <IconClock className="h-3.5 w-3.5" />
+              {t('branch.planNotDone')}
+            </span>
+          ) : (
+            !canEdit && <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
+          )}
+          {/* الربط اليدوي: نشاط أُنشئ باسم آخر لا يلتقطه التطابق بالاسم، فيُربط من هنا.
+              يحتاج بندًا محفوظًا — صف لم يُحفظ بعد لا id له يُربط به. */}
+          {canEdit && row.id && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => onLink(row)}
+              aria-label={t('branch.planLink')}
+              title={t('branch.planLink')}
+            >
+              <IconLink />
+            </Button>
+          )}
+          {canEdit && row.extra && (
+            <Button size="icon-sm" variant="ghost" onClick={() => onRemove(index)} aria-label={t('common.delete')}>
+              <IconTrash />
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center justify-end gap-1.5 sm:col-start-3 sm:row-start-1">
-        {/* أُضيف بعد اعتماد الخطة */}
-        {validated && !row.base && planned && <Badge variant="info">{t('branch.planAdded')}</Badge>}
-        {row.session ? (
-          <Link
-            to={`/sessions/${row.session.id}`}
-            className="focus-ring inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/12 px-2.5 py-0.5 text-xs font-medium text-success hover:bg-success/20"
-          >
-            <IconCheck className="h-3 w-3" />
-            {fmtDate(row.session.date)}
-          </Link>
-        ) : planned ? (
-          <span className={cn('inline-flex items-center gap-1 text-xs', late ? 'font-medium text-warning' : 'text-muted-foreground')}>
-            <IconClock className="h-3.5 w-3.5" />
-            {t('branch.planNotDone')}
-          </span>
-        ) : (
-          !canEdit && <span className="text-xs text-muted-foreground">{t('branch.planFree')}</span>
-        )}
-        {/* الربط اليدوي: نشاط أُنشئ باسم آخر لا يلتقطه التطابق بالاسم، فيُربط من هنا.
-            يحتاج بندًا محفوظًا — صف لم يُحفظ بعد لا id له يُربط به. */}
-        {canEdit && row.id && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => onLink(row)}
-            aria-label={t('branch.planLink')}
-            title={t('branch.planLink')}
-          >
-            <IconLink />
-          </Button>
-        )}
-        {canEdit && row.extra && (
-          <Button size="icon-sm" variant="ghost" onClick={() => onRemove(index)} aria-label={t('common.delete')}>
-            <IconTrash />
-          </Button>
-        )}
-      </div>
-
-      <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+      <div className="min-w-0 sm:col-start-2 sm:row-start-1">
         {canEdit ? (
           <Input
             value={row.title}
@@ -359,7 +368,7 @@ function PlanRow({ row, index, days, canEdit, validated, removedHere, today, onT
           showDate={row.date !== row.base.date}
           canEdit={canEdit}
           onRestore={onRestore}
-          className="col-span-2 sm:col-start-2"
+          className="sm:col-span-2 sm:col-start-2"
         />
       )}
       {!changed && removedHere && (
@@ -368,7 +377,7 @@ function PlanRow({ row, index, days, canEdit, validated, removedHere, today, onT
           removed
           canEdit={canEdit}
           onRestore={onRestore}
-          className="col-span-2 sm:col-start-2"
+          className="sm:col-span-2 sm:col-start-2"
         />
       )}
     </li>
@@ -511,7 +520,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
 
         {res.data &&
           (list.length === 0 ? (
-            <EmptyState icon={<IconCalendar />} title={t('branch.planLinkEmpty')} />
+            <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('branch.planLinkEmpty')} />
           ) : (
             <ul className="max-h-[45dvh] divide-y divide-border overflow-y-auto rounded-xl border border-border">
               {list.map((s) => {
@@ -526,7 +535,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
                       onClick={() => pick(s.id)}
                       className="focus-ring flex w-full items-center gap-3 px-3 py-2.5 text-start hover:bg-accent disabled:opacity-60 disabled:hover:bg-transparent"
                     >
-                      <span className="tabular w-16 shrink-0 text-xs text-muted-foreground sm:w-24 sm:text-sm">
+                      <span className="tabular w-[4.5rem] shrink-0 text-xs text-muted-foreground sm:w-24 sm:text-sm">
                         {fmtDate(s.date)}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
@@ -908,7 +917,7 @@ function PlansOverview({ onOpenBranch }) {
                     <button
                       type="button"
                       onClick={() => onOpenBranch(b.id)}
-                      className="focus-ring grid w-full cursor-pointer items-center gap-x-6 gap-y-2 px-4 py-3.5 text-start transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(0,1.6fr)] sm:px-5"
+                      className="focus-ring grid grid-cols-1 w-full cursor-pointer items-center gap-x-6 gap-y-2 px-4 py-3.5 text-start transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(0,1.6fr)] sm:px-5"
                     >
                       <span className="flex items-center gap-2">
                         <span className="font-semibold">{branchName(b, lng)}</span>
@@ -1120,7 +1129,7 @@ function SessionRow({ s }) {
                 <li key={m.id}>
                   <Link
                     to={`/members/${m.id}`}
-                    className="focus-ring flex min-h-10 items-center gap-2 rounded-full border border-border bg-card py-1 pe-3 ps-1 text-xs transition-colors hover:border-primary/35 hover:bg-accent sm:min-h-8"
+                    className="focus-ring flex min-h-11 items-center gap-2 rounded-full border border-border bg-card py-1 pe-3 ps-1 text-xs transition-colors hover:border-primary/35 hover:bg-accent sm:min-h-8"
                   >
                     <Avatar photo={m.photo} name={avatarName(m)} className="h-6 w-6 text-[0.625rem]" />
                     {memberName(m)}
@@ -1135,9 +1144,10 @@ function SessionRow({ s }) {
               {s.absent.map(memberName).join(' · ')}
             </p>
           )}
+          {/* A line of text, but a full-height tap on a phone */}
           <Link
             to={`/sessions/${s.id}`}
-            className="focus-ring inline-block rounded text-xs font-medium text-primary hover:underline"
+            className="focus-ring relative inline-block rounded text-xs font-medium text-primary before:absolute before:-inset-x-2 before:-inset-y-3.5 before:content-[''] hover:underline sm:before:content-none"
           >
             {t('branch.openSession')}
           </Link>
@@ -1239,6 +1249,10 @@ function BranchSessions({ branchId }) {
  * الطليعة ذات الفئة العمرية (البراعم: ٥–٦، ٦–٧، ٧–٨) تأخذ عناصرها بسنة ميلادهم:
  * «التوزيع حسب السنّ» يعرض من ليس في طليعة سنّه، ثم ينقلهم — كل أيلول يصعد الجميع.
  */
+// The end of a طليعة row: its edit and delete, or the «بلا طليعة» row's button.
+// One width from sm up, wide enough for that button's longest label.
+const groupRowEnd = 'flex shrink-0 items-center justify-end sm:flex sm:w-44';
+
 function BranchGroups({ branchId }) {
   const { t } = useTranslation();
   const { can } = usePerms();
@@ -1451,15 +1465,17 @@ function BranchGroups({ branchId }) {
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-start gap-3 border-b border-border p-4 sm:p-5">
         <p className="min-w-60 flex-1 text-sm leading-relaxed text-muted-foreground">{t('branch.groupsHint')}</p>
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Under the hint on a phone, the buttons share its width — one line each when
+            their words are long — instead of two ragged widths */}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {groups.length > 0 && (
-            <Button size="sm" variant="outline" onClick={() => openAssign()}>
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => openAssign()}>
               <IconUsers />
               {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
             </Button>
           )}
           {canEdit && (
-            <Button size="sm" variant="brand" onClick={newGroup}>
+            <Button size="sm" variant="brand" className="flex-1 sm:flex-none" onClick={newGroup}>
               <IconPlus />
               {t('branch.groupNew')}
             </Button>
@@ -1487,8 +1503,10 @@ function BranchGroups({ branchId }) {
           )}
           {groups.map((g) => (
             <li key={g.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
-              <div className="grid min-w-0 flex-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
-                <div className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
+              <div className="grid min-w-0 flex-1 grid-cols-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
+                {/* The count drops under the name when both do not fit: beside it, it
+                    cut the French ages short («nés en 20…») */}
+                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 sm:block">
                   <div className="min-w-0">
                     <p className="truncate font-medium">{g.name}</p>
                     {isAgeGroup(g) && (
@@ -1501,28 +1519,34 @@ function BranchGroups({ branchId }) {
                 </div>
                 <ShareBar value={share(g.member_count)} />
               </div>
-              {canEdit && (
-                <div className="flex shrink-0 items-center">
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={`${t('branch.groupEdit')} — ${g.name}`}
-                    title={t('branch.groupEdit')}
-                    onClick={() =>
-                      openEditor({ id: g.id, name: g.name, age_from: g.age_from ?? '', age_to: g.age_to ?? '' })
-                    }
-                  >
-                    <IconPencil />
-                  </Button>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={`${t('branch.groupDelete')} — ${g.name}`}
-                    title={t('branch.groupDelete')}
-                    onClick={() => removeGroup(g)}
-                  >
-                    <IconTrash />
-                  </Button>
+              {(canEdit || unassigned > 0) && (
+                // From sm up every row ends on the same width as the «بلا طليعة» row's
+                // button, so the bars line up and compare
+                <div className={cn(groupRowEnd, !canEdit && 'hidden')}>
+                  {canEdit && (
+                    <>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`${t('branch.groupEdit')} — ${g.name}`}
+                        title={t('branch.groupEdit')}
+                        onClick={() =>
+                          openEditor({ id: g.id, name: g.name, age_from: g.age_from ?? '', age_to: g.age_to ?? '' })
+                        }
+                      >
+                        <IconPencil />
+                      </Button>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`${t('branch.groupDelete')} — ${g.name}`}
+                        title={t('branch.groupDelete')}
+                        onClick={() => removeGroup(g)}
+                      >
+                        <IconTrash />
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </li>
@@ -1532,8 +1556,8 @@ function BranchGroups({ branchId }) {
           <li className="flex items-center gap-3 bg-muted/30 px-4 py-3 sm:px-5">
             {unassigned > 0 ? (
               <>
-                <div className="grid min-w-0 flex-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
-                  <div className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
+                <div className="grid min-w-0 flex-1 grid-cols-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,20rem)]">
+                  <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 sm:block">
                     <p className="truncate font-medium text-warning">{t('branch.groupNone')}</p>
                     <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
                       {t('branch.groupMembers', { count: unassigned })}
@@ -1541,9 +1565,11 @@ function BranchGroups({ branchId }) {
                   </div>
                   <ShareBar value={share(unassigned)} tone="warning" />
                 </div>
-                <Button size="sm" variant="ghost" className="shrink-0" onClick={() => openAssign('none')}>
-                  {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
-                </Button>
+                <div className={groupRowEnd}>
+                  <Button size="sm" variant="ghost" onClick={() => openAssign('none')}>
+                    {t(canEdit ? 'branch.groupAssignOpen' : 'branch.groupAssignView')}
+                  </Button>
+                </div>
               </>
             ) : (
               <p className="flex items-center gap-2 text-sm text-success">
@@ -2465,11 +2491,13 @@ export default function Branches() {
       </PageHeader>
 
       {/* Swiped sideways on a phone; a grid from tablet up, where a mouse has no swipe
-          and a hidden scrollbar would leave the last فرق out of reach */}
+          and a hidden scrollbar would leave the last فرق out of reach. The scroll
+          padding keeps the snap off the gutter: snapped to the bare edge, the first
+          tile (and its selection ring) sat flush against the screen. */}
       <div
         role="group"
         aria-label={t('branch.pageTitle')}
-        className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
+        className="no-scrollbar relative -mx-4 flex snap-x scroll-px-4 gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:scroll-px-0 sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
       >
         {branches.map((x) => (
           <BranchTile

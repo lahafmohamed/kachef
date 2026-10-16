@@ -301,8 +301,10 @@ function HistoryRow({ r, type, mixed, kind }) {
         <span className={cn('min-w-0', gone && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
           {subject}
         </span>
+        {/* At the line's end even when a long name pushes it below: amounts and marks
+            stay in one column instead of jumping from end to start row by row */}
         {(change || mark) && (
-          <span className={cn('inline-flex flex-wrap items-center gap-x-2 gap-y-0.5', gone && 'text-muted-foreground')}>
+          <span className={cn('ms-auto inline-flex flex-wrap items-center gap-x-2 gap-y-0.5', gone && 'text-muted-foreground')}>
             {change && <span className={cn(gone && 'line-through decoration-muted-foreground/60')}>{change}</span>}
             {mark && <span className="text-xs text-muted-foreground">{mark}</span>}
           </span>
@@ -367,7 +369,7 @@ function HistoryItem({ item, kind }) {
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            className="focus-ring -ms-1 mt-1 inline-flex min-h-9 items-center rounded px-1 text-xs font-medium text-primary hover:underline"
+            className="focus-ring -ms-1 mt-1 inline-flex min-h-11 items-center rounded px-1 text-xs font-medium text-primary hover:underline sm:min-h-9"
           >
             {open ? t('history.showLess') : t('history.showAll', { count: rows.length })}
           </button>

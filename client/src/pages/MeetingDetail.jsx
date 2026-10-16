@@ -31,6 +31,7 @@ import {
   CardTitle,
   cn,
   Dialog,
+  EmptyState,
   ErrorState,
   Input,
   Label,
@@ -43,6 +44,7 @@ import {
   IconCalendar,
   IconCheckAll,
   IconClock,
+  IconInbox,
   IconPencil,
   IconPin,
   IconPlus,
@@ -92,10 +94,14 @@ function AttendanceCard({ m, t, canEdit, onEdit }) {
   const taken = m.attendees.length > 0;
   return (
     <Card>
-      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Not taken yet: the line under the title says so, and the button follows it on a
+          phone, as the counts do once it is taken — no card body left holding one sentence */}
+      <CardHeader className={cn('gap-3 sm:flex-row sm:items-center sm:justify-between', !taken && 'pb-4 sm:pb-5')}>
         <div className="min-w-0">
           <CardTitle>{t('meeting.attendance')}</CardTitle>
-          {taken && <p className="mt-1 text-sm text-muted-foreground">{attendanceLine(c, t, m.section).join(' · ')}</p>}
+          <p className="mt-1 text-sm text-muted-foreground">
+            {taken ? attendanceLine(c, t, m.section).join(' · ') : t('meeting.attendanceEmpty')}
+          </p>
         </div>
         {canEdit && (
           <Button size="sm" variant={taken ? 'outline' : 'brand'} onClick={onEdit} className="w-full sm:w-auto">
@@ -104,10 +110,8 @@ function AttendanceCard({ m, t, canEdit, onEdit }) {
           </Button>
         )}
       </CardHeader>
-      <CardContent>
-        {!taken ? (
-          <p className="text-sm text-muted-foreground">{t('meeting.attendanceEmpty')}</p>
-        ) : (
+      {taken && (
+        <CardContent>
           <div className="space-y-4">
             {GROUPS.filter((g) => groups[g.key].length > 0).map((g) => (
               <div key={g.key}>
@@ -125,7 +129,7 @@ function AttendanceCard({ m, t, canEdit, onEdit }) {
                       <Avatar
                         photo={a.photo}
                         name={a.first_name ? avatarName(a) : a.name}
-                        className="h-6 w-6 text-[0.625rem]"
+                        className="h-6 w-6 text-[0.6875rem]"
                       />
                       <bdi className="truncate">{a.name}</bdi>
                     </li>
@@ -134,8 +138,8 @@ function AttendanceCard({ m, t, canEdit, onEdit }) {
               </div>
             ))}
           </div>
-        )}
-      </CardContent>
+        </CardContent>
+      )}
     </Card>
   );
 }
@@ -322,6 +326,9 @@ function AgendaCard({ m, t, canEdit, onAdd, onEdit }) {
                   {i + 1}
                 </span>
                 <div className="min-w-0 flex-1">
+                  {/* The pencil keeps its 44px but not the row's height (-my): what was said sits
+                      right under its point, not halfway to the next one. Its column (-me) is the
+                      decisions' pencils' column. */}
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="pt-0.5 font-semibold [overflow-wrap:anywhere]">
                       <span className="sr-only">{i + 1}. </span>
@@ -333,7 +340,7 @@ function AgendaCard({ m, t, canEdit, onAdd, onEdit }) {
                         size="icon-sm"
                         onClick={() => onEdit(it)}
                         aria-label={`${t('common.edit')} — ${it.title}`}
-                        className="-mt-1.5 shrink-0 text-muted-foreground sm:-mt-1"
+                        className="-my-2 -me-2.5 shrink-0 text-muted-foreground sm:-my-0.5 sm:-me-1.5"
                       >
                         <IconPencil />
                       </Button>
@@ -347,15 +354,16 @@ function AgendaCard({ m, t, canEdit, onAdd, onEdit }) {
                       {userText(it.discussion)}
                     </p>
                   ) : canEdit ? (
+                    // 44px to tap on a phone through the ::before, without the gap a min-height opened
                     <button
                       type="button"
                       onClick={() => onEdit(it)}
-                      className="focus-ring -mx-1 mt-1 min-h-11 rounded px-1 text-start text-sm text-muted-foreground underline-offset-4 hover:text-primary hover:underline sm:min-h-0"
+                      className="focus-ring relative -mx-1 mt-1.5 rounded px-1 text-start text-sm text-muted-foreground underline-offset-4 before:absolute before:inset-x-0 before:-inset-y-3 before:content-[''] hover:text-primary hover:underline sm:before:content-none"
                     >
                       {t('meeting.writeDiscussion')}
                     </button>
                   ) : (
-                    <p className="mt-1 text-sm text-muted-foreground">{t('meeting.noDiscussion')}</p>
+                    <p className="mt-1.5 text-sm text-muted-foreground">{t('meeting.noDiscussion')}</p>
                   )}
                 </div>
               </li>
@@ -499,6 +507,8 @@ function ItemDialog({ m, item, open, onClose, onSaved, t }) {
  */
 function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle, onEdit }) {
   return (
+    // Tick, first line and pencil share one centre line: 26px down on a phone (44px
+    // targets), 22px on a pointer screen
     <li className="flex items-start gap-1.5 py-1">
       <DecisionCheck
         status={d.status}
@@ -506,7 +516,7 @@ function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle,
         onToggle={canFollow ? () => onToggle(d) : null}
         label={t(d.status === 'done' ? 'meeting.markOpen' : 'meeting.markDone', { text: d.text })}
       />
-      <div className="min-w-0 flex-1 py-2">
+      <div className="min-w-0 flex-1 pb-2 pt-3 sm:pt-2">
         <p
           className={cn(
             'text-sm font-medium [overflow-wrap:anywhere]',
@@ -525,7 +535,7 @@ function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle,
           size="icon-sm"
           onClick={() => onEdit(d)}
           aria-label={`${t('common.edit')} — ${d.text}`}
-          className="mt-0.5 shrink-0 text-muted-foreground sm:mt-1.5"
+          className="shrink-0 text-muted-foreground sm:mt-0.5"
         >
           <IconPencil />
         </Button>
@@ -561,13 +571,17 @@ function FollowupsCard({ m, t, today, canFollow, busy, onToggle }) {
       <CardContent className="space-y-4">
         {groups.map((g) => (
           <section key={g.id} aria-label={t('meeting.fromMeeting', { date: fmtDate(g.date), title: g.title })}>
+            {/* A link to that meeting: 44px to tap on a phone */}
             <Link
               to={`/meetings/${g.id}`}
-              className="focus-ring inline-block rounded text-xs font-medium text-muted-foreground hover:text-primary hover:underline"
+              className="focus-ring flex min-h-11 w-fit max-w-full items-center rounded text-xs font-medium text-muted-foreground hover:text-primary hover:underline sm:min-h-0"
             >
-              <span className="tabular-nums">{fmtDate(g.date)}</span> · <bdi>{userText(g.title)}</bdi>
+              <span>
+                <span className="tabular-nums">{fmtDate(g.date)}</span> · <bdi>{userText(g.title)}</bdi>
+              </span>
             </Link>
-            <ul className="-mx-2 mt-1 divide-y divide-border sm:-mx-3">
+            {/* -mx: the ticks line up with the card's title, the pencils with the agenda's */}
+            <ul className="-mx-2.5 divide-y divide-border sm:-mx-1.5 sm:mt-1">
               {g.rows.map((d) => (
                 <DecisionItem
                   key={d.id}
@@ -617,7 +631,7 @@ function DecisionsCard({ m, t, today, canEdit, canFollow, busy, onToggle, onAdd,
         {m.decisions.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t('meeting.decisionsEmpty')}</p>
         ) : (
-          <ol className="-mx-2 divide-y divide-border sm:-mx-3">
+          <ol className="-mx-2.5 divide-y divide-border sm:-mx-1.5">
             {m.decisions.map((d, i) => (
               <DecisionItem
                 key={d.id}
@@ -752,7 +766,7 @@ function DecisionDialog({ m, decision, open, onClose, onSaved, leaders, t }) {
             onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
           />
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="dc_owner">{t('meeting.owner')}</Label>
             <PersonField
@@ -813,7 +827,7 @@ export default function MeetingDetail() {
   const canDelete = has('meetings.delete');
   const { section } = useSection();
 
-  const { data: m, setData: setM, loading, error, reload } = useFetch(`/meetings/${id}`);
+  const { data: m, setData: setM, loading, error, errorStatus, reload } = useFetch(`/meetings/${id}`);
   const leaders = useFetch('/leader-options', { skip: !canEdit });
   const [editing, setEditing] = useState(false);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
@@ -822,8 +836,31 @@ export default function MeetingDetail() {
   const [decisionDialog, setDecisionDialog] = useState(null);
   const [busy, setBusy] = useState(null);
 
+  const backButton = (
+    <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+      <IconBack className="rtl:rotate-180" />
+      {t('common.back')}
+    </Button>
+  );
+
   if (loading) return <SkeletonPage rows={4} />;
-  if (error) return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
+  // The way back stays above the error: an installed app has no browser «back» to fall
+  // back on. Minutes deleted since the link was shared, or out of this account's reach,
+  // say so — «check your connection» and a retry would send the reader nowhere.
+  if (error)
+    return (
+      <div className="space-y-4">
+        <div className="flex">{backButton}</div>
+        {/* The server's answers for minutes that are not there to show (404 / 403): no retry helps */}
+        {errorStatus === 404 || errorStatus === 403 ? (
+          <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+            {t('error.notFoundBody')}
+          </EmptyState>
+        ) : (
+          <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
+        )}
+      </div>
+    );
 
   const today = new Date().toISOString().slice(0, 10);
   const time = timeRange(m);
@@ -879,10 +916,7 @@ export default function MeetingDetail() {
     <div className="space-y-4">
       {/* Same bar as an activity's: icon-only actions on phones */}
       <div className="flex items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
-          <IconBack className="rtl:rotate-180" />
-          {t('common.back')}
-        </Button>
+        {backButton}
         <div className="flex items-center gap-2">
           <ExportPdfButton kind="meeting" id={m.id} compact />
           {canEdit && (
@@ -963,7 +997,7 @@ export default function MeetingDetail() {
             )}
           </div>
           {people.length > 0 && (
-            <dl className="grid gap-x-6 gap-y-2 border-t border-border pt-3 text-sm sm:grid-cols-2">
+            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 border-t border-border pt-3 text-sm sm:grid-cols-2">
               {people.map(([label, name]) => (
                 <div key={label} className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
                   <dt className="text-muted-foreground">{label}</dt>
@@ -1013,10 +1047,13 @@ export default function MeetingDetail() {
               </p>
             )}
             {m.next_date && (
-              <p className="flex flex-wrap items-center gap-x-1.5 text-sm">
-                <IconCalendar className="h-4 w-4 text-muted-foreground" />
-                <span className="text-muted-foreground">{t('meeting.nextDate')}</span>
-                <span className="font-medium">{fmtLongDate(m.next_date, lng)}</span>
+              // A date too long for the label's line goes under the label, whole — not under the icon
+              <p className="flex items-start gap-1.5 text-sm">
+                <IconCalendar className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                <span className="min-w-0">
+                  <span className="text-muted-foreground">{t('meeting.nextDate')}</span>{' '}
+                  <span className="whitespace-nowrap font-medium">{fmtLongDate(m.next_date, lng)}</span>
+                </span>
               </p>
             )}
           </CardContent>

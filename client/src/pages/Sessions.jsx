@@ -108,13 +108,11 @@ function ScopeBadge({ s, lang, t, branchList = [], bothSections = false }) {
       </>
     );
   }
-  // نشاط قادة يبقى للفوج، و فرقه المدعوّة تُذكر بعده
+  // نشاط قادة يبقى للفوج، و فرقه المدعوّة تُذكر بعده. Its kind is already the tag
+  // beside the title — repeated here it read as the same badge twice on one row.
   const invited = (s.branch_ids || []).map((id) => branchList.find((b) => b.id === id)).filter(Boolean);
   return (
     <>
-      <Badge variant="secondary">
-        {t(s.kind === 'group' ? 'session.kindGroup' : 'session.kindLeaders')}
-      </Badge>
       {/* No فرقة to tell them apart: with both أقسام listed, the نشاط names its own */}
       {bothSections && <Badge variant={isFeminine(s.section) ? 'info' : 'outline'}>{t(`section.${s.section}`)}</Badge>}
       {invited.map((b) => (
@@ -169,10 +167,11 @@ function AttendanceMeter({ s, t }) {
       <p className="text-sm">
         <span className="font-semibold tabular-nums">{s.branch_counts_total ?? 0}</span>{' '}
         <span className="text-muted-foreground">{t('session.present')}</span>
+        {/* A counted noun, not the «القادة» list title: «5 قادة», never «5 القادة» */}
         {s.leaders_count !== null && s.leaders_count !== undefined && (
           <span className="text-muted-foreground">
             {' · '}
-            <span className="tabular-nums">{s.leaders_count}</span> {t('leader.leadersList')}
+            <span className="tabular-nums">{t('member.rosterLeaders', { count: s.leaders_count })}</span>
           </span>
         )}
       </p>
@@ -294,6 +293,11 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
     s.leader,
     activityTypeKey(s.activity_type) && t(activityTypeKey(s.activity_type)),
   ].filter(Boolean);
+  // A نشاط قادة or عام للفوج may have nothing to put on the badge line — no فرقة,
+  // no invited one, a single قسم on screen: then the line is left out, not kept empty
+  const scoped =
+    !!s.branch_id || bothSections || (s.branch_ids || []).some((id) => branchList.some((b) => b.id === id));
+  const hasBadges = scoped || !!s.plan_item_id || s.guest_count > 0 || s.matalib.length > 0;
   return (
     <li>
       <Link
@@ -319,29 +323,31 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
               part that fell off. A short fact stays whole, so the line breaks between
               two — «أحمد / ياسين» read as two people — and each keeps its own
               direction: an Arabic place beside an Arabic name swapped places, and
-              their dots, on the French screen. */}
+              their dots, on the French screen. The dot holds on to the fact before it,
+              like a comma (no-break space), so a wrapped line never opens on a lone «·». */}
           {meta.length > 0 && (
             <p className="text-sm text-muted-foreground max-sm:line-clamp-2 sm:truncate" title={meta.join(' · ')}>
               {meta.map((m, i) => (
                 <Fragment key={i}>
-                  {i > 0 && ' · '}
+                  {i > 0 && '\u00a0· '}
                   <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
                 </Fragment>
               ))}
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} bothSections={bothSections} />
-            {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
-            {s.guest_count > 0 && (
-              <Badge variant="outline">{t('session.guestCount', { count: s.guest_count })}</Badge>
-            )}
-            {s.matalib.length > 0 && (
-              <Badge variant="outline">
-                {s.matalib.length} {t('session.requirementsShort')}
-              </Badge>
-            )}
-          </div>
+          {hasBadges && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} bothSections={bothSections} />
+              {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
+              {s.guest_count > 0 && (
+                <Badge variant="outline">{t('session.guestCount', { count: s.guest_count })}</Badge>
+              )}
+              {/* Counted, so the noun agrees: «مطلبان», «مطلب واحد», never «2 مطالب» */}
+              {s.matalib.length > 0 && (
+                <Badge variant="outline">{t('session.matalibCount', { count: s.matalib.length })}</Badge>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="col-start-2 sm:col-start-3">
@@ -414,6 +420,10 @@ export default function Sessions() {
 
   const activeFilters = [branch, groupFilter, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
   const filtering = activeFilters > 0 || !!q;
+  // A new search or filter keeps the list on screen, dimmed, until the answer comes
+  // back — swapping in skeletons on every keystroke made the page jump. Skeletons
+  // are for the first load only.
+  const refreshing = sessions.loading && !!sessions.data;
   // What hides behind الفلاتر — the badge on the button counts only these
   const moreFilters =
     [leaderFilter, activityType, kindFilter].filter(Boolean).length + (sort !== 'date_desc' ? 1 : 0);
@@ -811,8 +821,9 @@ export default function Sessions() {
     <div className="space-y-4">
       <PageHeader
         title={t('session.title')}
+        // No count before the first answer: «aucune séance trouvée» flashed while loading
         description={
-          filtering ? t('session.resultCount', { count: list.length }) : t('session.subtitle')
+          filtering && sessions.data ? t('session.resultCount', { count: list.length }) : t('session.subtitle')
         }
       >
         {(() => {
@@ -833,7 +844,9 @@ export default function Sessions() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="min-w-0 flex-1 basis-0 sm:basis-64">
-            <SearchInput value={q} onChange={setQ} placeholder={t('session.searchPlaceholder')} />
+            {/* Short enough to fit a 360px phone whole; names what the search matches
+                (titre, lieu, قائد or مساعد) */}
+            <SearchInput value={q} onChange={setQ} placeholder={t('session.listSearch')} />
           </div>
           <div className={cn('order-last w-full sm:order-none sm:w-auto', showFilters ? 'block' : 'hidden sm:block')}>
             <FilterSelect
@@ -870,15 +883,18 @@ export default function Sessions() {
               onChange={({ from: f, to: tt }) => patch({ from: f, to: tt })}
             />
           </div>
+          {/* As on the عناصر list: the word goes below 400px so the search keeps the
+              room for its hint; the count stays, and is part of the button's name */}
           <Button
-            variant="outline"
-            className="relative"
+            variant={showFilters ? 'secondary' : 'outline'}
+            className="min-w-11 shrink-0 px-3"
             aria-expanded={showFilters}
             aria-controls="session-more-filters"
+            aria-label={moreFilters > 0 ? `${t('session.filters')} (${moreFilters})` : t('session.filters')}
             onClick={() => setShowFilters((v) => !v)}
           >
             <IconFilter />
-            {t('session.filters')}
+            <span className="hidden min-[400px]:inline">{t('session.filters')}</span>
             {moreFilters > 0 && (
               <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[0.6875rem] font-bold tabular-nums text-primary-foreground">
                 {moreFilters}
@@ -944,7 +960,7 @@ export default function Sessions() {
 
       {sessions.error ? (
         <ErrorState message={t('error.loadFailed')} onRetry={sessions.reload} retryLabel={t('error.retry')} />
-      ) : sessions.loading ? (
+      ) : !sessions.data ? (
         <div className="space-y-3" aria-busy="true">
           <Skeleton className="h-5 w-40" />
           <Card className="divide-y divide-border">
@@ -981,9 +997,11 @@ export default function Sessions() {
           </EmptyState>
         </Card>
       ) : ranked ? (
-        <SessionList rows={list} ranked lang={i18n.language} t={t} branchList={branchList} />
+        <div aria-busy={refreshing || undefined} className={cn('transition-opacity', refreshing && 'opacity-60')}>
+          <SessionList rows={list} ranked lang={i18n.language} t={t} branchList={branchList} />
+        </div>
       ) : (
-        <div className="space-y-6">
+        <div aria-busy={refreshing || undefined} className={cn('space-y-6 transition-opacity', refreshing && 'opacity-60')}>
           {months.map(({ key, rows }) => {
             const rate = monthRate(rows);
             return (
@@ -1022,6 +1040,46 @@ export default function Sessions() {
                 ? 'session.newGroupSession'
                 : 'session.newSession'
         )}
+        // Pinned under the scrolling steps, as in the edit dialog: on a phone the
+        // participant lists ran past the screen and «حفظ» had to be scrolled to. The
+        // error sits with the buttons, so it shows wherever the step is scrolled.
+        footer={
+          branches.error || leaders.error ? undefined : (
+            <div className="space-y-2">
+              {error && (
+                <p role="alert" className="text-sm font-medium text-destructive">
+                  {error}
+                </p>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (step === 0) setCreating(false);
+                    else {
+                      setError(null);
+                      setStep(step - 1);
+                    }
+                  }}
+                >
+                  {t(step === 0 ? 'common.cancel' : 'common.back')}
+                </Button>
+                {/* Distinct keys: React would otherwise reuse the «التالي» button and
+                    flip it to type=submit mid-click, so the browser submits the form
+                    on step two and the مطالب step is never seen */}
+                {step < 2 ? (
+                  <Button key="next" type="button" onClick={nextStep}>
+                    {t('common.next')}
+                  </Button>
+                ) : (
+                  <Button key="save" type="submit" form="session-create-form" loading={saving}>
+                    {t('common.save')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        }
       >
         {branches.error || leaders.error ? (
           <ErrorState
@@ -1033,7 +1091,7 @@ export default function Sessions() {
             retryLabel={t('error.retry')}
           />
         ) : (
-        <form onSubmit={create} className="space-y-4">
+        <form id="session-create-form" onSubmit={create} className="space-y-4">
           {(() => {
           const kindField = (
           <div className="space-y-1.5">
@@ -1501,10 +1559,11 @@ export default function Sessions() {
                       className="inline-flex min-h-9 items-center gap-1 rounded-full border border-border bg-card ps-3 text-sm"
                     >
                       {name}
+                      {/* The icon size keeps its 44px on a phone, as every other target */}
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-9 w-9 rounded-full text-muted-foreground"
+                        className="rounded-full text-muted-foreground"
                         onClick={() => removeGuest(name)}
                         aria-label={`${t('common.delete')} — ${name}`}
                       >
@@ -1536,12 +1595,6 @@ export default function Sessions() {
                 />
               </div>
             </div>
-          );
-
-          const errorEl = error && (
-            <p role="alert" className="text-sm font-medium text-destructive">
-              {error}
-            </p>
           );
 
           const steps = [
@@ -1584,7 +1637,7 @@ export default function Sessions() {
                     {titleField}
                     {planLinked}
                     {planDay}
-                    <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       {dateField}
                       {timeField}
                     </div>
@@ -1592,7 +1645,7 @@ export default function Sessions() {
                 )}
                 {step === 1 && (
                   <div className="space-y-4">
-                    <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       {placeField}
                       {natureField}
                       {feeField}
@@ -1612,33 +1665,6 @@ export default function Sessions() {
                     {matalibField}
                   </div>
                 )}
-                {errorEl}
-                <div className="flex items-center justify-between gap-2 pt-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      if (step === 0) setCreating(false);
-                      else {
-                        setError(null);
-                        setStep(step - 1);
-                      }
-                    }}
-                  >
-                    {t(step === 0 ? 'common.cancel' : 'common.back')}
-                  </Button>
-                  {/* Distinct keys: React would otherwise reuse the «التالي» button and
-                      flip it to type=submit mid-click, so the browser submits the form
-                      on step two and the مطالب step is never seen */}
-                  {step < 2 ? (
-                    <Button key="next" type="button" onClick={nextStep}>
-                      {t('common.next')}
-                    </Button>
-                  ) : (
-                    <Button key="save" type="submit" loading={saving}>
-                      {t('common.save')}
-                    </Button>
-                  )}
-                </div>
               </>
             );
           })()}

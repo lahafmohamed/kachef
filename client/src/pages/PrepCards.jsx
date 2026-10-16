@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
@@ -77,8 +77,18 @@ export default function PrepCards() {
     setTo('');
   }
 
-  const meta = (c) =>
-    [fmtTime(c.start_time), c.place].filter(Boolean).join(' · ');
+  // The short facts of a card (time, place, and on phones who prepared it), joined
+  // by «·». Each one is isolated and kept whole, so a place written in the other
+  // script never reorders its neighbours and a name never breaks across lines.
+  const facts = (c, withLeader = false) =>
+    [fmtTime(c.start_time), c.place, withLeader && c.leader].filter(Boolean);
+  const factLine = (items) =>
+    items.map((x, i) => (
+      <Fragment key={i}>
+        {i > 0 && ' · '}
+        <bdi className={x.length <= 24 ? 'whitespace-nowrap' : undefined}>{x}</bdi>
+      </Fragment>
+    ));
 
   return (
     <div className="space-y-4">
@@ -183,7 +193,8 @@ export default function PrepCards() {
                   {t('common.clearFilters')}
                 </Button>
               ) : editable ? (
-                <Button variant="brand" onClick={() => setCreating(true)}>
+                // Outline: the header's «بطاقة تحضير جديدة» stays the one filled action on screen
+                <Button variant="outline" onClick={() => setCreating(true)}>
                   <IconPlus />
                   {t('prep.newCard')}
                 </Button>
@@ -204,29 +215,26 @@ export default function PrepCards() {
                     to={`/prep-cards/${c.id}`}
                     className="focus-ring block px-4 py-3 transition-colors hover:bg-accent/50"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="font-medium">{c.title}</span>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="min-w-0 font-medium [overflow-wrap:anywhere]">
+                        <bdi>{c.title}</bdi>
+                      </span>
                       <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
                         {fmtDate(c.date)}
                       </span>
                     </div>
+                    {/* One line of facts, then one row of badges: mixed in a single wrapping
+                        row, the name ran into the place with nothing between them */}
+                    {facts(c, true).length > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">{factLine(facts(c, true))}</p>
+                    )}
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
                       <Badge>{branchName(c, i18n.language)}</Badge>
                       {c.session_id && <Badge variant="success">{t('prep.linked')}</Badge>}
                       {c.matalib.length > 0 && (
                         <Badge variant="warning">
-                          {c.matalib.length} {t('session.requirementsShort')}
+                          {t('session.matalibCount', { count: c.matalib.length })}
                         </Badge>
-                      )}
-                      {meta(c) && (
-                        <span className="truncate text-xs text-muted-foreground" title={meta(c)}>
-                          {meta(c)}
-                        </span>
-                      )}
-                      {c.leader && (
-                        <span className="truncate text-xs text-muted-foreground" title={c.leader}>
-                          {c.leader}
-                        </span>
                       )}
                     </div>
                   </Link>
@@ -250,27 +258,27 @@ export default function PrepCards() {
               <tbody className="divide-y divide-border">
                 {list.map((c) => (
                   <tr key={c.id} className="group transition-colors hover:bg-accent/40">
-                    <Td className="tabular-nums">{fmtDate(c.date)}</Td>
+                    <Td className="whitespace-nowrap tabular-nums">{fmtDate(c.date)}</Td>
                     <Td>
                       <Link
                         to={`/prep-cards/${c.id}`}
                         className="focus-ring rounded font-medium group-hover:text-primary"
                       >
-                        {c.title}
+                        <bdi>{c.title}</bdi>
                       </Link>
                       {c.session_id && (
                         <Badge variant="success" className="ms-2">
                           {t('prep.linked')}
                         </Badge>
                       )}
-                      {meta(c) && (
-                        <span className="block text-xs text-muted-foreground">{meta(c)}</span>
+                      {facts(c).length > 0 && (
+                        <span className="block text-xs text-muted-foreground">{factLine(facts(c))}</span>
                       )}
                     </Td>
                     <Td>
                       <Badge>{branchName(c, i18n.language)}</Badge>
                     </Td>
-                    <Td className="text-muted-foreground">{c.leader || '—'}</Td>
+                    <Td className="text-muted-foreground">{c.leader ? <bdi>{c.leader}</bdi> : '—'}</Td>
                     <Td>
                       <Badge variant={c.matalib.length ? 'warning' : 'outline'}>{c.matalib.length}</Badge>
                     </Td>

@@ -20,7 +20,7 @@ function shiftDays(n) {
  * @param value {{from: string, to: string}} ISO dates ('' = open ended)
  * @param onChange called with the same shape
  */
-export default function DateRangePicker({ value, onChange, className }) {
+export default function DateRangePicker({ value, onChange, className, block = false }) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   const isAr = i18n.language === 'ar';
@@ -67,7 +67,8 @@ export default function DateRangePicker({ value, onChange, className }) {
         <PopoverTrigger asChild>
           <Button
             variant="outline"
-            className={cn('w-full justify-start gap-2 font-normal sm:w-auto', !hasRange && 'text-muted-foreground')}
+            // block: fills its column at every width (a form grid), not only on phones
+            className={cn('w-full justify-start gap-2 font-normal', !block && 'sm:w-auto', !hasRange && 'text-muted-foreground')}
             aria-label={t('session.dateRange')}
           >
             <IconCalendar />

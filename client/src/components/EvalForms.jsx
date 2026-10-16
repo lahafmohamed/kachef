@@ -326,13 +326,18 @@ function PresetOption({ preset, onPick }) {
             href={preset.source.url}
             target="_blank"
             rel="noreferrer"
-            className="focus-ring inline-flex items-center gap-1 rounded text-xs text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+            className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded text-xs text-muted-foreground underline-offset-2 hover:text-primary hover:underline sm:min-h-0"
           >
-            <IconLink className="h-3.5 w-3.5" />
-            {t('eval.source')} : <bdi>{preset.source.title}</bdi>
+            <IconLink className="h-3.5 w-3.5 shrink-0" />
+            {/* One run of text: a long title wraps as a sentence instead of leaving
+                «Source» and its colon on lines of their own */}
+            <span>
+              {t('eval.source')} <bdi>{preset.source.title}</bdi>
+            </span>
           </a>
         </div>
-        <Button size="sm" onClick={onPick}>
+        {/* Outline: a list of ten filled buttons would compete with each other */}
+        <Button size="sm" variant="outline" onClick={onPick}>
           {t('eval.usePreset')}
         </Button>
       </div>
@@ -341,7 +346,7 @@ function PresetOption({ preset, onPick }) {
         aria-expanded={open}
         aria-controls={listId}
         onClick={() => setOpen(!open)}
-        className="focus-ring mt-2 inline-flex min-h-9 cursor-pointer items-center gap-1 rounded text-xs font-medium text-primary"
+        className="focus-ring inline-flex min-h-11 cursor-pointer items-center gap-1 rounded text-xs font-medium text-primary sm:mt-2 sm:min-h-9"
       >
         {t(open ? 'eval.hidePreview' : 'eval.previewItems')}
         <IconChevronDown className={cn('h-3.5 w-3.5 transition-[rotate] duration-200', open && 'rotate-180')} />
@@ -359,7 +364,7 @@ function PresetOption({ preset, onPick }) {
                 {g.items.map((it, i) => (
                   <li key={i} dir="auto">
                     {evalText(it, 'label', lng)}
-                    {it.type === 'text' && <span className="text-muted-foreground/80"> — {t('eval.typeText')}</span>}
+                    {it.type === 'text' && <span> — {t('eval.typeText')}</span>}
                   </li>
                 ))}
               </ul>
@@ -466,7 +471,7 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
     >
       {d && (
         <form id={formId} onSubmit={save} className="space-y-5" noValidate>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor={`${formId}-ar`}>{t('eval.nameAr')}</Label>
               <Input
@@ -513,7 +518,7 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
                         aria-pressed={on}
                         onClick={() => toggleKind(k)}
                         className={cn(
-                          'focus-ring inline-flex min-h-10 cursor-pointer items-center rounded-full border px-3.5 text-sm transition-colors sm:min-h-9',
+                          'focus-ring inline-flex min-h-11 cursor-pointer items-center rounded-full border px-3.5 text-sm transition-colors sm:min-h-9',
                           on
                             ? 'border-primary bg-primary text-primary-foreground'
                             : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
@@ -624,7 +629,7 @@ function ItemRow({ it, index, last, invalid, onPatch, onMove, onRemove }) {
           <IconTrash />
         </Button>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <Input
           id={`${base}-ar`}
           dir="rtl"

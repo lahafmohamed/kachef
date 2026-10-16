@@ -36,8 +36,12 @@ export default function SearchInput({ value, onChange, placeholder, className, a
         aria-label={placeholder}
         // Escape clears without leaving the keyboard
         onKeyDown={(e) => e.key === 'Escape' && value && (e.preventDefault(), onChange(''))}
+        // Phones keep room at the end only for the clear button, which only a value
+        // shows (the Ctrl K hint is desktop-only); a placeholder too long for the field
+        // ends with «…» instead of a letter cut in half
         className={cn(
-          'focus-ring h-11 w-full rounded-lg border border-input bg-card ps-9 pe-12 text-sm shadow-xs sm:pe-20',
+          'focus-ring h-11 w-full text-ellipsis rounded-lg border border-input bg-card ps-9 text-sm shadow-xs sm:pe-20',
+          value ? 'pe-12' : 'pe-3',
           'transition-colors placeholder:text-muted-foreground focus-visible:border-ring sm:h-10',
           '[&::-webkit-search-cancel-button]:hidden'
         )}

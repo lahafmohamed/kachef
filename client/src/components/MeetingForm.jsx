@@ -262,7 +262,8 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          {/* The date takes only the width it needs, so «Choisir l'heure» fits whole in each time box */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)]">
             <div className="col-span-2 space-y-1.5 sm:col-span-1">
               <Label htmlFor="mt_date">{t('common.date')}</Label>
               <DatePicker id="mt_date" required clearable={false} value={form.date} onChange={set('date')} />
@@ -306,8 +307,9 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
             </div>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
+          {/* The place on its own row, the two people of the minutes side by side under it */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="mt_place">{t('session.place')}</Label>
               <Input id="mt_place" maxLength={200} autoComplete="off" value={form.place} onChange={set('place')} />
             </div>

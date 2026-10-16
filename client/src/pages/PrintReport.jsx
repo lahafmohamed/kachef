@@ -103,6 +103,9 @@ const KINDS = {
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
 
+// مطالب numbers as the pages list them: in Arabic the first reads first, on the right
+const listSep = (lng) => (lng === 'ar' ? '، ' : ', ');
+
 /** Present / absent / excused / untouched counts of a roster, with the rate the app uses. */
 function countStatuses(list) {
   const c = { present: 0, absent: 0, excused: 0, unmarked: 0 };
@@ -121,17 +124,19 @@ function Sheet({ kindLabel, children }) {
   const today = fmtDate(todayISO());
   return (
     <article className="print-sheet mx-auto w-full max-w-[210mm] rounded-xl bg-card px-6 py-6 text-[13px] leading-snug text-card-foreground shadow-md sm:px-[14mm] sm:py-[12mm]">
-      <header className="flex items-center justify-between gap-4 border-b-2 border-primary pb-3">
-        <div className="flex items-center gap-3">
-          <img src="/logo-mark.png" alt="" width={56} height={56} className="h-14 w-14 shrink-0" />
-          <div>
+      {/* On a phone preview the «generated on» lines drop under the brand instead of
+          squeezing the group's name onto two lines; on paper they stay at the end */}
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b-2 border-primary pb-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <img src="/logo-mark.png" alt="" width={56} height={56} className="h-12 w-12 shrink-0 sm:h-14 sm:w-14" />
+          <div className="min-w-0">
             <div className="text-lg font-bold leading-tight text-primary">{t('app.name')}</div>
             <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {kindLabel}
             </div>
           </div>
         </div>
-        <div className="text-end text-[11px] leading-relaxed text-muted-foreground">
+        <div className="text-start text-[11px] leading-relaxed text-muted-foreground sm:text-end">
           <div className="tabular-nums">{t('print.generatedOn', { date: today })}</div>
           {user && <div>{t('print.generatedBy', { name: user.display_name || user.username })}</div>}
         </div>
@@ -139,7 +144,8 @@ function Sheet({ kindLabel, children }) {
 
       {children}
 
-      <footer className="mt-10 flex justify-between border-t border-border pt-2 text-[10px] text-muted-foreground">
+      {/* Never a page of its own: when it does not fit, it takes the block above along */}
+      <footer className="mt-8 flex break-before-avoid justify-between gap-4 border-t border-border pt-2 text-[11px] text-muted-foreground">
         <span>
           {t('app.name')} · {kindLabel}
         </span>
@@ -155,10 +161,13 @@ function H1({ children, className }) {
   );
 }
 
+// Arabic has no capitals to carry a small heading: one size up, without the tracking
 function H2({ children, aside }) {
   return (
-    <div className="avoid-break mb-2 mt-6 flex items-baseline justify-between gap-3 border-b border-border pb-1">
-      <h2 className="text-[11px] font-bold uppercase tracking-wider text-primary">{children}</h2>
+    <div className="avoid-break mb-2 mt-6 flex break-after-avoid items-baseline justify-between gap-3 border-b border-border pb-1">
+      <h2 className="text-[12px] font-bold uppercase tracking-wider text-primary rtl:text-[13px] rtl:tracking-normal">
+        {children}
+      </h2>
       {aside !== null && aside !== undefined && (
         <span className="text-[11px] tabular-nums text-muted-foreground">{aside}</span>
       )}
@@ -200,7 +209,7 @@ function Facts({ items }) {
     <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
       {rows.map(([label, value, ltr]) => (
         <div key={label} className="avoid-break min-w-0">
-          <dt className="text-[10.5px] text-muted-foreground">{label}</dt>
+          <dt className="text-[11px] text-muted-foreground first-letter:uppercase">{label}</dt>
           <dd className="break-words font-medium">
             {ltr ? (
               <span dir="ltr" className="tabular-nums">
@@ -216,14 +225,25 @@ function Facts({ items }) {
   );
 }
 
+/**
+ * The figures in one row on paper: five get five columns rather than four and one
+ * left alone underneath. Two per row on a phone, an odd last one across both.
+ */
 function Stats({ items }) {
+  const odd = items.length % 2 === 1;
   return (
-    <div className="avoid-break grid grid-cols-2 gap-2 sm:grid-cols-4">
-      {items.map((s) => (
-        <div key={s.label} className="rounded-lg border border-border px-3 py-2">
+    <div className={cn('avoid-break grid grid-cols-2 gap-2', items.length === 5 ? 'sm:grid-cols-5' : 'sm:grid-cols-4')}>
+      {items.map((s, i) => (
+        <div
+          key={s.label}
+          className={cn(
+            'min-w-0 rounded-lg border border-border px-3 py-2',
+            odd && i === items.length - 1 && 'col-span-2 sm:col-span-1'
+          )}
+        >
           <div className={cn('text-xl font-bold leading-none tabular-nums', s.cls)}>{s.value}</div>
-          <div className="mt-1 text-[10.5px] leading-tight text-muted-foreground">{s.label}</div>
-          {s.hint && <div className="text-[10px] leading-tight text-muted-foreground">{s.hint}</div>}
+          <div className="mt-1 text-[11px] leading-tight text-muted-foreground first-letter:uppercase">{s.label}</div>
+          {s.hint && <div className="mt-0.5 text-[11px] leading-tight text-muted-foreground">{s.hint}</div>}
         </div>
       ))}
     </div>
@@ -269,35 +289,44 @@ function Status({ status }) {
   );
 }
 
+// The header rule is an opaque grey: a translucent one doubles up where two cells meet,
+// leaving a dark tick at every column joint of the PDF
 function Table({ head, children, className }) {
   return (
-    <table className={cn('w-full border-collapse text-[12px]', className)}>
-      <thead>
-        <tr className="border-b border-foreground/50">
-          {head.map((h, i) => {
-            const label = typeof h === 'string' ? h : h.label;
-            const cls = typeof h === 'string' ? undefined : h.className;
-            return (
-              <th
-                key={i}
-                scope="col"
-                className={cn(
-                  'py-1.5 pe-3 text-start text-[10px] font-semibold uppercase tracking-wide text-muted-foreground',
-                  cls
-                )}
-              >
-                {label}
-              </th>
-            );
-          })}
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-border">{children}</tbody>
-    </table>
+    // A phone's preview is narrower than the paper: a wide table scrolls inside the sheet
+    // there instead of pushing the whole page sideways. Paper is always wider than sm, so
+    // the file never sees the scroller
+    <div className="max-sm:overflow-x-auto">
+      <table className={cn('w-full border-collapse text-[12px]', className)}>
+        <thead>
+          <tr className="border-b border-muted-foreground">
+            {head.map((h, i) => {
+              const label = typeof h === 'string' ? h : h.label;
+              const cls = typeof h === 'string' ? undefined : h.className;
+              return (
+                <th
+                  key={i}
+                  scope="col"
+                  className={cn(
+                    'py-1.5 pe-3 text-start align-bottom text-[11px] font-semibold uppercase tracking-wide text-muted-foreground last:pe-0',
+                    cls
+                  )}
+                >
+                  {label}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">{children}</tbody>
+      </table>
+    </div>
   );
 }
 
-const td = 'py-1.5 pe-3 align-top';
+// The last column ends flush with the table, under the heading's aside — no gutter left
+// after it
+const td = 'py-1.5 pe-3 align-top last:pe-0';
 const tdNum = `${td} whitespace-nowrap tabular-nums`;
 
 function MatalibGrid({ total, selected }) {
@@ -323,11 +352,11 @@ function MatalibGrid({ total, selected }) {
 
 function Signature({ label }) {
   return (
-    <div className="avoid-break mt-10 grid grid-cols-2 gap-8">
+    <div className="avoid-break mt-8 grid grid-cols-2 gap-8">
       <div />
       <div>
-        <div className="h-12 border-b border-foreground/50" />
-        <div className="mt-1 text-[10.5px] text-muted-foreground">{label}</div>
+        <div className="h-12 border-b border-muted-foreground" />
+        <div className="mt-1 text-[11px] text-muted-foreground">{label}</div>
       </div>
     </div>
   );
@@ -427,7 +456,9 @@ function SessionReport({ id, onReady, kindLabel }) {
         '#',
         t('member.name'),
         t('member.group'),
-        ...(showPaid ? [{ label: t('session.subscriptions'), className: 'text-end' }] : []),
+        // Figures end-aligned against a status that starts its column: a wider gutter
+        // between them, or the two headings read as one
+        ...(showPaid ? [{ label: t('session.subscriptions'), className: 'pe-6 text-end' }] : []),
         t('member.status'),
       ]}
     >
@@ -444,7 +475,7 @@ function SessionReport({ id, onReady, kindLabel }) {
           </td>
           <td className={cn(td, 'text-muted-foreground')}>{m.group_name || '—'}</td>
           {showPaid && (
-            <td className={cn(tdNum, 'w-24 text-end font-medium')}>
+            <td className={cn(tdNum, 'w-24 pe-6 text-end font-medium')}>
               {m.paid !== null && m.paid !== undefined ? fmtAmount(m.paid) : '—'}
             </td>
           )}
@@ -488,12 +519,9 @@ function SessionReport({ id, onReady, kindLabel }) {
         <Facts
           items={[
             [t('session.leader'), session.leader],
-            [t('session.fee'), session.fee !== null && session.fee !== undefined ? session.fee : null],
-            [
-              t('session.requirementsShort'),
-              session.matalib?.length ? session.matalib.join(' · ') : null,
-              true,
-            ],
+            // In francs, as the page and the roster's column show it
+            [t('session.fee'), session.fee !== null && session.fee !== undefined ? fmtAmount(session.fee) : null],
+            [t('session.requirementsShort'), session.matalib?.length ? session.matalib.join(listSep(lng)) : null],
             [
               t('print.linkedPrepCards'),
               session.prep_cards?.length ? session.prep_cards.map((c) => c.title).join(' · ') : null,
@@ -671,7 +699,7 @@ function MemberReport({ id, onReady, kindLabel }) {
             {t(m.status === 'active' ? 'member.active' : 'member.inactive')}
           </Tag>
           <Tag tone="neutral">
-            {m.age != null && `${m.age} ${t('common.years')} · `}
+            {m.age != null && `${t('common.age', { count: m.age })} · `}
             {t(m.sex === 'M' ? 'member.male' : 'member.female')}
           </Tag>
         </Tags>
@@ -811,7 +839,7 @@ function MemberReport({ id, onReady, kindLabel }) {
                 <td className={cn(tdNum, 'w-28 text-end font-medium')}>{fmtAmount(r.amount)}</td>
               </tr>
             ))}
-            <tr className="border-t border-foreground/50">
+            <tr className="border-t border-muted-foreground">
               <td className={cn(td, 'font-bold')} colSpan={2}>
                 {t('member.subscriptionsTotal')}
               </td>
@@ -939,7 +967,13 @@ function LeaderReport({ id, onReady, kindLabel }) {
 
       <H2 aside={card.total > 0 ? t('leader.cardProgress', { done: card.done_count, total: card.total }) : null}>
         {t('leader.card')}
-        {card.year ? ` · ${card.year}` : ''}
+        {/* Isolated, or after Arabic words the year range prints backwards (2026-2025) */}
+        {card.year && (
+          <>
+            {' · '}
+            <span dir="ltr">{card.year}</span>
+          </>
+        )}
       </H2>
       {card.total === 0 ? (
         <p className="text-muted-foreground">{t('leader.cardEmpty')}</p>
@@ -977,8 +1011,10 @@ function LeaderReport({ id, onReady, kindLabel }) {
           <Table head={[t('leader.year'), t('leader.role')]}>
             {byYear.map((g) => (
               <tr key={g.year}>
-                <td className={cn(tdNum, 'w-24 font-semibold')} dir="ltr">
-                  {g.year}
+                {/* The island inside the cell: on the cell itself it turned the column
+                    left-aligned in Arabic, the year running into the role */}
+                <td className={cn(tdNum, 'w-24 font-semibold')}>
+                  <span dir="ltr">{g.year}</span>
                 </td>
                 <td className={td}>{g.roles.map(roleLabel).join(' · ')}</td>
               </tr>
@@ -1036,7 +1072,8 @@ function LeaderReport({ id, onReady, kindLabel }) {
             t('member.branch'),
             t('session.role'),
             t('session.myPresence'),
-            { label: t('session.present'), className: 'text-end' },
+            // How many were there, not a status
+            { label: t('print.presentCount'), className: 'text-end' },
           ]}
         >
           {sessions.map((s) => (
@@ -1278,8 +1315,8 @@ function BranchReport({ id, onReady, kindLabel }) {
               <td className={cn(td, 'text-muted-foreground')}>
                 {s.animators?.length ? s.animators.map(memberName).join(' · ') : s.leader || '—'}
               </td>
-              <td className={cn(tdNum, 'text-muted-foreground')} dir="ltr">
-                {s.matalib?.length ? s.matalib.join(' ') : ''}
+              <td className={cn(tdNum, 'text-muted-foreground')}>
+                {s.matalib?.length ? s.matalib.join(listSep(lng)) : ''}
               </td>
               <td className={cn(tdNum, 'text-end text-success')}>{s.present.length}</td>
               <td className={cn(tdNum, 'text-end text-destructive')}>{s.absent.length}</td>
@@ -1371,7 +1408,7 @@ function PromotionsReport({ id, onReady, kindLabel }) {
         <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
       </Tags>
 
-      <H2 aside={list.length || null}>{t('promotion.pending')}</H2>
+      <H2>{t('promotion.pending')}</H2>
       {list.length === 0 ? (
         <p className="text-muted-foreground">{t('promotion.noPending')}</p>
       ) : (
@@ -1424,7 +1461,9 @@ function ListSheet({ kindLabel, title, count, head, rows, empty, signature = tru
         <Tag tone="neutral">{count}</Tag>
         <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
       </Tags>
-      <H2 aside={rows.length || null}>{kindLabel}</H2>
+      {/* The count is said once, with its noun, in the tag above — not again as a bare
+          figure at the end of the heading */}
+      <H2>{kindLabel}</H2>
       {rows.length === 0 ? (
         <p className="text-muted-foreground">{empty}</p>
       ) : (
@@ -1503,7 +1542,7 @@ function MembersListReport({ id, onReady, kindLabel }) {
                 <>
                   {/* LTR island: in an Arabic sheet the digit pairs would print reversed */}
                   <span dir="ltr">{fmtPhone(phone.number)}</span>
-                  {phone.mother && <span className="text-xs"> ({t('member.motherShort')})</span>}
+                  {phone.mother && <span className="text-[11px]"> ({t('member.motherShort')})</span>}
                 </>
               ) : (
                 '—'
@@ -1536,7 +1575,7 @@ function LeadersListReport({ onReady, kindLabel }) {
     <ListSheet
       kindLabel={kindLabel}
       title={title}
-      count={String(list.length)}
+      count={t('leader.totalShort', { count: list.length })}
       empty={t('leader.noLeaders')}
       head={[{ label: '#', className: 'w-8' }, t('member.name'), t('leader.role'), t('leader.phone')]}
       rows={list.map((l, i) => (
@@ -1583,7 +1622,7 @@ function SessionsListReport({ id, onReady, kindLabel }) {
     <ListSheet
       kindLabel={kindLabel}
       title={name}
-      count={String(list.length)}
+      count={t('session.monthCount', { count: list.length })}
       empty={t('session.noSessions')}
       signature={false}
       head={[
@@ -1630,7 +1669,7 @@ function PrepListReport({ id, onReady, kindLabel }) {
     <ListSheet
       kindLabel={kindLabel}
       title={title}
-      count={String(list.length)}
+      count={t('prep.resultCount', { count: list.length })}
       empty={t('prep.noCards')}
       signature={false}
       head={[
@@ -1668,12 +1707,18 @@ function PlanReport({ id, onReady, kindLabel }) {
   }, [title, onReady]);
 
   if (res.loading || branches.loading) return <SkeletonPage rows={6} />;
-  if (!b || !plan) return res.error && res.error.status !== 404 ? <LoadError onRetry={res.reload} /> : <NotFound />;
+  if (!b || !plan) return res.error && res.errorStatus !== 404 ? <LoadError onRetry={res.reload} /> : <NotFound />;
 
   return (
     <ListSheet
       kindLabel={kindLabel}
-      title={title}
+      // The year isolated on the sheet (after an Arabic name it would print backwards);
+      // the plain string still names the file
+      title={
+        <>
+          {branchName(b, lng)} — <span dir="ltr">{plan.year}</span>
+        </>
+      }
       count={`${plan.done_count}/${plan.total}${plan.rate !== null ? ` · ${plan.rate}%` : ''}${
         plan.validation ? ` · ${t('branch.planRespect')} ${plan.summary.respect ?? 0}%` : ` · ${t('branch.planDraftShort')}`
       }`}
@@ -1698,17 +1743,25 @@ function PlanReport({ id, onReady, kindLabel }) {
               <td className={cn(td, 'font-medium')}>
                 {item.title}
                 {item.changed && (
-                  <div className="text-xs font-normal text-muted-foreground">
+                  <div className="text-[11px] font-normal text-muted-foreground">
                     {t('branch.planWas')} {item.base.title}
                     {item.base.date !== item.date && ` · ${fmtDate(item.base.date)}`}
                   </div>
                 )}
                 {plan.validation && !item.base && (
-                  <div className="text-xs font-normal text-muted-foreground">{t('branch.planAdded')}</div>
+                  <div className="text-[11px] font-normal text-muted-foreground">{t('branch.planAdded')}</div>
                 )}
               </td>
-              <td className={cn(td, item.session ? 'text-success' : 'text-muted-foreground')}>
-                {item.session ? t('print.planDone', { date: fmtDate(item.session.date) }) : t('branch.planNotDone')}
+              {/* Done reads as on the فرقة report: a check in green, so it holds in black and white */}
+              <td className={td}>
+                {item.session ? (
+                  <span className="inline-flex items-center gap-1 font-semibold text-success">
+                    <Mark kind="check" />
+                    {t('print.planDone', { date: fmtDate(item.session.date) })}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">{t('branch.planNotDone')}</span>
+                )}
               </td>
             </tr>
           ) : (
@@ -1752,12 +1805,14 @@ function PrepReport({ id, onReady, kindLabel }) {
         {c.start_time && <Tag tone="neutral">{fmtTime(c.start_time)}</Tag>}
         {c.place && <Tag tone="neutral">{c.place}</Tag>}
       </Tags>
-      <Facts
-        items={[
-          [t('prep.author'), c.leader || '—'],
-          [t('prep.matalib'), (c.matalib || []).join('، ') || null],
-        ]}
-      />
+      <div className="mt-4">
+        <Facts
+          items={[
+            [t('prep.author'), c.leader || '—'],
+            [t('prep.matalib'), (c.matalib || []).join(listSep(lng)) || null],
+          ]}
+        />
+      </div>
       {texts.map(([key, v]) => (
         <div key={key}>
           <H2>{t(key)}</H2>
@@ -1808,11 +1863,11 @@ function DecisionState({ d, today }) {
 /** Two signature lines side by side: who chaired, who wrote it up */
 function Signatures({ labels }) {
   return (
-    <div className="avoid-break mt-10 grid grid-cols-2 gap-8">
+    <div className="avoid-break mt-8 grid grid-cols-2 gap-8">
       {labels.map((label) => (
         <div key={label}>
-          <div className="h-12 border-b border-foreground/50" />
-          <div className="mt-1 text-[10.5px] text-muted-foreground">{label}</div>
+          <div className="h-12 border-b border-muted-foreground" />
+          <div className="mt-1 text-[11px] text-muted-foreground">{label}</div>
         </div>
       ))}
     </div>
@@ -1862,7 +1917,7 @@ function MeetingReport({ id, onReady, kindLabel }) {
             </div>
           )}
         </td>
-        <td className={td}>{d.owner || '—'}</td>
+        <td className={cn(td, 'sm:whitespace-nowrap')}>{d.owner || '—'}</td>
         <td className={tdNum}>{d.due_date ? fmtDate(d.due_date) : '—'}</td>
         <td className={td}>
           <DecisionState d={d} today={today} />
@@ -1974,16 +2029,19 @@ function MeetingReport({ id, onReady, kindLabel }) {
           </p>
         </>
       )}
-      {m.next_date && (
-        <p className="avoid-break mt-5">
-          <span className="text-muted-foreground">{t('meeting.nextDate')}</span>{' '}
-          <span className="font-semibold">{fmtLongDate(m.next_date, lng)}</span>
-        </p>
-      )}
-
-      <Signatures
-        labels={[gendered(t, 'meeting.signChair', m.section), gendered(t, 'meeting.signSecretary', m.section)]}
-      />
+      {/* The closing of the minutes stays in one piece: the signatures never start a
+          page on their own */}
+      <div className="avoid-break">
+        {m.next_date && (
+          <p className="mt-5">
+            <span className="text-muted-foreground">{t('meeting.nextDate')}</span>{' '}
+            <span className="font-semibold">{fmtLongDate(m.next_date, lng)}</span>
+          </p>
+        )}
+        <Signatures
+          labels={[gendered(t, 'meeting.signChair', m.section), gendered(t, 'meeting.signSecretary', m.section)]}
+        />
+      </div>
     </Sheet>
   );
 }
@@ -2069,25 +2127,27 @@ function MeetingDecisionsReport({ onReady, kindLabel }) {
       count={t('meeting.decisionCount', { count: list.length })}
       empty={t(`meeting.noDecisions_${status}`)}
       signature={false}
+      // The columns of the minutes' own follow-up table, the meeting under each decision:
+      // a column of its own left every cell too narrow — names and titles broke anywhere
       head={[
         { label: '#', className: 'w-8' },
         t('meeting.decisionText'),
         t('meeting.owner'),
         t('meeting.dueDate'),
-        t('meeting.meetingCol'),
         t('meeting.status'),
       ]}
       rows={list.map((d, i) => (
         <tr key={d.id} className="avoid-break">
           <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
-          <td className={cn(td, 'font-medium', d.status === 'dropped' && 'text-muted-foreground line-through')}>
-            <bdi>{userText(d.text)}</bdi>
+          <td className={cn(td, 'font-medium', d.status === 'dropped' && 'text-muted-foreground')}>
+            <bdi className={d.status === 'dropped' ? 'line-through' : undefined}>{userText(d.text)}</bdi>
+            <div className="text-[11px] font-normal text-muted-foreground">
+              {t('meeting.fromMeeting', { date: fmtDate(d.meeting_date), title: userText(d.meeting_title) })}
+            </div>
           </td>
-          <td className={td}>{d.owner || '—'}</td>
+          {/* A name kept whole on paper; the phone preview, narrower, may wrap it */}
+          <td className={cn(td, 'sm:whitespace-nowrap')}>{d.owner || '—'}</td>
           <td className={tdNum}>{d.due_date ? fmtDate(d.due_date) : '—'}</td>
-          <td className={cn(td, 'text-muted-foreground')}>
-            <span className="tabular-nums">{fmtDate(d.meeting_date)}</span> · <bdi>{userText(d.meeting_title)}</bdi>
-          </td>
           <td className={td}>
             <DecisionState d={d} today={today} />
           </td>
@@ -2275,7 +2335,7 @@ function TreasuryReport({ onReady, kindLabel }) {
       )}
 
       {(showIn && income.length > 0) || (showOut && spent.length > 0) ? (
-        <div className={cn('grid gap-x-8', showIn && showOut && 'grid-cols-2')}>
+        <div className={cn('grid grid-cols-1 gap-x-8', showIn && showOut && 'sm:grid-cols-2')}>
           {showIn && income.length > 0 && (
             <div>
               <H2>{t('treasury.income')}</H2>
@@ -2364,7 +2424,7 @@ function TreasuryReport({ onReady, kindLabel }) {
                               <li key={x.key} className="flex items-baseline justify-between gap-3">
                                 <span className="min-w-0">
                                   {it.title}
-                                  {it.owed && <Tag tone="warning" className="ms-1.5 px-1.5 py-0 text-[10px]">{t('treasury.statusOwed')}</Tag>}
+                                  {it.owed && <Tag tone="warning" className="ms-1.5 px-1.5 py-0">{t('treasury.statusOwed')}</Tag>}
                                   {it.meta.length > 0 && <span className="text-muted-foreground"> · {it.meta.join(' · ')}</span>}
                                 </span>
                                 <Signed value={x.amount} direction={x.direction} muted className="shrink-0 font-medium" />
@@ -2377,7 +2437,7 @@ function TreasuryReport({ onReady, kindLabel }) {
                         <span dir="ltr" className={cn('font-semibold', tone.className)}>
                           {signed(r.result)}
                         </span>
-                        {!flow && <div className={cn('text-[10.5px] font-medium', tone.className)}>{t(tone.key)}</div>}
+                        {!flow && <div className={cn('text-[11px] font-medium', tone.className)}>{t(tone.key)}</div>}
                       </td>
                     </tr>
                   );

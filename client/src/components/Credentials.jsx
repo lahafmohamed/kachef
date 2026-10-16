@@ -22,13 +22,17 @@ export default function Credentials({ username, password, onClose, notice }) {
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">{notice || t('leader.accountPasswordOnce')}</p>
       <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-4" dir="ltr">
+        {/* A username runs to 32 characters: it wraps inside the card on a phone
+            rather than pushing past the dialog's edge */}
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-xs text-muted-foreground">{t('auth.username')}</span>
-          <span className="select-all font-medium">{username}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">{t('auth.username')}</span>
+          <span className="min-w-0 select-all break-all text-end font-medium">{username}</span>
         </div>
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-xs text-muted-foreground">{t('auth.password')}</span>
-          <span className="select-all font-mono text-lg font-semibold tracking-wide">{password}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">{t('auth.password')}</span>
+          <span className="min-w-0 select-all break-all text-end font-mono text-lg font-semibold tracking-wide">
+            {password}
+          </span>
         </div>
       </div>
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

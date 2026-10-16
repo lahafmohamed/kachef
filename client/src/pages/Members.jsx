@@ -86,10 +86,12 @@ const yearsSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) /
 /** Mixed scripts in one line («13 سنة · برية · Alghadir»): each part keeps its own direction. */
 // A short part stays whole: on two lines, «طليعة / الذئاب» read as two facts. A long
 // free-text one (a school, an address) may still break, rather than run off the row.
+// The dot is glued to the part before it (no-break space): a wrapped line ends on its
+// separator, like a comma, instead of the next one opening on a stray «·».
 function Parts({ parts }) {
   return parts.filter(Boolean).map((p, i) => (
     <span key={i}>
-      {i > 0 && ' · '}
+      {i > 0 && '\u00a0· '}
       <bdi className={String(p).length <= 24 ? 'whitespace-nowrap' : undefined}>{p}</bdi>
     </span>
   ));
@@ -110,7 +112,7 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
   const absences = !isChef && !inactive && a?.absences >= 3 ? a.absences : 0;
   const contacts = contactsOf(m);
   const primary = contacts[0];
-  const age = m.age != null ? `${m.age} ${t('common.years')}` : null;
+  const age = m.age != null ? t('common.age', { count: m.age }) : null;
   const branchLabel = isChef ? t('branch.leaders') : branchName(m, lang);
   // What tells two «Ali Ahmad» apart: école and quartier; for a قائد, their roles
   const details = isChef ? (m.roles || []).map((r) => r.title) : [m.school, m.address_abidjan];
@@ -215,7 +217,9 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
 
       <td className="hidden px-3 @4xl:table-cell">
         {contacts.length ? (
-          <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-0.5 whitespace-nowrap">
+          // The label column keeps a floor width: a قائد's number has no «الأب / الأم» in
+          // front of it, and still lines up with the numbers in the rows around it
+          <dl className="grid grid-cols-[minmax(2.75rem,auto)_1fr] items-baseline gap-x-2 gap-y-0.5 whitespace-nowrap">
             {contacts.slice(0, 2).map((c) => (
               <div key={c.who} className="contents">
                 <dt className="text-xs text-muted-foreground">{isChef ? '' : whoLabel(t, c.who)}</dt>
@@ -656,7 +660,7 @@ export default function Members() {
                   aria-pressed={on}
                   onClick={() => patch({ group: c.id })}
                   className={cn(
-                    'focus-ring inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium transition-colors sm:h-8 sm:px-3 sm:text-xs',
+                    'focus-ring inline-flex h-11 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium transition-colors sm:h-8 sm:px-3 sm:text-xs',
                     on
                       ? 'border-primary/30 bg-accent text-accent-foreground'
                       : 'border-border bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
@@ -677,7 +681,8 @@ export default function Members() {
             onClick={() => setFiltersOpen((v) => !v)}
             aria-expanded={filtersOpen}
             aria-controls="member-filters"
-            aria-label={t('member.moreFilters')}
+            // The count badge is part of what the button says
+            aria-label={filterCount > 0 ? `${t('member.moreFilters')} (${filterCount})` : t('member.moreFilters')}
             className="shrink-0 px-3"
           >
             <IconFilter />
@@ -707,7 +712,7 @@ export default function Members() {
 
         {filtersOpen && (
           <div id="member-filters" className="rounded-2xl border border-border bg-card p-4 shadow-xs">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {/* On phones the sort moves in here, off the crowded toolbar */}
               <div className="space-y-1.5 sm:hidden">
                 <Label>{t('member.sortBy')}</Label>
@@ -728,12 +733,12 @@ export default function Members() {
               </div>
               <div className="space-y-1.5">
                 <Label>{t('member.status')}</Label>
+                {/* min-h-10: the height of the selects beside it in the grid */}
                 <SegmentedControl
                   label={t('member.status')}
-                  size="sm"
                   value={status || 'active'}
                   onChange={(v) => patch({ status: v === 'active' ? '' : v })}
-                  className="flex w-full"
+                  className="flex w-full sm:min-h-10"
                   options={[
                     { value: 'active', label: t('member.active') },
                     { value: 'inactive', label: t('member.inactive') },
@@ -747,10 +752,9 @@ export default function Members() {
                 <Label>{t('member.attendance')}</Label>
                 <SegmentedControl
                   label={t('member.attendance')}
-                  size="sm"
                   value={f.follow ? 'follow' : 'all'}
                   onChange={(v) => patch({ follow: v === 'follow' ? '1' : '' })}
-                  className="flex w-full"
+                  className="flex w-full sm:min-h-10"
                   options={[
                     { value: 'all', label: t('member.statusAll') },
                     { value: 'follow', label: t('member.followOnly') },
@@ -876,6 +880,7 @@ export default function Members() {
               <div className="space-y-1.5">
                 <Label>{t('member.joinedBetween')}</Label>
                 <DateRangePicker
+                  block
                   value={{ from: f.joined_from, to: f.joined_to }}
                   onChange={({ from, to }) => patch({ joined_from: from, joined_to: to })}
                 />
@@ -889,7 +894,8 @@ export default function Members() {
               ) : (
                 <span />
               )}
-              <Button variant="outline" size="sm" onClick={() => setFiltersOpen(false)}>
+              {/* min-w: «تم» alone made a 37px-wide target on phones */}
+              <Button variant="outline" size="sm" onClick={() => setFiltersOpen(false)} className="min-w-20">
                 {t('common.done')}
               </Button>
             </div>
@@ -969,8 +975,9 @@ export default function Members() {
                 icon={<IconUsers className="h-6 w-6" />}
                 title={branchObj ? t('member.emptyIn', { name: scopeTitle }) : t('member.noMembers')}
                 action={
+                  // Outline: the header's «عنصر جديد» stays the one filled action on screen
                   canCreate && currentBranch !== 'leaders' ? (
-                    <Button variant="brand" onClick={() => setFormFor('new')}>
+                    <Button variant="outline" onClick={() => setFormFor('new')}>
                       <IconPlus />
                       {t('member.addMember')}
                     </Button>

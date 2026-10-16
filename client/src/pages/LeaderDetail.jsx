@@ -54,12 +54,14 @@ function ageOf(iso) {
 
 /**
  * Mixed scripts in one line: each part keeps its own direction. A short part also
- * stays whole, so a wrapped line breaks between two facts, never inside one.
+ * stays whole, so a wrapped line breaks between two facts, never inside one. The «·»
+ * holds on to the part before it (a no-break space), like a comma, so no wrapped line
+ * opens on a lone «·».
  */
 function Parts({ parts }) {
   return parts.filter(Boolean).map((p, i) => (
     <span key={i}>
-      {i > 0 && <span aria-hidden="true"> · </span>}
+      {i > 0 && <span aria-hidden="true">{'\u00a0· '}</span>}
       <bdi className={String(p).length <= 24 ? 'whitespace-nowrap' : undefined}>{p}</bdi>
     </span>
   ));
@@ -91,8 +93,8 @@ function Fact({ label, children, className }) {
 function FactGroup({ title, children }) {
   return (
     <section className="space-y-3 p-4 sm:p-5">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">{children}</dl>
+      <h2 className="text-sm font-semibold">{title}</h2>
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">{children}</dl>
     </section>
   );
 }
@@ -101,7 +103,7 @@ function FactGroup({ title, children }) {
 const isLeadersOnly = (s) => !s.branch_name_fr && !s.branch_name_ar;
 
 /** The أنشطة this قائد animated, grouped by month, newest first — each line opens its نشاط. */
-function ActivityList({ rows, lang, t }) {
+function ActivityList({ rows, lang, feminine, t }) {
   const months = [];
   for (const s of rows) {
     const key = s.date.slice(0, 7);
@@ -110,57 +112,73 @@ function ActivityList({ rows, lang, t }) {
   }
   return (
     <div>
-      {months.map(({ key, rows: mrows }) => (
-        <section key={key} aria-labelledby={`act-${key}`}>
-          <div className="flex items-baseline justify-between gap-3 border-y border-border bg-muted/40 px-4 py-1.5 first:border-t-0 sm:px-5">
-            <h3 id={`act-${key}`} className="text-xs font-semibold text-muted-foreground">
-              {fmtMonth(`${key}-01`, lang)}
-            </h3>
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {mrows.filter((s) => s.my_status === 'present').length}/{mrows.length}
-            </span>
-          </div>
-          <ul className="divide-y divide-border">
-            {mrows.map((s) => (
-              <li key={s.id}>
-                <Link
-                  to={`/sessions/${s.id}`}
-                  className="focus-ring flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40 sm:px-5"
-                >
-                  <span className="w-9 shrink-0 text-center">
-                    <span className="sr-only">{fmtDate(s.date)}</span>
-                    <span aria-hidden="true" className="block text-lg font-semibold leading-none tabular-nums">
-                      {Number(s.date.slice(8, 10))}
-                    </span>
-                    <span aria-hidden="true" className="mt-0.5 block text-[0.6875rem] text-muted-foreground">
-                      {fmtWeekday(s.date, lang)}
-                    </span>
+      {months.map(({ key, rows: mrows }) => {
+        // As in the figures above: marked أنشطة only — an unmarked one says nothing yet
+        const present = mrows.filter((s) => s.my_status === 'present').length;
+        const marked = mrows.filter((s) => s.my_status).length;
+        return (
+          <section key={key} aria-labelledby={`act-${key}`}>
+            <div className="flex items-baseline justify-between gap-3 border-y border-border bg-muted/40 px-4 py-1.5 first:border-t-0 sm:px-5">
+              <h2 id={`act-${key}`} className="text-xs font-semibold text-muted-foreground">
+                {fmtMonth(`${key}-01`, lang)}
+              </h2>
+              {marked > 0 && (
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  <span aria-hidden="true">
+                    {present}/{marked}
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{s.title}</span>
-                    <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                      <Parts
-                        parts={[
-                          isLeadersOnly(s) ? t('session.kindLeaders') : branchName(s, lang),
-                          t(s.role === 'main' ? 'session.mainAnimator' : 'session.helper'),
-                          s.present_count > 0 && `${s.present_count} ${t('session.present')}`,
-                        ]}
-                      />
+                  <span className="sr-only">{t('leader.monthPresence', { present, marked })}</span>
+                </span>
+              )}
+            </div>
+            <ul className="divide-y divide-border">
+              {mrows.map((s) => (
+                <li key={s.id}>
+                  <Link
+                    to={`/sessions/${s.id}`}
+                    className="focus-ring flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40 sm:px-5"
+                  >
+                    <span className="w-9 shrink-0 text-center">
+                      <span className="sr-only">{fmtDate(s.date)}</span>
+                      <span aria-hidden="true" className="block text-lg font-semibold leading-none tabular-nums">
+                        {Number(s.date.slice(8, 10))}
+                      </span>
+                      <span aria-hidden="true" className="mt-0.5 block text-[0.6875rem] text-muted-foreground">
+                        {fmtWeekday(s.date, lang)}
+                      </span>
                     </span>
-                  </span>
-                  {s.my_status ? (
-                    <Badge variant={s.my_status === 'present' ? 'success' : 'destructive'} className="shrink-0">
-                      {t(s.my_status === 'present' ? 'session.present' : 'session.absent')}
-                    </Badge>
-                  ) : (
-                    <span className="shrink-0 text-xs text-muted-foreground">—</span>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{s.title}</span>
+                      <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        <Parts
+                          parts={[
+                            isLeadersOnly(s) ? t('session.kindLeaders') : branchName(s, lang),
+                            t(s.role === 'main' ? 'session.mainAnimator' : 'session.helper'),
+                            s.present_count > 0 &&
+                              t(feminine ? ['meeting.presentCountF', 'meeting.presentCount'] : 'meeting.presentCount', {
+                                count: s.present_count,
+                              }),
+                          ]}
+                        />
+                      </span>
+                    </span>
+                    {s.my_status ? (
+                      <Badge variant={s.my_status === 'present' ? 'success' : 'destructive'} className="shrink-0">
+                        {t(s.my_status === 'present' ? 'session.present' : 'session.absent')}
+                      </Badge>
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        <span aria-hidden="true">—</span>
+                        <span className="sr-only">{t('session.unmarked')}</span>
+                      </span>
+                    )}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -255,7 +273,7 @@ function ProgressCard({ card, years, canEdit, onYear, onToggle, t }) {
 function CourseLadder({ courses, t }) {
   const have = new Set(courses);
   return (
-    <ol className="grid gap-2 sm:grid-cols-5">
+    <ol className="grid grid-cols-1 gap-2 sm:grid-cols-5">
       {TRAINING_COURSES.map((c, i) => {
         const on = have.has(c);
         return (
@@ -320,6 +338,7 @@ export default function LeaderDetail() {
     setData: setLeader,
     loading,
     error,
+    errorStatus,
     reload,
   } = useFetch(`/leaders/${id}${cardYear ? `?year=${encodeURIComponent(cardYear)}` : ''}`);
   const events = useFetch(`/leaders/${id}/events`, { skip: !canEvents });
@@ -339,6 +358,22 @@ export default function LeaderDetail() {
   }
 
   if (loading && !leader) return <SkeletonPage rows={4} />;
+  // A قائد that is not there to show — an old link, or one outside this account's قسم
+  // (404 / 403): no retry brings him back, the way out does
+  if (errorStatus === 404 || errorStatus === 403)
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+          <IconBack className="rtl:rotate-180" />
+          {t('leader.leadersList')}
+        </Button>
+        <Card>
+          <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+            {t('error.notFoundBody')}
+          </EmptyState>
+        </Card>
+      </div>
+    );
   if (error)
     return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
 
@@ -403,7 +438,7 @@ export default function LeaderDetail() {
                 <Parts
                   parts={[
                     ...(roles.length ? roles.map((r) => r.title) : [t('leader.noRole')]),
-                    age != null && `${age} ${t('common.years')}`,
+                    age != null && t('common.age', { count: age }),
                     leader.join_year && t('leader.since', { year: leader.join_year }),
                   ]}
                 />
@@ -415,7 +450,7 @@ export default function LeaderDetail() {
 
         {/* One tile per number: a قائد's phone field sometimes holds two */}
         {phones.length > 0 && (
-          <ul className="grid gap-2 sm:flex sm:flex-wrap">
+          <ul className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
             {phones.map((n) => (
               <li key={n} className="flex min-w-0 gap-2">
                 <a
@@ -456,16 +491,20 @@ export default function LeaderDetail() {
         <Stat label={t('leader.colActivities')}>
           <p className="text-2xl font-bold tabular-nums">{leader.sessions.length}</p>
           <p className="text-xs text-muted-foreground">
-            {led > 0 ? t('leader.ledShort', { count: led }) : t('leader.noActivities')}
+            {/* «none yet» only when there is none at all: one he only helped in still counts */}
+            {leader.sessions.length > 0 ? t('leader.ledShort', { count: led }) : t('leader.noActivities')}
           </p>
         </Stat>
         <Stat label={t('leader.colService')}>
-          <p className="text-2xl font-bold tabular-nums">
-            {leader.years_ghadir ?? '—'}
-            {leader.years_ghadir != null && (
-              <span className="text-base font-medium text-muted-foreground"> {t('common.years')}</span>
-            )}
-          </p>
+          {/* Not filled in: the same muted «—» as an empty بطاقة or présence */}
+          {leader.years_ghadir != null ? (
+            <p className="text-2xl font-bold tabular-nums">
+              {leader.years_ghadir}
+              <span className="text-base font-medium text-muted-foreground"> {t('common.yearsUnit', { count: leader.years_ghadir })}</span>
+            </p>
+          ) : (
+            <p className="text-2xl font-bold text-muted-foreground">—</p>
+          )}
           <p className="text-xs text-muted-foreground">
             {leader.years_total > leader.years_ghadir
               ? t('leader.totalShort', { count: leader.years_total })
@@ -519,9 +558,11 @@ export default function LeaderDetail() {
             <>
               <Card className="overflow-hidden">
                 {leader.sessions.length === 0 ? (
-                  <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noActivities')} />
+                  <EmptyState icon={<IconShield className="h-6 w-6" />} title={t('leader.noActivities')}>
+                    {t('leader.noActivitiesHint')}
+                  </EmptyState>
                 ) : (
-                  <ActivityList rows={leader.sessions} lang={lang} t={t} />
+                  <ActivityList rows={leader.sessions} lang={lang} feminine={isFeminine(leader.section)} t={t} />
                 )}
               </Card>
 
@@ -548,9 +589,20 @@ export default function LeaderDetail() {
                               parts={[
                                 branchName(v, lang),
                                 t(v.role === 'main' ? 'session.mainAnimator' : 'session.helper'),
-                                v.members?.length > 0 && v.members.map(memberName).join(t('member.listSep')),
                               ]}
                             />
+                            {/* The عناصر visited: a long list wraps between two names, never inside one */}
+                            {v.members?.length > 0 && (
+                              <>
+                                <span aria-hidden="true">{'\u00a0· '}</span>
+                                {v.members.map((m, i) => (
+                                  <span key={m.id}>
+                                    {i > 0 && t('member.listSep')}
+                                    <bdi className="whitespace-nowrap">{memberName(m)}</bdi>
+                                  </span>
+                                ))}
+                              </>
+                            )}
                           </span>
                         </Link>
                       </li>
@@ -579,7 +631,7 @@ export default function LeaderDetail() {
                   {leader.birth_date && (
                     <span className="tabular-nums">
                       {fmtDate(leader.birth_date)}
-                      {age != null && ` · ${age} ${t('common.years')}`}
+                      {age != null && ` · ${t('common.age', { count: age })}`}
                     </span>
                   )}
                 </Fact>
@@ -602,7 +654,7 @@ export default function LeaderDetail() {
                 <Fact label={t('leader.education')}>{leader.education}</Fact>
               </FactGroup>
               <section className="space-y-3 p-4 sm:p-5">
-                <h3 className="text-sm font-semibold">{t('leader.trainingLevel')}</h3>
+                <h2 className="text-sm font-semibold">{t('leader.trainingLevel')}</h2>
                 <CourseLadder courses={leader.training_level || []} t={t} />
               </section>
             </Card>

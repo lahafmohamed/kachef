@@ -14,13 +14,16 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  cn,
   Dialog,
+  EmptyState,
   ErrorState,
   SkeletonPage,
   useConfirm,
   useToast,
   IconBack,
   IconCalendar,
+  IconClipboard,
   IconClock,
   IconPencil,
   IconPin,
@@ -31,6 +34,13 @@ import {
 // created_at / updated_at are UTC "YYYY-MM-DD HH:MM:SS" — show the local date
 const stampDate = (v) => (v ? fmtDate(v.slice(0, 10)) : '');
 
+// «Label : value» — French puts a no-break space before the colon, Arabic none
+const colon = (lng) => (lng === 'fr' ? '\u00a0: ' : ': ');
+
+// On a phone, an invisible margin makes a text-sized link a 44px target; pointer
+// screens keep the text's own box
+const TAP = 'relative max-sm:after:absolute max-sm:after:-inset-x-1 max-sm:after:-inset-y-3';
+
 /**
  * بطاقة تحضير واحدة كما كتبها القائد: الترويسة (العنوان، الزمان، المكان، الفرقة،
  * المُعدّ، المطالب) ثم الأقسام النصية — قسمٌ فارغ لا يُعرض. التعديل مفتوح في أي
@@ -39,6 +49,7 @@ const stampDate = (v) => (v ? fmtDate(v.slice(0, 10)) : '');
 export default function PrepCardDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
+  const lng = i18n.language;
   const navigate = useNavigate();
   const back = useBack('/prep-cards');
   const toast = useToast();
@@ -47,7 +58,7 @@ export default function PrepCardDetail() {
   const editable = has('prep.manage');
   const canDelete = has('prep.delete');
 
-  const { data: card, setData: setCard, loading, error, reload } = useFetch(`/prep-cards/${id}`);
+  const { data: card, setData: setCard, loading, error, errorStatus, reload } = useFetch(`/prep-cards/${id}`);
   const [editing, setEditing] = useState(false);
   const branches = useFetch('/branches', { skip: !editable });
   const leaders = useFetch('/leaders', { skip: !editable });
@@ -63,9 +74,33 @@ export default function PrepCardDetail() {
     }
   }
 
+  const backButton = (
+    <Button variant="ghost" size="sm" onClick={back} className="-ms-2 me-auto">
+      <IconBack className="rtl:rotate-180" />
+      {t('common.back')}
+    </Button>
+  );
+
   if (loading) return <SkeletonPage rows={4} />;
+  // The way back stays above the error: an installed app has no browser «back». A card
+  // that is gone says so — «check your connection» and a retry would lead nowhere
   if (error)
-    return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
+    return (
+      <div className="space-y-4">
+        <div className="flex">{backButton}</div>
+        {/* A card deleted since the link was shared, or outside this account's قسم (the
+            server's 404 / 403): no retry brings it back */}
+        {errorStatus === 404 || errorStatus === 403 ? (
+          <Card>
+            <EmptyState icon={<IconClipboard className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+              {t('error.notFoundBody')}
+            </EmptyState>
+          </Card>
+        ) : (
+          <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
+        )}
+      </div>
+    );
 
   const sections = [
     ['goals', 'prep.goals'],
@@ -74,16 +109,21 @@ export default function PrepCardDetail() {
     ['notes', 'prep.notes'],
   ].filter(([key]) => card[key]);
 
+  // سطر الأرشيف: من أنشأها و متى، و آخر تعديل إن اختلف
+  const stamp = [
+    card.created_by && t('prep.createdBy', { name: card.created_by, date: stampDate(card.created_at) }),
+    card.updated_at !== card.created_at && t('prep.updatedAt', { date: stampDate(card.updated_at) }),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
     <div className="space-y-4">
       {/* Phones: back and the icon-only actions share one line, and «create the
           activity» — the card's next step — gets a full-width line of its own under
           them instead of wrapping the header into three ragged rows */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={back} className="-ms-2 me-auto">
-          <IconBack className="rtl:rotate-180" />
-          {t('common.back')}
-        </Button>
+        {backButton}
         {/* البطاقة كُتبت قبل النشاط: من هنا يُنشأ النشاط مملوءًا منها و مربوطًا بها */}
         {editable && !card.session_id && (
           <Button
@@ -129,7 +169,11 @@ export default function PrepCardDetail() {
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {t('prep.cardLabel')}
           </p>
-          <h1 className="mt-1 text-lg font-bold tracking-tight sm:text-xl">{card.title}</h1>
+          {/* <bdi>: an Arabic title keeps its letter order on the French screen (a Latin one
+              on the Arabic screen) and stays aligned with the page */}
+          <h1 className="mt-1 text-xl font-bold tracking-tight [overflow-wrap:anywhere] sm:text-2xl">
+            <bdi>{card.title}</bdi>
+          </h1>
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
             <span className="flex items-center gap-1.5 tabular-nums">
               <IconCalendar className="h-4 w-4 text-muted-foreground" />
@@ -143,78 +187,87 @@ export default function PrepCardDetail() {
             )}
             {card.place && (
               <span className="flex items-center gap-1.5">
-                <IconPin className="h-4 w-4 text-muted-foreground" />
-                {card.place}
+                <IconPin className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <bdi>{card.place}</bdi>
               </span>
             )}
             <span className="flex items-center gap-1.5">
               <IconShield className="h-4 w-4 text-muted-foreground" />
-              <Badge>{branchName(card, i18n.language)}</Badge>
+              <Badge>{branchName(card, lng)}</Badge>
             </span>
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-            {card.leader && (
-              <span className="text-sm text-muted-foreground">
-                {t('prep.author')}:{' '}
-                {card.leader_id ? (
-                  <Link
-                    to={`/leaders/${card.leader_id}`}
-                    className="focus-ring rounded font-medium text-foreground hover:text-primary hover:underline"
-                  >
-                    {card.leader}
-                  </Link>
-                ) : (
-                  <span className="font-medium text-foreground">{card.leader}</span>
-                )}
-              </span>
-            )}
-            {/* النشاط الذي حُضِّرت له — يفتح صفحته مباشرة */}
-            {card.session_id && (
-              <span className="text-sm text-muted-foreground">
-                {t('prep.session')}:{' '}
+          {card.leader && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              {t('prep.author')}
+              {colon(lng)}
+              {card.leader_id ? (
                 <Link
-                  to={`/sessions/${card.session_id}`}
-                  className="focus-ring rounded font-medium text-foreground hover:text-primary hover:underline"
+                  to={`/leaders/${card.leader_id}`}
+                  className={cn('focus-ring rounded font-medium text-foreground hover:text-primary hover:underline', TAP)}
                 >
-                  {card.session_title}
+                  <bdi>{card.leader}</bdi>
                 </Link>
-              </span>
-            )}
-          </div>
+              ) : (
+                <bdi className="font-medium text-foreground">{card.leader}</bdi>
+              )}
+            </p>
+          )}
           {card.matalib.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <span className="text-sm text-muted-foreground">{t('prep.matalib')}:</span>
+              <span className="text-sm text-muted-foreground">
+                {t('prep.matalib')}
+                {colon(lng)}
+              </span>
               {card.matalib.map((n) => (
-                <Badge key={n} variant="warning">
+                <Badge key={n} variant="warning" className="tabular-nums">
                   {n}
                 </Badge>
               ))}
             </div>
           )}
+          {/* النشاط الذي حُضِّرت له — the same chip the نشاط shows for its card, so the link
+              reads alike both ways, and a 44px target on a phone */}
+          {card.session_id && (
+            <Link
+              to={`/sessions/${card.session_id}`}
+              className="focus-ring mt-4 flex min-h-11 w-fit max-w-full items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
+            >
+              <IconCalendar className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                {t('prep.session')}
+                {colon(lng)}
+                <bdi>{card.session_title}</bdi>
+              </span>
+            </Link>
+          )}
         </CardContent>
       </Card>
 
-      {sections.map(([key, labelKey]) => (
-        <Card key={key}>
-          <CardHeader>
-            <CardTitle>{t(labelKey)}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* anywhere: one pasted link must not push the page past a phone's edge */}
-            <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">{card[key]}</p>
-          </CardContent>
+      {sections.length > 0 ? (
+        sections.map(([key, labelKey]) => (
+          <Card key={key}>
+            <CardHeader>
+              <CardTitle>{t(labelKey)}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* auto: Arabic text keeps its own direction on the French screen, and vice
+                  versa; anywhere: one pasted link must not push the page past a phone's edge */}
+              <p dir="auto" className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
+                {card[key]}
+              </p>
+            </CardContent>
+          </Card>
+        ))
+      ) : (
+        // Every section is optional: a card saved with its heading alone says what comes here
+        <Card>
+          <EmptyState icon={<IconClipboard className="h-6 w-6" />} title={t('prep.emptyCard')}>
+            {t('prep.emptyCardHint')}
+          </EmptyState>
         </Card>
-      ))}
+      )}
 
-      {/* سطر الأرشيف: من أنشأها و متى، و آخر تعديل إن اختلف */}
-      <p className="text-xs text-muted-foreground">
-        {[
-          card.created_by && t('prep.createdBy', { name: card.created_by, date: stampDate(card.created_at) }),
-          card.updated_at !== card.created_at && t('prep.updatedAt', { date: stampDate(card.updated_at) }),
-        ]
-          .filter(Boolean)
-          .join(' · ')}
-      </p>
+      {stamp && <p className="text-xs text-muted-foreground">{stamp}</p>}
 
       <Dialog open={editing} onClose={() => setEditing(false)} title={t('prep.editCard')}>
         {branches.error || leaders.error ? (

@@ -87,6 +87,14 @@ const attendanceError = (t, err) =>
       ? t('session.forbiddenFees')
       : err.message;
 
+// «label : value» — French spaces its colon (kept on its word), Arabic writes it close,
+// as the locale strings do («آخر تعديل:»)
+const colon = (lng) => (lng === 'fr' ? '\u00a0: ' : ': ');
+
+// On a phone, an invisible margin makes a text-sized link or button a 44px target;
+// pointer screens keep the text's own box
+const TAP = 'relative max-sm:after:absolute max-sm:after:-inset-x-1 max-sm:after:-inset-y-3';
+
 /** Read-only rendering of a présence status for view-only accounts. */
 function StatusBadge({ status, t }) {
   const s = MEMBER_STATUSES.find((x) => x.value === status);
@@ -184,7 +192,8 @@ function GroupCountsCard({ session, editable, onSaved }) {
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
           <span className="text-sm font-medium">
-            {t('session.totalAttendance')} :{' '}
+            {t('session.totalAttendance')}
+            {colon(i18n.language)}
             <span className="tabular-nums">{membersTotal + (Number(leadersCount) || 0)}</span>
           </span>
           {editable && (
@@ -307,7 +316,7 @@ export default function SessionDetail() {
   // Photos and files, and deleting the نشاط: rights of their own
   const canFiles = has('sessions.files');
   const canDelete = has('sessions.delete');
-  const { data: session, setData: setSession, loading, error, reload } = useFetch(`/sessions/${id}`);
+  const { data: session, setData: setSession, loading, error, errorStatus, reload } = useFetch(`/sessions/${id}`);
   // This account just changed the séance: the header's «last change» says so without
   // reading the whole page back (the tap paths patch it locally, the others reload)
   const touched = (patch = {}) =>
@@ -501,7 +510,8 @@ export default function SessionDetail() {
     if (
       !(await confirm({
         title: t('session.markAllPresent'),
-        message: t('session.markAllConfirm', { count: unmarked.length }),
+        // قادة, not عناصر: the roster's own sentence named children here
+        message: t('session.markLeadersConfirm', { count: unmarked.length }),
         destructive: false,
         confirmLabel: t('session.markAllPresent'),
       }))
@@ -583,8 +593,30 @@ export default function SessionDetail() {
   }
 
   if (loading) return <SkeletonPage rows={6} />;
+  // The way back stays above the error: an installed app has no browser «back». A نشاط
+  // that is gone says so — «check your connection» and a retry would lead nowhere.
   if (error)
-    return <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />;
+    return (
+      <div className="space-y-4">
+        <div className="flex">
+          <Button variant="ghost" size="sm" onClick={back} className="-ms-2">
+            <IconBack className="rtl:rotate-180" />
+            {t('common.back')}
+          </Button>
+        </div>
+        {/* A نشاط deleted since the link was shared, or out of this account's reach: no retry
+            brings it back (a 404 / 403 on /sessions/:id) */}
+        {errorStatus === 404 || errorStatus === 403 ? (
+          <Card>
+            <EmptyState icon={<IconCalendar className="h-6 w-6" />} title={t('error.notFoundTitle')}>
+              {t('error.notFoundBody')}
+            </EmptyState>
+          </Card>
+        ) : (
+          <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
+        )}
+      </div>
+    );
 
   // مالية النشاط، لمن يرى مبالغه أو الصندوق: اشتراكاته و تبرعاته و مصاريفه في تبويب
   // خاصّ بها. من لا يراها لا تبويب له أصلًا، فالصفحة هي الحضور وحده كما كانت.
@@ -900,12 +932,16 @@ export default function SessionDetail() {
           ))}
           {session.matalib.length > 0 && (
             <Badge variant="warning">
-              {t('session.requirementsShort')} : {session.matalib.join('، ')}
+              {t('session.requirementsShort')}
+              {colon(i18n.language)}
+              {session.matalib.join(t('member.listSep'))}
             </Badge>
           )}
         </div>
         {(session.leader || session.fee !== null || money?.any || evalPending || evaluation?.count > 0) && (
-          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+          // A text-sized link or button is a 20px target: on a phone each reaches 44px
+          // through an invisible margin (TAP), the rows a little apart so they do not meet
+          <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm sm:gap-y-1">
             {session.leader && (
               <div className="flex gap-1.5">
                 <dt className="text-muted-foreground">{t('session.leader')}</dt>
@@ -913,7 +949,7 @@ export default function SessionDetail() {
                   {session.leader_id ? (
                     <Link
                       to={`/leaders/${session.leader_id}`}
-                      className="focus-ring rounded font-medium hover:text-primary hover:underline"
+                      className={cn('focus-ring rounded font-medium hover:text-primary hover:underline', TAP)}
                     >
                       {session.leader}
                     </Link>
@@ -937,7 +973,7 @@ export default function SessionDetail() {
                   <button
                     type="button"
                     onClick={() => setTab('money')}
-                    className={cn('focus-ring rounded font-semibold tabular-nums hover:underline', moneyTone.className)}
+                    className={cn('focus-ring rounded font-semibold tabular-nums hover:underline', TAP, moneyTone.className)}
                   >
                     <span dir="ltr">{signed(money.result)}</span>
                   </button>
@@ -955,6 +991,7 @@ export default function SessionDetail() {
                     onClick={() => setTab('eval')}
                     className={cn(
                       'focus-ring rounded font-semibold tabular-nums hover:underline',
+                      TAP,
                       evalPending ? 'text-primary' : scoreTone(evaluation.average).text
                     )}
                   >
@@ -974,22 +1011,28 @@ export default function SessionDetail() {
           <button
             type="button"
             onClick={() => setTab('history')}
-            className="focus-ring -my-1 block rounded py-1 text-start text-xs leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+            // 44px tall on a phone without moving the text; each fact wraps whole —
+            // «… · آخر تعديل: Admin، قبل ساعة» no longer leaves «واحدة» on a line alone
+            className="focus-ring -my-3 block rounded py-3 text-start text-xs leading-relaxed text-muted-foreground transition-colors hover:text-foreground sm:-my-1 sm:py-1"
           >
             {session.created_by && (
-              <Trans
-                i18nKey={session.created_at ? 'history.createdBy' : 'history.createdByOnly'}
-                values={{ name: session.created_by, date: session.created_at && fmtAtDate(session.created_at) }}
-                components={{ b: <bdi className="font-medium text-foreground" /> }}
-              />
+              <span className="inline-block">
+                <Trans
+                  i18nKey={session.created_at ? 'history.createdBy' : 'history.createdByOnly'}
+                  values={{ name: session.created_by, date: session.created_at && fmtAtDate(session.created_at) }}
+                  components={{ b: <bdi className="font-medium text-foreground" /> }}
+                />
+              </span>
             )}
             {session.created_by && session.last_change && <span aria-hidden="true"> · </span>}
             {session.last_change && (
-              <Trans
-                i18nKey="history.lastChange"
-                values={{ name: session.last_change.actor, when: fmtWhen(session.last_change.at, i18n.language, t) }}
-                components={{ b: <bdi className="font-medium text-foreground" /> }}
-              />
+              <span className="inline-block">
+                <Trans
+                  i18nKey="history.lastChange"
+                  values={{ name: session.last_change.actor, when: fmtWhen(session.last_change.at, i18n.language, t) }}
+                  components={{ b: <bdi className="font-medium text-foreground" /> }}
+                />
+              </span>
             )}
           </button>
         )}
@@ -1005,7 +1048,11 @@ export default function SessionDetail() {
               className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
             >
               <IconClipboard className="h-3.5 w-3.5" />
-              {t('prep.cardLabel')} : {c.title}
+              <span>
+                {t('prep.cardLabel')}
+                {colon(i18n.language)}
+                <bdi>{c.title}</bdi>
+              </span>
             </Link>
           ))}
         </div>
@@ -1036,7 +1083,8 @@ export default function SessionDetail() {
                   },
                 ]
               : []),
-            { id: 'files', label: fileCount ? `${t('session.tabFiles')} · ${fileCount}` : t('session.tabFiles') },
+            // Counted like the evaluation tab beside it: the same pill, not «· 3»
+            { id: 'files', label: t('session.tabFiles'), count: fileCount || null },
             { id: 'history', label: t('session.tabHistory') },
           ]}
           value={tab}
@@ -1490,9 +1538,11 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
         </div>
       )}
       {/* الاشتراك الشهري: بعد خانة النشاط من sm، و في الهاتف آخر سطر الحضور — سطر الاسم
-          لا يتّسع لـ«لم يدفع» و للخانتين معًا */}
+          لا يتّسع لـ«لم يدفع» و للخانتين معًا. On a phone wide enough, its slot is as
+          wide as its widest chip (a part paid, «1 000»): every row's présence control
+          is then the same width, its three choices one under the other down the list */}
       {m.dues && (
-        <div className="shrink-0 max-sm:order-last">
+        <div className="flex shrink-0 justify-end max-sm:order-last min-[380px]:max-sm:min-w-19">
           <DuesChip m={m} month={duesMonth} editable={duesEditable} onOpen={() => onDues(m.id)} />
         </div>
       )}

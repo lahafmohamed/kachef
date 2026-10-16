@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
@@ -47,15 +47,16 @@ function MoneyMeter({ e, t }) {
     return <p className="text-xs text-muted-foreground">{t(e.fee ? 'event.noPaymentsYet' : 'event.free')}</p>;
   const pct = e.expected ? Math.min(100, Math.round((100 * e.collected) / e.expected)) : null;
   const balance = e.collected + e.donations + (e.funded || 0) - e.expenses;
+  // A cut amount is a wrong one: the line wraps between the figures, each kept whole
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="truncate text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t('event.collected')}{' '}
-          <span className="font-medium tabular-nums text-foreground">
+          <span className="whitespace-nowrap font-medium tabular-nums text-foreground">
             {fmtAmount(e.collected, { unit: !(e.expected > 0) })}
           </span>
-          {e.expected > 0 && <span className="tabular-nums"> / {fmtAmount(e.expected)}</span>}
+          {e.expected > 0 && <span className="whitespace-nowrap tabular-nums"> / {fmtAmount(e.expected)}</span>}
         </p>
         {pct !== null && <span className="text-sm font-semibold tabular-nums">{pct}%</span>}
       </div>
@@ -67,7 +68,10 @@ function MoneyMeter({ e, t }) {
       {(e.expenses > 0 || e.donations > 0 || !!e.funded) && (
         <p className="text-xs text-muted-foreground">
           {t('event.balance')}{' '}
-          <span dir="ltr" className={cn('font-medium tabular-nums', balance < 0 ? 'text-destructive' : 'text-success')}>
+          <span
+            dir="ltr"
+            className={cn('whitespace-nowrap font-medium tabular-nums', balance < 0 ? 'text-destructive' : 'text-success')}
+          >
             {signed(balance)}
           </span>
         </p>
@@ -105,8 +109,10 @@ function EvalBadge({ e, t, lang }) {
 
 function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
   const days = dayNumber(e, e.end_date);
+  // The dates first, always there: digits only, so they stay un-isolated below
   const meta = [
-    `${fmtDateRange(e.start_date, e.end_date)}${days > 1 ? ` · ${t('event.dayCount', { count: days })}` : ''}`,
+    fmtDateRange(e.start_date, e.end_date),
+    days > 1 && t('event.dayCount', { count: days }),
     e.place,
     e.leader_name,
   ].filter(Boolean);
@@ -131,17 +137,38 @@ function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
 
         <div className="min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-semibold group-hover:text-primary">{e.title}</span>
+            <span className="min-w-0 font-semibold [overflow-wrap:anywhere] group-hover:text-primary">
+              <bdi>{e.title}</bdi>
+            </span>
             <Badge variant={KIND_BADGE[e.kind]}>{t(`event.kind_${e.kind}`)}</Badge>
           </div>
-          {/* Wraps on a phone, where a cut place name is a lost one; one line from sm up */}
+          {/* Wraps on a phone, where a cut place name is a lost one; one line from sm up.
+              A short fact stays whole and the dot holds on to the fact before it, like a
+              comma (no-break space), so the line breaks between two facts and never opens
+              on a lone «·». The
+              place and the قائد keep their own direction (an Arabic name on the French
+              screen); the dates stay in the line's, so the first day leads on both. */}
           <p className="text-sm text-muted-foreground sm:truncate" title={meta.join(' · ')}>
-            {meta.join(' · ')}
+            {meta.map((m, i) => (
+              <Fragment key={i}>
+                {i > 0 && '\u00a0· '}
+                {i === 0 ? (
+                  <span className="whitespace-nowrap tabular-nums">{m}</span>
+                ) : (
+                  <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+                )}
+              </Fragment>
+            ))}
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
             {bothSections && <Badge variant={isFeminine(e.section) ? 'info' : 'outline'}>{t(`section.${e.section}`)}</Badge>}
             {named.length ? (
-              named.map((b) => <Badge key={b.id}>{b.label}</Badge>)
+              // A فرقة with its طلائع can outgrow a phone row: it wraps inside the badge
+              named.map((b) => (
+                <Badge key={b.id} className="max-w-full whitespace-normal">
+                  {b.label}
+                </Badge>
+              ))
             ) : (
               <Badge variant="secondary">{t('event.wholeGroup')}</Badge>
             )}

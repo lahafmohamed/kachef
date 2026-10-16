@@ -86,8 +86,11 @@ function LanguageSwitch({ className }) {
             lang={code}
             aria-pressed={active}
             onClick={() => i18n.changeLanguage(code)}
+            // Phones: the hit area takes in the pill's padding above and below,
+            // 44px tall like every other touch target, while the pill keeps its look
             className={cn(
-              'focus-ring min-h-9 cursor-pointer rounded-full px-3.5 text-xs font-medium transition-colors sm:min-h-8',
+              'focus-ring relative min-h-9 cursor-pointer rounded-full px-3.5 text-xs font-medium transition-colors sm:min-h-8',
+              "before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] sm:before:content-none",
               active ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
             )}
           >
@@ -104,9 +107,10 @@ export function AuthHeader({ title, children }) {
   const { t } = useTranslation();
   return (
     <header className="space-y-2">
-      {/* Phones: app name + language on one row, clear of the scene. Desktop
-          drops the row — the lockup names the app, the switch sits up top. */}
-      <div className="flex flex-wrap items-center justify-between gap-3 lg:hidden">
+      {/* Phones: app name + language on one row, clear of the scene, with
+          pb-2 so the title reads with its subtitle rather than with this row.
+          Desktop drops the row — the lockup names the app, the switch sits up top. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-2 lg:hidden">
         <p className="text-sm font-semibold text-primary">{t('app.name')}</p>
         <LanguageSwitch />
       </div>
@@ -139,8 +143,11 @@ export default function AuthLayout({ children }) {
       </div>
 
       {/* Phones keep the form high, under the scene, where the keyboard leaves
-          it visible; from tablets up it centres in the space that is left */}
-      <div className="relative z-10 -mt-6 flex-1 rounded-t-[1.75rem] bg-background px-6 pb-[max(2rem,env(safe-area-inset-bottom))] pt-7 md:flex md:flex-col md:justify-center md:pb-16 lg:mt-0 lg:rounded-none lg:px-12 lg:py-20">
+          it visible; from tablets up it centres in the space that is left.
+          The lg padding is only a floor: the top one keeps a long title clear
+          of the language switch, the slimmer bottom one lets an error plus the
+          Caps Lock hint fit a 639px-tall laptop without the page scrolling */}
+      <div className="relative z-10 -mt-6 flex-1 rounded-t-[1.75rem] bg-background px-6 pb-[max(2rem,env(safe-area-inset-bottom))] pt-7 md:flex md:flex-col md:justify-center md:pb-16 lg:mt-0 lg:rounded-none lg:px-12 lg:pb-10 lg:pt-18">
         <LanguageSwitch className="absolute end-6 top-6 hidden lg:flex" />
         <div className="animate-fade-up mx-auto w-full max-w-sm">{children}</div>
       </div>

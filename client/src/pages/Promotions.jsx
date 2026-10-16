@@ -180,7 +180,7 @@ export default function Promotions() {
     const total = totals.get(h.old_branch_id);
     return total
       ? t('member.requirementsOf', { earned: h.matalib.length, total })
-      : `${h.matalib.length} ${t('session.requirementsShort')}`;
+      : t('session.matalibCount', { count: h.matalib.length });
   };
 
   async function archive(ids, key) {
@@ -251,20 +251,29 @@ export default function Promotions() {
         )}
       </PageHeader>
 
-      {/* فلتر واحد: الفرقة التي يغادرها العنصر — يحكم القائمتين معًا، الانتظار و السجل */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* فلتر واحد: الفرقة التي يغادرها العنصر — يحكم القائمتين معًا، الانتظار و السجل.
+          On a phone the reset is a bare ✕ beside the select: with its full label it
+          wrapped to a line of its own, under a select that already fills the width. */}
+      <div className="flex items-center gap-2">
         <FilterSelect
           value={branch}
           onChange={pickBranch}
           allLabel={t('member.allBranches')}
           ariaLabel={t('member.branch')}
-          className="w-full sm:w-auto sm:min-w-48"
+          className="min-w-0 flex-1 sm:w-auto sm:min-w-48 sm:flex-none"
           icon={<IconShield className="opacity-60" />}
           options={branchList.map((b) => ({ value: b.id, label: branchName(b, lang) }))}
         />
         {branch && (
-          <Button variant="ghost" size="sm" onClick={() => pickBranch('')}>
-            {t('common.clearFilters')}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => pickBranch('')}
+            aria-label={t('common.clearFilters')}
+            className="w-11 px-0 sm:w-auto sm:px-3"
+          >
+            <IconX />
+            <span className="hidden sm:inline">{t('common.clearFilters')}</span>
           </Button>
         )}
       </div>
@@ -282,7 +291,9 @@ export default function Promotions() {
           <h2 className="text-base font-semibold">{t('promotion.pending')}</h2>
           {pendingList.length > 0 && <Count value={pendingList.length} />}
           {/* A selection brings its own bar to the bottom: two «promote» buttons on
-              screen at once would compete for the same tap */}
+              screen at once would compete for the same tap. A phone has no room for it
+              beside the title: it takes a full line of its own rather than floating
+              at the end of a half-empty one. */}
           {editable && pendingList.length > 0 && pickedIds.length === 0 && (
             <Button
               variant="brand"
@@ -290,7 +301,7 @@ export default function Promotions() {
               loading={busy === 'all'}
               disabled={!!busy}
               onClick={() => promote(pendingList.map((p) => p.id), 'all')}
-              className="ms-auto"
+              className="w-full sm:ms-auto sm:w-auto"
             >
               {busy !== 'all' && <IconTrendingUp />}
               {t('promotion.promoteAll', { count: pendingList.length })}
@@ -306,7 +317,9 @@ export default function Promotions() {
           <div aria-hidden="true" className="divide-y divide-border">
             {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="flex items-center gap-3 px-4 py-3 sm:px-5">
-                <Skeleton className="h-10 w-10 rounded-full" />
+                {/* The box the loaded row will have, so the names do not shift when it lands */}
+                {canPick && <Skeleton className="mx-px h-4.5 w-4.5 shrink-0 rounded-sm" />}
+                <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
                 <div className="flex-1 space-y-2">
                   <Skeleton className="h-3.5 w-2/5" />
                   <Skeleton className="h-3 w-14" />
@@ -387,7 +400,7 @@ export default function Promotions() {
                             {name}
                           </Link>
                           <div className="mt-0.5 text-xs tabular-nums text-muted-foreground">
-                            {p.age} {t('common.years')}
+                            {t('common.age', { count: p.age })}
                           </div>
                         </div>
                         {/* Phones act through the selection bar: two buttons on every row
@@ -434,7 +447,7 @@ export default function Promotions() {
         {/* شريط التأشير يلتصق بالأسفل، و فوق شريط التنقّل في الهاتف: لولا ذلك لاختفى
             الزرّ تحته، و التأشير بلا زرّ ترفيع لا معنى له */}
         {canPick && pickedIds.length > 0 && (
-          <div className="glass animate-fade-up sticky bottom-[var(--bottomnav-h)] z-10 flex items-center gap-1.5 rounded-b-2xl border-t border-border py-2 ps-1 pe-4 shadow-[0_-8px_16px_-12px_hsl(220_25%_12%/0.2)] sm:gap-2 sm:ps-3 sm:pe-5 lg:bottom-0">
+          <div className="glass animate-fade-up sticky bottom-[var(--bottomnav-h)] z-10 flex items-center gap-1.5 rounded-b-2xl border-t border-border py-2 ps-1 pe-4 shadow-top sm:gap-2 sm:ps-3 sm:pe-5 lg:bottom-0">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -511,7 +524,9 @@ export default function Promotions() {
             ))}
           </div>
         ) : historyList.length === 0 ? (
-          <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('promotion.noHistory')} />
+          <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('promotion.noHistory')}>
+            {t('promotion.noHistoryHint')}
+          </EmptyState>
         ) : (
           <>
             {/* Narrow cards: one stacked row per promotion */}

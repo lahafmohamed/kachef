@@ -640,6 +640,8 @@ export function Button({
         'disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none',
         buttonVariants[variant],
         buttonSizes[size],
+        // Busy is not unavailable: the label is the feedback, so it keeps its contrast
+        loading && 'disabled:opacity-100',
         className
       )}
       {...props}
@@ -684,7 +686,8 @@ export function CardContent({ className, ...props }) {
 
 export const fieldBase =
   'flex h-11 w-full rounded-lg border border-input bg-card px-3.5 text-sm shadow-xs transition-colors sm:h-10 ' +
-  'hover:border-input/70 focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50';
+  'hover:border-input/70 focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 ' +
+  'aria-invalid:border-destructive aria-invalid:focus-visible:border-destructive aria-invalid:focus-visible:outline-destructive';
 
 export function Input({ className, ...props }) {
   return (
@@ -903,7 +906,7 @@ export function SkeletonPage({ rows = 5 }) {
   return (
     <div className="space-y-4" aria-busy="true" aria-live="polite">
       <Skeleton className="h-8 w-48" />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <Skeleton className="h-24" />
         <Skeleton className="h-24" />
         <Skeleton className="h-24" />
@@ -1083,14 +1086,23 @@ export function Dialog({ open, onClose, title, description, children, footer, si
         <div className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-border sm:hidden" />
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5 sm:py-4">
           <div className="min-w-0">
-            <h2 id={titleId} className="truncate font-semibold">
+            <h2 id={titleId} className="line-clamp-2 font-semibold [overflow-wrap:anywhere]">
               {frame.title}
             </h2>
             {frame.description && (
               <p className="mt-0.5 text-sm text-muted-foreground">{frame.description}</p>
             )}
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label={t('common.close')}>
+          {/* shrink-0: a long title squeezed it under 30px wide. The negative margins
+              keep the 44px (phone) / 32px hit area but centre the X on the title's
+              first line instead of hanging below it */}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onClose}
+            aria-label={t('common.close')}
+            className="-my-2.5 shrink-0 sm:-my-1"
+          >
             <IconX />
           </Button>
         </div>
@@ -1382,7 +1394,9 @@ export function ErrorState({ message, onRetry, retryLabel }) {
 export function PageHeader({ title, description, children, className }) {
   return (
     <div className={cn('flex flex-wrap items-start justify-between gap-3', className)}>
-      <div className="min-w-0">
+      {/* basis-full below sm: the actions always take the row under the title, rather
+          than jumping up beside it whenever a filter swaps in a shorter description */}
+      <div className="min-w-0 basis-full sm:basis-auto">
         <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
         {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       </div>

@@ -86,13 +86,16 @@ function Breakdown({ items, empty }) {
   );
 }
 
-/** A line's facts, each kept whole: the line breaks between them, never inside a short one */
+/**
+ * A line's facts, each kept whole: the line breaks between them, never inside a short one.
+ * The «·» holds on to the fact before it, so a line ends on it rather than starting with it.
+ */
 function Meta({ items }) {
   return (
     <span className="block text-xs text-muted-foreground">
       {items.map((m, i) => (
         <Fragment key={i}>
-          {i > 0 && ' · '}
+          {i > 0 && '\u00a0· '}
           <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
         </Fragment>
       ))}
@@ -100,9 +103,11 @@ function Meta({ items }) {
   );
 }
 
+// In the phone's sideways row a tile is as wide as its name (up to 15rem), so «Groupe ·
+// Francophones garçons» keeps to one line instead of making every tile of the row tall
 const tileClass = (on) =>
   cn(
-    'focus-ring flex min-w-[9rem] flex-1 shrink-0 snap-start cursor-pointer flex-col justify-between gap-3 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150',
+    'focus-ring flex min-w-[9rem] max-w-[15rem] flex-auto shrink-0 snap-start cursor-pointer flex-col justify-between gap-3 rounded-xl border p-3 text-start transition-[border-color,background-color,box-shadow] duration-150 sm:max-w-none',
     on
       ? 'border-primary bg-card shadow-sm ring-1 ring-primary'
       : 'border-border bg-card shadow-xs hover:border-primary/35 hover:bg-accent/40'
@@ -120,7 +125,11 @@ function BoxTile({ label, balance, owed, opened, selected, onSelect, t }) {
   }, [selected]);
   return (
     <button ref={ref} type="button" aria-pressed={selected} onClick={onSelect} className={tileClass(selected)}>
-      <span className={cn('truncate text-sm font-semibold', selected && 'text-primary')}>{label}</span>
+      {/* «Groupe · Francophones garçons» wraps rather than losing whose caisse it is; the
+          row's tiles grow together, their balances still level at the bottom */}
+      <span className={cn('text-sm font-semibold text-balance wrap-break-word', selected && 'text-primary')}>
+        {label}
+      </span>
       <span className="leading-none">
         {opened ? (
           <span className={cn('block text-xl font-bold leading-none tabular-nums', balance < 0 && 'text-destructive')}>
@@ -180,7 +189,7 @@ function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
         {fig.owed > 0 && (
           <p className="text-xs font-medium text-warning">
             <bdi className="whitespace-nowrap">{t('treasury.owedSummary', { amount: fmtAmount(fig.owed) })}</bdi>
-            {' · '}
+            {'\u00a0· '}
             {/* A deficit's «−» isolated left-to-right: in Arabic it would otherwise trail the figure */}
             <bdi className="whitespace-nowrap">
               {t('treasury.afterOwed', { amount: `⁦${money(fig.balance - fig.owed)}⁩` })}
@@ -222,8 +231,8 @@ const ROW_BASE =
   'focus-ring flex w-full items-center gap-3 text-start transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]!';
 const ROW_CLASS = `${ROW_BASE} px-4 py-3 sm:px-5`;
 // A line opened under a نشاط's: its text under the نشاط's title (past the icon), its
-// amount under the total (short of the chevron)
-const NESTED_PAD = 'py-2.5 ps-16 pe-11 sm:ps-[4.25rem] sm:pe-12';
+// amount under the total (short of the chevron, which a phone keeps under the total)
+const NESTED_PAD = 'py-2.5 ps-16 pe-4 sm:ps-[4.25rem] sm:pe-12';
 
 /**
  * One movement: a نشاط's اشتراكات (one line per نشاط), a day of اشتراكات القادة (who
@@ -270,7 +279,8 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canEvents, ca
       )}
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium">{title}</span>
+          {/* Balanced when it takes two lines: no word left alone on the second */}
+          <span className="font-medium text-balance">{title}</span>
           {tag && <Badge variant="outline">{tag}</Badge>}
           {owed && <Badge variant="warning">{t('treasury.statusOwed')}</Badge>}
         </span>
@@ -287,6 +297,9 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canEvents, ca
         {move ? '' : isIn ? '+' : '−'}
         {fmtAmount(r.amount)}
       </span>
+      {/* The width of a نشاط's chevron, so every amount of the journal ends on one edge;
+          a phone, where the chevron sits under the نشاط's total, keeps them for the text */}
+      {!nested && <span aria-hidden="true" className="hidden w-4 shrink-0 sm:block" />}
     </>
   );
 
@@ -346,35 +359,46 @@ function SessionRow({ g, flow, t, tag, canSessions, rowProps }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const tone = resultTone(g.result);
+  // Shown its مصاريف only, the sum is what was spent, not a loss: it reads like the
+  // journal's other مصاريف, not in the red of a deficit
+  const spentOnly = flow === 'out';
   const meta = sessionMeta(g, flow, t);
+  const chevron = cn('text-muted-foreground transition-transform duration-200', open && 'rotate-180');
   return (
     <>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id} className={ROW_CLASS}>
         <span
           className={cn(
             'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-            g.result > 0 ? 'bg-success/12 text-success' : g.result < 0 ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'
+            spentOnly || g.result === 0
+              ? 'bg-muted text-muted-foreground'
+              : g.result > 0
+                ? 'bg-success/12 text-success'
+                : 'bg-destructive/10 text-destructive'
           )}
         >
           <IconCalendar />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium">{g.session_title}</span>
+            <span className="font-medium text-balance">{g.session_title}</span>
             {tag && <Badge variant="outline">{tag}</Badge>}
           </span>
           <Meta items={meta} />
         </span>
         <span className="flex shrink-0 flex-col items-end gap-0.5">
-          <span dir="ltr" className={cn('font-semibold tabular-nums', tone.className)}>
+          <span dir="ltr" className={cn('font-semibold tabular-nums', !spentOnly && tone.className)}>
             {signed(g.result)}
           </span>
-          {/* The word first — the colour only repeats it; filtered, the sum is no result */}
-          {!flow && <span className={cn('text-xs font-medium', tone.className)}>{t(tone.key)}</span>}
+          {/* The word first — the colour only repeats it; filtered, the sum is no result.
+              A phone puts the chevron beside it: the total then ends on the line's edge,
+              like every other amount of the journal */}
+          <span className={cn('flex items-center gap-1', flow && 'sm:hidden')}>
+            {!flow && <span className={cn('text-xs font-medium', tone.className)}>{t(tone.key)}</span>}
+            <IconChevronDown className={cn(chevron, 'sm:hidden')} />
+          </span>
         </span>
-        <IconChevronDown
-          className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200', open && 'rotate-180')}
-        />
+        <IconChevronDown className={cn(chevron, 'hidden sm:block')} />
       </button>
       {open && (
         <div id={id} className="border-t border-border bg-muted/25">
@@ -430,7 +454,7 @@ function OwedCard({ owed, total, t, tagOf, canManage, onEdit, onPay }) {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="font-medium">{x.label}</span>
+                    <span className="font-medium text-balance">{x.label}</span>
                     {tag && <Badge variant="outline">{tag}</Badge>}
                   </span>
                   <Meta items={meta} />
@@ -535,9 +559,8 @@ function PayDialog({ entry, box, boxLabel, onClose, onSaved, t }) {
           <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
             <div className="min-w-0">
               <p className="font-medium">{entry.label}</p>
-              <p className="text-xs text-muted-foreground">
-                {t('treasury.owedRowTo', { name: entry.owed_to })} · {boxLabel}
-              </p>
+              {/* Whose debt and which caisse, each kept whole — the caisse's own «·» included */}
+              <Meta items={[t('treasury.owedRowTo', { name: entry.owed_to }), boxLabel]} />
             </div>
             <p dir="ltr" className="shrink-0 font-semibold tabular-nums">
               {fmtAmount(entry.amount)}
@@ -687,7 +710,8 @@ function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, o
       }
     >
       <form id="treasury-transfer-form" onSubmit={save} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+        {/* One above the other on a phone: half a sheet cuts «Groupe · Francophones garçons» */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="tr_from">{t('treasury.transferFrom')}</Label>
             <Select id="tr_from" value={form.from} onChange={setFrom}>
@@ -708,6 +732,8 @@ function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, o
               ))}
             </Select>
           </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="tr_amount">{t('treasury.amount')}</Label>
             <AmountInput
@@ -1163,10 +1189,15 @@ export default function Treasury() {
   return (
     <div className="space-y-4">
       <PageHeader title={t('treasury.title')} description={t('treasury.subtitle')}>
+        {/* px-3 on a phone: «Don ou recette», ⇄ and «Dépense» stay on one row down to 360px */}
         {canManage && anyOpen && (
           <>
             {canEntries && (
-              <Button variant="outline" onClick={() => setEntryDialog({ direction: 'in', entry: null })}>
+              <Button
+                variant="outline"
+                onClick={() => setEntryDialog({ direction: 'in', entry: null })}
+                className="px-3 sm:px-4"
+              >
                 <IconHandHeart />
                 {t('treasury.addIncome')}
               </Button>
@@ -1182,9 +1213,14 @@ export default function Treasury() {
                 <span className="hidden sm:inline">{t('treasury.addTransfer')}</span>
               </Button>
             )}
-            {/* «Ajouter une dépense» beside «Don ou recette» outgrows a phone's row */}
+            {/* «Ajouter une dépense» beside «Don ou recette» outgrows a phone's row. A caisse
+                picked but not yet opened: «Ouvrir la caisse» is the one filled action */}
             {canEntries && (
-              <Button variant="brand" onClick={() => setEntryDialog({ direction: 'out', entry: null })}>
+              <Button
+                variant={sel && !sel.start && canCounts ? 'outline' : 'brand'}
+                onClick={() => setEntryDialog({ direction: 'out', entry: null })}
+                className="px-3 sm:px-4"
+              >
                 <IconPlus />
                 <span className="sm:hidden">{t('treasury.addExpenseShort')}</span>
                 <span className="hidden sm:inline">{t('treasury.addExpense')}</span>
@@ -1218,11 +1254,13 @@ export default function Treasury() {
       ) : (
         <>
           {multi && (
-            // Swiped sideways on a phone; a grid from tablet up
+            // Swiped sideways on a phone; a grid from tablet up. scroll-px: tiles snap (and a
+            // caisse opened further along is brought into view) inside the page's gutter, not
+            // flush with — or cut by — the screen's edge
             <div
               role="group"
               aria-label={t('treasury.title')}
-              className="no-scrollbar relative -mx-4 flex snap-x gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
+              className="no-scrollbar relative -mx-4 flex snap-x scroll-px-4 gap-2 overflow-x-auto px-4 py-1 sm:mx-0 sm:grid sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] sm:overflow-visible sm:p-0"
             >
               <BoxTile
                 label={t('treasury.allBoxes')}
@@ -1339,7 +1377,8 @@ export default function Treasury() {
                   ) : (
                     months.map((m) => (
                       <section key={m.key} aria-label={fmtMonth(m.key, lng)}>
-                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-y border-border bg-muted/30 px-4 py-2 sm:px-5">
+                        {/* sm:pe-12: the month's totals end on the edge of its lines' amounts */}
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-y border-border bg-muted/30 px-4 py-2 sm:ps-5 sm:pe-12">
                           <h3 className="text-sm font-semibold">{fmtMonth(m.key, lng)}</h3>
                           <p dir="ltr" className="flex gap-3 text-xs font-medium tabular-nums">
                             {m.in > 0 && <span className="text-success">+{fmtAmount(m.in)}</span>}

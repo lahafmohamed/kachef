@@ -6,7 +6,9 @@ import { toDate } from './lib/date';
 const dateFormats = {};
 function dateFormat(lng) {
   const locale = lng === 'ar' ? 'ar-u-nu-latn' : 'fr-FR';
-  return (dateFormats[locale] ??= new Intl.DateTimeFormat(locale, { dateStyle: 'short' }));
+  // Padded in both languages («08/10/2026»): dateStyle 'short' padded French only, and
+  // Arabic date columns went ragged (8/10 beside 29/9)
+  return (dateFormats[locale] ??= new Intl.DateTimeFormat(locale, { day: '2-digit', month: '2-digit', year: 'numeric' }));
 }
 
 export function fmtDate(iso) {

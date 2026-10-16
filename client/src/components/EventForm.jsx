@@ -19,6 +19,7 @@ import {
   Input,
   Label,
   SegmentedControl,
+  Skeleton,
   Textarea,
   cn,
 } from './ui';
@@ -117,6 +118,10 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
     .filter((l) => l.section === formSection && (l.status === 'active' || l.id === Number(form.leader_id)))
     .map((l) => ({ value: l.id, label: memberName(l) }));
   const loadFailed = branches.error || leaders.error;
+  // First opening only: the lists are kept between openings. Saved before the فرق
+  // arrive, an event would silently go to the whole فوج.
+  const loadingLists = !loadFailed && (!branches.data || !leaders.data);
+  const labelGroups = groupedBranches.length > 1;
 
   function pickSection(s) {
     if (s === formSection) return;
@@ -200,7 +205,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
             <Button variant="outline" onClick={onClose}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit" form="event-form" loading={saving} disabled={!!loadFailed}>
+            <Button type="submit" form="event-form" loading={saving} disabled={!!loadFailed || loadingLists}>
               {t('common.save')}
             </Button>
           </div>
@@ -266,7 +271,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
           </div>
 
           {/* Who leads it, and what it costs */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className={cn('space-y-1.5', canFees ? 'sm:col-span-2' : 'sm:col-span-3')}>
               <Label htmlFor="ev_leader">{chiefLabel(t, form.kind, formSection)}</Label>
               <SearchSelect
@@ -296,6 +301,16 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
           </div>
 
           {/* Who may take part: the فرق, then the طلائع of those split into some */}
+          {!branches.data && (
+            <div className="space-y-1.5 border-t border-border pt-5" aria-busy="true">
+              <Skeleton className="h-4 w-32" />
+              <div className="flex flex-wrap gap-2">
+                {[0, 1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-11 w-24 rounded-full sm:h-9" />
+                ))}
+              </div>
+            </div>
+          )}
           {sectionBranches.length > 0 && (
             <div className="space-y-4 border-t border-border pt-5">
               <div className="space-y-1.5">
@@ -316,11 +331,20 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
               {groupedBranches.length > 0 && (
                 <div className="space-y-1.5">
                   <Label>{t('event.groups')}</Label>
-                  <div className="space-y-2">
+                  {/* Each فرقة's name over its طلائع on a phone; from sm up beside them, in
+                      a column as wide as the longest name so the chips line up */}
+                  <div
+                    className={cn(
+                      'space-y-3',
+                      labelGroups && 'sm:grid sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 sm:space-y-0'
+                    )}
+                  >
                     {groupedBranches.map((b) => (
-                      <div key={b.id} className="flex flex-wrap items-center gap-2">
-                        {groupedBranches.length > 1 && (
-                          <span className="text-xs text-muted-foreground">{branchName(b, i18n.language)}</span>
+                      <div key={b.id} className="flex flex-col gap-1.5 sm:contents">
+                        {labelGroups && (
+                          <span className="text-xs text-muted-foreground sm:flex sm:min-h-9 sm:items-center">
+                            {branchName(b, i18n.language)}
+                          </span>
                         )}
                         <div
                           className="flex flex-wrap gap-2"
@@ -330,7 +354,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
                           {b.groups.map((g) => (
                             <ToggleChip key={g.id} on={form.group_ids.includes(g.id)} onClick={() => toggleGroup(g.id)}>
                               {g.name}
-                              <span className="text-xs tabular-nums opacity-70">{g.member_count}</span>
+                              <span className="text-xs tabular-nums">{g.member_count}</span>
                             </ToggleChip>
                           ))}
                         </div>

@@ -68,6 +68,8 @@
   --shadow-xl: 0 28px 56px -14px hsl(220 25% 12% / 0.24);
   /* Primary surfaces share the neutral shadow — no coloured glow */
   --shadow-brand: 0 4px 14px -3px hsl(220 25% 12% / 0.14), 0 2px 5px -2px hsl(220 25% 12% / 0.06);
+  /* Upward lift for bars stuck to the bottom of the screen (selection bars) */
+  --shadow-top: 0 -8px 16px -12px hsl(220 25% 12% / 0.2);
 
   /* Motion */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
@@ -139,6 +141,7 @@
   --shadow-lg: 0 14px 32px -8px hsl(0 0% 0% / 0.6), 0 4px 10px -4px hsl(0 0% 0% / 0.4);
   --shadow-xl: 0 28px 56px -14px hsl(0 0% 0% / 0.75);
   --shadow-brand: 0 4px 14px -3px hsl(0 0% 0% / 0.5), 0 2px 5px -2px hsl(0 0% 0% / 0.35);
+  --shadow-top: 0 -8px 16px -12px hsl(0 0% 0% / 0.5);
 
   /* The same scene at night: plum sky, a dimmed sun, deeper water */
   --scene-sky: #1b1124;
@@ -203,6 +206,7 @@
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
   --shadow-brand: var(--shadow-brand);
+  --shadow-top: var(--shadow-top);
 
   --ease-out-soft: var(--ease-out-soft);
   --ease-spring: var(--ease-spring);
@@ -401,9 +405,14 @@ input[type="radio"] {
   }
 }
 
-/* Hairline inner highlight that keeps solid brand surfaces from looking flat */
+/* Hairline inner highlight that keeps solid brand surfaces from looking flat.
+   Through --tw-inset-shadow, so it composes with shadow-* instead of replacing it:
+   as a plain box-shadow it won or lost against shadow-brand by stylesheet order,
+   and primary buttons never got their drop shadow. */
 @utility ring-inset-light {
-  box-shadow: inset 0 1px 0 0 hsl(0 0% 100% / 0.16);
+  --tw-inset-shadow: inset 0 1px 0 0 hsl(0 0% 100% / 0.16);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow, 0 0 #0000),
+    var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow, 0 0 #0000);
 }
 
 /* Consistent focus ring for every interactive element */

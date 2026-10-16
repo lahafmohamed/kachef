@@ -44,7 +44,7 @@
     "next": "Suivant",
     "fillRequired": "Complétez les champs requis pour continuer.",
     "noResults": "Aucun résultat",
-    "noResultsHint": "Essayez un autre nom ou réinitialisez les filtres.",
+    "noResultsHint": "Essayez d'autres mots ou réinitialisez les filtres.",
     "years": "ans",
     "date": "Date",
     "pickDate": "Choisir une date",
@@ -55,7 +55,21 @@
     "hour": "Heure",
     "minute": "Minute",
     "done": "Terminé",
-    "saved": "Enregistré"
+    "saved": "Enregistré",
+    "age": "{{count}} ans",
+    "age_zero": "{{count}} an",
+    "age_one": "{{count}} an",
+    "age_two": "{{count}} ans",
+    "age_few": "{{count}} ans",
+    "age_many": "{{count}} ans",
+    "age_other": "{{count}} ans",
+    "yearsUnit": "ans",
+    "yearsUnit_zero": "an",
+    "yearsUnit_one": "an",
+    "yearsUnit_two": "ans",
+    "yearsUnit_few": "ans",
+    "yearsUnit_many": "ans",
+    "yearsUnit_other": "ans"
   },
   "birthday": {
     "title": "Anniversaires",
@@ -434,7 +448,22 @@
     "moneyEven": "À l’équilibre",
     "moneyProjected": "Si tous les présents paient :",
     "moneyFormula": "Résultat = cotisations + dons − dépenses (payées ou pas encore).",
-    "moneyDuesNote": "Hors cotisations mensuelles ({{amount}} encaissés ici) : elles paient le mois, pas la séance."
+    "moneyDuesNote": "Hors cotisations mensuelles ({{amount}} encaissés ici) : elles paient le mois, pas la séance.",
+    "listSearch": "Titre, lieu ou chef…",
+    "matalibCount": "{{count}} matalib",
+    "matalibCount_zero": "Aucun matlab",
+    "matalibCount_one": "{{count}} matlab",
+    "matalibCount_two": "{{count}} matalib",
+    "matalibCount_few": "{{count}} matalib",
+    "matalibCount_many": "{{count}} matalib",
+    "matalibCount_other": "{{count}} matalib",
+    "markRestPresent_one": "Marquer le dernier présent",
+    "markRestPresent_two": "Marquer les {{count}} restants présents",
+    "markRestAbsent_one": "Marquer le dernier absent",
+    "markRestAbsent_two": "Marquer les {{count}} restants absents",
+    "markLeadersConfirm": "Marquer {{count}} chefs comme présents ?",
+    "markLeadersConfirm_one": "Marquer {{count}} chef comme présent ?",
+    "markLeadersConfirm_two": "Marquer {{count}} chefs comme présents ?"
   },
   "files": {
     "photos": "Photos",
@@ -462,7 +491,7 @@
     "cardLabel": "Fiche de préparation",
     "newCard": "Nouvelle fiche de préparation",
     "editCard": "Modifier la fiche de préparation",
-    "searchPlaceholder": "Rechercher par titre, lieu ou animateur...",
+    "searchPlaceholder": "Titre, lieu ou animateur…",
     "resultCount": "{{count}} fiche(s) trouvée(s)",
     "resultCount_one": "{{count}} fiche trouvée",
     "resultCount_other": "{{count}} fiches trouvées",
@@ -489,7 +518,9 @@
     "sessionHint": "Optionnel : liez la fiche à la séance qu'elle prépare — le lien peut aussi être ajouté après la création de la séance.",
     "linked": "Liée à une séance",
     "noCard": "Aucune fiche",
-    "createSession": "Créer la séance"
+    "createSession": "Créer la séance",
+    "emptyCard": "Rien n'est encore rédigé",
+    "emptyCardHint": "Les objectifs, les séquences, les moyens pédagogiques et les remarques s'afficheront ici une fois rédigés."
   },
   "event": {
     "title": "Camps et formations",
@@ -500,7 +531,7 @@
     "delete": "Supprimer",
     "deleteConfirm": "Supprimer « {{title}} » ? Son programme, ses participants, leurs paiements, ses dons et ses dépenses seront supprimés avec lui. Cette action est irréversible.",
     "deleted": "Supprimé",
-    "searchPlaceholder": "Rechercher un nom, un lieu ou un chef…",
+    "searchPlaceholder": "Nom, lieu ou chef…",
     "resultCount_one": "{{count}} résultat",
     "resultCount_other": "{{count}} résultats",
     "allKinds": "Tous les types",
@@ -755,7 +786,9 @@
     "fundingDeleted": "Mouvement supprimé",
     "deleteFundingConfirm": "Supprimer ce mouvement ({{amount}}) ? La caisse sera corrigée aussi.",
     "fromCaisses": "Des caisses",
-    "fundingTakenReturned": "pris {{taken}} · rendu {{returned}}"
+    "fundingTakenReturned": "pris {{taken}} · rendu {{returned}}",
+    "donationCount_zero": "Pas encore de don",
+    "expenseCount_zero": "Pas encore de dépense"
   },
   "meeting": {
     "title": "Réunions",
@@ -972,7 +1005,14 @@
     "archived_other": "{{count}} membres archivés",
     "archiveSelected": "Archiver la sélection ({{count}})",
     "promoteOne": "Promouvoir {{name}}",
-    "transition": "De {{from}} vers {{to}}"
+    "transition": "De {{from}} vers {{to}}",
+    "noHistoryHint": "Chaque promotion validée s'affichera ici.",
+    "selected_two": "{{count}} sélectionnés",
+    "selected_few": "{{count}} sélectionnés",
+    "selected_many": "{{count}} sélectionnés",
+    "archiveConfirmMany_two": "Archiver {{count}} membres au lieu de les promouvoir ? Ils sortent des activités et des promotions. Vous pourrez les réactiver depuis leur fiche.",
+    "archiveConfirmMany_few": "Archiver {{count}} membres au lieu de les promouvoir ? Ils sortent des activités et des promotions. Vous pourrez les réactiver depuis leur fiche.",
+    "archiveConfirmMany_many": "Archiver {{count}} membres au lieu de les promouvoir ? Ils sortent des activités et des promotions. Vous pourrez les réactiver depuis leur fiche."
   },
   "leader": {
     "title": "Leadership",
@@ -1153,7 +1193,9 @@
     "statusInactive": "Chefs inactifs",
     "statusBoth": "Actifs et inactifs",
     "inactiveHidden": "Chefs inactifs masqués ({{count}})",
-    "shownOf": "{{shown}} sur {{total}}"
+    "shownOf": "{{shown}} sur {{total}}",
+    "monthPresence": "Présences : {{present}} sur {{marked}}",
+    "noActivitiesHint": "Les activités où il est inscrit comme animateur ou aide apparaîtront ici."
   },
   "dashboard": {
     "title": "Tableau de bord",
@@ -1225,7 +1267,8 @@
     },
     "recent": {
       "result": "{{present}} présents sur {{marked}}",
-      "unmarked": "Non pointés : {{count}}"
+      "unmarked": "Non pointés : {{count}}",
+      "present": "Présents : {{count}}"
     },
     "branches": {
       "title": "Branches",
@@ -1289,11 +1332,13 @@
     "confirmDeleteLookupInUse_other": "{{count}} membres ont cette valeur. La retirer de la liste ne change pas leur fiche, mais elle ne pourra plus être choisie à l'inscription. Continuer ?",
     "lookupCreated": "Valeur ajoutée",
     "lookupRenamed": "Valeur renommée sur toutes les fiches concernées",
-    "lookupDeleted": "Valeur retirée de la liste"
+    "lookupDeleted": "Valeur retirée de la liste",
+    "noLookupHint": "Ajoutez la première valeur avec le champ ci-dessous.",
+    "noLeaderMatalibHint": "Ajoutez le premier matlab avec le formulaire ci-dessous."
   },
   "branch": {
     "pageTitle": "Branches",
-    "pageSubtitle": "Chaque branche : effectif, chefs, activités, présence et مطالب",
+    "pageSubtitle": "Chaque branche : effectif, chefs, activités, présence et matalib",
     "years": "ans",
     "allAges": "Tous les âges",
     "members": "Membres",
@@ -1301,7 +1346,7 @@
     "activities": "Activités",
     "thisMonth": "{{count}} ce mois",
     "attendanceRate": "Taux de présence",
-    "presentAbsent": "{{present}} présents · {{absent}} absents",
+    "presentAbsent": "{{present}} présent(s) · {{absent}} absent(s)",
     "matalib": "Matalib",
     "matalibHint": "Matalib déjà travaillés",
     "matalibProgress": "Progression des matalib",
@@ -1313,7 +1358,7 @@
     "noParticipants": "Aucune présence enregistrée",
     "openSession": "Ouvrir l'activité",
     "showMore": "Voir {{count}} activités de plus",
-    "searchSessions": "Rechercher une activité ou un participant...",
+    "searchSessions": "Activité ou participant…",
     "planTitle": "Plan annuel",
     "planAddDay": "Autre jour",
     "planActivity": "Activité prévue",
@@ -1365,7 +1410,7 @@
     "planCountAdded_one": "{{count}} ajouté",
     "planCountAdded_other": "{{count}} ajoutés",
     "groupsTitle": "Sous-groupes",
-    "groupsHint": "Quand la branche est trop nombreuse pour une seule séance, on la découpe en sous-groupes. Un sous-groupe avec une tranche d'âge reçoit ses membres d'après leur année de naissance ; sans tranche, on les place à la main. L'activité choisit ensuite quels sous-groupes y participent.",
+    "groupsHint": "Quand la branche est trop nombreuse pour une seule séance, on la découpe en sous-groupes. Un sous-groupe avec une tranche d'âge reçoit ses membres d'après leur année de naissance ; sans tranche, on les place à la main. L'activité choisit ensuite quels sous-groupes y participent.",
     "groupsEmpty": "Aucun sous-groupe",
     "groupsEmptyHint": "Sans sous-groupe, toute la branche participe à chaque activité — c'est le fonctionnement normal.",
     "groupNew": "Nouveau sous-groupe",
@@ -1417,7 +1462,7 @@
     "groupUnassigned": "{{count}} non répartis",
     "planLeaveConfirm": "Les modifications du plan pour ce mois ne sont pas enregistrées et seront perdues si vous changez de branche.",
     "planLeave": "Continuer sans enregistrer",
-    "matalibEmpty": "Aucun matlab défini pour cette branche",
+    "matalibEmpty": "Aucun matalib défini pour cette branche",
     "moneyTab": "Finances",
     "expensesTotal": "Dépensé",
     "expensesByCategory": "Par catégorie",
@@ -1609,7 +1654,8 @@
       "treasury_entries": "Dons et recettes, et le règlement des dettes.",
       "treasury_transfers": "Entre caisses, et vers ou depuis un camp.",
       "treasury_counts": "Montant de départ, comptage et écart."
-    }
+    },
+    "noBranchesInSection": "Aucune branche dans cette section pour l’instant : le compte verra ses branches dès leur création."
   },
   "section": {
     "label": "Section",
@@ -1707,7 +1753,7 @@
     "usePreset": "Utiliser",
     "previewItems": "Voir les indicateurs",
     "hidePreview": "Masquer les indicateurs",
-    "source": "Source",
+    "source": "Source :",
     "blankForm": "Partir d'une grille vide",
     "newForm": "Nouvelle grille",
     "editForm": "Modifier la grille",
@@ -2172,7 +2218,8 @@
       "evaluations": "Évaluations",
       "people": "Membres et chefs",
       "money": "Argent"
-    }
+    },
+    "emptyActivityHint": "Les séances ajoutées ou modifiées par les chefs s’afficheront ici."
   },
   "history": {
     "createdBy": "Créée par <b>{{name}}</b> le {{date}}",

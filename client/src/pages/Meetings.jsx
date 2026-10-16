@@ -41,19 +41,37 @@ const fmtMonth = (key, lng) =>
   }).format(toDate(`${key}-01`));
 const fmtMonthShort = (iso, lng) => new Intl.DateTimeFormat(intlLocale(lng), { month: 'short' }).format(toDate(iso));
 
+/** The shape of a month of minutes — its heading, then rows laid out as MeetingRow — so nothing jumps when they arrive */
 function ListSkeleton() {
   return (
-    <Card className="divide-y divide-border" aria-busy="true">
-      {Array.from({ length: 4 }, (_, i) => (
-        <div key={i} className="flex gap-4 p-4">
-          <Skeleton className="h-10 w-10 shrink-0" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-4 w-1/3" />
-            <Skeleton className="h-3 w-1/2" />
+    <div className="space-y-2" aria-busy="true">
+      <div className="flex items-center justify-between gap-4 py-2">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+      <Card className="divide-y divide-border">
+        {Array.from({ length: 3 }, (_, i) => (
+          <div
+            key={i}
+            className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-x-4 gap-y-3 px-4 py-4 sm:grid-cols-[3.25rem_minmax(0,1fr)_14rem] sm:items-center sm:px-5"
+          >
+            <div className="flex flex-col items-center gap-1.5 self-start">
+              <Skeleton className="h-6 w-7" />
+              <Skeleton className="h-3 w-9" />
+            </div>
+            <div className="min-w-0 space-y-2">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-3 w-1/2" />
+              <Skeleton className="h-5 w-36 max-w-full rounded-full" />
+            </div>
+            <div className="col-start-2 space-y-1.5 sm:col-start-3">
+              <Skeleton className="h-3 w-40 max-w-full" />
+              <Skeleton className="h-3 w-24" />
+            </div>
           </div>
-        </div>
-      ))}
-    </Card>
+        ))}
+      </Card>
+    </div>
   );
 }
 
@@ -114,6 +132,19 @@ function MeetingFigures({ m, t, upcoming }) {
   );
 }
 
+/** A fact too long for one line may wrap, but never inside the name it carries («Présidée par علي / جعفر غنام») */
+function keepNameWhole(text, name) {
+  const at = name && name.length <= 24 ? text.indexOf(name) : -1;
+  if (at < 0) return text;
+  return (
+    <>
+      {text.slice(0, at)}
+      <span className="whitespace-nowrap">{name}</span>
+      {text.slice(at + name.length)}
+    </>
+  );
+}
+
 function MeetingRow({ m, lng, t, bothSections, today }) {
   const upcoming = m.date > today;
   const meta = [timeRange(m), m.place, m.chair && t('meeting.chairedBy', { name: m.chair })].filter(Boolean);
@@ -121,7 +152,7 @@ function MeetingRow({ m, lng, t, bothSections, today }) {
     <li>
       <Link
         to={`/meetings/${m.id}`}
-        className="focus-ring group grid grid-cols-[2.75rem_minmax(0,1fr)] gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-accent/40 sm:grid-cols-[3.25rem_minmax(0,1fr)_14rem] sm:items-center sm:px-5"
+        className="focus-ring group grid grid-cols-[2.75rem_minmax(0,1fr)] gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-accent/40 focus-visible:[outline-offset:-2px]! sm:grid-cols-[3.25rem_minmax(0,1fr)_14rem] sm:items-center sm:px-5"
       >
         <div className="self-start text-center">
           <span className="sr-only">{fmtDate(m.date)}</span>
@@ -142,7 +173,7 @@ function MeetingRow({ m, lng, t, bothSections, today }) {
               {meta.map((x, i) => (
                 <Fragment key={i}>
                   {i > 0 && ' · '}
-                  <bdi className={x.length <= 24 ? 'whitespace-nowrap' : undefined}>{x}</bdi>
+                  <bdi className={x.length <= 24 ? 'whitespace-nowrap' : undefined}>{keepNameWhole(x, m.chair)}</bdi>
                 </Fragment>
               ))}
             </p>
@@ -235,7 +266,10 @@ export default function Meetings() {
     <div className="space-y-4">
       <PageHeader
         title={t('meeting.title')}
-        description={filtering ? t('meeting.resultCount', { count: list.length }) : t('meeting.subtitle')}
+        // Not before the first answer: an empty list while loading is not «no results»
+        description={
+          filtering && meetings.data ? t('meeting.resultCount', { count: list.length }) : t('meeting.subtitle')
+        }
       >
         <ExportPdfButton kind="meetings-list" id={0} query={params.toString()} compact />
         {editable && (

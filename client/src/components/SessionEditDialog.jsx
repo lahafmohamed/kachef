@@ -23,6 +23,10 @@ import {
 
 const KIND_LABEL = { visit: 'session.kindVisit', leaders: 'session.kindLeaders', group: 'session.kindGroup' };
 
+// The three rows share one set of columns from sm: the wider third takes the nature, the
+// place and the fee — in even thirds «Activité hebdomadaire» and a long place clipped
+const COLS = 'sm:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,3fr)]';
+
 // The form as the session stands, so a reopened dialog starts from what is saved
 const formOf = (s) => ({
   title: s.title || '',
@@ -160,7 +164,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
         )}
 
         {/* What */}
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className={cn('grid grid-cols-1 gap-4', COLS)}>
           <div className={cn('space-y-1.5', isVisit ? 'sm:col-span-3' : 'sm:col-span-2')}>
             <Label htmlFor="se_title">{t(isGroup ? 'session.occasion' : 'session.sessionTitle')}</Label>
             <Input id="se_title" required maxLength={200} autoComplete="off" value={form.title} onChange={set('title')} />
@@ -181,7 +185,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
         </div>
 
         {/* When and where — date and time share a row even on a phone */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <div className={cn('grid grid-cols-2 gap-4', COLS)}>
           <div className="space-y-1.5">
             <Label htmlFor="se_date">{t('common.date')}</Label>
             <DatePicker id="se_date" required clearable={false} value={form.date} onChange={set('date')} />
@@ -197,7 +201,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
         </div>
 
         {/* Who leads it, and what it costs */}
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className={cn('grid grid-cols-1 gap-4', COLS)}>
           <div className={cn('space-y-1.5', showFee || isGroup ? 'sm:col-span-2' : 'sm:col-span-3')}>
             <Label htmlFor="se_leader">{leaderLabel}</Label>
             <SearchSelect

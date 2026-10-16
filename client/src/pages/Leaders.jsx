@@ -125,7 +125,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="l_first">{t('member.firstName')}</Label>
           <Input id="l_first" required autoComplete="off" value={form.first_name} onChange={set('first_name')} />
@@ -169,7 +169,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
 
       {/* نفس القوائم المنسَّقة التي يُسجَّل بها العناصر: حيّ واحد يُكتب بطريقتين
           يفرّق أهله على فلترين */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="l_abidjan">{t('member.addressAbidjan')}</Label>
           <SearchSelect
@@ -220,7 +220,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
         <p className="text-xs text-muted-foreground">{t('leader.currentRoleHint')}</p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="l_join_year">{t('leader.joinYear')}</Label>
           <Input
@@ -265,7 +265,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
       {/* الدورات التدريبية: قائد قد يكون خضع لأكثر من دورة، فهي تأشير لا اختيار واحد */}
       <div className="space-y-1.5">
         <Label>{t('leader.trainingLevel')}</Label>
-        <div className="grid gap-1 rounded-lg border border-border p-2 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-1 rounded-lg border border-border p-2 sm:grid-cols-2">
           {TRAINING_COURSES.map((c) => (
             <label
               key={c}
@@ -774,7 +774,7 @@ function ShareBar({ value, tone = 'primary', className }) {
  * A row's actions behind one button: forty-one rows each carrying three icons read
  * as a wall of buttons, and hid the names they act on.
  */
-function RowMenu({ label, items, variant = 'ghost', size = 'icon-sm', children }) {
+function RowMenu({ label, items, variant = 'ghost', size = 'icon-sm', className, children }) {
   const [open, setOpen] = useState(false);
   const shown = items.filter(Boolean);
   if (!shown.length) return null;
@@ -786,7 +786,7 @@ function RowMenu({ label, items, variant = 'ghost', size = 'icon-sm', children }
           size={size}
           aria-label={label}
           title={label}
-          className={cn('shrink-0', variant === 'ghost' && 'text-muted-foreground')}
+          className={cn('shrink-0', variant === 'ghost' && 'text-muted-foreground', className)}
         >
           <IconMore />
           {children}
@@ -898,11 +898,13 @@ function Holder({ a, page, strong = false }) {
       />
     );
   if (!a.leader_id) return <p className={cn(size, 'text-warning')}>{t('leader.vacant')}</p>;
+  // w-fit: dir="auto" aligns an Arabic name to its own start, so a full-width box
+  // pushed it to the far side of a French card, away from its avatar
   return (
     <Link
       to={`/leaders/${a.leader_id}`}
       dir="auto"
-      className={cn('focus-ring block truncate rounded-sm hover:text-primary hover:underline', size)}
+      className={cn('focus-ring block w-fit max-w-full truncate rounded-sm hover:text-primary hover:underline', size)}
     >
       {memberName(a)}
     </Link>
@@ -1010,7 +1012,7 @@ function TachkilaCards({ assignments, branches, page, headLabel }) {
     <div className="space-y-8">
       {top.length > 0 && (
         <Section title={headLabel || t('leader.sectionHead')}>
-          <div className="grid gap-4 sm:grid-cols-2 [&>*]:mb-0">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 [&>*]:mb-0">
             {top.map((a) => (
               <TeamCard key={a.id} title={a.title} lead={a} rest={helpersOf(a.id)} page={page} />
             ))}
@@ -1058,7 +1060,7 @@ function OrgNode({ a, label, extra = 0 }) {
     <>
       <SlotAvatar a={a} className="h-9 w-9 text-xs" />
       <span className="min-w-0 flex-1">
-        <span dir="auto" className={cn('block truncate text-sm font-medium', !filled && 'text-warning')}>
+        <span dir="auto" className={cn('block w-fit max-w-full truncate text-sm font-medium', !filled && 'text-warning')}>
           {filled ? memberName(a) : t('leader.vacant')}
         </span>
         <span className="block truncate text-xs text-muted-foreground">{label || a.title}</span>
@@ -1133,7 +1135,7 @@ function OrgTree({ assignments, branches, page }) {
           {split && <div aria-hidden="true" className="hidden h-5 w-[calc(50%+0.5rem)] border-x border-t border-border md:block" />}
         </>
       )}
-      <div className={cn('grid w-full gap-4', split && 'md:grid-cols-2')}>
+      <div className={cn('grid grid-cols-1 w-full gap-4', split && 'md:grid-cols-2')}>
         {amanaNodes.length > 0 && (
           <OrgPanel title={t('leader.amanat')}>
             {amanaNodes.map((a) => (
@@ -1162,7 +1164,7 @@ function TachkilaSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true">
       <Skeleton className="h-4 w-40" />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 6 }, (_, i) => (
           <Skeleton key={i} className="h-36 rounded-2xl" />
         ))}
@@ -1266,7 +1268,7 @@ function LeaderRow({ l, page, onOpen }) {
             </div>
             {/* Phones: age and level fold in here; wider cards give them columns */}
             <div className="mt-0.5 truncate text-xs text-muted-foreground @2xl:hidden">
-              <Parts parts={[age != null && `${age} ${t('common.years')}`, top && t(`leader.courseShort.${top}`)]} />
+              <Parts parts={[age != null && t('common.age', { count: age }), top && t(`leader.courseShort.${top}`)]} />
             </div>
           </div>
         </div>
@@ -1287,7 +1289,7 @@ function LeaderRow({ l, page, onOpen }) {
         {l.years_ghadir != null ? (
           <div className="leading-tight">
             <span className="text-sm font-medium tabular-nums">{l.years_ghadir}</span>{' '}
-            <span className="text-xs text-muted-foreground">{t('common.years')}</span>
+            <span className="text-xs text-muted-foreground">{t('common.yearsUnit', { count: l.years_ghadir })}</span>
             {l.years_total > l.years_ghadir && (
               <div className="mt-0.5 text-xs text-muted-foreground">
                 {t('leader.totalShort', { count: l.years_total })}
@@ -1806,19 +1808,21 @@ export default function Leaders() {
                     ))}
                   </Select>
                 )}
+                {/* One height across the row (the year picker's): the default sizes, and
+                    the menu raised to match from sm up */}
                 <SegmentedControl
                   label={t('leader.viewLabel')}
                   value={view}
                   onChange={setView}
-                  size="sm"
                   options={[
                     { value: 'list', label: t('leader.viewList') },
                     { value: 'tree', label: t('leader.viewTree') },
                   ]}
                 />
                 <span className="grow" />
+                {/* Outline: the header's «قائد جديد» stays the one filled action on screen */}
                 {canEdit && tachkila.year && (
-                  <Button size="sm" variant="brand" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
+                  <Button variant="outline" onClick={() => setEditingAssignment(EMPTY_ASSIGNMENT)}>
                     <IconPlus />
                     {t('leader.addAssignment')}
                   </Button>
@@ -1829,6 +1833,7 @@ export default function Leaders() {
                     label={t('common.actions')}
                     variant="outline"
                     size="icon"
+                    className="sm:h-10 sm:w-10"
                     items={[
                       { label: t('leader.newYear'), icon: <IconPlus />, onSelect: () => setCreatingYear(true) },
                       canEdit &&
@@ -1861,7 +1866,7 @@ export default function Leaders() {
                     title={t('leader.noAssignments')}
                     action={
                       canEdit && tachkila.year && tachkila.missing_count > 0 ? (
-                        <Button variant="brand" onClick={fillTemplate}>
+                        <Button variant="outline" onClick={fillTemplate}>
                           <IconShield />
                           {t('leader.fillTemplate', { count: tachkila.missing_count })}
                         </Button>
@@ -1909,7 +1914,8 @@ export default function Leaders() {
                       allLabel={t('leader.allLeaders')}
                       ariaLabel={t('leader.role')}
                       className="w-full sm:w-auto sm:min-w-40"
-                      icon={<IconShield className="opacity-60" />}
+                      // Icons from sm up: in a phone's half-width cell they cut «Tous les chefs» short
+                      icon={<IconShield className="hidden opacity-60 sm:block" />}
                       options={[
                         ...branches.map((b) => ({ value: b.id, label: branchName(b, i18n.language) })),
                         { value: 'amana', label: t('leader.amanat') },
@@ -1933,8 +1939,9 @@ export default function Leaders() {
                         onChange={(v) => patch({ account: v })}
                         allLabel={t('leader.accountAll')}
                         ariaLabel={t('leader.colAccount')}
-                        className="w-full sm:w-auto sm:min-w-40"
-                        icon={<IconKey className="opacity-60" />}
+                        // A row of its own on phones: «Avec ou sans accès» does not fit half of one
+                        className="col-span-2 w-full sm:w-auto sm:min-w-40"
+                        icon={<IconKey className="hidden opacity-60 sm:block" />}
                         options={[
                           { value: 'with', label: t('leader.accountWith') },
                           { value: 'without', label: t('leader.accountWithout') },
@@ -1949,7 +1956,7 @@ export default function Leaders() {
                         onChange={(v) => patch({ status: v })}
                         allLabel={t('leader.statusActive')}
                         ariaLabel={t('member.status')}
-                        className="w-full sm:w-auto sm:min-w-40"
+                        className="col-span-2 w-full sm:w-auto sm:min-w-40"
                         options={[
                           { value: 'inactive', label: t('leader.statusInactive') },
                           { value: 'all', label: t('leader.statusBoth') },
@@ -1982,14 +1989,17 @@ export default function Leaders() {
                         {t('common.clearFilters')}
                       </Button>
                     }
-                  />
+                  >
+                    {t('common.noResultsHint')}
+                  </EmptyState>
                 ) : (
                   <EmptyState
                     icon={<IconUsers className="h-6 w-6" />}
                     title={t('leader.noLeaders')}
                     action={
+                      // Outline: the header's «قائد جديد» stays the one filled action on screen
                       isAdmin ? (
-                        <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
+                        <Button variant="outline" onClick={() => setEditingLeader(EMPTY_LEADER)}>
                           <IconPlus />
                           {t('leader.addLeader')}
                         </Button>

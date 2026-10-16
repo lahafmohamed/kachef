@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
@@ -17,7 +17,7 @@ import {
   CardTitle,
   ErrorState,
   PageHeader,
-  SkeletonPage,
+  Skeleton,
   Table,
   Td,
   Th,
@@ -59,6 +59,25 @@ const rateText = (rate) => (rate == null ? '—' : `${rate}%`);
  */
 const bidi = (s) => (s ? `⁨${s}⁩` : s);
 
+/** «samedi 17 octobre» stays on one line: split, it reads as two facts. */
+const unbroken = (s) => s.replace(/ /g, '\u00a0');
+
+/**
+ * A composed line («date · présents : 12 · sans paiement : 4») that breaks
+ * between its facts, never inside a short one: «sans / paiement : 4», or a name
+ * split over two lines, reads as two facts. The no-break space before each «·»
+ * keeps a separator from starting a line.
+ */
+function Facts({ text }) {
+  if (typeof text !== 'string') return text;
+  return text.split(' · ').map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && '\u00a0· '}
+      {part.replace(/[\u2066-\u2069]/g, '').length <= 24 ? <span className="whitespace-nowrap">{part}</span> : part}
+    </Fragment>
+  ));
+}
+
 // The ar formatter adds bidi marks that reverse segments inside the UI's ltr islands
 const clean = (s) => s.replace(/[‎‏؜]/g, '');
 const formats = {};
@@ -71,8 +90,9 @@ function useFmt() {
   const { t, i18n } = useTranslation();
   const ar = i18n.language === 'ar';
   return useMemo(() => {
-    const locale = ar ? 'ar-u-nu-latn' : 'fr-FR';
-    // «samedi 3 octobre» · «السبت، 3 أكتوبر»
+    // ar-LB: the Levantine month names (تشرين الأول…) the فوج uses everywhere else
+    const locale = ar ? 'ar-LB-u-nu-latn' : 'fr-FR';
+    // «samedi 3 octobre» · «السبت، 3 تشرين الأول»
     const day = (iso) => clean(intl(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(noon(iso)));
     return {
       date: (iso) => fmtDate(iso),
@@ -170,7 +190,7 @@ function buildTodos(d, t, f, lng) {
       key: 'plan',
       level: 'week',
       Icon: IconCalendar,
-      title: t('dashboard.todo.notPlanned', { day: f.day(d.next_day) }),
+      title: t('dashboard.todo.notPlanned', { day: unbroken(f.day(d.next_day)) }),
       items: notPlanned.map((b) => ({
         key: b.id,
         label: bname(b),
@@ -284,7 +304,7 @@ function buildTodos(d, t, f, lng) {
       count: d.promotions.count,
       meta: [
         ...d.promotions.sample.map((p) => bidi(memberName(p))),
-        more > 0 && t('dashboard.todo.more', { count: more }),
+        more > 0 && bidi(t('dashboard.todo.more', { count: more })),
       ]
         .filter(Boolean)
         .join(' · '),
@@ -341,9 +361,10 @@ function TodoRow({ todo }) {
   const count = todo.count ?? (!target && todo.items?.length > 1 ? todo.items.length : null);
   const { Icon } = todo;
 
-  // Rows run edge to edge inside a clipped card: the focus ring is drawn inside them
+  // Rows run edge to edge inside a clipped card: the focus ring is drawn inside them.
+  // Their inset follows the card header's (p-4, sm:p-5) so icon and title line up.
   const rowCls =
-    'focus-ring flex w-full items-start gap-3 px-4 py-2.5 text-start transition-colors hover:bg-accent/50 focus-visible:[outline-offset:-2px]!';
+    'focus-ring flex w-full items-start gap-3 px-4 py-2.5 text-start transition-colors hover:bg-accent/50 focus-visible:[outline-offset:-2px]! sm:px-5';
   const body = (
     <>
       <span
@@ -355,7 +376,9 @@ function TodoRow({ todo }) {
       <span className="min-w-0 flex-1 py-px">
         <span className="block font-medium [overflow-wrap:anywhere]">{todo.title}</span>
         {meta && (
-          <span className="mt-0.5 block text-sm text-muted-foreground [overflow-wrap:anywhere]">{meta}</span>
+          <span className="mt-0.5 block text-sm text-muted-foreground [overflow-wrap:anywhere]">
+            <Facts text={meta} />
+          </span>
         )}
       </span>
       {/* Counts sit in their own column, level with the icon, so a long title
@@ -400,7 +423,7 @@ function TodoRow({ todo }) {
       </button>
       <div id={regionId} hidden={!open} className="border-t border-border bg-muted/40">
         {todo.followup ? (
-          <div className="px-4 py-1">
+          <div className="px-4 py-1 sm:px-5">
             <FollowUpList items={todo.followup} initial={5} />
           </div>
         ) : (
@@ -410,11 +433,16 @@ function TodoRow({ todo }) {
                 <PrefLink
                   to={item.to}
                   pref={item.pref}
-                  className="focus-ring flex items-center gap-3 py-2.5 ps-16 pe-4 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]!"
+                  // Indented to the title above: row inset + icon (2.25rem) + gap (0.75rem)
+                  className="focus-ring flex items-center gap-3 py-2.5 ps-16 pe-4 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:ps-[4.25rem] sm:pe-5"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block font-medium [overflow-wrap:anywhere]">{item.label}</span>
-                    {item.meta && <span className="block text-muted-foreground">{item.meta}</span>}
+                    {item.meta && (
+                      <span className="block text-muted-foreground">
+                        <Facts text={item.meta} />
+                      </span>
+                    )}
                   </span>
                   <IconArrow className="text-muted-foreground rtl:rotate-180" />
                 </PrefLink>
@@ -627,10 +655,12 @@ function TrendChart({ points, height = 176 }) {
                   </span>
                 )}
                 {open && (
+                  // Short lines that never wrap: at 1× zoom, max-content rounding
+                  // used to drop the «10» of «الحضور: 9 من 10» onto a line alone
                   <span
                     aria-hidden="true"
                     className={cn(
-                      'pointer-events-none absolute z-10 w-max max-w-44 rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md',
+                      'pointer-events-none absolute z-10 w-max rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs whitespace-nowrap text-popover-foreground shadow-md',
                       edge
                     )}
                     style={{ bottom: `calc(${p.rate}% + 0.5rem)` }}
@@ -718,7 +748,7 @@ function RecentList({ items }) {
               ? t('session.kindGroup')
               : [
                   x.kind === 'visit' && t('session.kindVisit'),
-                  bidi(branchName(x, i18n.language)) + (x.branch_count > 1 ? ` +${x.branch_count - 1}` : ''),
+                  bidi(branchName(x, i18n.language)) + (x.branch_count > 1 ? ` ${bidi(`+${x.branch_count - 1}`)}` : ''),
                 ]
                   .filter(Boolean)
                   .join(' · ');
@@ -727,22 +757,24 @@ function RecentList({ items }) {
           <li key={x.id}>
             <Link
               to={`/sessions/${x.id}`}
-              className="focus-ring -mx-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-2 py-2.5 transition-colors hover:bg-accent/50"
+              className="focus-ring -mx-2 flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-accent/50"
             >
-              <span className="min-w-40 flex-1">
+              <span className="min-w-0 flex-1">
                 <span className="block font-medium [overflow-wrap:anywhere]">{x.title}</span>
                 <span className="block text-xs text-muted-foreground">
-                  {f.date(x.date)} · {where}
+                  <Facts text={`${f.date(x.date)} · ${where}`} />
                 </span>
               </span>
-              <span className="flex flex-wrap items-center gap-1.5">
+              {/* The figures keep their own column at the row's end: dropped under
+                  the title on some rows only, they read as a ragged list */}
+              <span className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center">
                 {x.unmarked_count > 0 && (
                   <Badge variant="warning">{t('dashboard.recent.unmarked', { count: x.unmarked_count })}</Badge>
                 )}
                 <Badge variant="secondary">
                   {counted
                     ? t('dashboard.recent.result', { present: x.present_count, marked: x.present_count + x.absent_count })
-                    : `${x.present_count} ${t('session.present')}`}
+                    : t('dashboard.recent.present', { count: x.present_count })}
                 </Badge>
               </span>
             </Link>
@@ -754,12 +786,21 @@ function RecentList({ items }) {
 }
 
 function Kpi({ label, value, context, spark, to }) {
+  // A long figure («127 000 F») shrinks to its tile on a phone instead of running
+  // past the padding — it cannot wrap, its spaces are no-break. Short ones, and
+  // every figure in a wider tile, stay at the full 1.875rem.
+  const chars = Math.max(1, String(value).replace(/[\u2066-\u2069]/g, '').length);
   const body = (
-    <Card interactive={!!to} className="flex h-full flex-col gap-1 p-4 sm:p-5">
+    <Card interactive={!!to} className="@container flex h-full flex-col gap-1 p-4 sm:p-5">
       {/* Two lines kept on phones: a label that wraps beside one that doesn't
           would drop its number below its neighbour's */}
       <span className="text-sm text-muted-foreground max-sm:min-h-[2lh]">{label}</span>
-      <span className="text-3xl font-bold leading-tight tracking-tight">{value}</span>
+      <span
+        className="text-3xl font-bold leading-tight tracking-tight"
+        style={{ fontSize: `min(1.875rem, ${(180 / chars).toFixed(1)}cqi)` }}
+      >
+        {value}
+      </span>
       {context && <span className="text-xs text-muted-foreground">{context}</span>}
       <Spark points={spark} className="mt-auto h-9 pt-2" />
     </Card>
@@ -770,6 +811,31 @@ function Kpi({ label, value, context, spark, to }) {
     </Link>
   ) : (
     body
+  );
+}
+
+/**
+ * Loading placeholder in the page's own shape — the figures two by two on a
+ * phone, four abreast from xl, then the rail and the main column — so nothing
+ * jumps when the numbers land.
+ */
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true" aria-live="polite">
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-4 w-64 max-w-full" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-40 rounded-2xl" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3 xl:items-start">
+        <Skeleton className="h-72 rounded-2xl xl:col-start-3 xl:row-start-1" />
+        <Skeleton className="h-72 rounded-2xl xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+      </div>
+    </div>
   );
 }
 
@@ -790,9 +856,15 @@ export default function Dashboard() {
   const d = res.data;
   const todos = useMemo(() => (d ? buildTodos(d, t, f, i18n.language) : []), [d, t, f, i18n.language]);
 
-  if (res.loading) return <SkeletonPage />;
+  if (res.loading) return <DashboardSkeleton />;
   if (res.error)
-    return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
+    return (
+      <div className="space-y-6">
+        {/* The title stays: the home screen still says where it is */}
+        <PageHeader title={t('dashboard.title')} />
+        <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />
+      </div>
+    );
 
   const lng = i18n.language;
   const live = d.branches.filter(isLive);
@@ -802,7 +874,8 @@ export default function Dashboard() {
   const delta =
     d.month?.rate != null && d.month.prev_rate != null
       ? t('dashboard.vsPrev', {
-          delta: `${d.month.rate - d.month.prev_rate >= 0 ? '+' : '−'}${Math.abs(d.month.rate - d.month.prev_rate)}`,
+          // Isolated, so an Arabic line keeps the sign before the digits: «−2», not «2−»
+          delta: bidi(`${d.month.rate - d.month.prev_rate >= 0 ? '+' : '−'}${Math.abs(d.month.rate - d.month.prev_rate)}`),
           month: f.month(d.month.prev_month),
         })
       : null;

@@ -75,15 +75,18 @@ function SettingsSection({ title, badge, open: openProp, onOpenChange, children 
       {/* 0fr → 1fr folds to the body's real height without measuring it.
           Clipped with overflow: clip where supported — hidden would turn this
           wrapper into a scroll container and trap the branches' sticky Save
-          bar inside it. Safari < 16 falls back to hidden. */}
+          bar inside it. Safari < 16 falls back to hidden. `relative` makes it
+          the containing block of absolutely placed descendants (sr-only
+          labels): otherwise they escape the clip and keep a folded page
+          scrolling into blank space. */}
       <div
         id={bodyId}
         className={cn(
-          'grid transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+          'grid grid-cols-1 transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
           open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
         )}
       >
-        <div inert={!open} className="min-h-0 overflow-hidden supports-[overflow:clip]:overflow-clip">
+        <div inert={!open} className="relative min-h-0 overflow-hidden supports-[overflow:clip]:overflow-clip">
           {children}
         </div>
       </div>
@@ -144,7 +147,12 @@ function LeaderMatalibCard() {
         ) : loading ? (
           <Skeleton className="h-24" />
         ) : list.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t('settings.noLeaderMatalib')}</p>
+          <EmptyState
+            title={t('settings.noLeaderMatalib')}
+            className="gap-1 rounded-lg border border-dashed border-border px-4 py-6"
+          >
+            {t('settings.noLeaderMatalibHint')}
+          </EmptyState>
         ) : (
           <ul className="divide-y divide-border rounded-lg border border-border">
             {list.map((m) => (
@@ -296,7 +304,12 @@ function LookupListsCard() {
         ) : loading ? (
           <Skeleton className="h-24" />
         ) : list.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t('settings.noLookup')}</p>
+          <EmptyState
+            title={t('settings.noLookup')}
+            className="gap-1 rounded-lg border border-dashed border-border px-4 py-6"
+          >
+            {t('settings.noLookupHint')}
+          </EmptyState>
         ) : (
           <ul className="divide-y divide-border rounded-lg border border-border">
             {list.map((v) => (
@@ -311,7 +324,8 @@ function LookupListsCard() {
                         if (e.key === 'Enter') rename(v);
                         if (e.key === 'Escape') setEditing(null);
                       }}
-                      className="h-9 min-w-40 flex-1"
+                      aria-label={t('settings.lookupLabel')}
+                      className="min-w-40 flex-1 sm:h-9"
                     />
                     <Button size="sm" onClick={() => rename(v)}>
                       {t('common.save')}
@@ -322,7 +336,8 @@ function LookupListsCard() {
                   </>
                 ) : (
                   <>
-                    <span className="flex-1 truncate text-sm">{v.label}</span>
+                    {/* A long school name wraps instead of losing its end */}
+                    <span className="min-w-0 flex-1 break-words text-sm">{v.label}</span>
                     {/* Says what a delete would leave behind, before it is clicked */}
                     {v.usage_count > 0 && <Badge variant="outline">{v.usage_count}</Badge>}
                     <Button
@@ -525,7 +540,11 @@ export default function Settings() {
         badge={dirty && !saving && <Badge variant="warning">{t('settings.unsaved')}</Badge>}
       >
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">{t('settings.noLimit')}</p>
+          <div className="space-y-1 text-sm text-muted-foreground">
+            <p>{t('settings.noLimit')}</p>
+            <p>{t('section.branchHint')}</p>
+            <p>{t('settings.allAgesHint')}</p>
+          </div>
           {error ? (
             <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
           ) : loading ? (
@@ -547,11 +566,11 @@ export default function Settings() {
           ) : (
             branches.map((b) => (
               <div key={b.id} className="space-y-3 rounded-lg border border-border p-3 sm:p-4">
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <h3 className="font-semibold">
                     {i18n.language === 'ar' ? b.name_ar : b.name_fr}
-                    <span className="ms-2 text-xs font-normal tabular-nums text-muted-foreground">
-                      {b.member_count} {t('settings.members')}
+                    <span className="ms-2 whitespace-nowrap text-xs font-normal tabular-nums text-muted-foreground">
+                      {t('member.rosterCount', { count: b.member_count })}
                     </span>
                   </h3>
                   <Button
@@ -563,7 +582,7 @@ export default function Settings() {
                     <IconTrash />
                   </Button>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor={`fr-${b.id}`}>{t('settings.nameFr')}</Label>
                     <Input
@@ -583,12 +602,10 @@ export default function Settings() {
                     />
                   </div>
                 </div>
-                <SectionField
-                  value={b.section}
-                  onChange={(v) => setField(b.id, 'section', v)}
-                  hint={t('section.branchHint')}
-                />
+                {/* The section rule is said once, above the list, not in every card */}
+                <SectionField value={b.section} onChange={(v) => setField(b.id, 'section', v)} />
                 <AllAgesToggle
+                  hint={false}
                   checked={!!b.all_ages}
                   onChange={(v) => setField(b.id, 'all_ages', v ? 1 : 0)}
                 />

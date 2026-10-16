@@ -19,7 +19,7 @@ export default function FilterChips({ chips, onClearAll }) {
           type="button"
           onClick={c.clear}
           aria-label={t('common.removeFilter', { label: c.label ? `${c.label}: ${c.value}` : c.value })}
-          className="focus-ring inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:h-8"
+          className="focus-ring inline-flex h-11 cursor-pointer items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 ps-3 pe-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:h-8"
         >
           <span className="max-w-72 truncate">
             {c.label && <span className="opacity-75">{c.label}: </span>}

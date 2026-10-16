@@ -246,11 +246,12 @@ function SectionSwitcher({ onSwitched }) {
   );
 }
 
+// 44px rows under a thumb (the phone's account menu), as the buttons are; 36px where a pointer aims
 function MenuItem({ icon, children, ...props }) {
   return (
     <button
       type="button"
-      className="focus-ring flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-start text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+      className="focus-ring flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-start text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground sm:h-9"
       {...props}
     >
       {icon}

@@ -18,14 +18,15 @@ const EMPTY_BRANCH = {
  * «كل الأعمار» — a فرقة outside the age ladder (الفرنكوفونية): no range to type, and
  * the server keeps its عناصر out of every ترفيع. Shared with the فرق cards in الإعدادات.
  */
-export function AllAgesToggle({ checked, onChange }) {
+export function AllAgesToggle({ checked, onChange, hint = true }) {
   const { t } = useTranslation();
   return (
     <label className="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-lg border border-border p-3 text-sm transition-colors hover:bg-accent/40">
       <input type="checkbox" className="mt-0.5" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span>
         <span className="font-medium">{t('branch.allAges')}</span>
-        <span className="mt-0.5 block text-xs text-muted-foreground">{t('settings.allAgesHint')}</span>
+        {/* hint={false}: a list of these (الإعدادات) says it once above, not per card */}
+        {hint && <span className="mt-0.5 block text-xs text-muted-foreground">{t('settings.allAgesHint')}</span>}
       </span>
     </label>
   );
@@ -83,7 +84,7 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
   return (
     <Dialog open={open} onClose={close} title={t('settings.newBranch')}>
       <form onSubmit={submit} className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="nb_fr">{t('settings.nameFr')}</Label>
             <Input id="nb_fr" dir="ltr" required value={form.name_fr} onChange={set('name_fr')} />
@@ -95,7 +96,9 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
         </div>
         <SectionField value={section} onChange={setSectionPick} hint={t('section.branchHint')} />
         <AllAgesToggle checked={form.all_ages} onChange={(v) => setForm((f) => ({ ...f, all_ages: v }))} />
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4">
+        {/* Rows as far apart as the form's other fields: at gap-2 the مطالب total sat
+            cramped under the ages */}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-4 sm:grid-cols-3 sm:gap-4">
           {/* Unmounted, not hidden: a hidden required field would block the submit */}
           {!form.all_ages && (
             <>

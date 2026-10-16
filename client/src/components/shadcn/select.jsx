@@ -50,14 +50,16 @@ export function SelectTrigger({ className, children, icon, ...props }) {
       className={cn(
         'group focus-ring flex h-11 w-full items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs',
         'transition-colors hover:bg-accent/40 focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 sm:h-10',
-        'data-[placeholder]:text-muted-foreground [&>span]:truncate',
+        'data-[placeholder]:text-muted-foreground',
         className
       )}
       {...props}
     >
+      {/* The value in its own box: text-overflow does nothing on a flex container, so a
+          value too long for the trigger was cut off hard instead of ending with «…» */}
       <span className="flex min-w-0 items-center gap-2">
         {icon}
-        {children}
+        <span className="min-w-0 truncate">{children}</span>
       </span>
       {/* The chevron points at where the panel went. Rotating it is the one
           cue that survives the panel being portalled somewhere else on screen. */}

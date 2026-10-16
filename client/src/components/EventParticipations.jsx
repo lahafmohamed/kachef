@@ -64,10 +64,8 @@ export default function EventParticipations({ state, feminine = false }) {
         {rows.map((e) => {
           const days = dayNumber(e, e.end_date);
           const phase = eventPhase(e, today);
-          const meta = [
-            `${fmtDateRange(e.start_date, e.end_date)}${days > 1 ? ` · ${t('event.dayCount', { count: days })}` : ''}`,
-            e.place,
-          ].filter(Boolean);
+          const range = fmtDateRange(e.start_date, e.end_date);
+          const meta = [days > 1 && t('event.dayCount', { count: days }), e.place].filter(Boolean);
           const joined = e.participant_id !== null;
           // Paid or not only where an amount is asked, or money was recorded anyway
           const payKey =
@@ -104,7 +102,19 @@ export default function EventParticipations({ state, feminine = false }) {
                       <Badge variant="outline">{t('event.startsIn', { count: 1 - dayNumber(e, today) })}</Badge>
                     )}
                   </div>
-                  <p className="text-sm text-muted-foreground">{meta.join(' · ')}</p>
+                  {/* Each fact whole. The dates, digits only, follow the line's direction (the
+                      first one read first, as everywhere else); the others keep their own (a
+                      Latin place on the Arabic page). The «·» holds on to the fact before it, like
+                      a comma, so a wrapped line never opens on a lone «·» */}
+                  <p className="text-sm text-muted-foreground">
+                    <span className="whitespace-nowrap">{range}</span>
+                    {meta.map((m, i) => (
+                      <span key={i}>
+                        <span aria-hidden="true">{'\u00a0· '}</span>
+                        <bdi className={m.length <= 24 ? 'whitespace-nowrap' : undefined}>{m}</bdi>
+                      </span>
+                    ))}
+                  </p>
                 </div>
 
                 {/* His part in it: in charge, how many جلسات he attended, what he paid */}

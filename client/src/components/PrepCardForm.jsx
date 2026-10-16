@@ -144,7 +144,7 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="pc_date">{t('common.date')}</Label>
           <DatePicker
@@ -228,11 +228,11 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
         <div className="space-y-1.5">
           <Label>
             {t('prep.matalib')}
-            <span className="ms-2 font-normal text-muted-foreground">
+            <span className="ms-2 font-normal tabular-nums text-muted-foreground">
               {t('session.selectedCount', { count: form.matalib.length })}
             </span>
           </Label>
-          <div className="max-h-56 overflow-y-auto rounded-md border border-border p-2">
+          <div className="max-h-56 overflow-y-auto rounded-lg border border-border p-2">
             <RequirementGrid
               total={selectedBranch.total_requirements}
               selected={form.matalib}
@@ -281,19 +281,24 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
         />
       </div>
 
-      {error && (
-        <p role="alert" className="text-sm font-medium text-destructive">
-          {error}
-        </p>
-      )}
-
-      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" onClick={onCancel}>
-          {t('common.cancel')}
-        </Button>
-        <Button type="submit" loading={saving}>
-          {t('common.save')}
-        </Button>
+      {/* Pinned to the bottom of the dialog, like a Dialog footer: the form runs two
+          screens long, and «حفظ» had to be scrolled to. The negative offsets cancel
+          the dialog body's padding so the bar sits flush with its edges, scrolled or
+          not; the error sits with the buttons so it shows wherever the form is. */}
+      <div className="sticky -bottom-[max(1rem,env(safe-area-inset-bottom,0px))] z-10 -mx-4 -mb-[max(1rem,env(safe-area-inset-bottom,0px))] space-y-2 border-t border-border bg-card px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:-bottom-[max(1.25rem,env(safe-area-inset-bottom,0px))] sm:-mx-5 sm:-mb-[max(1.25rem,env(safe-area-inset-bottom,0px))] sm:rounded-b-2xl sm:px-5">
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" loading={saving}>
+            {t('common.save')}
+          </Button>
+        </div>
       </div>
     </form>
   );
