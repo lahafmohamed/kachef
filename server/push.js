@@ -26,6 +26,9 @@ const BIRTHDAY_HOUR = Number(process.env.NOTIFY_BIRTHDAY_HOUR ?? 7);
 const DUES_REMINDER_DAY = Number(process.env.NOTIFY_DUES_DAY ?? 5);
 const DUES_REMINDER_HOUR = 10;
 const DUES_START = '2026-01';
+// I1 : le rapport du mois écoulé, rappelé le 1er du mois
+const REPORT_REMINDER_DAY = Number(process.env.NOTIFY_REPORT_DAY ?? 1);
+const REPORT_REMINDER_HOUR = 9;
 // بطاقة التحضير of the next planned نشاط, this many days before it
 const PREP_DAYS_AHEAD = 2;
 const REMINDER_EVERY_MS = 10 * 60 * 1000;
@@ -52,6 +55,8 @@ const TYPES = {
   event_changed: { group: 'events', perm: 'events.read', on: () => true },
   event_role: { group: 'events', perm: 'events.read', leader: true, on: () => true },
   event_reminder: { group: 'events', perm: 'events.read', leader: true, on: () => true },
+  // E1 : à J-3, au chef du camp et à sa هيئة, ce qui manque encore (autorisations, sécurité)
+  event_readiness: { group: 'events', perm: 'events.read', leader: true, on: () => true },
   // ----- الاجتماعات -----
   meeting_created: { group: 'meetings', perm: 'meetings.read', on: () => true },
   decision_assigned: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
@@ -63,6 +68,11 @@ const TYPES = {
   // ----- العناصر و القادة -----
   birthday: { group: 'people', perm: ['members.read', 'leaders.read'], on: (u) => ownBranches(u) !== null },
   member_created: { group: 'people', perm: 'members.read', on: () => false },
+  // A2 : un عنصر atteint la série d'absences, après validation de la présence. Les قادة de
+  // sa فرقة au premier palier ; au second (deux fois le seuil), l'admin aussi.
+  absence_streak: { group: 'people', perm: 'members.read', on: () => true },
+  // I1 : le 1er du mois, rendre le rapport du mois écoulé à la قيادة
+  period_report: { group: 'sessions', perm: 'branches.read', on: () => true },
   // ----- المال -----
   treasury_entry: { group: 'money', perm: 'treasury.read', on: () => false },
   leader_dues: { group: 'money', perm: null, leader: true, on: () => false },
@@ -705,6 +715,46 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     });
   }
 
+  /**
+   * A2 : un عنصر absent `streak` fois de suite (séances qui comptent). Palier 1 : les comptes
+   * liés à sa فرقة ; palier 2 : eux et l'admin. Une seule fois par palier et par série
+   * (`startId` = la première absence de la série). Renvoie true si l'alerte est partie.
+   */
+  function absenceStreak({ member: m, streak, level, startId, threshold, lastContact }) {
+    const section = db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
+    if (!section) return false;
+    if (markReminder.run(`absence:${m.id}:${startId}:${level}`).changes === 0) return false;
+    const users = audience({ section, branchIds: [m.branch_id], type: 'absence_streak' }).filter(
+      (u) => ownBranches(u) !== null || (level === 2 && u.role === 'admin')
+    );
+    const name = [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ');
+    deliver(users, {
+      type: 'absence_streak',
+      url: `/members/${m.id}?tab=followup`,
+      tag: `abs${m.id}`,
+      text: (lang) => ({
+        title: titleWith(
+          level === 2
+            ? lang === 'ar' ? 'غياب متواصل: تصعيد' : 'Absences répétées : escalade'
+            : lang === 'ar' ? 'عنصر للمتابعة' : 'Membre à suivre',
+          branchNames([m.branch_id], lang)
+        ),
+        body: joinLine(
+          name,
+          lang === 'ar' ? `${streak} غيابات متتالية` : `${streak} absences de suite`,
+          lastContact
+            ? lang === 'ar'
+              ? `آخر اتصال ${fmtDay(lastContact.contacted_at, lang)} (${lastContact.contacted_by})`
+              : `dernier contact le ${fmtDay(lastContact.contacted_at, lang)} (${lastContact.contacted_by})`
+            : lang === 'ar'
+              ? 'لم يُتّصل بأهله بعد'
+              : 'famille pas encore contactée'
+        ),
+      }),
+    });
+    return true;
+  }
+
   // ---------- Reminders ----------
   // The evening of a فرقة's نشاط, its قادة hear it if nobody is marked present yet: the
   // roster starts all absent, so an untouched one reads as a نشاط nobody came to, and
@@ -718,11 +768,14 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
   function attendanceReminders(now = new Date()) {
     if (now.getUTCHours() < REMINDER_HOUR) return 0;
     const today = now.toISOString().slice(0, 10);
-    db.prepare("DELETE FROM notification_reminders WHERE sent_at < datetime('now', '-60 days')").run();
+    // Les paliers d'absence (A2) restent : une série longue ne doit pas réalerter
+    db.prepare(
+      "DELETE FROM notification_reminders WHERE sent_at < datetime('now', '-60 days') AND key NOT LIKE 'absence:%'"
+    ).run();
     const unmarked = db
       .prepare(
         `SELECT s.* FROM sessions s
-         WHERE s.kind = 'activity' AND s.date = ?
+         WHERE s.kind = 'activity' AND s.date = ? AND s.attendance_finalized_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM notification_reminders r WHERE r.key = 'attendance:' || s.id)
            AND EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = s.id)
            AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = s.id AND a.status IN ('present', 'excused'))`
@@ -753,6 +806,48 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
               : `«${s.title}» : personne n'est encore marqué présent.`,
         }),
       });
+    }
+    // J+1 et J+3 : une séance passée dont la présence n'est toujours pas confirmée — ni
+    // validée, ni personne de marqué présent ou excusé (la règle de countedSessionSQL dans
+    // index.js). Elle ne compte nulle part tant qu'on ne la reprend pas. Un نشاط قادة aussi,
+    // quand il a une liste (فرق invitées) : son audience est celle de ces فرق.
+    for (const offset of [1, 3]) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() - offset);
+      const day = d.toISOString().slice(0, 10);
+      const late = db
+        .prepare(
+          `SELECT s.* FROM sessions s
+           WHERE s.date = ? AND s.attendance_finalized_at IS NULL
+             AND (s.kind = 'activity'
+                  OR (s.kind = 'leaders' AND EXISTS (SELECT 1 FROM session_branches sb WHERE sb.session_id = s.id)))
+             AND EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = s.id)
+             AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = s.id AND a.status IN ('present', 'excused'))
+             AND NOT (s.kind = 'leaders' AND EXISTS (SELECT 1 FROM session_leaders sl
+                        WHERE sl.session_id = s.id AND sl.status IN ('present', 'excused')))`
+        )
+        .all(day);
+      for (const s of late) {
+        if (markReminder.run(`attendance-j${offset}:${s.id}`).changes === 0) continue;
+        sent += 1;
+        const branchIds = branchIdsOf(s.id);
+        deliver(audience({ section: s.section, branchIds, type: 'attendance_missing' }), {
+          type: 'attendance_missing',
+          url: `/sessions/${s.id}`,
+          tag: `s${s.id}`,
+          ttl: 24 * 60 * 60,
+          text: (lang) => ({
+            title: titleWith(
+              lang === 'ar' ? 'حضور لم يُثبَّت' : 'Présence non confirmée',
+              branchNames(branchIds, lang)
+            ),
+            body:
+              lang === 'ar'
+                ? `«${s.title}» (${fmtDay(s.date, lang)}): لم يُسجَّل الحضور بعد، فالنشاط لا يُحتسب في النسب. سجّله أو ثبّته.`
+                : `«${s.title}» (${fmtDay(s.date, lang)}) : présence toujours pas saisie, la séance ne compte pas dans les taux. Pointez-la ou validez-la.`,
+          }),
+        });
+      }
     }
     return sent;
   }
@@ -800,6 +895,56 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
               ? `${w.fem ? 'تبدأ' : 'يبدأ'} ${w.ar} غدًا`
               : `${capital(w.fr)} ${ev.kind === 'trip' ? 'a lieu' : 'commence'} demain`,
           body: joinLine(`«${ev.title}»`, ev.place),
+        }),
+      });
+    }
+    return sent;
+  }
+
+  /** Three days before a مخيم, its chief and هيئة: the parental consents and safety points still missing. */
+  function readinessReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR) return 0;
+    let sent = 0;
+    const rows = db
+      .prepare(
+        `SELECT e.*,
+           (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL
+              AND p.member_id IS NOT NULL AND p.consent_at IS NULL) AS consent_missing,
+           (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = e.id) AS safety_total,
+           (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = e.id AND c.done_at IS NOT NULL) AS safety_done
+         FROM events e WHERE e.start_date = ?`
+      )
+      .all(isoDay(now, 3));
+    for (const ev of rows) {
+      if (!ev.consent_missing && ev.safety_done >= ev.safety_total) continue;
+      if (!claim(`event-ready:${ev.id}`)) continue;
+      const leaderIds = db
+        .prepare(
+          `SELECT leader_id FROM events WHERE id = @id AND leader_id IS NOT NULL
+           UNION SELECT leader_id FROM event_staff WHERE event_id = @id AND leader_id IS NOT NULL`
+        )
+        .all({ id: ev.id })
+        .map((r) => r.leader_id);
+      const users = usersOfLeaders(leaderIds).filter((u) => hears(u, 'event_readiness', ev.section));
+      sent += users.length;
+      const w = eventWord(ev);
+      const n = ev.consent_missing;
+      const safety = ev.safety_total && ev.safety_done < ev.safety_total;
+      deliver(users, {
+        type: 'event_readiness',
+        url: `/events/${ev.id}?tab=safety`,
+        tag: `e${ev.id}-ready`,
+        ttl: 3 * DAY_S,
+        text: (lang) => ({
+          title:
+            lang === 'ar'
+              ? `${w.ar} بعد ثلاثة أيام: لم يكتمل التحضير`
+              : `${capital(w.fr)} dans trois jours : la préparation n'est pas complète`,
+          body: joinLine(
+            `«${ev.title}»`,
+            n ? (lang === 'ar' ? `أذونات الأهل الناقصة: ${n}` : `${n} autorisation${n > 1 ? 's' : ''} parentale${n > 1 ? 's' : ''} manquante${n > 1 ? 's' : ''}`) : null,
+            safety ? (lang === 'ar' ? `السلامة ${ev.safety_done}/${ev.safety_total}` : `sécurité ${ev.safety_done}/${ev.safety_total}`) : null
+          ),
         }),
       });
     }
@@ -1023,15 +1168,42 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     return users.length;
   }
 
+  /** I1 : le 1er du mois, le rapport du mois écoulé est à rendre à la قيادة. */
+  function reportReminders(now = new Date()) {
+    if (now.getUTCDate() !== REPORT_REMINDER_DAY || now.getUTCHours() < REPORT_REMINDER_HOUR) return 0;
+    const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15));
+    const month = prev.toISOString().slice(0, 7);
+    const users = activeUsers
+      .all()
+      .filter((u) => typesFor(u).includes('period_report') && wants(u, 'period_report') && claim(`report:${month}:${u.id}`));
+    const monthName = (lang) => fmt(lang, { month: 'long', year: 'numeric' }, prev);
+    deliver(users, {
+      type: 'period_report',
+      url: `/?report=${month}`,
+      tag: `report-${month}`,
+      ttl: 3 * DAY_S,
+      text: (lang) => ({
+        title: lang === 'ar' ? 'التقرير الشهري' : 'Rapport du mois',
+        body:
+          lang === 'ar'
+            ? `تقرير ${monthName(lang)} جاهز للرفع إلى القيادة.`
+            : `Le rapport de ${monthName(lang)} est à remettre à la direction.`,
+      }),
+    });
+    return users.length;
+  }
+
   function runReminders() {
     for (const job of [
       attendanceReminders,
       eventReminders,
+      readinessReminders,
       decisionReminders,
       evaluationReminders,
       prepReminders,
       birthdayReminders,
       duesReminders,
+      reportReminders,
     ])
       try {
         job();
@@ -1239,9 +1411,11 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     evaluationReceived,
     memberCreated,
     treasuryEntry,
+    absenceStreak,
     // The reminders, callable with a given time (tests)
     attendanceReminders,
     eventReminders,
+    readinessReminders,
     decisionReminders,
     evaluationReminders,
     prepReminders,

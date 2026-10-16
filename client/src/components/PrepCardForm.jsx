@@ -7,7 +7,8 @@ import { branchName, fmtDate, memberName, todayISO } from '../utils';
 import DatePicker from './DatePicker';
 import SearchSelect from './SearchSelect';
 import TimePicker from './TimePicker';
-import { Button, Input, Label, RequirementGrid, Select, Textarea } from './ui';
+import { Button, Input, Label, Select, Textarea } from './ui';
+import { BranchRequirementGrid } from './MatalibCatalog';
 
 /**
  * نموذج بطاقة التحضير — يخدم الإنشاء و التعديل معًا: initial فارغ يعني بطاقة
@@ -232,14 +233,14 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
               {t('session.selectedCount', { count: form.matalib.length })}
             </span>
           </Label>
-          <div className="max-h-56 overflow-y-auto rounded-lg border border-border p-2">
-            <RequirementGrid
-              total={selectedBranch.total_requirements}
-              selected={form.matalib}
-              onToggle={toggleMatlab}
-              label={t('prep.matalib')}
-            />
-          </div>
+          <BranchRequirementGrid
+            branchId={selectedBranch.id}
+            wrapClassName="max-h-56 overflow-y-auto rounded-lg border border-border p-2"
+            total={selectedBranch.total_requirements}
+            selected={form.matalib}
+            onToggle={toggleMatlab}
+            label={t('prep.matalib')}
+          />
         </div>
       )}
 

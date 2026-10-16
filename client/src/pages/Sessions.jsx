@@ -1,4 +1,5 @@
 import ExportPdfButton from '../components/ExportPdfButton';
+import PeriodReportButton from '../components/PeriodReport';
 import { Fragment, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -12,6 +13,7 @@ import { toDate } from '../lib/date';
 import { signed } from '../lib/events';
 import { resultTone } from '../lib/treasury';
 import { fmtScore, scoreTone } from '../lib/evaluations';
+import { isCountedSession } from '../lib/attendance';
 import AmountInput from '../components/AmountInput';
 import Combobox from '../components/Combobox';
 import DatePicker from '../components/DatePicker';
@@ -32,10 +34,10 @@ import {
   Input,
   Label,
   PageHeader,
-  RequirementGrid,
   Select,
   Skeleton,
   useToast,
+  IconAlert,
   IconCalendar,
   IconCheck,
   IconCoins,
@@ -47,9 +49,13 @@ import {
   IconSwap,
   IconX,
 } from '../components/ui';
+import { BranchRequirementGrid } from '../components/MatalibCatalog';
 
 // The journal's filters, as the URL and the API both name them
-const FILTER_KEYS = ['q', 'branch', 'group', 'from', 'to', 'leader', 'activity_type', 'kind'];
+const FILTER_KEYS = ['q', 'branch', 'group', 'from', 'to', 'leader', 'activity_type', 'kind', 'todo'];
+// «À régulariser»: all three gaps (1), or one of them
+const TODO_KINDS = ['attendance', 'eval', 'finances'];
+const TODO_BADGE = { attendance: 'session.unconfirmed', eval: 'session.todoEval', finances: 'session.todoFinances' };
 
 const EMPTY = {
   kind: 'activity',
@@ -141,10 +147,11 @@ function tally(s) {
 }
 
 /**
- * Every عنصر starts out غائب when the نشاط is created: today's or an upcoming one with
- * nobody marked present or excused has simply not been taken yet — it is not a 0%.
+ * Every عنصر starts out غائب when the نشاط is created: a séance that does not count
+ * (not validated, and nobody marked present or excused — or not yet past) has simply
+ * not been taken yet — it is not a 0%. Same rule as every rate on the server.
  */
-const untaken = (s) => s.date >= todayISO() && !s.present_count && !s.excused_count;
+const untaken = (s) => !isCountedSession(s);
 
 /** Rate across a month: every marked عنصر weighs the same, so a big نشاط counts for more. */
 function monthRate(rows) {
@@ -183,7 +190,9 @@ function AttendanceMeter({ s, t }) {
   if (!marked || untaken(s))
     return (
       <div className="space-y-1.5">
-        <p className="text-xs text-muted-foreground">{t('session.notMarked')}</p>
+        <p className={cn('text-xs', s.unconfirmed ? 'font-medium text-warning' : 'text-muted-foreground')}>
+          {t(s.unconfirmed ? 'session.unconfirmed' : 'session.notMarked')}
+        </p>
         <div className="h-1.5 rounded-full border border-dashed border-border" />
       </div>
     );
@@ -297,7 +306,9 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
   // no invited one, a single قسم on screen: then the line is left out, not kept empty
   const scoped =
     !!s.branch_id || bothSections || (s.branch_ids || []).some((id) => branchList.some((b) => b.id === id));
-  const hasBadges = scoped || !!s.plan_item_id || s.guest_count > 0 || s.matalib.length > 0;
+  // What is still to do on it («À régulariser»); the présence one is said by the meter
+  const todo = (s.todo || []).filter((k) => k !== 'attendance');
+  const hasBadges = scoped || !!s.plan_item_id || s.guest_count > 0 || s.matalib.length > 0 || todo.length > 0;
   return (
     <li>
       <Link
@@ -339,6 +350,11 @@ function SessionRow({ s, showDate, ranked, lang, t, branchList, bothSections }) 
             <div className="flex flex-wrap items-center gap-1.5">
               <ScopeBadge s={s} lang={lang} t={t} branchList={branchList} bothSections={bothSections} />
               {s.plan_item_id && <Badge variant="success">{t('session.fromPlan')}</Badge>}
+              {todo.map((k) => (
+                <Badge key={k} variant="warning">
+                  {t(TODO_BADGE[k])}
+                </Badge>
+              ))}
               {s.guest_count > 0 && (
                 <Badge variant="outline">{t('session.guestCount', { count: s.guest_count })}</Badge>
               )}
@@ -404,6 +420,7 @@ export default function Sessions() {
   const leaderFilter = param('leader');
   const activityType = param('activity_type');
   const kindFilter = param('kind');
+  const todoFilter = param('todo');
   // Sorting is a preference, not a filter: it survives from one visit to the next
   const [sort, setSort] = useLocalStorage('sessions.sort', 'date_desc');
   const [showFilters, setShowFilters] = useState(false);
@@ -417,8 +434,13 @@ export default function Sessions() {
   const leaders = useFetch('/leaders');
   // Visit picker needs the roster; without members.read the fetch would 403
   const members = useFetch('/members', { skip: !has('members.read') });
+  // How many séances «À régulariser» — the button says it before it is pressed
+  const todoAll = useFetch('/sessions?todo=1');
+  const todoCount = todoAll.data?.length || 0;
 
-  const activeFilters = [branch, groupFilter, from, to, leaderFilter, activityType, kindFilter].filter(Boolean).length;
+  const activeFilters = [branch, groupFilter, from, to, leaderFilter, activityType, kindFilter, todoFilter].filter(
+    Boolean
+  ).length;
   const filtering = activeFilters > 0 || !!q;
   // A new search or filter keeps the list on screen, dimmed, until the answer comes
   // back — swapping in skeletons on every keystroke made the page jump. Skeletons
@@ -806,6 +828,11 @@ export default function Sessions() {
     },
     activityType && { key: 'nature', value: labelOf(natureOptions, activityType), clear: () => patch({ activity_type: '' }) },
     kindFilter && { key: 'kind', value: labelOf(kindOptions, kindFilter), clear: () => patch({ kind: '' }) },
+    todoFilter && {
+      key: 'todo',
+      value: TODO_KINDS.includes(todoFilter) ? `${t('session.todo')} · ${t(TODO_BADGE[todoFilter])}` : t('session.todo'),
+      clear: () => patch({ todo: '' }),
+    },
   ].filter(Boolean);
 
   // Month headers only make sense in date order; a ranking by attendance is one flat list
@@ -831,6 +858,7 @@ export default function Sessions() {
           q.delete('branch');
           return <ExportPdfButton kind="sessions-list" id={params.get('branch') || 0} query={q.toString()} compact />;
         })()}
+        <PeriodReportButton compact />
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>
             <IconPlus />
@@ -883,6 +911,24 @@ export default function Sessions() {
               onChange={({ from: f, to: tt }) => patch({ from: f, to: tt })}
             />
           </div>
+          {/* «À régulariser»: past séances whose présence is not confirmed, whose
+              evaluation or finances are missing — shown only when there is some */}
+          {(todoCount > 0 || todoFilter) && (
+            <Button
+              variant={todoFilter ? 'secondary' : 'outline'}
+              className="shrink-0 px-3"
+              aria-pressed={!!todoFilter}
+              onClick={() => patch({ todo: todoFilter ? '' : '1' })}
+            >
+              <IconAlert />
+              {t('session.todo')}
+              {todoCount > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-warning px-1 text-[0.6875rem] font-bold tabular-nums text-warning-foreground">
+                  {todoCount}
+                </span>
+              )}
+            </Button>
+          )}
           {/* As on the عناصر list: the word goes below 400px so the search keeps the
               room for its hint; the count stays, and is part of the button's name */}
           <Button
@@ -1586,14 +1632,14 @@ export default function Sessions() {
                   {t('session.selectedCount', { count: form.matalib.length })}
                 </span>
               </Label>
-              <div className="max-h-56 overflow-y-auto rounded-lg border border-border p-2">
-                <RequirementGrid
-                  total={selectedBranch.total_requirements}
-                  selected={form.matalib}
-                  onToggle={toggleMatalib}
-                  label={t('session.requirements')}
-                />
-              </div>
+              <BranchRequirementGrid
+                branchId={selectedBranch.id}
+                wrapClassName="max-h-56 overflow-y-auto rounded-lg border border-border p-2"
+                total={selectedBranch.total_requirements}
+                selected={form.matalib}
+                onToggle={toggleMatalib}
+                label={t('session.requirements')}
+              />
             </div>
           );
 

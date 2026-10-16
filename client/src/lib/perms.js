@@ -9,12 +9,16 @@ export const PERM_GROUPS = [
     keys: [
       'members.read',
       'members.contact',
+      'members.health',
+      'members.followup',
       'members.create',
       'members.edit',
       'members.matalib',
+      'members.admission',
       'members.delete',
       'members.dues.read',
       'members.dues.record',
+      'members.dues.exempt',
     ],
   },
   {
@@ -61,9 +65,13 @@ export const PERM_DEPENDENCIES = {
   'members.edit': ['members.read'],
   'members.delete': ['members.read'],
   'members.contact': ['members.read'],
+  'members.followup': ['members.read'],
+  'members.health': ['members.read'],
   'members.matalib': ['members.read'],
+  'members.admission': ['members.read'],
   'members.dues.read': ['members.read'],
   'members.dues.record': ['members.dues.read'],
+  'members.dues.exempt': ['members.dues.read'],
   'sessions.create': ['sessions.read'],
   'sessions.edit': ['sessions.read'],
   'sessions.attendance': ['sessions.read'],
@@ -100,7 +108,7 @@ export const PERM_DEPENDENCIES = {
 // null = every right.
 export const PERM_PRESETS = {
   branch: [
-    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.matalib',
+    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib', 'members.admission',
     'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
     'prep.read', 'prep.manage',
     'events.read', 'events.manage', 'events.attendance',

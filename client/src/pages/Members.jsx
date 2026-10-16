@@ -3,7 +3,7 @@ import { Link, useNavigate, useNavigationType } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
-import { avatarName, birthdayWhen, branchName, fmtDate, fmtPhone, memberName } from '../utils';
+import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
 import ExportPdfButton from '../components/ExportPdfButton';
 import FilterChips from '../components/FilterChips';
@@ -36,6 +36,7 @@ import {
   cn,
   IconAlert,
   IconCake,
+  IconCoins,
   IconFilter,
   IconPencil,
   IconPhone,
@@ -45,6 +46,9 @@ import {
   IconSort,
   IconUsers,
 } from '../components/ui';
+import { RoleBadges } from '../components/GroupResponsibilities';
+import { AdmissionBadge } from '../components/Admission';
+import { LastContactLine, useAbsenceThreshold } from '../components/Followup';
 
 // Filters the server applies, named as the API names them: the page URL and the
 // request share one vocabulary, and the PDF export takes the same query as is.
@@ -62,6 +66,8 @@ const SERVER_FILTERS = [
   'missing',
   // '1' = للمتابعة: ثلاث غيابات متتالية أو أكثر
   'follow',
+  // 'late' = اشتراك متأخر (G1), pour qui voit les cotisations
+  'dues',
 ];
 // Everything the page keeps in its URL — so «back» from a profile lands on the
 // same فرقة, طليعة and search instead of the whole فوج.
@@ -102,14 +108,14 @@ function Parts({ parts }) {
  * link (keyboard, screen readers, open-in-new-tab) and the phone and pencil keep
  * their own clicks. Columns appear with the card's width, not the viewport's.
  */
-function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
+function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold = 3, showContact = false }) {
   const isChef = m.kind === 'leader';
   const inactive = m.status !== 'active';
   const href = isChef ? `/leaders/${m.id}` : `/members/${m.id}`;
   const name = memberName(m);
   const a = m.attendance;
   const bday = birthdayWhen(m.birth_date);
-  const absences = !isChef && !inactive && a?.absences >= 3 ? a.absences : 0;
+  const absences = !isChef && !inactive && a?.absences >= threshold ? a.absences : 0;
   const contacts = contactsOf(m);
   const primary = contacts[0];
   const age = m.age != null ? t('common.age', { count: m.age }) : null;
@@ -160,6 +166,16 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
                 </Badge>
               )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+              {/* Cotisation en retard (G1) : un mois passé non réglé — le mois en cours
+                  non encore payé, c'est tout le monde en début de mois */}
+              {m.dues_late?.late && (
+                <Badge variant="destructive" title={t('arrears.owedTitle', { amount: fmtAmount(m.dues_late.owed) })}>
+                  <IconCoins className="h-3 w-3" />
+                  {t('arrears.monthsChip', { count: m.dues_late.months })}
+                </Badge>
+              )}
+              <AdmissionBadge member={m} />
+              {!isChef && <RoleBadges items={m.responsibilities} />}
             </div>
             {/* Phones: age and طليعة fold in here; wider cards give them columns. Two
                 lines: on one, a 360px screen cut the طليعة to «طليعة ا…» */}
@@ -171,6 +187,8 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen }) {
                 <Parts parts={details} />
               </div>
             )}
+            {/* «للمتابعة»: who last called the family, and when the next call is due (A2) */}
+            {showContact && !isChef && <LastContactLine contact={m.last_contact} className="mt-0.5 block" />}
           </div>
         </div>
       </td>
@@ -299,6 +317,7 @@ function RosterSkeleton() {
 
 export default function Members() {
   const { t, i18n } = useTranslation();
+  const threshold = useAbsenceThreshold();
   const lang = i18n.language;
   const navigate = useNavigate();
   const navType = useNavigationType();
@@ -334,6 +353,7 @@ export default function Members() {
   // server while its chip claimed otherwise: it is dropped here as well
   if (!missingOptions.some((o) => o.value === f.missing)) f.missing = '';
   if (f.follow !== '1') f.follow = '';
+  if (f.dues !== 'late' || !has('members.dues.read')) f.dues = '';
   // Sorting is a preference, not a filter: it survives from one visit to the next
   // (and the dashboard presets it before sending a قائد here)
   const [sort, setSort] = useLocalStorage('members.sort', 'name');
@@ -388,6 +408,7 @@ export default function Members() {
     f.joined_from || f.joined_to,
     f.missing,
     f.follow,
+    f.dues,
   ].filter(Boolean).length;
   const filterCount = advancedCount + (status ? 1 : 0);
 
@@ -478,7 +499,7 @@ export default function Members() {
   const presentSum = kids.reduce((s, m) => s + (m.attendance?.present || 0), 0);
   const markedSum = kids.reduce((s, m) => s + (m.attendance?.total || 0), 0);
   const rosterRate = markedSum ? Math.round((100 * presentSum) / markedSum) : null;
-  const followCount = kids.filter((m) => m.status === 'active' && m.attendance?.absences >= 3).length;
+  const followCount = kids.filter((m) => m.status === 'active' && m.attendance?.absences >= threshold).length;
 
   const scopeTitle =
     currentBranch === 'leaders'
@@ -526,6 +547,12 @@ export default function Members() {
       label: t('member.attendance'),
       value: t('member.followOnly'),
       clear: () => patch({ follow: '' }),
+    },
+    f.dues && {
+      key: 'dues',
+      label: t('dues.title'),
+      value: t('arrears.lateOnly'),
+      clear: () => patch({ dues: '' }),
     },
     f.missing && {
       key: 'missing',
@@ -760,8 +787,24 @@ export default function Members() {
                     { value: 'follow', label: t('member.followOnly') },
                   ]}
                 />
-                <p className="text-xs text-muted-foreground">{t('member.followHint')}</p>
+                <p className="text-xs text-muted-foreground">{t('member.followHint', { count: threshold })}</p>
               </div>
+              {/* G1 : qui a des mois de cotisation en retard */}
+              {has('members.dues.read') && (
+                <div className="space-y-1.5">
+                  <Label>{t('dues.title')}</Label>
+                  <SegmentedControl
+                    label={t('dues.title')}
+                    value={f.dues ? 'late' : 'all'}
+                    onChange={(v) => patch({ dues: v === 'late' ? 'late' : '' })}
+                    className="flex w-full sm:min-h-10"
+                    options={[
+                      { value: 'all', label: t('member.statusAll') },
+                      { value: 'late', label: t('arrears.lateOnly') },
+                    ]}
+                  />
+                </div>
+              )}
               {/* Files still to complete: what the profile counts as missing, field by field */}
               <div className="space-y-1.5">
                 <Label>{t('member.missingFilter')}</Label>
@@ -943,7 +986,7 @@ export default function Members() {
                     <button
                       type="button"
                       aria-pressed={!!f.follow}
-                      title={t('member.followHint')}
+                      title={t('member.followHint', { count: threshold })}
                       onClick={() => patch({ follow: f.follow ? '' : '1' })}
                       className="focus-ring inline-flex min-h-11 cursor-pointer items-center rounded-sm font-medium text-destructive underline-offset-2 hover:underline sm:min-h-0"
                     >
@@ -1019,6 +1062,8 @@ export default function Members() {
                     canModify={canModify}
                     onEdit={setFormFor}
                     onOpen={navigate}
+                    threshold={threshold}
+                    showContact={!!f.follow}
                   />
                 ))}
               </tbody>

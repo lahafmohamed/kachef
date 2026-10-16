@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS member_matalib (
   UNIQUE(member_id, branch_id, number)
 );
 
+-- كتالوج مطالب الفرقة: ما يعنيه كل رقم. member_matalib و sessions.matalib يبقيان
+-- بالأرقام، فالكتالوج يُضاف فوقها بلا هجرة: رقمٌ بلا سطر هنا يبقى صالحًا، بلا اسم فقط.
+-- majal أحد المجالات العشرة (MAJALAT في index.js)، kind قبول أو تقدم.
+CREATE TABLE IF NOT EXISTS branch_matalib (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  number INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  majal TEXT,
+  kind TEXT NOT NULL DEFAULT 'progress' CHECK (kind IN ('admission', 'progress')),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(branch_id, number)
+);
+
 CREATE TABLE IF NOT EXISTS promotions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
@@ -1569,6 +1583,20 @@ function migrate() {
   ensureColumn('promotions', 'reversed_at', 'reversed_at TEXT');
   ensureColumn('promotions', 'reversed_by', 'reversed_by TEXT');
   ensureColumn('promotions', 'reversal_reason', 'reversal_reason TEXT');
+  // ترفيع تحت عتبة الفرقة: ممكن، لكن كاستثناء معلَّل
+  ensureColumn('promotions', 'override', 'override INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('promotions', 'override_reason', 'override_reason TEXT');
+  // عتبة الترفيع (% من مطالب الفرقة). NULL تُملأ مرّة بقيم montadamahdi: 60 للبراعم و
+  // الأشبال، 70 لغيرهما. 0 = بلا عتبة. ما اختاره المسؤول لا يُمسّ بعدها.
+  ensureColumn('branches', 'promotion_threshold', 'promotion_threshold INTEGER');
+  db.exec(`
+    UPDATE branches SET promotion_threshold =
+      CASE WHEN name_ar LIKE '%أشبال%' OR name_ar LIKE '%براعم%'
+             OR lower(name_fr) LIKE '%louveteau%' OR lower(name_fr) LIKE '%achbal%'
+             OR lower(name_fr) LIKE '%baraem%' OR lower(name_fr) LIKE '%bourgeon%'
+           THEN 60 ELSE 70 END
+    WHERE promotion_threshold IS NULL
+  `);
   // A عنصر or قائد taken off a مخيم's list stays on it, marked: his file says he did not take part.
   // Every count, payment and evaluator ignores a row with withdrawn_at; adding him again clears it.
   ensureColumn('event_participants', 'withdrawn_at', 'withdrawn_at TEXT');
@@ -1801,6 +1829,196 @@ function migrate() {
   seedFrancophoneSection();
   // After it: user_version 2 is its mark, 3 this one's
   seedEventEvalForms();
+  migrateResponsibilities();
+  migrateAdmission();
+  migrateAbsenceFollowup();
+  migrateCampSafety();
+  migrateDuesRates();
+}
+
+// Cotisations (G1) : les tarifs datés (due_rates — un tarif vaut à partir de son mois,
+// jusqu'au suivant : changer le tarif ne touche plus les mois passés), et sur la fiche
+// d'un عنصر un tarif personnel ou une exonération (dues_monthly : NULL = tarif général,
+// 0 = exonéré), son motif (dues_note) et le mois d'où il vaut (dues_rate_from, NULL =
+// depuis toujours). Les tarifs d'aujourd'hui sont posés une fois (user_version 8, dans
+// index.js) à partir du plus ancien mois connu : aucun solde existant ne bouge.
+function migrateDuesRates() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS due_rates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL CHECK (kind IN ('member', 'leader')),
+      amount INTEGER NOT NULL CHECK (amount >= 0),
+      effective_month TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      UNIQUE (kind, effective_month)
+    );
+  `);
+  ensureColumn('members', 'dues_monthly', 'dues_monthly INTEGER');
+  ensureColumn('members', 'dues_note', 'dues_note TEXT');
+  ensureColumn('members', 'dues_rate_from', 'dues_rate_from TEXT');
+}
+
+// Suivi des absences (A2) : le motif d'un absent ou d'un excusé (attendance.reason :
+// illness, travel, study, family, dropout, other — NULL = non dit), le journal des contacts
+// avec la famille (سجل المتابعة), et les réglages de l'application (le seuil de la série
+// d'absences). Aucune donnée existante n'est touchée.
+function migrateAbsenceFollowup() {
+  ensureColumn('attendance', 'reason', 'reason TEXT');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS member_contacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+      contacted_at TEXT NOT NULL,
+      contacted_by TEXT NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      channel TEXT NOT NULL DEFAULT 'call',
+      reason TEXT,
+      note TEXT,
+      next_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_member_contacts_member ON member_contacts(member_id, contacted_at);
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT,
+      updated_by TEXT
+    );
+  `);
+}
+
+// القبول (B1): فترة التجربة، مطالب القبول، التكريس.
+// كل من في القاعدة يوم هذه الهجرة يُعدّ مكرَّسًا (DEFAULT 'invested'، و invested_at مجهول
+// NULL): الجداول استُوردت لعناصر قائمين. وحده العنصر الذي يُسجَّل بعدها يبدأ في التجربة،
+// إلا أن يختار القائد غير ذلك. مطالب القبول لكل فرقة تُملأ مرّة بقيم montadamahdi حين
+// تكون NULL، و ما عدّله المسؤول لا يُمسّ بعدها.
+function migrateAdmission() {
+  ensureColumn('members', 'admission_status', "admission_status TEXT NOT NULL DEFAULT 'invested'");
+  ensureColumn('members', 'invested_at', 'invested_at TEXT');
+  ensureColumn('members', 'trial_started_at', 'trial_started_at TEXT');
+  ensureColumn('branches', 'trial_months', 'trial_months INTEGER');
+  ensureColumn('branches', 'law_items_required', 'law_items_required INTEGER');
+  ensureColumn('branches', 'consecutive_meetings_required', 'consecutive_meetings_required INTEGER');
+  ensureColumn('branches', 'cries_required', 'cries_required INTEGER');
+  // عنصر رُفِّع داخليًا (براعم ← أشبال) يُعفى من مدّة التجربة و من طلب الانتساب
+  ensureColumn('branches', 'internal_skip_trial', 'internal_skip_trial INTEGER');
+  // أشبال (و البراعم): شهر، ٤ بنود، اجتماعان متتاليان، ٣ صرخات. كشافة: شهر، ٥، ٤، ٣.
+  // جوالة (و العلياء): شهران، ٧ بنود، ٤ اجتماعات، ٥ صرخات.
+  const kind = `CASE
+      WHEN name_ar LIKE '%أشبال%' OR name_ar LIKE '%براعم%' THEN 'cub'
+      WHEN name_ar LIKE '%جوال%' OR name_ar LIKE '%علياء%' THEN 'rover'
+      ELSE 'scout' END`;
+  db.exec(`
+    UPDATE branches SET trial_months = CASE ${kind} WHEN 'rover' THEN 2 ELSE 1 END WHERE trial_months IS NULL;
+    UPDATE branches SET law_items_required = CASE ${kind} WHEN 'cub' THEN 4 WHEN 'scout' THEN 5 ELSE 7 END
+      WHERE law_items_required IS NULL;
+    UPDATE branches SET consecutive_meetings_required = CASE ${kind} WHEN 'cub' THEN 2 ELSE 4 END
+      WHERE consecutive_meetings_required IS NULL;
+    UPDATE branches SET cries_required = CASE ${kind} WHEN 'rover' THEN 5 ELSE 3 END WHERE cries_required IS NULL;
+    UPDATE branches SET internal_skip_trial = 1 WHERE internal_skip_trial IS NULL;
+  `);
+  // بند واحد من قائمة القبول، لعنصر في فرقة: من أنجزه و متى. value لعدد بنود القانون
+  // و الصرخات المحفوظة. الفرقة جزء من المفتاح: عنصر رُفِّع و هو في التجربة يبدأ قائمة
+  // فرقته الجديدة، و القديمة تبقى.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS member_admission (
+      member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+      branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+      item TEXT NOT NULL CHECK (item IN ('request', 'salute', 'promise', 'law', 'meetings', 'cries')),
+      value INTEGER,
+      done_at TEXT,
+      done_by TEXT,
+      PRIMARY KEY (member_id, branch_id, item)
+    );
+  `);
+}
+
+// مسؤوليات العناصر في الطليعة (C1): العريف الأول، العريف، المساعد، و دور حرّ (مصوّر،
+// منشد…). كل سطر مؤرَّخ، و لا يُمحى: نهاية المسؤولية تملأ end_date فيبقى التاريخ.
+// group_name نسخة من اسم الطليعة يومها، كي يبقى السطر مقروءًا لو حُذفت الطليعة.
+// end_reason: ended (أنهاها قائد)، replaced (عُيّن غيره مكانه)، moved (خرج من الطليعة)،
+// left (خرج من الفرقة أو لم يعد نشطًا).
+function migrateResponsibilities() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS member_responsibilities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+      branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+      group_id INTEGER REFERENCES branch_groups(id) ON DELETE SET NULL,
+      group_name TEXT,
+      role TEXT NOT NULL CHECK (role IN ('arif_awwal', 'arif', 'musaid', 'other')),
+      label TEXT,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      end_reason TEXT,
+      assigned_by TEXT,
+      ended_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_resp_member ON member_responsibilities(member_id, end_date);
+    CREATE INDEX IF NOT EXISTS idx_resp_group ON member_responsibilities(group_id, end_date);
+    CREATE INDEX IF NOT EXISTS idx_resp_branch ON member_responsibilities(branch_id, end_date);
+  `);
+  // حدود الطليعة و الفرقة (نظام الجماعات الصغيرة: ٥ إلى ٨ في الطليعة؛ فرقة فوق ٣٣ تُقسَم)
+  ensureColumn('branches', 'group_min', 'group_min INTEGER NOT NULL DEFAULT 5');
+  ensureColumn('branches', 'group_max', 'group_max INTEGER NOT NULL DEFAULT 8');
+  ensureColumn('branches', 'unit_max', 'unit_max INTEGER NOT NULL DEFAULT 33');
+  // الخادم يغلق المسؤولية بنفسه حين يغادر العنصر طليعته أو فرقته أو يُؤرشَف — مهما كان
+  // الطريق (توزيع يدوي، حسب السنّ، ترفيع، تعديل الملف، أرشفة). المشغّل يُعاد إنشاؤه في كل
+  // إقلاع، بعد كل إعادة بناء لجدول members (إعادة البناء تُسقط مشغّلاته).
+  // date('now') بتوقيت UTC، كـ todayISO في الخادم.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_resp_close_on_move
+    AFTER UPDATE OF group_id, branch_id, status ON members
+    WHEN OLD.group_id IS NOT NEW.group_id OR OLD.branch_id IS NOT NEW.branch_id OR OLD.status IS NOT NEW.status
+    BEGIN
+      UPDATE member_responsibilities
+         SET end_date = MAX(start_date, date('now')),
+             end_reason = CASE WHEN NEW.status != 'active' OR NEW.branch_id IS NOT OLD.branch_id
+                               THEN 'left' ELSE 'moved' END,
+             ended_by = 'system'
+       WHERE member_id = NEW.id AND end_date IS NULL
+         AND (NEW.status != 'active' OR NEW.branch_id IS NOT OLD.branch_id
+              OR (group_id IS NOT NULL AND group_id IS NOT NEW.group_id));
+    END;
+  `);
+}
+
+// Camp prêt à partir (E1) : la fiche santé de l'عنصر (lue avec members.health, ou par les
+// قادة d'un camp où il est inscrit), l'autorisation parentale par participant (date, qui
+// l'a reçue, scan facultatif) et la check-list sécurité de chaque camp, point par point,
+// avec son responsable dans la هيئة et qui l'a coché quand. Tout est nullable : rien
+// d'existant n'est touché. events.safety_seeded : la check-list par défaut n'est posée
+// qu'une fois par camp — un point supprimé reste supprimé.
+function migrateCampSafety() {
+  for (const col of ['allergies', 'treatment', 'medical_notes', 'emergency_name', 'emergency_phone',
+    'health_updated_at', 'health_updated_by'])
+    ensureColumn('members', col, `${col} TEXT`);
+  // 1 = sait nager, 0 = ne sait pas, NULL = non renseigné
+  ensureColumn('members', 'can_swim', 'can_swim INTEGER');
+  ensureColumn('event_participants', 'consent_at', 'consent_at TEXT');
+  ensureColumn('event_participants', 'consent_by', 'consent_by TEXT');
+  ensureColumn('event_participants', 'consent_scan', 'consent_scan TEXT');
+  ensureColumn('event_participants', 'consent_recorded_by', 'consent_recorded_by TEXT');
+  ensureColumn('events', 'safety_seeded', 'safety_seeded INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_checklist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      -- item : un point du modèle par défaut (kit, extinguisher, evacuation, assembly, site,
+      -- first_aider), traduit par l'interface ; label : un point ajouté à la main
+      item TEXT,
+      label TEXT,
+      staff_id INTEGER REFERENCES event_staff(id) ON DELETE SET NULL,
+      done_at TEXT,
+      done_by TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (item IS NOT NULL OR label IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_checklist_event ON event_checklist(event_id, sort_order);
+  `);
 }
 
 function seed() {

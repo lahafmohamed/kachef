@@ -45,14 +45,23 @@ const PERM_GROUPS = {
     'members.read',
     // الهواتف و العناوين: معطيات شخصية
     'members.contact',
+    // الصحة (E1): الحساسية، العلاج، موانع، السباحة، رقم الطوارئ — معطيات حساسة، لا تخرج
+    // من الخادم بدونها. قادة المخيم يرونها لمشاركيه وحدهم، بلا هذه الصلاحية.
+    'members.health',
+    // سجل المتابعة: تسجيل اتصال بأهل العنصر (مكالمة، واتساب، زيارة) و الموعد التالي
+    'members.followup',
     'members.create',
     'members.edit',
     // زيادة أو إلغاء مطلب لأي عنصر بشكل يدوي
     'members.matalib',
+    // القبول: بنود فترة التجربة، و التكريس (فردي أو جماعي)
+    'members.admission',
     'members.delete',
     // الاشتراك الشهري للعناصر (member_dues): رؤيته، ثم قبضه
     'members.dues.read',
     'members.dues.record',
+    // G1 : tarif personnel ou exonération (fratrie, cas social), avec son motif
+    'members.dues.exempt',
   ],
   sessions: [
     'sessions.read',
@@ -115,9 +124,13 @@ const PERM_DEPENDENCIES = {
   'members.edit': ['members.read'],
   'members.delete': ['members.read'],
   'members.contact': ['members.read'],
+  'members.followup': ['members.read'],
+  'members.health': ['members.read'],
   'members.matalib': ['members.read'],
+  'members.admission': ['members.read'],
   'members.dues.read': ['members.read'],
   'members.dues.record': ['members.dues.read'],
+  'members.dues.exempt': ['members.dues.read'],
   'sessions.create': ['sessions.read'],
   'sessions.edit': ['sessions.read'],
   'sessions.attendance': ['sessions.read'],
@@ -273,6 +286,70 @@ function migrateStoredPerms() {
 }
 migrateStoredPerms();
 
+// Once (user_version 5): members.admission is new (B1). An account that could already
+// tick مطالب by hand (members.matalib) is the قائد who follows عناصره: he gets it too.
+function grantAdmissionPerm() {
+  if (db.pragma('user_version', { simple: true }) >= 5) return;
+  const update = db.prepare('UPDATE users SET perms = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const u of db.prepare("SELECT id, perms FROM users WHERE role != 'admin' AND perms IS NOT NULL").all()) {
+      let list;
+      try {
+        list = JSON.parse(u.perms);
+      } catch {
+        continue;
+      }
+      if (Array.isArray(list) && list.includes('members.matalib') && !list.includes('members.admission'))
+        update.run(JSON.stringify([...list, 'members.admission']), u.id);
+    }
+    db.pragma('user_version = 5');
+  })();
+}
+grantAdmissionPerm();
+
+// Once (user_version 6): members.followup is new (A2). Whoever could read the parents'
+// phones (members.contact) is the قائد who calls them: he may write the call down too.
+function grantFollowupPerm() {
+  if (db.pragma('user_version', { simple: true }) >= 6) return;
+  const update = db.prepare('UPDATE users SET perms = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const u of db.prepare("SELECT id, perms FROM users WHERE role != 'admin' AND perms IS NOT NULL").all()) {
+      let list;
+      try {
+        list = JSON.parse(u.perms);
+      } catch {
+        continue;
+      }
+      if (Array.isArray(list) && list.includes('members.contact') && !list.includes('members.followup'))
+        update.run(JSON.stringify([...list, 'members.followup']), u.id);
+    }
+    db.pragma('user_version = 6');
+  })();
+}
+grantFollowupPerm();
+
+// Once (user_version 7): members.health is new (E1). The قائد who already edits his عناصر'
+// files and reads their parents' phones (members.edit + members.contact) fills in their
+// health too; nobody else gets it without the admin.
+function grantHealthPerm() {
+  if (db.pragma('user_version', { simple: true }) >= 7) return;
+  const update = db.prepare('UPDATE users SET perms = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const u of db.prepare("SELECT id, perms FROM users WHERE role != 'admin' AND perms IS NOT NULL").all()) {
+      let list;
+      try {
+        list = JSON.parse(u.perms);
+      } catch {
+        continue;
+      }
+      if (Array.isArray(list) && list.includes('members.edit') && list.includes('members.contact') && !list.includes('members.health'))
+        update.run(JSON.stringify([...list, 'members.health']), u.id);
+    }
+    db.pragma('user_version = 7');
+  })();
+}
+grantHealthPerm();
+
 // ---------- Usernames ----------
 // A login name is typed on a phone keyboard, dictated over the phone and matched
 // case-insensitively by SQLite's NOCASE (ASCII only). So: lowercase ASCII letters,
@@ -421,7 +498,7 @@ const AUDIT_IN_SESSION = new Set(['treasury_entry', 'member_due', 'session_evalu
 function auditSnapshot(value) {
   if (value === undefined || value === null) return null;
   const clean = { ...value };
-  for (const key of ['password_hash', 'token', 'photo']) delete clean[key];
+  for (const key of ['password_hash', 'token', 'photo', 'consent_scan']) delete clean[key];
   const json = JSON.stringify(clean);
   return json.length > 20000 ? JSON.stringify({ truncated: true }) : json;
 }
@@ -448,9 +525,33 @@ function auditEvent(req, action, entityType, entityId, before = null, after = nu
 // Coordinates are personal data: without members.contact they never leave the server
 const CONTACT_FIELDS = ['member_phone', 'father_phone', 'mother_phone', 'address_abidjan', 'address_lebanon'];
 function stripContact(req, m) {
-  if (hasPerm(req, 'members.contact')) return m;
+  if (hasPerm(req, 'members.contact')) return stripHealth(req, stripDuesRate(req, m));
   const out = { ...m };
   for (const f of CONTACT_FIELDS) if (f in out) out[f] = null;
+  return stripHealth(req, stripDuesRate(req, out));
+}
+
+// G1 : le tarif personnel et le motif d'une exonération (cas social) ne sortent pas
+// sans members.dues.read
+function stripDuesRate(req, m) {
+  if (!m || hasPerm(req, 'members.dues.read') || !('dues_monthly' in m || 'dues_note' in m)) return m;
+  const out = { ...m };
+  delete out.dues_monthly;
+  delete out.dues_note;
+  delete out.dues_rate_from;
+  return out;
+}
+
+// Health (E1) is more sensitive still: without members.health the fields are not even sent.
+// The قادة of a camp read them for its participants through the camp page (eventHealth).
+const HEALTH_FIELDS = [
+  'allergies', 'treatment', 'medical_notes', 'can_swim', 'emergency_name', 'emergency_phone',
+  'health_updated_at', 'health_updated_by',
+];
+function stripHealth(req, m) {
+  if (!m || hasPerm(req, 'members.health')) return m;
+  const out = { ...m };
+  for (const f of HEALTH_FIELDS) delete out[f];
   return out;
 }
 
@@ -547,7 +648,7 @@ app.post('/api/auth/login', (req, res) => {
   db.prepare(
     "INSERT INTO auth_tokens (token, user_id, last_seen_at) VALUES (?, ?, datetime('now'))"
   ).run(token, u.id);
-  res.json({ token, user: publicUser(u), idleTimeoutMs: IDLE_MS });
+  res.json({ token, user: { ...publicUser(u), absence_threshold: absenceThreshold() }, idleTimeoutMs: IDLE_MS });
 });
 
 // Every other /api route requires a valid, still-fresh token
@@ -585,7 +686,8 @@ app.post('/api/auth/logout', (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/auth/me', (req, res) => res.json(req.user));
+// absence_threshold: the series of absences that asks for a call (A2), for every badge
+app.get('/api/auth/me', (req, res) => res.json({ ...req.user, absence_threshold: absenceThreshold() }));
 
 app.post('/api/auth/change-password', (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
@@ -713,6 +815,69 @@ const attendanceInBranchSQL = (branchId, sAlias = 's', aAlias = 'a') => {
       OR COALESCE(${aAlias}.branch_id,
           (SELECT m2.branch_id FROM members m2 WHERE m2.id = ${aAlias}.member_id)) = ${id}))`;
 };
+
+// ---------- Séance «pointée» : la seule règle de comptage ----------
+// Tous les عناصر sont créés «absent» : une séance jamais pointée ferait passer toute la
+// فرقة pour absente. Une séance compte (taux, séries d'absences, مطالب, alertes) si sa
+// présence a été validée, ou si elle est passée et qu'au moins un عنصر (ou un قائد, pour
+// un نشاط قادة) y est marqué présent ou excusé. Celle du jour et les suivantes ne comptent
+// qu'une fois validées. `today` : une date littérale, ou '?' dans une requête préparée.
+// Mirrored by isCountedSession() on the client (lib/attendance.js).
+function countedSessionSQL(s = 's', today = `'${todayISO()}'`) {
+  return `(${s}.attendance_finalized_at IS NOT NULL OR (${s}.date < ${today} AND (
+      EXISTS (SELECT 1 FROM attendance cnt_a WHERE cnt_a.session_id = ${s}.id AND cnt_a.status IN ('present', 'excused'))
+      OR (${s}.kind = 'leaders' AND EXISTS (SELECT 1 FROM session_leaders cnt_l
+            WHERE cnt_l.session_id = ${s}.id AND cnt_l.status IN ('present', 'excused'))))))`;
+}
+// «Présence non confirmée» : une séance à pointer, passée, qui ne compte pas
+const POINTED_KINDS_SQL = (s = 's') => `${s}.kind IN ('activity', 'leaders')`;
+function unconfirmedSessionSQL(s = 's', today = `'${todayISO()}'`) {
+  return `(${POINTED_KINDS_SQL(s)} AND ${s}.date < ${today} AND NOT ${countedSessionSQL(s, today)})`;
+}
+// ---------- Suivi des absences (A2) ----------
+// La série d'absences qui demande d'appeler la famille : 3 par défaut, réglable par
+// l'admin (app_settings). Une même règle pour le badge, le filtre «للمتابعة», le tableau
+// de bord et l'alerte push — calculée sur les seules séances qui comptent (countedSessionSQL).
+const ABSENCE_THRESHOLD_DEFAULT = 3;
+const appSettingStmt = db.prepare('SELECT value FROM app_settings WHERE key = ?');
+function absenceThreshold() {
+  const n = Number(appSettingStmt.get('absence_threshold')?.value);
+  return Number.isInteger(n) && n >= 2 && n <= 10 ? n : ABSENCE_THRESHOLD_DEFAULT;
+}
+// Motif d'un absent ou d'un excusé, et d'un contact avec la famille. «dropout» (انقطاع)
+// propose l'archivage côté client.
+const ABSENCE_REASONS = ['illness', 'travel', 'study', 'family', 'dropout', 'other'];
+const CONTACT_CHANNELS = ['call', 'whatsapp', 'visit', 'other'];
+// Le dernier contact de chaque عنصر demandé : «contacté il y a X jours par Y», et la
+// relance prévue — tant qu'elle n'est pas échue, la ligne passe au second plan
+function lastContactsOf(memberIds) {
+  const ids = [...new Set(memberIds.map(Number).filter(Number.isInteger))];
+  const out = new Map();
+  if (!ids.length) return out;
+  const rows = db
+    .prepare(
+      `SELECT c.member_id, c.contacted_at, c.contacted_by, c.channel, c.reason, c.next_date
+       FROM member_contacts c
+       WHERE c.member_id IN (${ids.join(',')})
+         AND c.id = (SELECT c2.id FROM member_contacts c2 WHERE c2.member_id = c.member_id
+                     ORDER BY c2.contacted_at DESC, c2.id DESC LIMIT 1)`
+    )
+    .all();
+  for (const r of rows) out.set(r.member_id, r);
+  return out;
+}
+
+// The «À régulariser» queue only looks this far back: older gaps no longer ask anything
+const TODO_WINDOW_DAYS = 90;
+// Évaluation manquante : séance passée, son type a une grille, personne ne l'a notée
+const todoEvalSQL = (s = 's') =>
+  `(${s}.date < '${todayISO()}' AND EXISTS (SELECT 1 FROM eval_kind_forms k WHERE k.kind = ${s}.kind)
+    AND NOT EXISTS (SELECT 1 FROM session_evaluations ev WHERE ev.session_id = ${s}.id))`;
+// Finances non saisies : un frais est demandé, des présents, et aucun paiement noté
+const todoFinancesSQL = (s = 's') =>
+  `(${s}.date < '${todayISO()}' AND COALESCE(${s}.fee, 0) > 0
+    AND EXISTS (SELECT 1 FROM attendance a2 WHERE a2.session_id = ${s}.id AND a2.status = 'present')
+    AND NOT EXISTS (SELECT 1 FROM attendance a3 WHERE a3.session_id = ${s}.id AND a3.paid IS NOT NULL))`;
 
 // SQL fragment limiting أنشطة to the caller's قسم and فرق — نشاط بلا فرقة (قادة / فوج)
 // يمرّ إن كان من قسمه
@@ -909,6 +1074,86 @@ function parsePermList(v) {
   return keys.length === ALL_PERMS.length ? null : JSON.stringify(keys);
 }
 
+// ---------- Accès ↔ التشكيلة (I4) ----------
+// users.branches is typed by hand; the التشكيلة moves every year. For an account
+// linked to a قائد, the فرق of his توصيفات in the latest تشكيلة year are what his
+// access (and his notification audience, push.js) should be. Nothing is changed
+// silently except an account that was already aligned: it follows the تشكيلة.
+
+// فرق القائد في تشكيلة السنة الأخيرة، مرتّبة؛ من قسم الحساب وحده إن حُصر فيه
+function tachkilaBranchIds(leaderId, section = null, year = latestYear()) {
+  if (!leaderId || !year) return [];
+  return db
+    .prepare(
+      `SELECT DISTINCT a.branch_id AS id FROM assignments a JOIN branches b ON b.id = a.branch_id
+        WHERE a.year = ? AND a.leader_id = ?${section ? ' AND b.section = ?' : ''} ORDER BY a.branch_id`
+    )
+    .all(...(section ? [year, leaderId, section] : [year, leaderId]))
+    .map((r) => r.id);
+}
+
+const sameIds = (a, b) => {
+  const sa = [...a].map(Number).sort((x, y) => x - y);
+  const sb = [...b].map(Number).sort((x, y) => x - y);
+  return sa.length === sb.length && sa.every((v, i) => v === sb[i]);
+};
+
+// État d'un compte face à la تشكيلة:
+//  'archived' — القائد مؤرشف أو غير نشط (أو محذوف)
+//  'absent'   — لا توصيف له في تشكيلة السنة
+//  'amana'    — توصيفات بلا فرقة (أمانة): لا شيء يُقارن
+//  'all'      — الحساب يرى كل الفرق: لا يُقيَّد تلقائيًا
+//  'drift'    — فرق الحساب ≠ فرق التشكيلة
+//  'ok'
+function tachkilaStatus(u, year = latestYear()) {
+  if (!u.leader_id || u.role === 'admin') return null;
+  const leader = db.prepare('SELECT status, archived_at FROM leaders WHERE id = ?').get(u.leader_id);
+  const ids = tachkilaBranchIds(u.leader_id, u.section, year);
+  const base = { tachkila_year: year, assignment_branch_ids: ids };
+  if (!leader || leader.archived_at || leader.status !== 'active') return { ...base, tachkila_status: 'archived' };
+  const inYear =
+    year && db.prepare('SELECT 1 FROM assignments WHERE year = ? AND leader_id = ? LIMIT 1').get(year, u.leader_id);
+  if (!inYear) return { ...base, tachkila_status: 'absent' };
+  if (ids.length === 0) return { ...base, tachkila_status: 'amana' };
+  if (!u.branches) return { ...base, tachkila_status: 'all' };
+  return { ...base, tachkila_status: sameIds(JSON.parse(u.branches), ids) ? 'ok' : 'drift' };
+}
+
+function alignAccount(req, u, ids) {
+  const json = JSON.stringify(ids);
+  if (u.branches === json) return false;
+  db.prepare('UPDATE users SET branches = ? WHERE id = ?').run(json, u.id);
+  auditEvent(req, 'update', 'user', u.id, publicUser(u), publicUser(userById(u.id)));
+  return true;
+}
+
+// Route middleware for every تشكيلة write: the linked accounts aligned before the
+// change are re-aligned after it (only when the write succeeded and the قائد still
+// has فرق — an emptied تشكيلة never empties an account; the badge shows it instead).
+function followTachkila(req, res, next) {
+  const year = latestYear();
+  const aligned = db
+    .prepare("SELECT * FROM users WHERE leader_id IS NOT NULL AND role != 'admin' AND active = 1 AND branches IS NOT NULL")
+    .all()
+    .filter((u) => tachkilaStatus(u, year)?.tachkila_status === 'ok')
+    .map((u) => u.id);
+  if (aligned.length === 0) return next();
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return;
+    try {
+      for (const id of aligned) {
+        const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+        if (!u || !u.active || !u.branches) continue;
+        const ids = tachkilaBranchIds(u.leader_id, u.section);
+        if (ids.length > 0) alignAccount(req, u, ids);
+      }
+    } catch (e) {
+      console.error('tachkila follow failed:', e.message);
+    }
+  });
+  next();
+}
+
 // Active accounts first; the deactivated ones sit in their own section on the page
 const USER_LIST_SQL = `
   SELECT u.*, (SELECT ${fullNameSQL('l')} FROM leaders l WHERE l.id = u.leader_id) AS leader_name
@@ -922,7 +1167,28 @@ const userById = (id) =>
     .get(id);
 
 app.get('/api/users', requireAdmin, (req, res) => {
-  res.json(db.prepare(USER_LIST_SQL).all().map(publicUser));
+  const year = latestYear();
+  res.json(db.prepare(USER_LIST_SQL).all().map((u) => ({ ...publicUser(u), ...(tachkilaStatus(u, year) || {}) })));
+});
+
+// «Aligner» : les فرق du compte = celles de sa تشكيلة. `ids` = some accounts; none =
+// every active account in drift. 'all' / 'amana' / 'absent' / 'archived' are never
+// touched: those need the admin's judgment, not a button.
+app.post('/api/users/sync-branches', requireAdmin, (req, res) => {
+  const only = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+  if (req.body?.ids !== undefined && !only) return res.status(400).json({ error: 'invalid ids' });
+  const year = latestYear();
+  const rows = db.prepare("SELECT * FROM users WHERE leader_id IS NOT NULL AND role != 'admin' AND active = 1").all();
+  const updated = [];
+  db.transaction(() => {
+    for (const u of rows) {
+      if (only && !only.includes(u.id)) continue;
+      const st = tachkilaStatus(u, year);
+      if (st?.tachkila_status !== 'drift') continue;
+      if (alignAccount(req, u, st.assignment_branch_ids)) updated.push(u.id);
+    }
+  })();
+  res.json({ updated: updated.length, ids: updated, year });
 });
 
 // What the form fills in while the admin types a display name. `except` = the
@@ -1107,6 +1373,31 @@ function targetBranchFor(age, branches) {
   return below.length ? below[below.length - 1] : null;
 }
 
+// عتبة الترفيع لفرقة (% من مطالبها). NULL — فرقة أُنشئت بعد ملء الهجرة — تأخذ قيمة
+// montadamahdi: 60 للبراعم و الأشبال، 70 لغيرهما. 0 = بلا عتبة.
+function defaultThreshold(nameAr) {
+  return /أشبال|براعم/.test(nameAr || '') ? 60 : 70;
+}
+const branchThreshold = (b) =>
+  b.promotion_threshold === null || b.promotion_threshold === undefined
+    ? defaultThreshold(b.name_ar)
+    : b.promotion_threshold;
+
+// مطالب X/Y و نسبتها، و هل بلغ العتبة. فرقة بلا مطالب (total 0) أو بلا عتبة: جاهز.
+function matalibProgress(memberId, branch) {
+  const total = branch.total_requirements || 0;
+  const earned = earnedNumbersInBranch(memberId, branch.id).filter((n) => !total || n <= total);
+  const pct = total ? Math.round((earned.length / total) * 100) : null;
+  const threshold = branchThreshold(branch);
+  return {
+    earned_count: earned.length,
+    total,
+    pct,
+    threshold,
+    ready: !total || !threshold || pct >= threshold,
+  };
+}
+
 function pendingPromotions() {
   // فرقة كل الأعمار خارج سلّم السنّ: عناصرها يبقون فيها، و لا يُرقّى إليها أحد.
   // عنصرٌ فيها يسقط أدناه عند !cur.
@@ -1142,6 +1433,7 @@ function pendingPromotions() {
       age,
       current_branch: cur,
       target_branch: target,
+      ...matalibProgress(m.id, cur),
     });
   }
   return out;
@@ -1204,7 +1496,7 @@ function earnedNumbersInBranch(memberId, branchId) {
     .prepare(
       `SELECT s.matalib FROM attendance a JOIN sessions s ON s.id = a.session_id
        WHERE a.member_id = ? AND a.status = 'present' AND s.kind = 'activity'
-         AND ${sessionInBranchSQL(branchId)}`
+         AND ${sessionInBranchSQL(branchId)} AND ${countedSessionSQL('s')}`
     )
     .all(memberId);
   const set = new Set();
@@ -1301,7 +1593,8 @@ const attendanceRowsStmt = db.prepare(
   `SELECT a.status, a.paid, s.date, s.title, s.matalib, s.id AS session_id,
     (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS sb_ids
    FROM attendance a JOIN sessions s ON s.id = a.session_id
-   WHERE a.member_id = ? AND s.kind = 'activity' AND a.status != 'unmarked' AND s.date <= ?
+   WHERE a.member_id = ? AND s.kind = 'activity' AND a.status != 'unmarked'
+     AND ${countedSessionSQL('s', '?')}
    ORDER BY s.date DESC, s.id DESC`
 );
 function attributedAttendance(m, { withFees = false } = {}) {
@@ -1327,7 +1620,9 @@ function attributedAttendance(m, { withFees = false } = {}) {
   return { periodsAsc, rows };
 }
 
-function attendanceStats(memberId, branchId, { from = null, to = null } = {}) {
+// `until` (inclusive) bounds the history to a day: a séance's badge counts the streak as
+// it stood on that séance, not as it stands today (bug 15)
+function attendanceStats(memberId, branchId, { from = null, to = null, until = null } = {}) {
   // نافذة زمنية اختيارية: الترقية تعيد عدّاد الحضور من الصفر، فتاريخ الترقية
   // يحدّ الإحصاء — و ما قبله يُعرض بطاقةً تاريخية للفرقة السابقة.
   const rows = db
@@ -1335,11 +1630,11 @@ function attendanceStats(memberId, branchId, { from = null, to = null } = {}) {
       `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
        FROM attendance a JOIN sessions s ON s.id = a.session_id
        WHERE a.member_id = ? AND s.kind = 'activity'
-          AND a.status != 'unmarked' AND s.date <= ?
-          AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?)
+          AND a.status != 'unmarked' AND ${countedSessionSQL('s', '?')}
+          AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?) AND (? IS NULL OR s.date <= ?)
        ORDER BY s.date DESC, s.id DESC`
     )
-    .all(memberId, todayISO(), from, from, to, to)
+    .all(memberId, todayISO(), from, from, to, to, until, until)
     .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
   const earned = branchId ? earnedNumbersInBranch(memberId, branchId) : [];
   return {
@@ -1408,7 +1703,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
            COALESCE(SUM(a.status = 'absent'), 0) AS absent,
            COALESCE(SUM(a.status = 'excused'), 0) AS excused
          FROM attendance a JOIN sessions s ON s.id = a.session_id
-         WHERE s.kind = 'activity' AND ${attendanceInBranchSQL(id)}`
+         WHERE s.kind = 'activity' AND ${attendanceInBranchSQL(id)} AND ${countedSessionSQL('s')}`
       )
       .get();
   const leadersStmt = db.prepare(
@@ -1417,8 +1712,15 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
      WHERE a.branch_id = ? AND a.year = ?
      ORDER BY a.sort_order, a.id`
   );
+  // Covered = worked on in a séance that counts and where someone was present (bug 14)
   const mataliOf = (id) =>
-    db.prepare(`SELECT matalib FROM sessions s WHERE kind = 'activity' AND ${sessionInBranchSQL(id)}`).all();
+    db
+      .prepare(
+        `SELECT matalib FROM sessions s WHERE kind = 'activity' AND ${sessionInBranchSQL(id)}
+           AND ${countedSessionSQL('s')}
+           AND EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = s.id AND a.status = 'present')`
+      )
+      .all();
   const lastSessionOf = (id) =>
     db
       .prepare(
@@ -1451,6 +1753,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
         total: b.total_requirements,
       },
       last_session: lastSessionOf(b.id) || null,
+      staffing: staffingAlerts(b.id),
     };
   });
   res.json(rows);
@@ -1464,11 +1767,12 @@ app.get('/api/branches/:id/sessions', requirePerm('branches.read'), (req, res) =
   if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
   const sessions = db
     .prepare(
-      `SELECT s.id, s.title, s.date, s.leader, s.matalib, s.kind
+      `SELECT s.id, s.title, s.date, s.leader, s.matalib, s.kind, s.attendance_finalized_at,
+              ${countedSessionSQL('s')} AS counted, ${unconfirmedSessionSQL('s')} AS unconfirmed
        FROM sessions s WHERE ${sessionInBranchSQL(branch.id)} ORDER BY s.date DESC, s.id DESC`
     )
     .all()
-    .map((s) => ({ ...s, matalib: JSON.parse(s.matalib || '[]') }));
+    .map((s) => ({ ...s, counted: !!s.counted, unconfirmed: !!s.unconfirmed, matalib: JSON.parse(s.matalib || '[]') }));
 
   const attendeesStmt = db.prepare(
     `SELECT a.status, m.id, m.first_name, m.father_name, m.last_name, m.photo
@@ -1920,6 +2224,14 @@ function validateBranchBody(body, { requireNames }) {
   }
   if (!Number.isInteger(total_requirements) || total_requirements < 0)
     return 'invalid total_requirements';
+  const th = body.promotion_threshold;
+  if (th !== undefined && th !== null && (!Number.isInteger(th) || th < 0 || th > 100))
+    return 'invalid promotion_threshold';
+  // مطالب القبول (B1): أعداد صغيرة، غائبة = بلا تغيير
+  for (const [k, max] of [['trial_months', 12], ['law_items_required', 10], ['consecutive_meetings_required', 20], ['cries_required', 20]]) {
+    const v = body[k];
+    if (v !== undefined && v !== null && (!Number.isInteger(v) || v < 0 || v > max)) return `invalid ${k}`;
+  }
   if (requireNames || name_fr !== undefined) {
     if (typeof name_fr !== 'string' || !name_fr.trim()) return 'invalid name_fr';
   }
@@ -1975,6 +2287,9 @@ app.get('/api/branches/:id/groups', requirePerm('branches.read'), (req, res) => 
     groups: groupsOfBranch(branch.id),
     // السنة التي تُحسب منها سنّ السنة: معاينة التوزيع حسب السنّ تقرأ بساعة الخادم
     age_year: ageYear(),
+    // مسؤوليات الطليعة الجارية و تنبيهات العدد (C1)
+    responsibilities: currentResponsibilities(branch.id),
+    staffing: staffingAlerts(branch.id),
     // العناصر غير النشطين يظهرون أيضًا: توزيعهم محفوظ، و عودتهم لا تحتاج إعادة توزيع
     members: db
       .prepare(
@@ -2099,6 +2414,207 @@ app.post('/api/branches/:id/groups/by-age', requirePerm('branches.groups'), (req
   res.json({ moved });
 });
 
+// ---------- مسؤوليات الطليعة (C1) ----------
+// من هو عريف الطليعة و مساعده، و منذ متى. السطر لا يُمحى: نهاية المسؤولية تؤرَّخ، و
+// مشغّل في db.js يغلقها بنفسه حين يغادر العنصر طليعته أو فرقته أو يُؤرشَف.
+const RESP_ROLES = ['arif_awwal', 'arif', 'musaid', 'other'];
+// العريف الأول عريفُ طليعته أيضًا: الدوران يشغلان مكانًا واحدًا، رأس الطليعة
+const LEAD_ROLES = ['arif_awwal', 'arif'];
+const STRUCT_ROLES = ['arif_awwal', 'arif', 'musaid'];
+const RESP_LIMIT_DEFAULTS = { group_min: 5, group_max: 8, unit_max: 33 };
+
+const responsibilitySQL = `SELECT r.id, r.member_id, r.branch_id, r.group_id, r.role, r.label, r.start_date,
+    r.end_date, r.end_reason, r.assigned_by, r.ended_by, COALESCE(g.name, r.group_name) AS group_name,
+    m.first_name, m.father_name, m.last_name, m.photo
+  FROM member_responsibilities r JOIN members m ON m.id = r.member_id
+  LEFT JOIN branch_groups g ON g.id = r.group_id`;
+
+const currentResponsibilities = (branchId) =>
+  db
+    .prepare(
+      `${responsibilitySQL} WHERE r.branch_id = ? AND r.end_date IS NULL
+       ORDER BY CASE r.role WHEN 'arif_awwal' THEN 0 WHEN 'arif' THEN 1 WHEN 'musaid' THEN 2 ELSE 3 END, r.start_date`
+    )
+    .all(branchId);
+
+function branchLimits(b) {
+  return {
+    group_min: b?.group_min ?? RESP_LIMIT_DEFAULTS.group_min,
+    group_max: b?.group_max ?? RESP_LIMIT_DEFAULTS.group_max,
+    unit_max: b?.unit_max ?? RESP_LIMIT_DEFAULTS.unit_max,
+  };
+}
+
+// تنبيهات العدد في فرقة: طليعة بلا عريف، عدد خارج الحدّين، فرقة أكبر من حدّها، نشطون
+// بلا طليعة. الطليعة الفارغة لا تُنبِّه (لم تُستعمل بعد)، و الفرقة بلا طلائع لا يُنبَّه
+// فيها إلا على حجمها.
+function staffingAlerts(branchId) {
+  const b = db.prepare('SELECT id, group_min, group_max, unit_max FROM branches WHERE id = ?').get(branchId);
+  if (!b) return null;
+  const limits = branchLimits(b);
+  const groups = groupsOfBranch(branchId);
+  const active = db
+    .prepare("SELECT COUNT(*) AS n FROM members WHERE branch_id = ? AND status = 'active'")
+    .get(branchId).n;
+  const unassigned = groups.length
+    ? db
+        .prepare("SELECT COUNT(*) AS n FROM members WHERE branch_id = ? AND status = 'active' AND group_id IS NULL")
+        .get(branchId).n
+    : 0;
+  const led = new Set(
+    db
+      .prepare(
+        `SELECT DISTINCT group_id FROM member_responsibilities
+         WHERE branch_id = ? AND end_date IS NULL AND group_id IS NOT NULL AND role IN ('arif_awwal', 'arif')`
+      )
+      .all(branchId)
+      .map((r) => r.group_id)
+  );
+  const used = groups.filter((g) => g.member_count > 0);
+  const pick = (g) => ({ id: g.id, name: g.name, count: g.member_count });
+  const out = {
+    limits,
+    active,
+    groups: groups.length,
+    no_lead: used.filter((g) => !led.has(g.id)).map(pick),
+    small: used.filter((g) => g.member_count < limits.group_min).map(pick),
+    large: used.filter((g) => g.member_count > limits.group_max).map(pick),
+    over_unit: active > limits.unit_max,
+    unassigned,
+  };
+  out.count =
+    out.no_lead.length + out.small.length + out.large.length + (out.over_unit ? 1 : 0) + (unassigned ? 1 : 0);
+  return out;
+}
+
+app.get('/api/branches/:id/responsibilities', requirePerm('branches.read'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.read');
+  if (!branch) return;
+  res.json({
+    current: currentResponsibilities(branch.id),
+    history: db
+      .prepare(
+        `${responsibilitySQL} WHERE r.branch_id = ? AND r.end_date IS NOT NULL ORDER BY r.end_date DESC, r.id DESC LIMIT 300`
+      )
+      .all(branch.id),
+  });
+});
+
+// تكليف عنصر بمسؤولية. دور البنية (العريف الأول، العريف، المساعد) له صاحب واحد في
+// الطليعة — و العريف الأول واحد في الفرقة — فيُغلق سلفه بتاريخ بدء الجديد (replaced)،
+// و العنصر لا يحمل إلا دور بنية واحدًا في وقت واحد. الدور الحرّ (مصوّر، منشد…) يتعدّد.
+app.post('/api/branches/:id/responsibilities', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const b = req.body || {};
+  const role = RESP_ROLES.includes(b.role) ? b.role : null;
+  if (!role) return res.status(400).json({ error: 'invalid role' });
+  const label = role === 'other' && typeof b.label === 'string' ? b.label.trim().slice(0, 40) : null;
+  if (role === 'other' && !label) return res.status(400).json({ error: 'label required' });
+  const today = todayISO();
+  const start = b.start_date === undefined || b.start_date === null || b.start_date === '' ? today : b.start_date;
+  if (!validISODate(start) || start > today) return res.status(400).json({ error: 'invalid start_date' });
+  const member = db
+    .prepare("SELECT id, group_id FROM members WHERE id = ? AND branch_id = ? AND status = 'active'")
+    .get(Number(b.member_id), branch.id);
+  if (!member) return res.status(400).json({ error: 'invalid member_id' });
+  if (role !== 'other' && !member.group_id) return res.status(409).json({ error: 'member_without_group' });
+  const group = member.group_id
+    ? db.prepare('SELECT id, name FROM branch_groups WHERE id = ?').get(member.group_id)
+    : null;
+  const open = db.prepare('SELECT * FROM member_responsibilities WHERE branch_id = ? AND end_date IS NULL').all(branch.id);
+  if (open.some((r) => r.member_id === member.id && r.role === role && (role !== 'other' || r.label === label)))
+    return res.status(409).json({ error: 'responsibility_exists' });
+  const toClose = open.filter((r) => {
+    if (role === 'other') return false;
+    if (r.member_id === member.id) return STRUCT_ROLES.includes(r.role);
+    if (r.group_id === member.group_id)
+      return LEAD_ROLES.includes(role) ? LEAD_ROLES.includes(r.role) : r.role === role;
+    return false;
+  });
+  // العريف الأول السابق، في طليعة أخرى، يبقى عريف طليعته
+  const formerFirst =
+    role === 'arif_awwal'
+      ? open.find((r) => r.role === 'arif_awwal' && r.member_id !== member.id && r.group_id !== member.group_id)
+      : null;
+  const user = req.user?.display_name || req.user?.username || null;
+  // MAX: تاريخ بدء أقدم من بدء السلف لا يجعله منتهيًا قبل أن يبدأ
+  const close = db.prepare(
+    `UPDATE member_responsibilities SET end_date = MAX(start_date, ?), end_reason = 'replaced', ended_by = ?
+     WHERE id = ? AND end_date IS NULL`
+  );
+  const insert = db.prepare(
+    `INSERT INTO member_responsibilities (member_id, branch_id, group_id, group_name, role, label, start_date, assigned_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  let id;
+  db.transaction(() => {
+    for (const r of toClose) close.run(start, user, r.id);
+    if (formerFirst) {
+      close.run(start, user, formerFirst.id);
+      const g =
+        formerFirst.group_id && db.prepare('SELECT name FROM branch_groups WHERE id = ?').get(formerFirst.group_id);
+      insert.run(
+        formerFirst.member_id, branch.id, formerFirst.group_id, g?.name ?? formerFirst.group_name, 'arif', null, start, user
+      );
+    }
+    id = insert.run(member.id, branch.id, group?.id ?? null, group?.name ?? null, role, label, start, user)
+      .lastInsertRowid;
+  })();
+  const row = db.prepare(`${responsibilitySQL} WHERE r.id = ?`).get(id);
+  auditEvent(req, 'create', 'responsibility', id, null, row);
+  res.status(201).json(row);
+});
+
+// إنهاء مسؤولية: السطر يبقى، مؤرَّخًا
+app.post('/api/branches/:id/responsibilities/:rid/end', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const r = db
+    .prepare('SELECT * FROM member_responsibilities WHERE id = ? AND branch_id = ?')
+    .get(req.params.rid, branch.id);
+  if (!r) return res.status(404).json({ error: 'responsibility not found' });
+  if (r.end_date) return res.status(409).json({ error: 'responsibility_ended' });
+  const today = todayISO();
+  const end = req.body?.end_date || today;
+  if (!validISODate(end) || end > today || end < r.start_date)
+    return res.status(400).json({ error: 'invalid end_date' });
+  const user = req.user?.display_name || req.user?.username || null;
+  db.prepare("UPDATE member_responsibilities SET end_date = ?, end_reason = 'ended', ended_by = ? WHERE id = ?")
+    .run(end, user, r.id);
+  const after = db.prepare('SELECT * FROM member_responsibilities WHERE id = ?').get(r.id);
+  auditEvent(req, 'update', 'responsibility', r.id, r, after);
+  res.json(after);
+});
+
+// محو سطر أُدخل خطأً (الإنهاء العادي يمرّ بـ /end)
+app.delete('/api/branches/:id/responsibilities/:rid', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const r = db
+    .prepare('SELECT * FROM member_responsibilities WHERE id = ? AND branch_id = ?')
+    .get(req.params.rid, branch.id);
+  if (!r) return res.status(404).json({ error: 'responsibility not found' });
+  db.prepare('DELETE FROM member_responsibilities WHERE id = ?').run(r.id);
+  auditEvent(req, 'delete', 'responsibility', r.id, r, null);
+  res.status(204).end();
+});
+
+// حدود العدد في الفرقة، يضبطها قائدها
+app.put('/api/branches/:id/group-limits', requirePerm('branches.groups'), (req, res) => {
+  const branch = branchForGroups(req, res, 'branches.groups');
+  if (!branch) return;
+  const { group_min, group_max, unit_max } = req.body || {};
+  const ok = (n, max) => Number.isInteger(n) && n >= 1 && n <= max;
+  if (!ok(group_min, 99) || !ok(group_max, 99) || group_min > group_max || !ok(unit_max, 999))
+    return res.status(400).json({ error: 'invalid limits' });
+  const before = db.prepare('SELECT group_min, group_max, unit_max FROM branches WHERE id = ?').get(branch.id);
+  db.prepare('UPDATE branches SET group_min = ?, group_max = ?, unit_max = ? WHERE id = ?')
+    .run(group_min, group_max, unit_max, branch.id);
+  auditEvent(req, 'update', 'branch_limits', branch.id, before, { group_min, group_max, unit_max });
+  res.json(staffingAlerts(branch.id));
+});
+
 app.post('/api/branches', requireAdmin, (req, res) => {
   const err = validateBranchBody(req.body, { requireNames: true });
   if (err) return res.status(400).json({ error: err });
@@ -2111,7 +2627,8 @@ app.post('/api/branches', requireAdmin, (req, res) => {
   // sort_order mirrors min_age so branches always list in age order
   const info = db
     .prepare(
-      'INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages, section) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      `INSERT INTO branches (name_fr, name_ar, min_age, max_age, sort_order, total_requirements, all_ages, section,
+         promotion_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       name_fr.trim(),
@@ -2121,8 +2638,14 @@ app.post('/api/branches', requireAdmin, (req, res) => {
       allAges ? ALL_AGES_SORT_ORDER : min_age,
       total_requirements,
       allAges ? 1 : 0,
-      section
+      section,
+      Number.isInteger(req.body.promotion_threshold) ? req.body.promotion_threshold : defaultThreshold(name_ar)
     );
+  // مطالب القبول: ما أُرسل، و إلا قيم montadamahdi حسب الاسم
+  const rules = { ...admissionDefaults(name_ar), ...admissionRulesFrom(req.body) };
+  db.prepare(
+    `UPDATE branches SET ${ADMISSION_RULE_KEYS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`
+  ).run(...ADMISSION_RULE_KEYS.map((k) => rules[k]), info.lastInsertRowid);
   res.status(201).json(db.prepare('SELECT * FROM branches WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -2153,7 +2676,7 @@ app.put('/api/branches/:id', requireAdmin, (req, res) => {
   db.transaction(() => {
     db.prepare(
       `UPDATE branches SET name_fr = ?, name_ar = ?, min_age = ?, max_age = ?, sort_order = ?, total_requirements = ?,
-         all_ages = ?, section = ?
+         all_ages = ?, section = ?, promotion_threshold = ?
        WHERE id = ?`
     ).run(
       name_fr !== undefined ? name_fr.trim() : existing.name_fr,
@@ -2164,8 +2687,17 @@ app.put('/api/branches/:id', requireAdmin, (req, res) => {
       total_requirements,
       allAges ? 1 : 0,
       section,
+      Number.isInteger(req.body.promotion_threshold) ? req.body.promotion_threshold : existing.promotion_threshold,
       req.params.id
     );
+    const rules = admissionRulesFrom(req.body);
+    if (Object.keys(rules).length)
+      db.prepare(`UPDATE branches SET ${Object.keys(rules).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
+        ...Object.values(rules),
+        existing.id
+      );
+    // Labels of numbers that no longer exist go with them (nothing was ticked above usedMax)
+    db.prepare('DELETE FROM branch_matalib WHERE branch_id = ? AND number > ?').run(existing.id, total_requirements);
     // توصيفات الفرقة (و هي فارغة هنا) تتبعها إلى قسمها الجديد
     if (section !== existing.section)
       db.prepare('UPDATE assignments SET section = ? WHERE branch_id = ?').run(section, existing.id);
@@ -2382,7 +2914,9 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
   } = req.query;
   const canContact = hasPerm(req, 'members.contact');
   let sql = `SELECT m.*, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
-               g.name AS group_name
+               g.name AS group_name,
+               (SELECT json_group_array(json_object('role', r.role, 'label', r.label))
+                  FROM member_responsibilities r WHERE r.member_id = m.id AND r.end_date IS NULL) AS roles_json
              FROM members m JOIN branches b ON b.id = m.branch_id
              LEFT JOIN branch_groups g ON g.id = m.group_id WHERE 1=1`;
   const params = [];
@@ -2469,10 +3003,12 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
         present: st.present,
         total: st.total,
         absences: st.consecutive_absences,
+        last_present: st.history.find((r) => r.status === 'present')?.date || null,
         // آخر ثمانية أنشطة، الأحدث أولًا — شريط الحضور في القائمة، كخانات دفتر الحضور
         recent: st.history.slice(0, 8).map((r) => ({ date: r.date, status: r.status })),
       };
-      return stripContact(req, { ...m, age: calcAge(m.birth_date), attendance });
+      const { roles_json: rolesJson, ...rest } = m;
+      return stripContact(req, { ...rest, age: calcAge(m.birth_date), attendance, responsibilities: JSON.parse(rolesJson || '[]') });
     });
   // الحضور محسوب هنا لا في SQL، فترتيبه هنا: الأضعف أولًا، و من لم يُسجَّل له
   // نشاط بعدُ في الآخر. الترتيب ثابت، فالأسماء تبقى أبجدية داخل النسبة الواحدة.
@@ -2481,7 +3017,20 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
   // «للمتابعة»: absent from their last three activities or more — the dashboard's
   // follow-up and the red mark in the list, as a filter. The streak is only known
   // once attendance is computed, so it is cut here rather than in SQL.
-  res.json(follow ? rows.filter((m) => m.status === 'active' && m.attendance.absences >= FOLLOW_UP_STREAK) : rows);
+  // Le dernier contact avec la famille (A2), pour «contacté il y a X jours par Y»
+  const contacts = lastContactsOf(rows.map((m) => m.id));
+  for (const m of rows) m.last_contact = contacts.get(m.id) || null;
+  // G1 : les mois de cotisation en retard (la puce «x أشهر»), pour qui voit les cotisations
+  let out = follow ? rows.filter((m) => m.status === 'active' && m.attendance.absences >= absenceThreshold()) : rows;
+  if (canSeeMemberDues(req)) {
+    const late = arrearsByMember(rows);
+    for (const m of rows) {
+      const a = late.get(m.id);
+      m.dues_late = a ? { months: a.months.length, owed: a.owed, late: isLate(a.months) } : null;
+    }
+    if (req.query.dues === 'late') out = out.filter((m) => m.dues_late?.late);
+  }
+  res.json(out);
 });
 
 // Values actually present in the base, to fill the المدرسة / مكان السكن filters.
@@ -2518,7 +3067,7 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
   const promotions = db
     .prepare(
-      `SELECT p.id, p.promoted_at, p.matalib,
+      `SELECT p.id, p.promoted_at, p.matalib, p.override, p.override_reason, p.old_branch_id,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         ob.total_requirements AS old_total_requirements,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
@@ -2557,10 +3106,26 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
       // مالًا دُفع. يجمعها البرنامج من خانات الأنشطة، لا يُدخَل المجموع يدويًا.
       subscriptions: canSeeFees ? memberSubscriptions(m.id) : null,
       former_attendance,
+      absence_threshold: absenceThreshold(),
       visits: familyVisits(m.id),
       // مطالب زيدت أو أُلغيت يدويًا — the UI marks them apart from the ones earned in أنشطة
       manual_matalib: manualMatalib(m.id, m.branch_id),
+      // ما تعنيه الأرقام، و عتبة الترفيع في فرقته
+      matalib_catalog: branchMatalibList(m.branch_id),
+      promotion_threshold: branchThreshold(
+        db.prepare('SELECT name_ar, promotion_threshold FROM branches WHERE id = ?').get(m.branch_id)
+      ),
       promotions,
+      // مسؤولياته في الطليعة، الجارية أولًا ثم المنتهية (C1)
+      responsibilities: db
+        .prepare(
+          `SELECT r.id, r.role, r.label, r.start_date, r.end_date, r.end_reason, r.branch_id,
+             COALESCE(g.name, r.group_name) AS group_name, b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+           FROM member_responsibilities r JOIN branches b ON b.id = r.branch_id
+           LEFT JOIN branch_groups g ON g.id = r.group_id
+           WHERE r.member_id = ? ORDER BY r.end_date IS NOT NULL, COALESCE(r.end_date, r.start_date) DESC, r.id DESC`
+        )
+        .all(m.id),
     })
   );
 });
@@ -2586,23 +3151,32 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
+  // B1 : un nouvel عنصر commence en فترة التجربة, à sa date d'adhésion. Le قائد peut
+  // l'inscrire déjà مكرَّس (date facultative).
+  const invested = b.admission_status === 'invested';
+  if (invested && b.invested_at && (!validISODate(b.invested_at) || b.invested_at > todayISO()))
+    return res.status(400).json({ error: 'invalid date' });
+  const admission = invested
+    ? { status: 'invested', invested_at: b.invested_at || null, trial_started_at: null }
+    : { status: 'trial', invested_at: null, trial_started_at: b.join_date && b.join_date <= todayISO() ? b.join_date : todayISO() };
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
         address_abidjan, address_lebanon, school, blood_type, sex, branch_id, group_id, member_phone,
-        father_phone, mother_phone, join_date, photo, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        father_phone, mother_phone, join_date, photo, status, admission_status, invested_at, trial_started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
       b.birth_date || null, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
       b.school || null, b.blood_type || null, b.sex, b.branch_id, groupId, b.member_phone || null,
-      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null, b.status || 'active'
+      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null, b.status || 'active',
+      admission.status, admission.invested_at, admission.trial_started_at
     );
   const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'member', created.id, null, created);
   notifications.memberCreated(req, created);
-  res.status(201).json(created);
+  res.status(201).json(stripContact(req, created));
 });
 
 app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
@@ -2663,7 +3237,7 @@ app.put('/api/members/:id', requirePerm('members.edit'), (req, res) => {
   })();
   const updated = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
   auditEvent(req, 'update', 'member', existing.id, existing, updated);
-  res.json(updated);
+  res.json(stripContact(req, updated));
 });
 
 // الأرشفة لا تمحو شيئًا: العنصر يخرج من الأنشطة و الترفيعات و العدّ، و يبقى
@@ -2711,7 +3285,108 @@ app.post('/api/members/:id/restore', requirePerm('members.edit'), (req, res) => 
   ).run(existing.id);
   const updated = db.prepare('SELECT * FROM members WHERE id = ?').get(existing.id);
   auditEvent(req, 'restore', 'member', existing.id, existing, updated);
-  res.json(updated);
+  res.json(stripContact(req, updated));
+});
+
+// ---------- سجل المتابعة (A2) ----------
+// Chaque contact avec la famille d'un عنصر : quand, qui, par quel canal, le motif, une note
+// et la relance prévue. Les زيارات الأهل (séances kind='visit') se lisent dans le même fil.
+// Lire : members.read ; écrire : members.followup. Une ligne se corrige ou s'efface par son
+// auteur (ou l'admin). Tout est tracé dans le journal d'audit.
+const contactSQL = 'SELECT * FROM member_contacts WHERE id = ?';
+function parseContact(body) {
+  const b = body || {};
+  const date = String(b.contacted_at || todayISO()).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > todayISO()) return { error: 'invalid_date' };
+  const channel = CONTACT_CHANNELS.includes(b.channel) ? b.channel : null;
+  if (!channel) return { error: 'invalid_channel' };
+  const reason = b.reason ? (ABSENCE_REASONS.includes(b.reason) ? b.reason : undefined) : null;
+  if (reason === undefined) return { error: 'invalid_reason' };
+  const next = b.next_date ? String(b.next_date).slice(0, 10) : null;
+  if (next && (!/^\d{4}-\d{2}-\d{2}$/.test(next) || next < date)) return { error: 'invalid_next_date' };
+  const note = String(b.note || '').trim().slice(0, 1000) || null;
+  return { value: { contacted_at: date, channel, reason, note, next_date: next } };
+}
+function followupMember(req, res) {
+  const m = db.prepare('SELECT id, branch_id, status FROM members WHERE id = ?').get(intOr(req.params.id));
+  if (!m) return void res.status(404).json({ error: 'member not found' });
+  if (!branchOk(req, m.branch_id)) return void res.status(403).json({ error: 'forbidden' });
+  return m;
+}
+const contactsOfMember = (memberId) =>
+  db
+    .prepare('SELECT * FROM member_contacts WHERE member_id = ? ORDER BY contacted_at DESC, id DESC')
+    .all(memberId);
+const canEditContact = (req, c) => req.user.role === 'admin' || (c.user_id && c.user_id === req.user.id);
+
+app.get('/api/members/:id/contacts', requirePerm('members.read'), (req, res) => {
+  const m = followupMember(req, res);
+  if (!m) return;
+  res.json({
+    items: contactsOfMember(m.id).map((c) => ({ ...c, can_edit: hasPerm(req, 'members.followup') && canEditContact(req, c) })),
+    visits: familyVisits(m.id),
+    can_write: hasPerm(req, 'members.followup'),
+  });
+});
+
+app.post('/api/members/:id/contacts', requirePerm('members.followup'), (req, res) => {
+  const m = followupMember(req, res);
+  if (!m) return;
+  const { value, error } = parseContact(req.body);
+  if (error) return res.status(400).json({ error });
+  const info = db
+    .prepare(
+      `INSERT INTO member_contacts (member_id, contacted_at, contacted_by, user_id, channel, reason, note, next_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(m.id, value.contacted_at, req.user.display_name || req.user.username, req.user.id, value.channel, value.reason, value.note, value.next_date);
+  const c = db.prepare(contactSQL).get(info.lastInsertRowid);
+  auditEvent(req, 'create', 'member_contact', c.id, null, c);
+  res.status(201).json({ ...c, can_edit: true });
+});
+
+function loadOwnContact(req, res) {
+  const m = followupMember(req, res);
+  if (!m) return;
+  const c = db.prepare(contactSQL).get(intOr(req.params.cid));
+  if (!c || c.member_id !== m.id) return void res.status(404).json({ error: 'contact not found' });
+  if (!canEditContact(req, c)) return void res.status(403).json({ error: 'forbidden' });
+  return c;
+}
+
+app.put('/api/members/:id/contacts/:cid', requirePerm('members.followup'), (req, res) => {
+  const c = loadOwnContact(req, res);
+  if (!c) return;
+  const { value, error } = parseContact(req.body);
+  if (error) return res.status(400).json({ error });
+  db.prepare(
+    'UPDATE member_contacts SET contacted_at = ?, channel = ?, reason = ?, note = ?, next_date = ? WHERE id = ?'
+  ).run(value.contacted_at, value.channel, value.reason, value.note, value.next_date, c.id);
+  const after = db.prepare(contactSQL).get(c.id);
+  auditEvent(req, 'update', 'member_contact', c.id, c, after);
+  res.json({ ...after, can_edit: true });
+});
+
+app.delete('/api/members/:id/contacts/:cid', requirePerm('members.followup'), (req, res) => {
+  const c = loadOwnContact(req, res);
+  if (!c) return;
+  db.prepare('DELETE FROM member_contacts WHERE id = ?').run(c.id);
+  auditEvent(req, 'delete', 'member_contact', c.id, c, null);
+  res.status(204).end();
+});
+
+// Réglages du suivi : le seuil de la série d'absences (admin)
+app.get('/api/settings/followup', (req, res) => res.json({ absence_threshold: absenceThreshold() }));
+app.put('/api/settings/followup', requireAdmin, (req, res) => {
+  const n = Number(req.body?.absence_threshold);
+  if (!Number.isInteger(n) || n < 2 || n > 10) return res.status(400).json({ error: 'invalid_threshold' });
+  const before = absenceThreshold();
+  db.prepare(
+    `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('absence_threshold', ?, datetime('now'), ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+  ).run(String(n), req.user.display_name || req.user.username);
+  auditEvent(req, 'update', 'app_setting', 'absence_threshold', { value: before }, { value: n });
+  res.json({ absence_threshold: n });
 });
 
 // زيادة أو إلغاء مطلب لعنصر بشكل يدوي، بمعزل عن حضوره في الأنشطة:
@@ -2732,6 +3407,10 @@ app.post('/api/members/:id/matalib', requirePerm('members.matalib'), (req, res) 
     return res.status(400).json({ error: 'invalid number' });
   if (!['granted', 'revoked', 'auto'].includes(state))
     return res.status(400).json({ error: 'invalid state' });
+  const before =
+    db
+      .prepare('SELECT number, state, updated_at, updated_by FROM member_matalib WHERE member_id = ? AND branch_id = ? AND number = ?')
+      .get(m.id, m.branch_id, number) || null;
   if (state === 'auto') {
     db.prepare('DELETE FROM member_matalib WHERE member_id = ? AND branch_id = ? AND number = ?').run(
       m.id, m.branch_id, number
@@ -2744,10 +3423,395 @@ app.post('/api/members/:id/matalib', requirePerm('members.matalib'), (req, res) 
          state = excluded.state, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
     ).run(m.id, m.branch_id, number, state, req.user.display_name || req.user.username);
   }
+  // السطر اليدوي يُحذف عند «auto»: السجلّ وحده يحفظ من منح المطلب ثم من سحبه
+  if ((before?.state || 'auto') !== state)
+    auditEvent(
+      req,
+      'matlab',
+      'member',
+      m.id,
+      { branch_id: m.branch_id, number, state: before?.state || 'auto' },
+      { branch_id: m.branch_id, number, state }
+    );
   res.json({
     earned_numbers: earnedNumbersInBranch(m.id, m.branch_id),
     manual_matalib: manualMatalib(m.id, m.branch_id),
   });
+});
+
+// ---------- كتالوج مطالب الفرقة ----------
+// ما يعنيه كل رقم من 1 إلى total_requirements: نصّه، مجاله من المجالات العشرة، و نوعه
+// (قبول / تقدم). الأرقام تبقى المفتاح في member_matalib و الأنشطة و البطاقات، فكل ما
+// سُجّل قبل الكتالوج يبقى صالحًا و يكتسب اسمه بمجرّد ملئه.
+const MAJALAT = [
+  'religious', 'civic', 'national', 'scouting', 'arts',
+  'health', 'sports', 'social', 'environment', 'science',
+];
+const MATLAB_KINDS = ['admission', 'progress'];
+
+const branchMatalibList = (branchId) =>
+  db
+    .prepare('SELECT id, number, label, majal, kind FROM branch_matalib WHERE branch_id = ? ORDER BY number')
+    .all(branchId);
+
+function readableBranch(req, res) {
+  const b = db.prepare('SELECT id, total_requirements FROM branches WHERE id = ?').get(req.params.id);
+  if (!b) {
+    res.status(404).json({ error: 'branch not found' });
+    return null;
+  }
+  if (!branchOk(req, b.id)) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return b;
+}
+
+// Clean one catalogue line; null = invalid. Empty label = no line (the number stays bare).
+function cleanMatlab(raw, total) {
+  const number = Number(raw?.number);
+  if (!Number.isInteger(number) || number < 1 || (total && number > total)) return null;
+  const label = String(raw?.label ?? '').trim().slice(0, 300);
+  const majal = raw?.majal ? String(raw.majal) : null;
+  if (majal && !MAJALAT.includes(majal)) return null;
+  const kind = raw?.kind ? String(raw.kind) : 'progress';
+  if (!MATLAB_KINDS.includes(kind)) return null;
+  return { number, label, majal, kind };
+}
+
+app.get(
+  '/api/branches/:id/matalib',
+  requireAnyPerm('members.read', 'branches.read', 'sessions.read', 'prep.read', 'promotions.read'),
+  (req, res) => {
+    const b = readableBranch(req, res);
+    if (!b) return;
+    res.json({ total: b.total_requirements, items: branchMatalibList(b.id) });
+  }
+);
+
+// Replaces the whole catalogue of one فرقة (the settings editor and the paste import both
+// send the full list). Only labels are lost by a removal: the numbers ticked stay.
+app.put('/api/branches/:id/matalib', requireAdmin, (req, res) => {
+  const b = readableBranch(req, res);
+  if (!b) return;
+  const items = req.body?.items;
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'items required' });
+  const clean = [];
+  const seen = new Set();
+  for (const raw of items) {
+    const it = cleanMatlab(raw, b.total_requirements);
+    if (!it) return res.status(400).json({ error: 'invalid matlab', number: raw?.number ?? null });
+    if (seen.has(it.number)) return res.status(400).json({ error: 'duplicate number', number: it.number });
+    seen.add(it.number);
+    if (it.label) clean.push(it);
+  }
+  const before = branchMatalibList(b.id);
+  db.transaction(() => {
+    db.prepare('DELETE FROM branch_matalib WHERE branch_id = ?').run(b.id);
+    const ins = db.prepare(
+      'INSERT INTO branch_matalib (branch_id, number, label, majal, kind, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    for (const it of clean) ins.run(b.id, it.number, it.label, it.majal, it.kind, it.number);
+  })();
+  const after = branchMatalibList(b.id);
+  auditEvent(req, 'update', 'branch_matalib', b.id, { count: before.length }, { count: after.length });
+  res.json({ total: b.total_requirements, items: after });
+});
+
+// نسخ كتالوج فرقة إلى نظيرتها (الفتيات، الفرنكوفون): يحلّ محلّ كتالوجها كلّه. الأرقام
+// فوق total_requirements الهدف تُترك، و يُقال كم.
+app.post('/api/branches/:id/matalib/copy', requireAdmin, (req, res) => {
+  const b = readableBranch(req, res);
+  if (!b) return;
+  const fromId = Number(req.body?.from_branch_id);
+  if (!Number.isInteger(fromId) || fromId === b.id) return res.status(400).json({ error: 'invalid from_branch_id' });
+  if (!db.prepare('SELECT id FROM branches WHERE id = ?').get(fromId))
+    return res.status(404).json({ error: 'branch not found' });
+  const source = branchMatalibList(fromId);
+  const fits = source.filter((it) => !b.total_requirements || it.number <= b.total_requirements);
+  db.transaction(() => {
+    db.prepare('DELETE FROM branch_matalib WHERE branch_id = ?').run(b.id);
+    const ins = db.prepare(
+      'INSERT INTO branch_matalib (branch_id, number, label, majal, kind, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    for (const it of fits) ins.run(b.id, it.number, it.label, it.majal, it.kind, it.number);
+  })();
+  auditEvent(req, 'copy', 'branch_matalib', b.id, null, { from_branch_id: fromId, count: fits.length });
+  res.json({ total: b.total_requirements, items: branchMatalibList(b.id), skipped: source.length - fits.length });
+});
+
+// ---------- القبول (B1): فترة التجربة، مطالب القبول، التكريس ----------
+// members.admission_status: 'trial' (في فترة التجربة) أو 'invested' (مكرَّس). من كان في
+// القاعدة قبل هذه الميزة مكرَّس بتاريخ مجهول (invested_at NULL). قائمة القبول ستة بنود
+// لكل عنصر في فرقته (member_admission)، و «الاجتماعات المتتالية» تُحسب من الحضور المعتمد
+// (countedSessionSQL، قاعدة A1) و يمكن للقائد أن يثبتها يدويًا.
+const ADMISSION_ITEMS = ['request', 'salute', 'promise', 'law', 'meetings', 'cries'];
+const ADMISSION_COUNTED = ['law', 'cries'];
+const ADMISSION_RULE_KEYS = [
+  'trial_months',
+  'law_items_required',
+  'consecutive_meetings_required',
+  'cries_required',
+  'internal_skip_trial',
+];
+// قيم montadamahdi، لفرقة لم تُضبط بعد (أُنشئت قبل الهجرة أو بلا قيم). مرآة migrateAdmission.
+function admissionDefaults(nameAr) {
+  const n = nameAr || '';
+  if (/أشبال|براعم/.test(n))
+    return { trial_months: 1, law_items_required: 4, consecutive_meetings_required: 2, cries_required: 3, internal_skip_trial: 1 };
+  if (/جوال|علياء/.test(n))
+    return { trial_months: 2, law_items_required: 7, consecutive_meetings_required: 4, cries_required: 5, internal_skip_trial: 1 };
+  return { trial_months: 1, law_items_required: 5, consecutive_meetings_required: 4, cries_required: 3, internal_skip_trial: 1 };
+}
+// Les règles d'admission d'un corps de requête déjà validé (validateBranchBody) : seules les clés présentes
+function admissionRulesFrom(body) {
+  const out = {};
+  for (const k of ADMISSION_RULE_KEYS) {
+    if (k === 'internal_skip_trial') {
+      if (body[k] !== undefined && body[k] !== null) out[k] = body[k] ? 1 : 0;
+    } else if (Number.isInteger(body[k])) out[k] = body[k];
+  }
+  return out;
+}
+function admissionRules(b) {
+  const d = admissionDefaults(b.name_ar);
+  return Object.fromEntries(ADMISSION_RULE_KEYS.map((k) => [k, b[k] ?? d[k]]));
+}
+
+function addMonthsISO(iso, n) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  const day = d.getUTCDate();
+  d.setUTCMonth(d.getUTCMonth() + n);
+  // 31 janvier + 1 mois = fin février, pas 3 mars
+  if (d.getUTCDate() !== day) d.setUTCDate(0);
+  return d.toISOString().slice(0, 10);
+}
+const daysBetweenISO = (a, b) =>
+  Math.round((new Date(`${b}T12:00:00Z`) - new Date(`${a}T12:00:00Z`)) / 86400000);
+
+// أطول سلسلة اجتماعات حضرها متتالية منذ بدء التجربة، في الأنشطة المعتمدة وحدها.
+// الغياب يقطعها، و الغياب بعذر لا يقطعها و لا يزيدها.
+function consecutiveMeetings(memberId, from) {
+  const rows = attendanceStats(memberId, null, { from }).history;
+  let best = 0;
+  let cur = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].status === 'present') best = Math.max(best, ++cur);
+    else if (rows[i].status === 'absent') cur = 0;
+  }
+  return best;
+}
+
+const admissionRowsStmt = db.prepare(
+  'SELECT item, value, done_at, done_by FROM member_admission WHERE member_id = ? AND branch_id = ?'
+);
+const internalPromotionStmt = db.prepare(
+  'SELECT 1 FROM promotions WHERE member_id = ? AND new_branch_id = ? AND reversed_at IS NULL LIMIT 1'
+);
+
+// حالة القبول لعنصر في فرقته: البنود، المدّة، و هل هو جاهز للتكريس
+function admissionState(m, b) {
+  const rules = admissionRules(b);
+  const byItem = Object.fromEntries(admissionRowsStmt.all(m.id, b.id).map((r) => [r.item, r]));
+  // رُفِّع إليها من فرقة أدنى: لا مدّة تجربة و لا طلب انتساب
+  const internal = !!rules.internal_skip_trial && !!internalPromotionStmt.get(m.id, b.id);
+  const start = m.trial_started_at || m.join_date || null;
+  const trial = m.admission_status === 'trial';
+  const meetings = trial ? consecutiveMeetings(m.id, start) : null;
+  const required = {
+    law: rules.law_items_required,
+    meetings: rules.consecutive_meetings_required,
+    cries: rules.cries_required,
+  };
+  const items = ADMISSION_ITEMS.map((item) => {
+    const r = byItem[item];
+    const trace = { done_at: r?.done_at ?? null, done_by: r?.done_by ?? null };
+    if (item === 'request' && internal) return { item, done: true, waived: true, ...trace };
+    if (ADMISSION_COUNTED.includes(item)) {
+      const value = r?.value ?? 0;
+      return { item, value, required: required[item], done: !required[item] || value >= required[item], ...trace };
+    }
+    if (item === 'meetings') {
+      const auto = !required.meetings || (meetings ?? 0) >= required.meetings;
+      return { item, value: meetings, required: required.meetings, auto, done: auto || !!r?.done_at, ...trace };
+    }
+    return { item, done: !!r?.done_at, ...trace };
+  });
+  const today = todayISO();
+  const trialEnd = start && !internal && rules.trial_months ? addMonthsISO(start, rules.trial_months) : null;
+  // بلا تاريخ بداية لا تُحسب المدّة: لا تمنع التكريس
+  const durationOk = internal || !rules.trial_months || !start || today >= trialEnd;
+  const doneCount = items.filter((i) => i.done).length;
+  return {
+    status: m.admission_status,
+    invested_at: m.invested_at ?? null,
+    trial_started_at: start,
+    trial_days: trial && start ? Math.max(0, daysBetweenISO(start, today)) : null,
+    trial_end: trialEnd,
+    duration_ok: durationOk,
+    internal,
+    rules,
+    items,
+    done_count: doneCount,
+    total: items.length,
+    ready: trial && durationOk && doneCount === items.length,
+  };
+}
+
+const memberWithBranch = (id) => {
+  const m = db.prepare('SELECT * FROM members WHERE id = ?').get(id);
+  if (!m) return null;
+  return { m, b: db.prepare('SELECT * FROM branches WHERE id = ?').get(m.branch_id) };
+};
+
+app.get('/api/members/:id/admission', requirePerm('members.read'), (req, res) => {
+  const found = memberWithBranch(req.params.id);
+  if (!found) return res.status(404).json({ error: 'member not found' });
+  const { m, b } = found;
+  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  // مطالب «قبول» من كتالوج الفرقة (B2): للإعلام، تُكسب بالحضور أو يدويًا كسائر المطالب
+  const earned = new Set(earnedNumbersInBranch(m.id, b.id));
+  const catalog = branchMatalibList(b.id)
+    .filter((k) => k.kind === 'admission' && (!b.total_requirements || k.number <= b.total_requirements))
+    .map((k) => ({ ...k, earned: earned.has(k.number) }));
+  res.json({ ...admissionState(m, b), catalog });
+});
+
+// بند واحد { item, done } أو { item, value }، أو الحالة { status, invested_at, trial_started_at }
+app.post('/api/members/:id/admission', requirePerm('members.admission'), (req, res) => {
+  const found = memberWithBranch(req.params.id);
+  if (!found) return res.status(404).json({ error: 'member not found' });
+  const { m, b } = found;
+  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  const body = req.body || {};
+  const who = req.user.display_name || req.user.username;
+  const before = admissionState(m, b);
+  if (body.item !== undefined) {
+    if (!ADMISSION_ITEMS.includes(body.item)) return res.status(400).json({ error: 'invalid item' });
+    let value = null;
+    let done;
+    if (ADMISSION_COUNTED.includes(body.item)) {
+      value = Number(body.value);
+      if (!Number.isInteger(value) || value < 0 || value > 50) return res.status(400).json({ error: 'invalid value' });
+      done = true;
+    } else {
+      if (typeof body.done !== 'boolean') return res.status(400).json({ error: 'invalid done' });
+      done = body.done;
+    }
+    db.prepare(
+      `INSERT INTO member_admission (member_id, branch_id, item, value, done_at, done_by)
+       VALUES (?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END, CASE WHEN ? THEN ? END)
+       ON CONFLICT(member_id, branch_id, item) DO UPDATE SET
+         value = excluded.value, done_at = excluded.done_at, done_by = excluded.done_by`
+    ).run(m.id, b.id, body.item, value, done ? 1 : 0, done ? 1 : 0, who);
+  } else if (body.status !== undefined) {
+    if (!['trial', 'invested'].includes(body.status)) return res.status(400).json({ error: 'invalid status' });
+    const date = body.status === 'invested' ? body.invested_at : body.trial_started_at;
+    if (date !== undefined && date !== null && date !== '' && (!validISODate(date) || date > todayISO()))
+      return res.status(400).json({ error: 'invalid date' });
+    if (body.status === 'invested')
+      db.prepare("UPDATE members SET admission_status = 'invested', invested_at = ? WHERE id = ?").run(
+        date || (m.admission_status === 'invested' ? null : todayISO()),
+        m.id
+      );
+    else
+      db.prepare(
+        "UPDATE members SET admission_status = 'trial', invested_at = NULL, trial_started_at = ? WHERE id = ?"
+      ).run(date || m.trial_started_at || todayISO(), m.id);
+  } else return res.status(400).json({ error: 'item or status required' });
+  const after = admissionState(db.prepare('SELECT * FROM members WHERE id = ?').get(m.id), b);
+  const snap = (s) => ({
+    status: s.status,
+    invested_at: s.invested_at,
+    trial_started_at: s.trial_started_at,
+    items: Object.fromEntries(s.items.map((i) => [i.item, i.value ?? i.done])),
+  });
+  auditEvent(req, 'admission', 'member', m.id, snap(before), snap(after));
+  res.json(after);
+});
+
+// التكريس الجماعي: تاريخ واحد لعدّة عناصر (حفل القبول). يصلح أيضًا لتأريخ تكريس
+// عناصر قدامى كان تاريخه مجهولًا.
+app.post('/api/members/investiture', requirePerm('members.admission'), (req, res) => {
+  const rawIds = req.body?.member_ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0) return res.status(400).json({ error: 'member_ids required' });
+  const date = req.body?.date || todayISO();
+  if (!validISODate(date) || date > todayISO()) return res.status(400).json({ error: 'invalid date' });
+  const ids = [...new Set(rawIds.map(Number))];
+  const find = db.prepare('SELECT * FROM members WHERE id = ?');
+  const rows = ids.map((id) => find.get(id));
+  if (rows.some((m) => !m)) return res.status(404).json({ error: 'member not found' });
+  if (rows.some((m) => !branchOk(req, m.branch_id))) return res.status(403).json({ error: 'forbidden' });
+  const update = db.prepare("UPDATE members SET admission_status = 'invested', invested_at = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const m of rows) {
+      update.run(date, m.id);
+      auditEvent(
+        req,
+        'investiture',
+        'member',
+        m.id,
+        { admission_status: m.admission_status, invested_at: m.invested_at },
+        { admission_status: 'invested', invested_at: date }
+      );
+    }
+  })();
+  res.json({ invested: rows.length });
+});
+
+// من في فترة التجربة (النشطون، في فرق الحساب)، الجاهزون للتكريس أولًا
+function pendingAdmissions(req) {
+  const rows = db
+    .prepare(
+      `SELECT m.* FROM members m JOIN branches b ON b.id = m.branch_id
+        WHERE m.status = 'active' AND m.admission_status = 'trial'${branchFilterSQL(req, 'm.branch_id')}`
+    )
+    .all();
+  const branches = Object.fromEntries(getBranches().map((b) => [b.id, b]));
+  const out = rows.map((m) => {
+    const b = branches[m.branch_id];
+    const s = admissionState(m, b);
+    return {
+      id: m.id,
+      first_name: m.first_name,
+      father_name: m.father_name,
+      last_name: m.last_name,
+      photo: m.photo,
+      branch_id: b.id,
+      branch_name_fr: b.name_fr,
+      branch_name_ar: b.name_ar,
+      trial_started_at: s.trial_started_at,
+      trial_days: s.trial_days,
+      trial_end: s.trial_end,
+      duration_ok: s.duration_ok,
+      done_count: s.done_count,
+      total: s.total,
+      missing: s.items.filter((i) => !i.done).map((i) => i.item),
+      ready: s.ready,
+    };
+  });
+  out.sort((a, b) => b.ready - a.ready || (b.trial_days ?? 0) - (a.trial_days ?? 0));
+  return out;
+}
+app.get('/api/admissions/pending', requirePerm('members.read'), (req, res) => res.json(pendingAdmissions(req)));
+
+// Bug 8 : the same فرق as pendingPromotions, the عناصر it has to skip
+const missingBirthDateSQL = (req) => `FROM members m JOIN branches b ON b.id = m.branch_id
+        WHERE m.status = 'active' AND m.birth_date IS NULL AND b.all_ages = 0 AND b.max_age IS NOT NULL
+          ${branchFilterSQL(req, 'm.branch_id')}`;
+
+// Bug 8 : pendingPromotions ne peut rien proposer sans date de naissance. Ces عناصر sont
+// listés ici (mêmes فرق que le ترفيع : à tranche d'âge, pas la dernière) pour être complétés.
+app.get('/api/promotions/missing-birth-date', requirePerm('promotions.read'), (req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo, m.branch_id,
+              b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+        ${missingBirthDateSQL(req)}
+        ORDER BY b.sort_order, m.last_name, m.first_name`
+    )
+    .all();
+  res.json(rows);
 });
 
 // ---------- Promotions ----------
@@ -2765,7 +3829,8 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   const pending = pendingPromotions().filter((p) => branchOk(req, p.current_branch.id));
   const byId = Object.fromEntries(pending.map((p) => [p.id, p]));
   const insert = db.prepare(
-    'INSERT INTO promotions (member_id, old_branch_id, new_branch_id, promoted_at, matalib) VALUES (?, ?, ?, ?, ?)'
+    `INSERT INTO promotions (member_id, old_branch_id, new_branch_id, promoted_at, matalib, override, override_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
   // الترقية تنقل العنصر إلى فرقة أخرى، و المجموعة تخصّ فرقتها: يخرج منها إلى طليعة
   // سنّه في فرقته الجديدة إن كانت لها طلائع بسنّ، و إلا بقي بلا طليعة حتى يُوزَّع.
@@ -2777,12 +3842,27 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   );
   const invalid = ids.filter((id) => !byId[id]);
   if (invalid.length) return res.status(409).json({ error: 'promotion_not_eligible', member_ids: invalid });
+  // تحت العتبة: ترفيع استثنائي، لا يمرّ إلا بسببٍ مكتوب لكل عنصر
+  const overrides = req.body?.overrides && typeof req.body.overrides === 'object' ? req.body.overrides : {};
+  const reasonOf = (id) => String(overrides[id] ?? '').trim().slice(0, 500);
+  const unjustified = ids.filter((id) => !byId[id].ready && !reasonOf(id));
+  if (unjustified.length)
+    return res.status(409).json({ error: 'promotion_below_threshold', member_ids: unjustified });
   let promoted = 0;
   const run = db.transaction(() => {
     for (const id of ids) {
       const p = byId[id];
       const acquired = earnedNumbersInBranch(p.id, p.current_branch.id);
-      const info = insert.run(p.id, p.current_branch.id, p.target_branch.id, todayISO(), JSON.stringify(acquired));
+      const override = !p.ready;
+      const info = insert.run(
+        p.id,
+        p.current_branch.id,
+        p.target_branch.id,
+        todayISO(),
+        JSON.stringify(acquired),
+        override ? 1 : 0,
+        override ? reasonOf(p.id) : null
+      );
       update.run(p.target_branch.id, ageGroupIdFor(p.birth_date, p.target_branch.id), p.id);
       movement.run(
         p.id,
@@ -2796,6 +3876,9 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
         member_id: p.id,
         old_branch_id: p.current_branch.id,
         new_branch_id: p.target_branch.id,
+        pct: p.pct,
+        override,
+        override_reason: override ? reasonOf(p.id) : null,
       });
       promoted++;
     }
@@ -2809,7 +3892,8 @@ app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) =>
     .prepare(
        `SELECT p.id, p.promoted_at, p.member_id, p.matalib,
         p.old_branch_id, p.new_branch_id,
-        p.reversed_at, p.reversed_by, p.reversal_reason,
+        p.reversed_at, p.reversed_by, p.reversal_reason, p.override, p.override_reason,
+        ob.total_requirements AS old_total_requirements,
         m.first_name, m.father_name, m.last_name,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
@@ -2996,7 +4080,7 @@ const ACCOUNT_PRESETS = {
   // قائد فرقة: يدير عناصره و أنشطته و خطة فرقته و مجموعاتها، و يقرأ ما حوله.
   // بلا حذف عناصر، بلا تثبيت ترقيات، بلا أرقام مالية — هذه للأدمن.
   branch: [
-    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.matalib',
+    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib', 'members.admission',
     'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
     'prep.read', 'prep.manage',
     'events.read', 'events.manage', 'events.attendance',
@@ -3170,6 +4254,13 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
       ),
       roles: roles[l.id] || [],
       year,
+      // Admin only: is the قائد's account still on the فرق of his تشكيلة (I4)
+      ...(req.user.role === 'admin' && l.account_user_id
+        ? (() => {
+            const st = tachkilaStatus(db.prepare('SELECT * FROM users WHERE id = ?').get(l.account_user_id), year);
+            return st ? { account_tachkila_status: st.tachkila_status } : {};
+          })()
+        : {}),
       card: { year: cardYear, total: cardTotal, done_count: doneByLeader[l.id] || 0 },
     }))
   );
@@ -3404,14 +4495,16 @@ function duesSummary(leaderId) {
     for (const m of yearMonths(y)) if (monthOwed(m) && !paidMonths.has(m)) unpaid.push(m);
   const paidTotal =
     db.prepare('SELECT COALESCE(SUM(amount), 0) AS n FROM leader_dues WHERE leader_id = ?').get(leaderId).n;
-  return { paid_total: paidTotal, unpaid_months: unpaid, owed_total: unpaid.length * LEADER_DUE_MONTHLY };
+  // Chaque mois à son tarif du moment (G1) : un nouveau tarif ne touche pas les mois passés
+  return { paid_total: paidTotal, unpaid_months: unpaid, owed_total: unpaid.reduce((n, m) => n + rateFor('leader', m), 0) };
 }
 
 const duesMeta = (year) => ({
   year,
   years: duesYears(),
   months: yearMonths(year),
-  monthly: LEADER_DUE_MONTHLY,
+  monthly: rateFor('leader', currentMonth()),
+  month_rates: Object.fromEntries(yearMonths(year).map((m) => [m, rateFor('leader', m)])),
   start_month: DUES_START,
   current_month: currentMonth(),
 });
@@ -3478,7 +4571,7 @@ app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues.record'), (req
       db.prepare('INSERT INTO leader_dues (leader_id, month, amount, recorded_by) VALUES (?, ?, ?, ?)').run(
         l.id,
         month,
-        LEADER_DUE_MONTHLY,
+        rateFor('leader', month),
         req.user.display_name || req.user.username
       );
   } else {
@@ -3501,8 +4594,66 @@ app.put('/api/leaders/:id/dues/:month', requirePerm('leaders.dues.record'), (req
 // العنصر (اليوم)، و يدخل صندوق فرقة العنصر.
 // يراه من يرى مبالغ الأنشطة أو الصندوق، و يسجّله من يسجّل الدفع في الأنشطة أو أمين المال.
 
+// Le tarif d'avant G1 : il ne sert plus qu'à poser le premier tarif daté (due_rates) et
+// de filet si la table était vide
 const MEMBER_DUE_MONTHLY = 2000;
 const MEMBER_DUES_START = '2026-10';
+
+// ---------- Tarifs datés (G1) ----------
+// Un tarif vaut à partir de son mois (effective_month) jusqu'au tarif suivant : changer
+// le tarif ne recalcule plus les mois passés. Un mois avant le premier tarif prend le
+// premier. Lus une fois, relus après chaque écriture.
+const DUE_RATE_KINDS = { member: MEMBER_DUE_MONTHLY, leader: LEADER_DUE_MONTHLY };
+let dueRatesCache = null;
+function dueRateList(kind) {
+  if (!dueRatesCache) {
+    dueRatesCache = { member: [], leader: [] };
+    for (const r of db.prepare('SELECT * FROM due_rates ORDER BY effective_month, id').all())
+      dueRatesCache[r.kind]?.push(r);
+  }
+  return dueRatesCache[kind];
+}
+function rateFor(kind, month) {
+  const list = dueRateList(kind);
+  let amount = list.length ? list[0].amount : DUE_RATE_KINDS[kind];
+  for (const r of list) {
+    if (r.effective_month > month) break;
+    amount = r.amount;
+  }
+  return amount;
+}
+
+// Une fois (user_version 8) : les tarifs codés en dur jusqu'ici, posés à partir du plus
+// ancien mois connu (début des cotisations, ou un paiement plus ancien) — chaque mois
+// passé garde exactement le montant qu'il avait, aucun solde ne bouge.
+function seedDueRates() {
+  if (db.pragma('user_version', { simple: true }) >= 8) return;
+  const oldest = (table, start) => {
+    const m = db.prepare(`SELECT MIN(month) AS m FROM ${table}`).get().m;
+    return m && m < start ? m : start;
+  };
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO due_rates (kind, amount, effective_month, created_by) VALUES (?, ?, ?, 'system')"
+  );
+  db.transaction(() => {
+    if (!db.prepare("SELECT 1 FROM due_rates WHERE kind = 'member'").get())
+      insert.run('member', MEMBER_DUE_MONTHLY, oldest('member_dues', MEMBER_DUES_START));
+    if (!db.prepare("SELECT 1 FROM due_rates WHERE kind = 'leader'").get())
+      insert.run('leader', LEADER_DUE_MONTHLY, oldest('leader_dues', DUES_START));
+    db.pragma('user_version = 8');
+  })();
+}
+seedDueRates();
+
+// Ce qu'un عنصر doit pour un mois : son tarif personnel (0 = exonéré) à partir du mois
+// où il vaut, le tarif général sinon
+const memberRate = (m, month) =>
+  m.dues_monthly !== null && m.dues_monthly !== undefined && (!m.dues_rate_from || month >= m.dues_rate_from)
+    ? m.dues_monthly
+    : rateFor('member', month);
+
+// Les colonnes d'un عنصر dont le calcul des cotisations a besoin
+const MEMBER_DUES_COLS = 'status, join_date, archived_at, dues_monthly, dues_note, dues_rate_from';
 
 const canSeeMemberDues = (req) => hasPerm(req, 'members.dues.read');
 const canWriteMemberDues = (req) => hasPerm(req, 'members.dues.record');
@@ -3533,13 +4684,25 @@ const paidByMonth = (rows) => {
   return out;
 };
 
-// What is left to pay of a month once `paid` was given for it
-const dueLeft = (paid) => Math.max(0, MEMBER_DUE_MONTHLY - (paid || 0));
+// What is left to pay of a month once `paid` was given for it, `rate` being its price
+const dueLeft = (paid, rate) => Math.max(0, rate - (paid || 0));
 
-// The months owed up to `until` and not paid in full (`paid`: month -> total) — none
-// for an عنصر no longer active
-const memberLateMonths = (m, paid, until) =>
-  m.status === 'active' ? monthsBetween(memberDuesFrom(m), until).filter((x) => dueLeft(paid.get(x)) > 0) : [];
+// Le dernier mois dû : `until` pour un عنصر actif ; pour un archivé, le mois de son
+// archivage (il l'a atteint en étant actif) — sa dette ne disparaît plus (bug 7). Archivé
+// sans date (avant l'archivage daté) : rien, faute de savoir jusqu'où.
+function memberDuesUntil(m, until) {
+  if (m.status === 'active') return until;
+  const arch = /^\d{4}-\d{2}/.test(m.archived_at || '') ? m.archived_at.slice(0, 7) : null;
+  if (!arch) return null;
+  return arch < until ? arch : until;
+}
+
+// The months owed up to `until` and not paid in full (`paid`: month -> total)
+function memberLateMonths(m, paid, until) {
+  const end = memberDuesUntil(m, until);
+  if (!end) return [];
+  return monthsBetween(memberDuesFrom(m), end).filter((x) => dueLeft(paid.get(x), memberRate(m, x)) > 0);
+}
 
 // السنوات المعروضة: من سنة البدء إلى السنة القادمة، و أبعد إن سُجّل دفع مقدَّم
 function memberDuesYears() {
@@ -3565,38 +4728,40 @@ const memberDuePayment = (r) => ({
 
 // One month as the screens show it: how much was given, what is left, is it paid in
 // full, and each payment. null: nothing given for it.
-function memberDueMonth(payments) {
+function memberDueMonth(payments, rate) {
   if (!payments.length) return null;
   const amount = payments.reduce((n, p) => n + p.amount, 0);
-  const left = dueLeft(amount);
+  const left = dueLeft(amount, rate);
   return { amount, left, full: left === 0, payments: payments.map(memberDuePayment) };
 }
 
-const memberDuesOf = (memberId, first, last) => {
+const memberDuesOf = (m, first, last) => {
   const byMonth = new Map();
   for (const r of db
     .prepare(`${MEMBER_DUE_SQL} WHERE d.member_id = ? AND d.month >= ? AND d.month <= ?${MEMBER_DUE_ORDER}`)
-    .all(memberId, first, last)) {
+    .all(m.id, first, last)) {
     if (!byMonth.has(r.month)) byMonth.set(r.month, []);
     byMonth.get(r.month).push(r);
   }
-  return Object.fromEntries([...byMonth].map(([month, rows]) => [month, memberDueMonth(rows)]));
+  return Object.fromEntries([...byMonth].map(([month, rows]) => [month, memberDueMonth(rows, memberRate(m, month))]));
 };
 
-const memberMonthOf = (memberId, month) =>
+const memberMonthOf = (m, month) =>
   memberDueMonth(
-    db.prepare(`${MEMBER_DUE_SQL} WHERE d.member_id = ? AND d.month = ?${MEMBER_DUE_ORDER}`).all(memberId, month)
+    db.prepare(`${MEMBER_DUE_SQL} WHERE d.member_id = ? AND d.month = ?${MEMBER_DUE_ORDER}`).all(m.id, month),
+    memberRate(m, month)
   );
 
 // حصيلة عنصر على كل السنوات: ما دفعه، و الأشهر التي حلّت و لم تُسدَّد كاملةً، و ما بقي منها
 function memberDuesSummary(m) {
-  const rows = db.prepare('SELECT month, amount FROM member_dues WHERE member_id = ?').all(m.id);
+  const rows = db.prepare('SELECT month, amount, paid_on FROM member_dues WHERE member_id = ?').all(m.id);
   const paid = paidByMonth(rows);
   const unpaid = memberLateMonths(m, paid, currentMonth());
   return {
     paid_total: rows.reduce((n, r) => n + r.amount, 0),
     unpaid_months: unpaid,
-    owed_total: unpaid.reduce((n, x) => n + dueLeft(paid.get(x)), 0),
+    owed_total: unpaid.reduce((n, x) => n + dueLeft(paid.get(x), memberRate(m, x)), 0),
+    last_paid_on: rows.reduce((d, r) => (r.paid_on && (!d || r.paid_on > d) ? r.paid_on : d), null),
   };
 }
 
@@ -3606,7 +4771,7 @@ function rosterDues(roster, session) {
   const month = session.date.slice(0, 7);
   const ids = roster.map((m) => intOr(m.id)).join(',') || '-1';
   const info = new Map(
-    db.prepare(`SELECT id, status, join_date FROM members WHERE id IN (${ids})`).all().map((m) => [m.id, m])
+    db.prepare(`SELECT id, ${MEMBER_DUES_COLS} FROM members WHERE id IN (${ids})`).all().map((m) => [m.id, m])
   );
   const byMember = new Map();
   for (const d of db.prepare(`${MEMBER_DUE_SQL} WHERE d.member_id IN (${ids})${MEMBER_DUE_ORDER}`).all()) {
@@ -3621,8 +4786,11 @@ function rosterDues(roster, session) {
       ...r,
       dues: {
         from,
-        owes: m.status === 'active' && month >= from,
-        month: memberDueMonth(own.filter((d) => d.month === month)),
+        owes: m.status === 'active' && month >= from && memberRate(m, month) > 0,
+        // Ce que coûte le mois de l'activité pour lui : tarif du mois, ou le sien (0 = exonéré)
+        rate: memberRate(m, month),
+        exempt: memberRate(m, month) === 0,
+        month: memberDueMonth(own.filter((d) => d.month === month), memberRate(m, month)),
         late: memberLateMonths(m, paidByMonth(own), month).filter((x) => x < month),
         here: own
           .filter((d) => d.session_id === session.id)
@@ -3634,7 +4802,7 @@ function rosterDues(roster, session) {
 
 // العنصر بعد التحقّق من نطاقه، أو null بعد ردّ 404 / 403
 function loadDuesMember(req, res) {
-  const m = db.prepare('SELECT id, branch_id, status, join_date FROM members WHERE id = ?').get(intOr(req.params.id));
+  const m = db.prepare(`SELECT id, branch_id, ${MEMBER_DUES_COLS} FROM members WHERE id = ?`).get(intOr(req.params.id));
   if (!m) res.status(404).json({ error: 'member not found' });
   else if (!branchOk(req, m.branch_id)) res.status(403).json({ error: 'forbidden' });
   else return m;
@@ -3678,10 +4846,13 @@ function insertMemberDue(req, m, month, amount, session) {
 }
 
 const monthLeft = (m, month) =>
-  dueLeft(db.prepare('SELECT SUM(amount) AS n FROM member_dues WHERE member_id = ? AND month = ?').get(m.id, month).n);
+  dueLeft(
+    db.prepare('SELECT SUM(amount) AS n FROM member_dues WHERE member_id = ? AND month = ?').get(m.id, month).n,
+    memberRate(m, month)
+  );
 
 // The month after a change, and the عنصر's whole account with it
-const memberMonthPayload = (m, month) => ({ month, paid: memberMonthOf(m.id, month), summary: memberDuesSummary(m) });
+const memberMonthPayload = (m, month) => ({ month, paid: memberMonthOf(m, month), summary: memberDuesSummary(m) });
 
 app.get('/api/members/:id/dues', (req, res) => {
   if (!canSeeMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
@@ -3694,12 +4865,27 @@ app.get('/api/members/:id/dues', (req, res) => {
     year,
     years: memberDuesYears(),
     months,
-    monthly: MEMBER_DUE_MONTHLY,
+    // Son tarif de ce mois-ci ; month_rates : celui de chaque mois de l'année (G1)
+    monthly: memberRate(m, currentMonth()),
+    month_rates: Object.fromEntries(months.map((x) => [x, memberRate(m, x)])),
+    // Les mois de l'année qui lui sont dus : atteints, depuis son début, jusqu'à son
+    // archivage, et pas exonérés
+    owed_months: (() => {
+      const end = memberDuesUntil(m, currentMonth());
+      return end ? months.filter((x) => x >= memberDuesFrom(m) && x <= end && memberRate(m, x) > 0) : [];
+    })(),
+    personal_rate:
+      m.dues_monthly === null || m.dues_monthly === undefined
+        ? null
+        : { amount: m.dues_monthly, note: m.dues_note, from: m.dues_rate_from },
+    general_rate: rateFor('member', currentMonth()),
+    can_exempt: hasPerm(req, 'members.dues.exempt'),
     start_month: memberDuesFrom(m),
     current_month: currentMonth(),
     member_id: m.id,
     active: m.status === 'active',
-    paid: memberDuesOf(m.id, months[0], months[11]),
+    archived_month: m.status === 'active' ? null : memberDuesUntil(m, currentMonth()),
+    paid: memberDuesOf(m, months[0], months[11]),
     summary: memberDuesSummary(m),
     can_edit: canWriteMemberDues(req),
   });
@@ -3758,6 +4944,178 @@ app.put('/api/members/:id/dues/:month', (req, res) => {
       auditEvent(req, 'delete', 'member_due', p.id, p, null);
     }
   res.json(memberMonthPayload(m, month));
+});
+
+// ---------- Arriérés (G1) ----------
+// Un seul calcul, lu par la trésorerie, العناصر, le tableau de bord et les exports.
+// `members` : lignes de members avec MEMBER_DUES_COLS. Rend id -> { months, owed,
+// last_paid_on } pour ceux qui doivent quelque chose (`year` : ses seuls mois).
+function arrearsByMember(members, year = null) {
+  const out = new Map();
+  if (!members.length) return out;
+  const ids = members.map((m) => intOr(m.id)).join(',');
+  const byMember = new Map();
+  for (const r of db
+    .prepare(`SELECT member_id, month, amount, paid_on FROM member_dues WHERE member_id IN (${ids})`)
+    .all()) {
+    if (!byMember.has(r.member_id)) byMember.set(r.member_id, []);
+    byMember.get(r.member_id).push(r);
+  }
+  const until = currentMonth();
+  for (const m of members) {
+    const rows = byMember.get(m.id) || [];
+    const paid = paidByMonth(rows);
+    let months = memberLateMonths(m, paid, until);
+    if (year) months = months.filter((x) => x.startsWith(year));
+    if (!months.length) continue;
+    out.set(m.id, {
+      months,
+      owed: months.reduce((n, x) => n + dueLeft(paid.get(x), memberRate(m, x)), 0),
+      last_paid_on: rows.reduce((d, r) => (r.paid_on && (!d || r.paid_on > d) ? r.paid_on : d), null),
+    });
+  }
+  return out;
+}
+
+// En retard = doit au moins un mois passé : le mois en cours non encore payé, c'est tout
+// le monde au début du mois (il ne compte qu'avec current, et dans le montant dû)
+const isLate = (months, current = currentMonth()) => months.some((m) => m < current);
+
+// Les عناصر en retard, dans le périmètre du compte : actifs d'un côté, archivés avec une
+// dette de l'autre (« soldées / abandonnées » : la dette reste visible après l'archivage).
+// withCurrent : aussi ceux qui ne doivent que le mois en cours.
+function duesArrears(req, { branch = null, year = null, withCurrent = false } = {}) {
+  const params = [];
+  let sql = `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.photo,
+               m.member_phone, m.father_phone, m.mother_phone,
+               ${MEMBER_DUES_COLS.split(', ').map((c) => `m.${c}`).join(', ')},
+               b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar, b.sort_order AS branch_sort,
+               g.name AS group_name
+             FROM members m JOIN branches b ON b.id = m.branch_id
+             LEFT JOIN branch_groups g ON g.id = m.group_id
+             WHERE (m.status = 'active' OR m.archived_at IS NOT NULL)${branchFilterSQL(req, 'm.branch_id')}`;
+  if (branch) {
+    sql += ' AND m.branch_id = ?';
+    params.push(intOr(branch));
+  }
+  const members = db.prepare(sql).all(...params);
+  const late = arrearsByMember(members, year);
+  const rows = members
+    .filter((m) => late.has(m.id) && (withCurrent || isLate(late.get(m.id).months)))
+    .map((m) => {
+      const { dues_note: _n, ...rest } = m;
+      return stripContact(req, { ...rest, ...late.get(m.id), archived: m.status !== 'active' });
+    })
+    .sort(
+      (a, b) =>
+        (a.branch_sort ?? 0) - (b.branch_sort ?? 0) ||
+        a.branch_id - b.branch_id ||
+        b.owed - a.owed ||
+        `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`)
+    );
+  const active = rows.filter((r) => !r.archived);
+  const archived = rows.filter((r) => r.archived);
+  const total = (list) => ({
+    members: list.length,
+    months: list.reduce((n, r) => n + r.months.length, 0),
+    amount: list.reduce((n, r) => n + r.owed, 0),
+  });
+  return {
+    current_month: currentMonth(),
+    rate: rateFor('member', currentMonth()),
+    year: year || null,
+    with_current: withCurrent,
+    members: active,
+    archived,
+    totals: total(active),
+    archived_totals: total(archived),
+  };
+}
+
+app.get('/api/member-dues/arrears', (req, res) => {
+  if (!canSeeMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const year = req.query.year ? String(req.query.year).trim() : null;
+  if (year && !YEAR_RE.test(year)) return res.status(400).json({ error: 'invalid year' });
+  const branch = req.query.branch ? intOr(req.query.branch) : null;
+  if (branch && !branchOk(req, branch)) return res.status(403).json({ error: 'forbidden' });
+  res.json(duesArrears(req, { branch, year, withCurrent: req.query.current === '1' }));
+});
+
+// Tarif personnel ou exonération (G1), sur la fiche : amount null = tarif général,
+// 0 = exonéré, n = tarif personnel ; note (le motif : fratrie, cas social…) obligatoire
+// dès qu'il s'écarte du tarif ; from = le mois d'où il vaut (ce mois-ci par défaut) —
+// les mois d'avant gardent ce qu'ils devaient.
+app.put('/api/members/:id/dues-rate', requirePerm('members.dues.exempt'), (req, res) => {
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const b = req.body || {};
+  const raw = b.amount;
+  const amount = raw === null || raw === undefined || raw === '' ? null : Number(raw);
+  if (amount !== null && (!Number.isInteger(amount) || amount < 0 || amount > 1000000))
+    return res.status(400).json({ error: 'invalid amount' });
+  const note = typeof b.note === 'string' ? b.note.trim().slice(0, 300) : '';
+  if (amount !== null && !note) return res.status(400).json({ error: 'note_required' });
+  const from = b.from === undefined || b.from === null || b.from === '' ? currentMonth() : String(b.from);
+  if (amount !== null && !MONTH_RE.test(from)) return res.status(400).json({ error: 'invalid month' });
+  const before = db.prepare('SELECT dues_monthly, dues_note, dues_rate_from FROM members WHERE id = ?').get(m.id);
+  db.prepare('UPDATE members SET dues_monthly = ?, dues_note = ?, dues_rate_from = ? WHERE id = ?').run(
+    amount,
+    amount === null ? null : note,
+    amount === null ? null : from,
+    m.id
+  );
+  const after = db.prepare('SELECT dues_monthly, dues_note, dues_rate_from FROM members WHERE id = ?').get(m.id);
+  auditEvent(req, 'update', 'member_dues_rate', m.id, before, after);
+  res.json({ personal_rate: amount === null ? null : { amount, note, from }, summary: memberDuesSummary({ ...m, ...after }) });
+});
+
+// Tarifs datés (réglages, admin). Lus par qui voit une cotisation.
+const dueRatesPayload = () => ({
+  current_month: currentMonth(),
+  member: dueRateList('member').map(({ id, amount, effective_month, created_by, created_at }) => ({
+    id, amount, effective_month, created_by, created_at,
+  })),
+  leader: dueRateList('leader').map(({ id, amount, effective_month, created_by, created_at }) => ({
+    id, amount, effective_month, created_by, created_at,
+  })),
+  current: { member: rateFor('member', currentMonth()), leader: rateFor('leader', currentMonth()) },
+});
+
+app.get('/api/due-rates', (req, res) => {
+  if (req.user.role !== 'admin' && !canSeeMemberDues(req) && !hasPerm(req, 'leaders.dues'))
+    return res.status(403).json({ error: 'forbidden' });
+  res.json(dueRatesPayload());
+});
+
+// Un tarif à partir d'un mois ; le même mois déjà tarifé : son montant est remplacé
+app.post('/api/due-rates', requireAdmin, (req, res) => {
+  const { kind, effective_month: month } = req.body || {};
+  const amount = Number(req.body?.amount);
+  if (!(kind in DUE_RATE_KINDS)) return res.status(400).json({ error: 'invalid kind' });
+  if (!MONTH_RE.test(String(month || ''))) return res.status(400).json({ error: 'invalid month' });
+  if (!Number.isInteger(amount) || amount < 0 || amount > 1000000) return res.status(400).json({ error: 'invalid amount' });
+  const before = db.prepare('SELECT * FROM due_rates WHERE kind = ? AND effective_month = ?').get(kind, month) || null;
+  db.prepare(
+    `INSERT INTO due_rates (kind, amount, effective_month, created_by) VALUES (?, ?, ?, ?)
+     ON CONFLICT(kind, effective_month) DO UPDATE SET amount = excluded.amount, created_by = excluded.created_by,
+       created_at = datetime('now')`
+  ).run(kind, amount, month, actorName(req));
+  dueRatesCache = null;
+  const after = db.prepare('SELECT * FROM due_rates WHERE kind = ? AND effective_month = ?').get(kind, month);
+  auditEvent(req, before ? 'update' : 'create', 'due_rate', after.id, before, after);
+  res.status(before ? 200 : 201).json(dueRatesPayload());
+});
+
+// Le seul tarif d'un genre ne se supprime pas : il faut toujours un prix
+app.delete('/api/due-rates/:id', requireAdmin, (req, res) => {
+  const r = db.prepare('SELECT * FROM due_rates WHERE id = ?').get(intOr(req.params.id));
+  if (!r) return res.status(404).json({ error: 'not found' });
+  if (db.prepare('SELECT COUNT(*) AS n FROM due_rates WHERE kind = ?').get(r.kind).n <= 1)
+    return res.status(400).json({ error: 'last_rate' });
+  db.prepare('DELETE FROM due_rates WHERE id = ?').run(r.id);
+  dueRatesCache = null;
+  auditEvent(req, 'delete', 'due_rate', r.id, r, null);
+  res.json(dueRatesPayload());
 });
 
 app.put('/api/leaders/:id', requireAdmin, (req, res) => {
@@ -3936,7 +5294,7 @@ function validateAssignment(body, selfId = null, section = 'M') {
   return null;
 }
 
-app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
+app.post('/api/tachkila', requireAdmin, followTachkila, rejectLocked((req) => req.body?.year), (req, res) => {
   if (req.body?.section !== undefined && !parseSection(req.body.section))
     return res.status(400).json({ error: 'invalid section' });
   const section = assignmentSection(req, req.body);
@@ -3969,6 +5327,7 @@ app.post('/api/tachkila', requireAdmin, rejectLocked((req) => req.body?.year), (
 app.put(
   '/api/tachkila/:id',
   requireAdmin,
+  followTachkila,
   rejectLocked((req) => [assignmentYear(req), req.body?.year]),
   (req, res) => {
     const existing = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
@@ -4007,7 +5366,7 @@ app.put(
   }
 );
 
-app.delete('/api/tachkila/:id', requireAdmin, rejectLocked(assignmentYear), (req, res) => {
+app.delete('/api/tachkila/:id', requireAdmin, followTachkila, rejectLocked(assignmentYear), (req, res) => {
   let changes = 0;
   db.transaction(() => {
     // حذف الأمين لا يُسقط مساعديه من التشكيلة: يعودون توصيفات مستقلة
@@ -4027,7 +5386,7 @@ const insertAssignmentRow = () =>
 //   template (default) — every standard توصيف of the فوج as an empty slot
 //   copy               — same توصيفات AND same قادة as `from_year`
 //   empty              — nothing, build it by hand
-app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_year), (req, res) => {
+app.post('/api/tachkila/copy', requireAdmin, followTachkila, rejectLocked((req) => req.body?.to_year), (req, res) => {
   const { from_year, to_year, mode = 'template' } = req.body;
   if (!scoutYearRange(String(to_year || '').trim())) return res.status(400).json({ error: 'invalid year' });
   if (!['template', 'copy', 'empty'].includes(mode)) return res.status(400).json({ error: 'invalid mode' });
@@ -4077,7 +5436,7 @@ app.post('/api/tachkila/copy', requireAdmin, rejectLocked((req) => req.body?.to_
 
 // Add the standard توصيفات an existing year is missing — for تشكيلات made before this template,
 // or after a new فرقة was created. Existing rows are matched by title and left untouched.
-app.post('/api/tachkila/fill', requireAdmin, rejectLocked((req) => req.body?.year), (req, res) => {
+app.post('/api/tachkila/fill', requireAdmin, followTachkila, rejectLocked((req) => req.body?.year), (req, res) => {
   const year = String(req.body.year || '').trim();
   if (!scoutYearRange(year)) return res.status(400).json({ error: 'invalid year' });
   db.prepare('INSERT OR IGNORE INTO tachkila_years (year, created_by) VALUES (?, ?)').run(
@@ -4261,12 +5620,18 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
               THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
               ELSE 0 END) AS absent_count,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'excused') AS excused_count,
-        (SELECT ROUND(100.0 * SUM(m.status = 'present') / NULLIF(COUNT(*), 0)) FROM (
+        -- Un taux seulement pour une séance qui compte (pointée ou validée) : une liste
+        -- restée «absent» par défaut n'est pas un 0 %
+        (CASE WHEN ${countedSessionSQL('s')} THEN (SELECT ROUND(100.0 * SUM(m.status = 'present') / NULLIF(COUNT(*), 0)) FROM (
            SELECT a.status FROM attendance a
             WHERE a.session_id = s.id AND a.status IN ('present', 'absent', 'excused')
            UNION ALL
            SELECT sl.status FROM session_leaders sl
-            WHERE sl.session_id = s.id AND s.kind = 'leaders' AND sl.status IS NOT NULL) m) AS rate,
+            WHERE sl.session_id = s.id AND s.kind = 'leaders' AND sl.status IS NOT NULL) m) END) AS rate,
+        ${countedSessionSQL('s')} AS counted,
+        ${unconfirmedSessionSQL('s')} AS unconfirmed,
+        ${todoEvalSQL('s')} AS todo_eval,
+        ${todoFinancesSQL('s')} AS todo_finances,
         (SELECT COUNT(*) FROM session_guests g WHERE g.session_id = s.id) AS guest_count,
         -- مالية النشاط، فيُعرف من القائمة أربح أم خسر: اشتراكاته و تبرعاته، و مصاريفه
         -- مدفوعةً أو لم تُدفع بعد
@@ -4304,6 +5669,20 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   if (to) { sql += ' AND s.date <= ?'; params.push(to); }
   if (activityType) { sql += ' AND s.activity_type = ?'; params.push(activityType); }
   if (kind) { sql += ' AND s.kind = ?'; params.push(kind); }
+  // «À régulariser» : ce qui reste à faire sur les séances passées récentes — présence
+  // non confirmée, évaluation manquante, finances non saisies alors qu'un frais existe.
+  // todo=attendance|eval|finances n'en garde qu'un ; todo=1 les trois.
+  const todo = req.query.todo;
+  if (todo) {
+    const parts = {
+      attendance: unconfirmedSessionSQL('s'),
+      eval: todoEvalSQL('s'),
+      finances: hasPerm(req, 'sessions.read.fees') ? todoFinancesSQL('s') : null,
+    };
+    const picked = parts[todo] !== undefined ? [parts[todo]] : Object.values(parts);
+    const conds = picked.filter(Boolean);
+    sql += ` AND s.date >= date('${todayISO()}', '-${TODO_WINDOW_DAYS} days') AND (${conds.length ? conds.join(' OR ') : '0'})`;
+  }
   // "What did this قائد run" covers both roles: the animateur principal recorded on the
   // نشاط itself, and the مساعدين listed in session_leaders.
   if (leader) {
@@ -4321,7 +5700,9 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
   }
   sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
   const seesMoney = canSeeSessionExpenses(req);
+  const seesFees = hasPerm(req, 'sessions.read.fees');
   const today = todayISO();
+  const todoSince = db.prepare(`SELECT date(?, '-${TODO_WINDOW_DAYS} days') AS d`).get(today).d;
   const rows = db
     .prepare(sql)
     .all(...params)
@@ -4335,12 +5716,27 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
         eval_form: evalForm,
         eval_participant: evalParticipant,
         eval_mine: evalMine,
+        counted,
+        unconfirmed,
+        todo_eval: todoEval,
+        todo_finances: todoFinances,
         ...r
       }) => {
         // ينتظر تقييمه: قائد شارك، و النشاط مضى، و لم يقيّم — فلا يرى معدّل غيره قبل أن يقيّم
         const pending = !!evalParticipant && !evalMine && r.date <= today;
         return stripFee(req, {
           ...r,
+          counted: !!counted,
+          unconfirmed: !!unconfirmed,
+          // Ce qui reste à régulariser sur la séance (fenêtre de TODO_WINDOW_DAYS jours)
+          todo:
+            r.date >= todoSince
+              ? [
+                  unconfirmed && 'attendance',
+                  todoEval && 'eval',
+                  todoFinances && seesFees && 'finances',
+                ].filter(Boolean)
+              : [],
           matalib: JSON.parse(r.matalib || '[]'),
           branch_ids: parseIdList(r.branch_ids),
           group_ids: parseIdList(r.group_ids),
@@ -4710,7 +6106,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
               COALESCE(a.branch_id, m.branch_id) AS branch_id,
               a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status,
-              a.paid
+              a.paid, a.reason
        FROM attendance a JOIN members m ON m.id = a.member_id
        LEFT JOIN branch_groups g ON g.id = a.group_id
        WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) IN (${rosterList})
@@ -4725,6 +6121,8 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
           db
             .prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?')
             .get(m.id).d || null,
+        // borné à la date de la séance : sur une séance ancienne, la série d'alors
+        until: s.date,
       }).consecutive_absences,
     }));
   // نشاط قادة: حضوره هو القادة أنفسهم، فاللائحة كل قائد نشيط من قسم النشاط — لا
@@ -4758,7 +6156,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     // حصيلة اشتراكات النشاط كاملًا — يحسبها البرنامج من الخانات، لا تُدخَل يدويًا
     subscriptions: sessionSubscriptions(s.id),
     member_dues: withDues
-      ? { monthly: MEMBER_DUE_MONTHLY, month: s.date.slice(0, 7), can_edit: canWriteMemberDues(req) }
+      ? { monthly: rateFor('member', s.date.slice(0, 7)), month: s.date.slice(0, 7), can_edit: canWriteMemberDues(req) }
       : null,
     // ما اشتُري للنشاط من الصندوق، و التبرعات التي وصلت فيه — لمن يرى مبالغ الأنشطة أو الصندوق
     expenses: canSeeSessionExpenses(req) ? sessionEntriesOf(s.id, 'out') : null,
@@ -4780,6 +6178,18 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       : [],
     // الفرق التي يحقّ للمستخدم وضع حضورها في هذا النشاط
     my_branch_ids: myBranchIds,
+    // La série d'absences qui met un عنصر en suivi (A2), pour le badge du pointage et du PDF
+    absence_threshold: absenceThreshold(),
+    // Validation de la présence (A1) : compte-t-elle, est-elle «non confirmée», et qui
+    // peut la valider / la rouvrir (toutes les فرق de la séance, comme sa création)
+    counted: !!db.prepare(`SELECT ${countedSessionSQL('s')} AS c FROM sessions s WHERE s.id = ?`).get(s.id).c,
+    unconfirmed: !!db.prepare(`SELECT ${unconfirmedSessionSQL('s')} AS c FROM sessions s WHERE s.id = ?`).get(s.id).c,
+    can_finalize:
+      ['activity', 'leaders'].includes(s.kind) &&
+      hasPerm(req, 'sessions.attendance') &&
+      branchIds.every((b) => branchOk(req, b)),
+    can_reopen:
+      ['activity', 'leaders'].includes(s.kind) && hasPerm(req, 'sessions.edit') && branchIds.every((b) => branchOk(req, b)),
     // مجموعات النشاط بأسمائها — فارغة تعني أن كل فرقه تشارك كاملةً
     groups: db
       .prepare(
@@ -4848,10 +6258,15 @@ app.post('/api/sessions/:id/counts', requirePerm('sessions.attendance'), (req, r
 
 // Add / remove helpers and mark animator présence on a session
 app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req, res) => {
-  const s = db.prepare('SELECT id, title, branch_id, kind, section FROM sessions WHERE id = ?').get(req.params.id);
+  const s = db
+    .prepare('SELECT id, title, branch_id, kind, section, attendance_finalized_at FROM sessions WHERE id = ?')
+    .get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
   const { leader_id, status, remove } = req.body;
+  // Présence validée : celle des قادة d'un نشاط قادة est figée jusqu'à réouverture
+  if (s.kind === 'leaders' && s.attendance_finalized_at && 'status' in (req.body || {}))
+    return res.status(409).json({ error: 'attendance_finalized' });
   // منشّطو النشاط من قسمه وحده
   if (!db.prepare('SELECT id FROM leaders WHERE id = ? AND section = ?').get(leader_id, s.section))
     return res.status(400).json({ error: 'invalid leader_id' });
@@ -5089,16 +6504,25 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   );
   // For the history: each عنصر whose status or payment really changed, as it was and as it
   // is — with the فرقة he counts in here, which decides who may read the line
-  const attendanceRow = db.prepare('SELECT status, paid, branch_id FROM attendance WHERE session_id = ? AND member_id = ?');
+  const attendanceRow = db.prepare('SELECT status, paid, reason, branch_id FROM attendance WHERE session_id = ? AND member_id = ?');
+  const upsertReason = db.prepare(
+    `INSERT INTO attendance (session_id, member_id, reason) VALUES (?, ?, ?)
+     ON CONFLICT(session_id, member_id) DO UPDATE SET reason = excluded.reason`
+  );
   const was = [];
   const now = [];
   const run = db.transaction(() => {
     for (const r of records) {
       const withStatus = r.status !== undefined;
       const withPaid = 'paid' in r;
-      if (!r.member_id || (!withStatus && !withPaid)) throw new Error('invalid record');
+      // Motif d'absence (A2) : libre même après validation, il ne change aucun chiffre
+      const withReason = 'reason' in r;
+      if (!r.member_id || (!withStatus && !withPaid && !withReason)) throw new Error('invalid record');
+      if (withReason && r.reason !== null && !ABSENCE_REASONS.includes(r.reason)) throw new Error('invalid record');
       if (withStatus && !['present', 'absent', 'excused'].includes(r.status))
         throw new Error('invalid record');
+      // Présence validée : les statuts sont figés jusqu'à réouverture (les paiements restent libres)
+      if (withStatus && s.attendance_finalized_at) throw new Error('attendance_finalized');
       const paid = withPaid ? parsePaid(r.paid) : undefined;
       if (withPaid && paid === undefined) throw new Error('invalid paid');
       if (withPaid && !canSeeFees) throw new Error('forbidden_fees');
@@ -5115,12 +6539,16 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
       const prevStatus = prev?.status === 'unmarked' ? null : (prev?.status ?? null);
       if (withStatus && prevStatus !== r.status) [from.status, to.status] = [prevStatus, r.status];
       if (withPaid && (prev?.paid ?? null) !== paid) [from.paid, to.paid] = [prev?.paid ?? null, paid];
-      if ('status' in to || 'paid' in to) {
+      // Un présent n'a pas de motif : le passer présent l'efface
+      const reason = withStatus && r.status === 'present' ? null : withReason ? r.reason : undefined;
+      if (reason !== undefined && (prev?.reason ?? null) !== reason) [from.reason, to.reason] = [prev?.reason ?? null, reason];
+      if ('status' in to || 'paid' in to || 'reason' in to) {
         was.push(from);
         now.push(to);
       }
       if (withStatus) upsertStatus.run(s.id, r.member_id, r.status);
       if (withPaid) upsertPaid.run(s.id, r.member_id, paid);
+      if (reason !== undefined && (prev || reason !== null)) upsertReason.run(s.id, r.member_id, reason);
     }
   });
   try {
@@ -5128,13 +6556,172 @@ app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (re
   } catch (e) {
     // فرقة أو مجموعة خارج نطاق النشاط: منعٌ لا خطأ في البيانات
     return res
-      .status(['forbidden_branch', 'forbidden_group', 'forbidden_fees'].includes(e.message) ? 403 : 400)
+      .status(
+        e.message === 'attendance_finalized'
+          ? 409
+          : ['forbidden_branch', 'forbidden_group', 'forbidden_fees'].includes(e.message)
+            ? 403
+            : 400
+      )
       .json({ error: e.message });
   }
   if (now.length) auditEvent(req, 'attendance', 'session', s.id, { attendance: was }, { attendance: now });
   notifyAdmins(req, 'attendance', s);
   // الحصيلة تعود مع كل حفظ: البرنامج يجمعها، فلا يجمعها القائد على ورقة
   res.json({ ok: true, subscriptions: canSeeFees ? sessionSubscriptions(s.id) : null });
+});
+
+// ---------- Validation de la présence (A1) ----------
+// «تثبيت الحضور» : qui a validé et quand, dans sessions.attendance_finalized_at/by. Une
+// séance validée compte dans toutes les statistiques (countedSessionSQL) et sa présence
+// ne se modifie plus qu'après «Rouvrir», réservé à sessions.edit. Les deux sont tracés
+// dans l'Historique de la séance. Une séance commune se valide d'un bloc : il faut donc
+// avoir toutes ses فرق (le pointage, lui, reste فرقة par فرقة).
+function finalizeTarget(req, res) {
+  const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) return void res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return void res.status(403).json({ error: 'forbidden' });
+  if (!['activity', 'leaders'].includes(s.kind)) return void res.status(400).json({ error: 'not_pointed_kind' });
+  if (!branchIdsOfSession(s.id).every((b) => branchOk(req, b))) return void res.status(403).json({ error: 'forbidden' });
+  return s;
+}
+const finalizeState = (s) => ({
+  attendance_finalized_at: s.attendance_finalized_at ?? null,
+  attendance_finalized_by: s.attendance_finalized_by ?? null,
+});
+
+app.post('/api/sessions/:id/finalize', requirePerm('sessions.attendance'), (req, res) => {
+  const s = finalizeTarget(req, res);
+  if (!s) return;
+  if (s.attendance_finalized_at) return res.status(409).json({ error: 'already_finalized' });
+  // Une séance à venir n'a pas eu lieu : rien à valider
+  if (s.date > todayISO()) return res.status(400).json({ error: 'future_session' });
+  const by = req.user.display_name || req.user.username;
+  db.prepare("UPDATE sessions SET attendance_finalized_at = datetime('now'), attendance_finalized_by = ? WHERE id = ?")
+    .run(by, s.id);
+  const after = db.prepare('SELECT * FROM sessions WHERE id = ?').get(s.id);
+  auditEvent(req, 'finalize', 'session', s.id, finalizeState(s), finalizeState(after));
+  res.json(finalizeState(after));
+  // A2 : la séance compte désormais — les absents dont la série atteint un palier
+  setImmediate(() => {
+    try {
+      absenceStreakAlerts(req, after);
+    } catch (e) {
+      console.error('absence streak alerts failed:', e.message);
+    }
+  });
+});
+
+// Après validation (A2) : chaque عنصر actif absent de cette séance dont la série
+// d'absences — séances qui comptent, dans sa فرقة actuelle — atteint le seuil (palier 1)
+// ou deux fois le seuil (palier 2, escalade à l'admin). Une seule alerte par palier et par
+// série : la clé porte la première absence de la série, une nouvelle série réalerte.
+function absenceStreakAlerts(req, s) {
+  if (s.kind !== 'activity') return 0;
+  const threshold = absenceThreshold();
+  const absent = db
+    .prepare(
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.status
+       FROM attendance a JOIN members m ON m.id = a.member_id
+       WHERE a.session_id = ? AND a.status = 'absent' AND m.status = 'active'`
+    )
+    .all(s.id);
+  let sent = 0;
+  for (const m of absent) {
+    const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
+    const streak = statsFromRows(rows).consecutive_absences;
+    if (streak < threshold) continue;
+    // Cette séance doit faire partie de la série (une ancienne validée plus tard n'alerte pas)
+    if (!rows.slice(0, streak).some((r) => r.session_id === s.id)) continue;
+    const level = streak >= threshold * 2 ? 2 : 1;
+    const startId = rows[streak - 1].session_id;
+    const lastContact = lastContactsOf([m.id]).get(m.id) || null;
+    if (notifications.absenceStreak({ member: m, streak, level, startId, threshold, lastContact })) sent += 1;
+  }
+  return sent;
+}
+
+// Une fois (user_version 9), au premier démarrage avec A2 : les séries d'absences déjà en
+// cours sont marquées « alertées » à leur palier actuel. Sinon, la première validation de
+// présence après le déploiement enverrait d'un coup toutes les séries anciennes. Une série
+// en cours n'alerte donc plus qu'en atteignant le palier suivant ; une nouvelle série alerte.
+function seedAbsenceReminders() {
+  if (db.pragma('user_version', { simple: true }) >= 9) return;
+  const threshold = absenceThreshold();
+  const mark = db.prepare('INSERT OR IGNORE INTO notification_reminders (key) VALUES (?)');
+  const members = db.prepare("SELECT * FROM members WHERE status = 'active'").all();
+  db.transaction(() => {
+    for (const m of members) {
+      const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
+      const streak = statsFromRows(rows).consecutive_absences;
+      if (streak < threshold) continue;
+      const startId = rows[streak - 1].session_id;
+      const level = streak >= threshold * 2 ? 2 : 1;
+      for (let l = 1; l <= level; l++) mark.run(`absence:${m.id}:${startId}:${l}`);
+    }
+    db.pragma('user_version = 9');
+  })();
+}
+
+app.post('/api/sessions/:id/reopen', requirePerm('sessions.edit'), (req, res) => {
+  const s = finalizeTarget(req, res);
+  if (!s) return;
+  if (!s.attendance_finalized_at) return res.status(409).json({ error: 'not_finalized' });
+  db.prepare('UPDATE sessions SET attendance_finalized_at = NULL, attendance_finalized_by = NULL WHERE id = ?').run(s.id);
+  auditEvent(req, 'reopen', 'session', s.id, finalizeState(s), finalizeState({}));
+  res.json(finalizeState({}));
+});
+
+// «Mettre à jour la liste» : la liste d'une séance est figée à sa création. Ajoute les
+// عناصر actifs de ses فرق (et طلائع) arrivés depuis, et signale ceux de la liste qui
+// sont archivés ou ont changé de فرقة — sans les retirer : leur ligne est l'archive
+// de ce jour-là. ?dry=1 ne fait que compter.
+app.post('/api/sessions/:id/roster/sync', requirePerm('sessions.attendance'), (req, res) => {
+  const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return res.status(403).json({ error: 'forbidden' });
+  const branchIds = branchIdsOfSession(s.id);
+  if (!(s.kind === 'activity' || (s.kind === 'leaders' && branchIds.length > 0)))
+    return res.status(400).json({ error: 'no_roster' });
+  if (s.attendance_finalized_at) return res.status(409).json({ error: 'attendance_finalized' });
+  // Only the فرق this account marks: a shared séance's other roster is not his to touch
+  const mine = myBranchesOfSession(req, s.id).map(intOr);
+  const list = mine.join(',') || -1;
+  const missing = db
+    .prepare(
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.group_id FROM members m
+       WHERE m.branch_id IN (${list}) AND m.status = 'active'
+         AND ${memberInSessionGroupsSQL(s.id, 'm')}
+         AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.session_id = ? AND a.member_id = m.id)
+       ORDER BY m.last_name, m.first_name`
+    )
+    .all(s.id);
+  // Listed here, but archived since, or now in another فرقة than the one he counts in here
+  const flagged = db
+    .prepare(
+      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.status, m.branch_id,
+              COALESCE(a.branch_id, m.branch_id) AS session_branch_id
+       FROM attendance a JOIN members m ON m.id = a.member_id
+       WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) IN (${list})
+         AND (m.status != 'active' OR m.branch_id != COALESCE(a.branch_id, m.branch_id))
+       ORDER BY m.last_name, m.first_name`
+    )
+    .all(s.id)
+    .map((m) => ({ ...m, reason: m.status !== 'active' ? 'archived' : 'transferred' }));
+  const dry = req.query.dry === '1' || req.body?.dry === true;
+  if (!dry && missing.length) {
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO attendance (session_id, member_id, status, branch_id, group_id)
+       VALUES (?, ?, 'absent', ?, ?)`
+    );
+    db.transaction(() => {
+      for (const m of missing) insert.run(s.id, m.id, m.branch_id, m.group_id);
+    })();
+    auditEvent(req, 'roster_sync', 'session', s.id, null, {
+      added: missing.map((m) => ({ member_id: m.id, branch_id: m.branch_id })),
+    });
+  }
+  res.json({ added: missing, flagged, dry });
 });
 
 // ---------- سجلّ النشاط ----------
@@ -5191,6 +6778,7 @@ function historyEntry(ev, see) {
           const p = was.get(r.member_id) || {};
           if ('status' in r) rows.push(row(`a:${r.member_id}`, { field: 'status', member_id: r.member_id }, p.status, r.status));
           if ('paid' in r && see.fees) rows.push(row(`p:${r.member_id}`, { field: 'paid', member_id: r.member_id }, p.paid, r.paid));
+          if ('reason' in r) rows.push(row(`r:${r.member_id}`, { field: 'reason', member_id: r.member_id }, p.reason, r.reason));
         }
         return { type: 'attendance', rows };
       }
@@ -5213,6 +6801,17 @@ function historyEntry(ev, see) {
       }
       case 'guest':
         return one('guests', `g:${x.id}`, { name: x.name }, before?.name, after?.name);
+      case 'finalize':
+        return { type: 'finalized', rows: [] };
+      case 'reopen':
+        return { type: 'reopened', rows: [] };
+      case 'roster_sync':
+        return {
+          type: 'roster',
+          rows: (after?.added || [])
+            .filter((r) => see.branch(r.branch_id))
+            .map((r) => row(`r:${r.member_id}`, { member_id: r.member_id }, null, true)),
+        };
       case 'add_file':
       case 'remove_file':
         return one('files', `file:${x.file_id}`, { name: x.name, kind: x.kind }, before && true, after && true);
@@ -5291,7 +6890,7 @@ function historyItems(req, s) {
   // What a burst undid (absent, present, absent again) leaves nothing to say
   return items
     .map((i) => ({ ...i, rows: i.rows.filter((r) => !sameValue(r.from, r.to)) }))
-    .filter((i) => i.type === 'created' || i.vague || i.rows.length > 0);
+    .filter((i) => ['created', 'finalized', 'reopened'].includes(i.type) || i.vague || i.rows.length > 0);
 }
 
 // Names on the rows, as they read today: a renamed عنصر reads under his new name
@@ -6215,13 +7814,21 @@ function eventSummary(ev) {
 const EVENT_PARTICIPANT_SQL = `
   SELECT p.id, p.member_id, p.leader_id, p.guest_name, p.amount_due, p.paid, p.paid_at, p.recorded_by,
     p.withdrawn_at, p.withdrawn_by,
+    -- E1 : l'autorisation parentale ; le scan lui-même ne vient qu'à la demande
+    p.consent_at, p.consent_by, p.consent_recorded_by, p.consent_scan IS NOT NULL AS consent_has_scan,
     COALESCE(m.first_name, l.first_name) AS first_name,
     COALESCE(m.father_name, l.father_name) AS father_name,
     COALESCE(m.last_name, l.last_name) AS last_name,
     COALESCE(m.photo, l.photo) AS photo,
     COALESCE(m.status, l.status) AS status,
     m.branch_id, m.group_id, g.name AS group_name,
-    b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar
+    b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
+    -- E2 : la liste d'appel du dossier de camp — âge, groupe sanguin, téléphones (members.contact /
+    -- leaders.contact, retirés sinon par participantOut)
+    m.birth_date, m.sex, m.blood_type, m.father_phone, m.mother_phone, m.member_phone, l.phone AS leader_phone,
+    -- دوره الجاري في طليعته (C1): العريف هو صلة الطليعة في المخيم
+    (SELECT r.role FROM member_responsibilities r WHERE r.member_id = p.member_id AND r.end_date IS NULL
+       AND r.role != 'other' ORDER BY r.id DESC LIMIT 1) AS member_role
   FROM event_participants p
   LEFT JOIN members m ON m.id = p.member_id
   LEFT JOIN branches b ON b.id = m.branch_id
@@ -6231,6 +7838,20 @@ const EVENT_PARTICIPANT_SQL = `
 
 const stripParticipantFees = (req, p) =>
   hasPerm(req, 'events.read.fees') ? p : { ...p, amount_due: null, paid: null, paid_at: null, recorded_by: null };
+
+// Un participant tel qu'il quitte le serveur : sans les montants (events.read.fees), sans les
+// téléphones des parents (members.contact) ni celui du قائد (leaders.contact)
+function participantOut(req, p) {
+  if (!p) return p;
+  const out = { ...stripParticipantFees(req, p) };
+  if (!hasPerm(req, 'members.contact')) {
+    out.father_phone = null;
+    out.mother_phone = null;
+    out.member_phone = null;
+  }
+  if (!hasPerm(req, 'leaders.contact')) out.leader_phone = null;
+  return out;
+}
 
 const expensesOf = (eventId) =>
   db
@@ -6294,6 +7915,9 @@ const donationsOf = (eventId) =>
 // كلائحة النشاط المشترك — و القادة و الضيوف يراهم كل من يرى المخيم.
 function eventPayload(req, ev) {
   const canFees = hasPerm(req, 'events.read.fees');
+  ensureChecklist(ev);
+  // E1 : la fiche santé des عناصر inscrits, pour members.health et les قادة du camp seulement
+  const health = eventHealthMap(req, ev);
   // The list, and apart from it whoever was taken off it — a عنصر or قائد, whose file says he did
   // not take part. Same names for the same accounts; the second list reaches no count or payment.
   const peopleOf = (withdrawn) =>
@@ -6304,7 +7928,12 @@ function eventPayload(req, ev) {
            b.sort_order, last_name, first_name, p.guest_name, p.id`
       )
       .all(ev.id)
-      .map((p) => stripParticipantFees(req, p));
+      .map((p) => {
+        const out = participantOut(req, p);
+        out.consent_has_scan = !!p.consent_has_scan;
+        if (health && p.member_id && health.has(p.member_id)) out.health = health.get(p.member_id);
+        return out;
+      });
   const participants = peopleOf(false);
   const withdrawn = peopleOf(true);
   const visible = new Set(participants.map((p) => p.id));
@@ -6343,6 +7972,11 @@ function eventPayload(req, ev) {
     summary: canFees ? eventSummary(ev) : null,
     // تبويب التقييم و نقطته و العلامة في رأس الصفحة — null إن لم تكن لنوعه استمارة
     evaluation: evalSummaryOf(req, ev, EVENT_EVAL),
+    // E1 : prêt à partir — autorisations, check-list sécurité, et qui peut quoi
+    checklist: checklistOf(ev.id),
+    readiness: eventReadiness(ev.id),
+    health_visible: !!health,
+    can_safety: hasPerm(req, 'events.manage') || isEventStaff(req, ev.id),
   };
 }
 
@@ -6446,12 +8080,21 @@ app.get('/api/events', requirePerm('events.read'), (req, res) => {
       (SELECT GROUP_CONCAT(eg.group_id) FROM event_groups eg WHERE eg.event_id = e.id) AS group_ids,
       (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS participant_count,
       (SELECT COUNT(*) FROM event_sessions s WHERE s.event_id = e.id) AS session_count,
+      ${EVENT_READINESS_SQL('e')},
       (SELECT COALESCE(SUM(p.paid), 0) FROM event_participants p
          WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS collected,
       (SELECT COALESCE(SUM(COALESCE(p.amount_due, e.fee, 0)), 0)
          FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS expected,
       (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
          FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS outstanding,
+      -- E2 : qui doit encore, et combien de familles appeler (des frères et sœurs partagent le
+      -- téléphone d'un parent : un seul appel)
+      (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL
+         AND COALESCE(p.paid, 0) < COALESCE(p.amount_due, e.fee, 0)) AS unpaid_count,
+      (SELECT COUNT(DISTINCT COALESCE(NULLIF(m.father_phone, ''), NULLIF(m.mother_phone, ''), 'p' || p.id))
+         FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
+         WHERE p.event_id = e.id AND p.withdrawn_at IS NULL
+           AND COALESCE(p.paid, 0) < COALESCE(p.amount_due, e.fee, 0)) AS unpaid_families,
       (SELECT COALESCE(SUM(d.amount), 0) FROM event_donations d WHERE d.event_id = e.id) AS donations,
       (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses,
       (SELECT COALESCE(SUM(CASE WHEN f.direction = 'to_event' THEN f.amount ELSE -f.amount END), 0)
@@ -6464,11 +8107,17 @@ app.get('/api/events', requirePerm('events.read'), (req, res) => {
     params.push(req.query.kind);
   }
   if (req.query.q) {
-    sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR ${fullNameSQL('l')} LIKE ?)`;
-    params.push(`%${req.query.q}%`, `%${req.query.q}%`, `%${req.query.q}%`);
+    // E2 : un participant aussi — un عنصر des فرق du compte, un قائد ou un invité
+    sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR ${fullNameSQL('l')} LIKE ?
+      OR EXISTS (SELECT 1 FROM event_participants pq LEFT JOIN members mq ON mq.id = pq.member_id
+        LEFT JOIN leaders lq ON lq.id = pq.leader_id
+        WHERE pq.event_id = e.id AND pq.withdrawn_at IS NULL${branchFilterSQL(req, 'mq.branch_id')}
+          AND (pq.guest_name LIKE ? OR ${fullNameSQL('mq')} LIKE ? OR ${fullNameSQL('lq')} LIKE ?)))`;
+    const like = `%${req.query.q}%`;
+    params.push(like, like, like, like, like, like);
   }
   sql += ' ORDER BY e.start_date DESC, e.id DESC';
-  const money = ['fee', 'collected', 'expected', 'outstanding', 'donations', 'expenses', 'funded'];
+  const money = ['fee', 'collected', 'expected', 'outstanding', 'unpaid_count', 'unpaid_families', 'donations', 'expenses', 'funded'];
   res.json(
     db
       .prepare(sql)
@@ -6810,7 +8459,7 @@ app.put('/api/events/:id/participants/:pid', requirePerm('events.payments'), (re
   const after = db.prepare('SELECT * FROM event_participants WHERE id = ?').get(p.id);
   auditEvent(req, 'update', 'event_payment', p.id, p, after);
   res.json({
-    participant: db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id),
+    participant: participantOut(req, db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id)),
     summary: eventSummary(ev),
   });
 });
@@ -7052,6 +8701,303 @@ app.delete('/api/events/:id/staff/:sid', requirePerm('events.manage'), (req, res
   db.prepare('DELETE FROM event_staff WHERE id = ?').run(st.id);
   auditEvent(req, 'delete', 'event_staff', st.id, st, null);
   res.json({ staff: staffOf(ev.id) });
+});
+
+// ---------- Camp prêt à partir (E1) : santé, autorisations parentales, sécurité ----------
+
+// Un قائد du camp : son chef, ou un membre de sa هيئة قيادية (le مسعف compris)
+function isEventStaff(req, eventId) {
+  const me = Number(req.user.leader_id);
+  if (!Number.isInteger(me) || me <= 0) return false;
+  return !!db
+    .prepare(
+      `SELECT 1 FROM events e WHERE e.id = @ev AND (e.leader_id = @me
+         OR EXISTS (SELECT 1 FROM event_staff st WHERE st.event_id = e.id AND st.leader_id = @me))`
+    )
+    .get({ ev: eventId, me });
+}
+
+// La fiche santé d'un عنصر : members.health, ou قائد d'un camp en cours ou à venir (fini il y a
+// moins de 3 jours) où il est inscrit. Rien d'autre ne l'ouvre.
+function canReadHealth(req, memberId) {
+  if (hasPerm(req, 'members.health')) return true;
+  return hasPerm(req, 'events.read') && isStaffOfMember(req, memberId);
+}
+
+const healthOf = (m) => ({
+  blood_type: m.blood_type ?? null,
+  allergies: m.allergies ?? null,
+  treatment: m.treatment ?? null,
+  medical_notes: m.medical_notes ?? null,
+  can_swim: m.can_swim === null || m.can_swim === undefined ? null : !!m.can_swim,
+  emergency_name: m.emergency_name ?? null,
+  emergency_phone: m.emergency_phone ?? null,
+  updated_at: m.health_updated_at ?? null,
+  updated_by: m.health_updated_by ?? null,
+});
+
+app.get('/api/members/:id/health', requirePerm('members.read'), (req, res) => {
+  const m = db.prepare('SELECT * FROM members WHERE id = ?').get(intOr(req.params.id));
+  if (!m) return res.status(404).json({ error: 'member not found' });
+  if (!canReadHealth(req, m.id)) return res.status(403).json({ error: 'forbidden' });
+  // Hors de ses فرق, seul un قائد d'un camp où il est inscrit passe
+  if (!branchOk(req, m.branch_id) && !isStaffOfMember(req, m.id)) return res.status(403).json({ error: 'forbidden' });
+  res.json({
+    ...healthOf(m),
+    can_edit: hasPerm(req, 'members.health') && hasPerm(req, 'members.edit') && branchOk(req, m.branch_id),
+  });
+});
+
+// قائد d'un camp en cours ou à venir où l'عنصر est inscrit
+function isStaffOfMember(req, memberId) {
+  const me = Number(req.user.leader_id);
+  if (!Number.isInteger(me) || me <= 0) return false;
+  return !!db
+    .prepare(
+      `SELECT 1 FROM event_participants p JOIN events e ON e.id = p.event_id
+       WHERE p.member_id = @m AND p.withdrawn_at IS NULL AND e.end_date >= date(@today, '-3 days')
+         AND (e.leader_id = @me OR EXISTS (SELECT 1 FROM event_staff st WHERE st.event_id = e.id AND st.leader_id = @me))
+       LIMIT 1`
+    )
+    .get({ m: memberId, me, today: todayISO() });
+}
+
+app.put('/api/members/:id/health', requirePerm('members.health'), requirePerm('members.edit'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM members WHERE id = ?').get(intOr(req.params.id));
+  if (!existing) return res.status(404).json({ error: 'member not found' });
+  if (!branchOk(req, existing.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const v = {
+    allergies: optionalText(b.allergies, 1000),
+    treatment: optionalText(b.treatment, 1000),
+    medical_notes: optionalText(b.medical_notes, 2000),
+    emergency_name: optionalText(b.emergency_name, 120),
+    emergency_phone: optionalText(b.emergency_phone, 40),
+  };
+  if (Object.values(v).some((x) => x === undefined)) return res.status(400).json({ error: 'text too long' });
+  if (b.can_swim !== undefined && b.can_swim !== null && typeof b.can_swim !== 'boolean')
+    return res.status(400).json({ error: 'invalid can_swim' });
+  const swim = b.can_swim === true ? 1 : b.can_swim === false ? 0 : null;
+  // فصيلة الدم: هنا أيضًا، كي يُملأ الجزء الصحي كله في مكان واحد
+  let blood = existing.blood_type;
+  if ('blood_type' in b) {
+    if (b.blood_type && !BLOOD_TYPES.includes(b.blood_type)) return res.status(400).json({ error: 'invalid blood_type' });
+    blood = b.blood_type || null;
+  }
+  db.prepare(
+    `UPDATE members SET allergies = ?, treatment = ?, medical_notes = ?, can_swim = ?, emergency_name = ?,
+       emergency_phone = ?, blood_type = ?, health_updated_at = datetime('now'), health_updated_by = ? WHERE id = ?`
+  ).run(v.allergies, v.treatment, v.medical_notes, swim, v.emergency_name, v.emergency_phone, blood,
+    req.user.display_name || req.user.username, existing.id);
+  const updated = db.prepare('SELECT * FROM members WHERE id = ?').get(existing.id);
+  auditEvent(req, 'update', 'member_health', existing.id, healthOf(existing), healthOf(updated));
+  res.json({ ...healthOf(updated), can_edit: true });
+});
+
+// La fiche santé des participants d'un camp, pour qui peut la lire : members.health, ou ses قادة
+function eventHealthMap(req, ev) {
+  if (!hasPerm(req, 'members.health') && !isEventStaff(req, ev.id)) return null;
+  const out = new Map();
+  for (const m of db
+    .prepare(
+      `SELECT m.* FROM members m JOIN event_participants p ON p.member_id = m.id
+       WHERE p.event_id = ? AND p.withdrawn_at IS NULL`
+    )
+    .all(ev.id))
+    out.set(m.id, healthOf(m));
+  return out;
+}
+
+// La check-list sécurité par défaut d'un مخيم (montadamahdi, السلامة في المخيمات)
+const SAFETY_ITEMS = ['kit', 'extinguisher', 'evacuation', 'assembly', 'site', 'first_aider'];
+// Posée une seule fois par camp : un point supprimé reste supprimé
+function ensureChecklist(ev) {
+  if (!ev || ev.kind !== 'camp') return;
+  const row = db.prepare('SELECT safety_seeded FROM events WHERE id = ?').get(ev.id);
+  if (!row || row.safety_seeded) return;
+  db.transaction(() => {
+    const has = db.prepare('SELECT COUNT(*) AS n FROM event_checklist WHERE event_id = ?').get(ev.id).n;
+    if (!has) {
+      const insert = db.prepare('INSERT INTO event_checklist (event_id, item, sort_order) VALUES (?, ?, ?)');
+      SAFETY_ITEMS.forEach((item, i) => insert.run(ev.id, item, i));
+    }
+    db.prepare('UPDATE events SET safety_seeded = 1 WHERE id = ?').run(ev.id);
+  })();
+}
+// Au démarrage, les camps en cours et à venir reçoivent la leur
+for (const ev of db
+  .prepare("SELECT id, kind FROM events WHERE kind = 'camp' AND safety_seeded = 0 AND end_date >= ?")
+  .all(todayISO()))
+  ensureChecklist(ev);
+
+const checklistOf = (eventId) =>
+  db
+    .prepare(
+      `SELECT c.id, c.item, c.label, c.staff_id, c.done_at, c.done_by, c.sort_order,
+         st.role AS staff_role, st.title AS staff_title, st.leader_id AS staff_leader_id,
+         COALESCE(${fullNameSQL('l')}, st.name) AS staff_name
+       FROM event_checklist c
+       LEFT JOIN event_staff st ON st.id = c.staff_id
+       LEFT JOIN leaders l ON l.id = st.leader_id
+       WHERE c.event_id = ? ORDER BY c.sort_order, c.id`
+    )
+    .all(eventId);
+
+// L'état «prêt à partir» : autorisations manquantes (عناصر inscrits), points de sécurité cochés
+const EVENT_READINESS_SQL = (alias = 'e') => `
+  (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
+     AND p.member_id IS NOT NULL AND p.consent_at IS NULL) AS consent_missing,
+  (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
+     AND p.member_id IS NOT NULL) AS consent_total,
+  (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = ${alias}.id) AS safety_total,
+  (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = ${alias}.id AND c.done_at IS NOT NULL) AS safety_done`;
+
+function eventReadiness(eventId) {
+  return db.prepare(`SELECT ${EVENT_READINESS_SQL('e')} FROM events e WHERE e.id = ?`).get(eventId);
+}
+
+// Le scan de l'autorisation : une image ou un PDF, en data URL, comme les photos
+function validScan(value) {
+  const text = String(value);
+  return text.length <= 2500000 && /^data:(image\/(png|jpeg|webp)|application\/pdf);base64,/i.test(text);
+}
+
+// Autorisation parentale : reçue le…, par… (le قائد qui l'a reçue), scan facultatif.
+// Les قادة du camp la saisissent aussi, sans events.manage.
+app.put('/api/events/:id/participants/:pid/consent', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  if (!hasPerm(req, 'events.manage') && !isEventStaff(req, ev.id)) return res.status(403).json({ error: 'forbidden' });
+  const p = loadParticipant(req, res, ev);
+  if (!p) return;
+  if (p.withdrawn_at || !p.member_id) return res.status(404).json({ error: 'participant not found' });
+  const b = req.body || {};
+  const sets = [];
+  const params = [];
+  const removing = 'consent_at' in b && (b.consent_at === null || b.consent_at === '');
+  if (removing) {
+    // Retirée : la date, le nom et le scan partent ensemble
+    sets.push('consent_at = NULL', 'consent_by = NULL', 'consent_scan = NULL', 'consent_recorded_by = NULL');
+  } else {
+    if ('consent_at' in b) {
+      if (!validISODate(b.consent_at) || b.consent_at > todayISO()) return res.status(400).json({ error: 'invalid date' });
+      const by = optionalText(b.consent_by, 120);
+      if (by === undefined) return res.status(400).json({ error: 'text too long' });
+      sets.push('consent_at = ?', 'consent_by = ?', 'consent_recorded_by = ?');
+      params.push(b.consent_at, by || req.user.display_name || req.user.username, req.user.display_name || req.user.username);
+    }
+    if ('scan' in b) {
+      if (b.scan === null || b.scan === '') sets.push('consent_scan = NULL');
+      else {
+        if (!validScan(b.scan)) return res.status(400).json({ error: 'invalid scan' });
+        if (!p.consent_at && !('consent_at' in b)) return res.status(400).json({ error: 'consent_required' });
+        sets.push('consent_scan = ?');
+        params.push(b.scan);
+      }
+    }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  db.prepare(`UPDATE event_participants SET ${sets.join(', ')} WHERE id = ?`).run(...params, p.id);
+  const after = db.prepare('SELECT * FROM event_participants WHERE id = ?').get(p.id);
+  auditEvent(req, 'update', 'event_consent', p.id, p, after);
+  res.json({
+    participant: participantOut(req, db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id)),
+    readiness: eventReadiness(ev.id),
+  });
+});
+
+app.get('/api/events/:id/participants/:pid/consent-scan', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const p = loadParticipant(req, res, ev);
+  if (!p) return;
+  if (!p.consent_scan) return res.status(404).json({ error: 'not found' });
+  res.json({ scan: p.consent_scan });
+});
+
+const loadChecklistItem = (req, res, ev) => {
+  const c = db.prepare('SELECT * FROM event_checklist WHERE id = ? AND event_id = ?').get(intOr(req.params.cid), ev.id);
+  if (!c) res.status(404).json({ error: 'item not found' });
+  return c || null;
+};
+// Le responsable d'un point : quelqu'un de la هيئة de ce camp, ou personne
+function parseChecklistStaff(b, ev) {
+  if (b.staff_id === undefined) return { skip: true };
+  if (b.staff_id === null || b.staff_id === '') return { value: null };
+  const st = db.prepare('SELECT id FROM event_staff WHERE id = ? AND event_id = ?').get(intOr(b.staff_id), ev.id);
+  return st ? { value: st.id } : { error: 'invalid staff_id' };
+}
+const checklistReply = (ev) => ({ checklist: checklistOf(ev.id), readiness: eventReadiness(ev.id) });
+
+app.post('/api/events/:id/checklist', requirePerm('events.manage'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const b = req.body || {};
+  const item = SAFETY_ITEMS.includes(b.item) ? b.item : null;
+  const label = item ? null : optionalText(b.label, 200);
+  if (label === undefined) return res.status(400).json({ error: 'text too long' });
+  if (!item && !label) return res.status(400).json({ error: 'invalid label' });
+  const staff = parseChecklistStaff(b, ev);
+  if (staff.error) return res.status(400).json({ error: staff.error });
+  const order = db
+    .prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM event_checklist WHERE event_id = ?')
+    .get(ev.id).n;
+  const id = db
+    .prepare('INSERT INTO event_checklist (event_id, item, label, staff_id, sort_order) VALUES (?, ?, ?, ?, ?)')
+    .run(ev.id, item, label, staff.value ?? null, order).lastInsertRowid;
+  auditEvent(req, 'create', 'event_checklist', id, null, db.prepare('SELECT * FROM event_checklist WHERE id = ?').get(id));
+  res.status(201).json(checklistReply(ev));
+});
+
+// Cocher : un قائد du camp ou events.manage ; le libellé et le responsable : events.manage
+app.put('/api/events/:id/checklist/:cid', requirePerm('events.read'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const c = loadChecklistItem(req, res, ev);
+  if (!c) return;
+  const manage = hasPerm(req, 'events.manage');
+  const b = req.body || {};
+  const sets = [];
+  const params = [];
+  if ('done' in b) {
+    if (!manage && !isEventStaff(req, ev.id)) return res.status(403).json({ error: 'forbidden' });
+    if (b.done) {
+      if (!c.done_at) {
+        sets.push("done_at = datetime('now')", 'done_by = ?');
+        params.push(req.user.display_name || req.user.username);
+      }
+    } else sets.push('done_at = NULL', 'done_by = NULL');
+  }
+  if ('label' in b || 'staff_id' in b) {
+    if (!manage) return res.status(403).json({ error: 'forbidden' });
+    if ('label' in b && !c.item) {
+      const label = optionalText(b.label, 200);
+      if (!label) return res.status(400).json({ error: label === undefined ? 'text too long' : 'invalid label' });
+      sets.push('label = ?');
+      params.push(label);
+    }
+    const staff = parseChecklistStaff(b, ev);
+    if (staff.error) return res.status(400).json({ error: staff.error });
+    if (!staff.skip) {
+      sets.push('staff_id = ?');
+      params.push(staff.value);
+    }
+  }
+  if (sets.length) {
+    db.prepare(`UPDATE event_checklist SET ${sets.join(', ')} WHERE id = ?`).run(...params, c.id);
+    auditEvent(req, 'update', 'event_checklist', c.id, c, db.prepare('SELECT * FROM event_checklist WHERE id = ?').get(c.id));
+  }
+  res.json(checklistReply(ev));
+});
+
+app.delete('/api/events/:id/checklist/:cid', requirePerm('events.manage'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const c = loadChecklistItem(req, res, ev);
+  if (!c) return;
+  db.prepare('DELETE FROM event_checklist WHERE id = ?').run(c.id);
+  auditEvent(req, 'delete', 'event_checklist', c.id, c, null);
+  res.json(checklistReply(ev));
 });
 
 // التبرعات: مبلغ و يوم و ملاحظة. لا اسم للمتبرّع — هكذا طُلبت.
@@ -8654,8 +10600,6 @@ app.get('/api/branches/:id/money', requirePerm('branches.read'), (req, res) => {
 // page that details it, and every figure honours the caller's فرقة scope, so a
 // restricted قائد's dashboard only talks about his own فرق.
 
-// Three absences in a row: the same threshold as the red badge in Members and in pointage
-const FOLLOW_UP_STREAK = 3;
 
 // The weekly نشاط day: next Saturday, or today when today is a Saturday
 function nextSaturday(iso) {
@@ -8690,7 +10634,7 @@ app.get('/api/dashboard', (req, res) => {
     const monthStmt = db.prepare(
       `SELECT ${tally}, COALESCE(SUM(a.paid), 0) AS collected
        FROM attendance a JOIN sessions s ON s.id = a.session_id JOIN members m ON m.id = a.member_id
-       WHERE s.kind = 'activity' AND substr(s.date, 1, 7) = ? AND s.date <= ?${scoped}`
+       WHERE s.kind = 'activity' AND substr(s.date, 1, 7) = ? AND ${countedSessionSQL('s', '?')}${scoped}`
     );
     const activitiesSince = db.prepare(
       `SELECT COUNT(*) AS n FROM sessions s
@@ -8713,7 +10657,7 @@ app.get('/api/dashboard', (req, res) => {
       .prepare(
         `SELECT s.date, COUNT(DISTINCT s.id) AS sessions, ${tally}
          FROM attendance a JOIN sessions s ON s.id = a.session_id JOIN members m ON m.id = a.member_id
-         WHERE s.kind = 'activity' AND s.date <= ?${scoped}
+         WHERE s.kind = 'activity' AND ${countedSessionSQL('s', '?')}${scoped}
          GROUP BY s.date HAVING marked > 0 ORDER BY s.date DESC LIMIT 8`
       )
       .all(today)
@@ -8757,7 +10701,7 @@ app.get('/api/dashboard', (req, res) => {
         const s = db
           .prepare(
             `SELECT ${tally} FROM attendance a JOIN sessions s ON s.id = a.session_id
-             WHERE s.kind = 'activity' AND s.date >= ? AND s.date <= ? AND ${inBranch}`
+             WHERE s.kind = 'activity' AND s.date >= ? AND ${countedSessionSQL('s', '?')} AND ${inBranch}`
           )
           .get(season.from, today);
         out.season = {
@@ -8772,7 +10716,7 @@ app.get('/api/dashboard', (req, res) => {
         out.trend = db
           .prepare(
             `SELECT s.date, ${tally} FROM attendance a JOIN sessions s ON s.id = a.session_id
-             WHERE s.kind = 'activity' AND s.date <= ? AND ${inBranch}
+             WHERE s.kind = 'activity' AND ${countedSessionSQL('s', '?')} AND ${inBranch}
              GROUP BY s.date HAVING marked > 0 ORDER BY s.date DESC LIMIT 8`
           )
           .all(today)
@@ -8812,7 +10756,7 @@ app.get('/api/dashboard', (req, res) => {
     for (const m of members) {
       const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
       const absences = statsFromRows(rows).consecutive_absences;
-      if (absences < FOLLOW_UP_STREAK) continue;
+      if (absences < absenceThreshold()) continue;
       followup.push(
         stripContact(req, { ...m, absences, last_present: rows.find((r) => r.status === 'present')?.date || null })
       );
@@ -8823,20 +10767,28 @@ app.get('/api/dashboard', (req, res) => {
         String(a.last_name).localeCompare(String(b.last_name)) ||
         String(a.first_name).localeCompare(String(b.first_name))
     );
+    const contacts = lastContactsOf(followup.map((f) => f.id));
+    for (const f of followup) f.last_contact = contacts.get(f.id) || null;
     for (const b of branches) b.followup_count = followup.filter((f) => f.branch_id === b.id).length;
   }
 
-  // Past activities whose roster still has unmarked عناصر (they count nowhere until marked)
+  // Past séances whose présence is not confirmed (they count nowhere until pointed or
+  // validated): the ten latest to open, and the true total beside them (bug 10)
+  const unconfirmedWhere = `${unconfirmedSessionSQL('s')}
+           AND s.date >= date('${today}', '-${TODO_WINDOW_DAYS} days')${sessionScopeSQL(req)}`;
   const unmarked = canSessions
     ? db
         .prepare(
-          `SELECT s.id AS session_id, s.title, s.date, COUNT(*) AS count
-           FROM attendance a JOIN sessions s ON s.id = a.session_id JOIN members m ON m.id = a.member_id
-           WHERE a.status = 'unmarked' AND s.kind = 'activity' AND s.date <= ?${scoped}
-           GROUP BY s.id ORDER BY s.date DESC, s.id DESC LIMIT 10`
+          `SELECT s.id AS session_id, s.title, s.date,
+                  (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id) AS count
+           FROM sessions s WHERE ${unconfirmedWhere}
+           ORDER BY s.date DESC, s.id DESC LIMIT 10`
         )
-        .all(today)
+        .all()
     : [];
+  const unmarkedTotal = canSessions
+    ? db.prepare(`SELECT COUNT(*) AS n FROM sessions s WHERE ${unconfirmedWhere}`).get().n
+    : 0;
 
   // Paid activities of the last 60 days where someone present has no payment recorded
   const unpaid = canFees
@@ -8887,6 +10839,19 @@ app.get('/api/dashboard', (req, res) => {
           .all({ today, me })
       : [];
 
+  // E1 : les camps des trois semaines à venir qui ne sont pas prêts à partir — autorisations
+  // parentales manquantes ou check-list sécurité incomplète
+  const eventsToPrepare = hasPerm(req, 'events.read')
+    ? db
+        .prepare(
+          `SELECT * FROM (SELECT e.id AS event_id, e.title, e.kind, e.start_date, ${EVENT_READINESS_SQL('e')}
+             FROM events e WHERE e.start_date >= @today AND e.start_date <= date(@today, '+21 days')${eventScopeSQL(req)})
+           WHERE consent_missing > 0 OR safety_done < safety_total
+           ORDER BY start_date, event_id LIMIT 10`
+        )
+        .all({ today })
+    : [];
+
   const recent = canSessions
     ? db
         .prepare(
@@ -8903,7 +10868,8 @@ app.get('/api/dashboard', (req, res) => {
                 THEN (SELECT COUNT(*) FROM session_leaders sl WHERE sl.session_id = s.id AND sl.status = 'absent')
                    + (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status IN ('absent', 'excused'))
                 ELSE (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status IN ('absent', 'excused')) END) AS absent_count,
-             (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'unmarked') AS unmarked_count
+             (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'unmarked') AS unmarked_count,
+             ${unconfirmedSessionSQL('s')} AS unconfirmed
            FROM sessions s LEFT JOIN branches b ON b.id = s.branch_id
            WHERE s.date <= ?${sessionScopeSQL(req)}
            ORDER BY s.date DESC, s.id DESC LIMIT 4`
@@ -8919,6 +10885,25 @@ app.get('/api/dashboard', (req, res) => {
       sample: pending
         .slice(0, 3)
         .map((p) => ({ id: p.id, first_name: p.first_name, father_name: p.father_name, last_name: p.last_name })),
+      // Bug 8 : ceux que le ترفيع ne peut pas voir, faute de date de naissance
+      missing_birth_date: db.prepare(`SELECT COUNT(*) AS n ${missingBirthDateSQL(req)}`).get().n,
+    };
+  }
+  // B1 : فترة التجربة — combien, et qui est prêt pour le تكريس
+  let admissions = null;
+  if (hasPerm(req, 'members.read')) {
+    const list = pendingAdmissions(req);
+    admissions = {
+      trial_count: list.length,
+      ready: list.filter((a) => a.ready).map((a) => ({
+        id: a.id,
+        first_name: a.first_name,
+        father_name: a.father_name,
+        last_name: a.last_name,
+        branch_name_fr: a.branch_name_fr,
+        branch_name_ar: a.branch_name_ar,
+        trial_days: a.trial_days,
+      })),
     };
   }
 
@@ -8939,17 +10924,421 @@ app.get('/api/dashboard', (req, res) => {
     branches,
     followup,
     unmarked,
+    unmarked_total: unmarkedTotal,
     unpaid,
     to_evaluate: toEvaluate,
     events_to_evaluate: eventsToEvaluate,
+    events_to_prepare: eventsToPrepare,
     recent,
     promotions,
+    admissions,
+    // G1 : cotisations en retard, par فرقة — actifs seulement (les archivés sont en
+    // trésorerie), et seulement qui doit un mois passé : le mois en cours non encore payé,
+    // c'est tout le monde au début du mois
+    dues_arrears: canSeeMemberDues(req)
+      ? (() => {
+          const a = duesArrears(req);
+          const late = a.members;
+          const by = new Map();
+          for (const r of late) {
+            if (!by.has(r.branch_id))
+              by.set(r.branch_id, {
+                id: r.branch_id,
+                name_fr: r.branch_name_fr,
+                name_ar: r.branch_name_ar,
+                members: 0,
+                amount: 0,
+              });
+            const b = by.get(r.branch_id);
+            b.members += 1;
+            b.amount += r.owed;
+          }
+          return {
+            members: late.length,
+            amount: late.reduce((n, r) => n + r.owed, 0),
+            branches: [...by.values()],
+          };
+        })()
+      : null,
+    // فرق فيها ما يُنبَّه عليه: طليعة بلا عريف، عدد خارج الحدّين، فرقة تحتاج قسمة (C1)
+    staffing: canPlan
+      ? db
+          .prepare(`SELECT id, name_fr, name_ar FROM branches WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY sort_order, id`)
+          .all()
+          .map((b) => ({ ...b, ...staffingAlerts(b.id) }))
+          .filter((b) => b.count > 0)
+      : [],
     birthdays: upcomingBirthdays().filter((b) =>
       b.kind === 'leader'
         ? leaderOk(req, b) && hasPerm(req, 'leaders.read')
         : branchOk(req, b.branch_id) && hasPerm(req, 'members.read')
     ),
   });
+});
+
+// ---------- Rapport périodique à la قيادة (I1) ----------
+// Un seul rapport pour rendre compte d'un mois ou d'un trimestre : une فرقة (id) ou tout
+// le فوج visible (0). Il agrège ce que les autres modules calculent déjà — présence
+// validée (A1), suivi et contacts (A2), admissions (B1), arriérés (G1), camps, caisses —
+// chaque partie seulement pour un compte qui a le droit de la voir.
+const REPORT_MAX_DAYS = 400;
+const shiftISO = (iso, days) => {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+const reportRecipient = () => appSettingStmt.get('report_recipient')?.value || '';
+
+// Le mois écoulé par défaut : c'est celui qu'on rend au début du suivant
+function reportPeriod(q) {
+  let from = typeof q.from === 'string' ? q.from : '';
+  let to = typeof q.to === 'string' ? q.to : '';
+  if (!from && !to) {
+    const first = `${todayISO().slice(0, 7)}-01`;
+    to = shiftISO(first, -1);
+    from = `${to.slice(0, 7)}-01`;
+  }
+  if (!validISODate(from) || !validISODate(to) || from > to) return null;
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5) + 1;
+  if (days > REPORT_MAX_DAYS) return null;
+  // Des mois entiers (mois, trimestre) : comparés aux mêmes mois juste avant ; sinon, au
+  // même nombre de jours
+  const monthEnd = (iso) => shiftISO(iso, 1).endsWith('-01');
+  let prevFrom = shiftISO(from, -days);
+  if (from.endsWith('-01') && monthEnd(to)) {
+    const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7)) + 1;
+    const d = new Date(Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)) - 1 - months, 1));
+    prevFrom = d.toISOString().slice(0, 10);
+  }
+  return { from, to, days, prev: { from: prevFrom, to: shiftISO(from, -1) } };
+}
+
+// Présence d'une فرقة sur une période : les seules séances qui comptent (countedSessionSQL)
+function branchAttendance(branchId, from, to) {
+  const r = db
+    .prepare(
+      `SELECT COALESCE(SUM(a.status = 'present'), 0) AS present,
+              COALESCE(SUM(a.status = 'absent'), 0) AS absent,
+              COALESCE(SUM(a.status = 'excused'), 0) AS excused
+       FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE s.kind = 'activity' AND a.status != 'unmarked' AND s.date BETWEEN ? AND ?
+         AND ${countedSessionSQL('s')} AND ${attendanceInBranchSQL(branchId)}`
+    )
+    .get(from, to);
+  const marked = r.present + r.absent + r.excused;
+  return { ...r, marked, rate: marked ? Math.round((r.present / marked) * 100) : null };
+}
+
+// Séries d'absences en cours des عناصر actifs d'une فرقة, en une requête
+function streaksOf(branchId) {
+  const rows = db
+    .prepare(
+      `SELECT a.member_id, a.status FROM attendance a
+       JOIN sessions s ON s.id = a.session_id JOIN members m ON m.id = a.member_id
+       WHERE m.branch_id = ? AND m.status = 'active' AND s.kind = 'activity' AND a.status != 'unmarked'
+         AND ${countedSessionSQL('s')}
+       ORDER BY a.member_id, s.date DESC, s.id DESC`
+    )
+    .all(branchId);
+  const out = new Map();
+  const done = new Set();
+  for (const r of rows) {
+    if (done.has(r.member_id)) continue;
+    if (r.status === 'absent') out.set(r.member_id, (out.get(r.member_id) || 0) + 1);
+    else done.add(r.member_id);
+  }
+  return out;
+}
+
+function periodReport(req, branchId, p) {
+  const today = todayISO();
+  const section = activeSection(req);
+  const all = getBranches().filter((b) => branchOk(req, b.id) && (!section || b.section === section));
+  // Le فوج : les فرق vides (aucun عنصر actif, aucune séance) n'encombrent pas le rapport
+  const branches = branchId
+    ? getBranches().filter((b) => b.id === branchId)
+    : all.filter(
+        (b) =>
+          db.prepare("SELECT 1 FROM members WHERE branch_id = ? AND status = 'active' LIMIT 1").get(b.id) ||
+          db
+            .prepare(`SELECT 1 FROM sessions s WHERE s.date BETWEEN ? AND ? AND ${sessionInBranchSQL(b.id)} LIMIT 1`)
+            .get(p.from, p.to)
+      );
+  const ids = branches.map((b) => b.id);
+  const idList = ids.length ? ids.join(',') : '-1';
+  const threshold = absenceThreshold();
+  const canMembers = hasPerm(req, 'members.read');
+  const followup = [];
+
+  const rows = branches.map((b) => {
+    const s = db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+           COALESCE(SUM(${countedSessionSQL('s')}), 0) AS counted,
+           COALESCE(SUM(${unconfirmedSessionSQL('s')}), 0) AS unconfirmed,
+           COALESCE(SUM(s.date >= '${today}' AND NOT ${countedSessionSQL('s')}), 0) AS planned
+         FROM sessions s WHERE s.kind = 'activity' AND s.date BETWEEN ? AND ? AND ${sessionInBranchSQL(b.id)}`
+      )
+      .get(p.from, p.to);
+    const visits = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM sessions s WHERE s.kind = 'visit' AND s.date BETWEEN ? AND ? AND ${sessionInBranchSQL(b.id)}`
+      )
+      .get(p.from, p.to).n;
+    const m = db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND status = 'active') AS active,
+           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND join_date BETWEEN @f AND @t) AS joined,
+           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND status != 'active'
+              AND substr(archived_at, 1, 10) BETWEEN @f AND @t) AS archived,
+           (SELECT COUNT(*) FROM promotions WHERE old_branch_id = @b AND reversed_at IS NULL
+              AND substr(promoted_at, 1, 10) BETWEEN @f AND @t) AS promoted_out,
+           (SELECT COUNT(*) FROM promotions WHERE new_branch_id = @b AND reversed_at IS NULL
+              AND substr(promoted_at, 1, 10) BETWEEN @f AND @t) AS promoted_in,
+           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND status = 'active' AND admission_status = 'trial') AS trial,
+           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND invested_at BETWEEN @f AND @t) AS invested`
+      )
+      .get({ b: b.id, f: p.from, t: p.to });
+    // À suivre : la série d'absences en cours atteint le seuil (A2)
+    const streaks = streaksOf(b.id);
+    const followIds = [...streaks].filter(([, n]) => n >= threshold).map(([id]) => id);
+    const last = lastContactsOf(followIds);
+    const contacts = db
+      .prepare(
+        `SELECT COUNT(*) AS n, COUNT(DISTINCT c.member_id) AS members FROM member_contacts c
+         JOIN members m ON m.id = c.member_id
+         WHERE m.branch_id = ? AND substr(c.contacted_at, 1, 10) BETWEEN ? AND ?`
+      )
+      .get(b.id, p.from, p.to);
+    if (canMembers && followIds.length)
+      for (const pm of db
+        .prepare(`SELECT id, first_name, father_name, last_name FROM members WHERE id IN (${followIds.join(',')})`)
+        .all())
+        followup.push({
+          ...pm,
+          branch_id: b.id,
+          branch_name_fr: b.name_fr,
+          branch_name_ar: b.name_ar,
+          absences: streaks.get(pm.id),
+          last_contact: last.get(pm.id)?.contacted_at || null,
+          last_contact_by: last.get(pm.id)?.contacted_by || null,
+        });
+    return {
+      id: b.id,
+      name_fr: b.name_fr,
+      name_ar: b.name_ar,
+      section: b.section,
+      sessions: { ...s, visits },
+      attendance: branchAttendance(b.id, p.from, p.to),
+      prev_attendance: branchAttendance(b.id, p.prev.from, p.prev.to),
+      members: m,
+      followup: {
+        count: followIds.length,
+        contacted: followIds.filter((id) => (last.get(id)?.contacted_at || '').slice(0, 10) >= p.from).length,
+        contacts: contacts.n,
+        contacted_members: contacts.members,
+      },
+    };
+  });
+  followup.sort((a, b) => b.absences - a.absences);
+
+  // Totaux : séances distinctes (une séance commune à deux فرق compte une fois)
+  const distinct = db
+    .prepare(
+      `SELECT COUNT(*) AS total, COALESCE(SUM(${countedSessionSQL('s')}), 0) AS counted,
+         COALESCE(SUM(${unconfirmedSessionSQL('s')}), 0) AS unconfirmed,
+         COALESCE(SUM(s.date >= '${today}' AND NOT ${countedSessionSQL('s')}), 0) AS planned
+       FROM sessions s WHERE s.kind = 'activity' AND s.date BETWEEN ? AND ?
+         AND EXISTS (SELECT 1 FROM session_branches sb WHERE sb.session_id = s.id AND sb.branch_id IN (${idList}))`
+    )
+    .get(p.from, p.to);
+  const sumRows = (pick) => rows.reduce((n, r) => n + pick(r), 0);
+  const rateOf = (key) => {
+    const marked = sumRows((r) => r[key].marked);
+    return marked ? Math.round((sumRows((r) => r[key].present) / marked) * 100) : null;
+  };
+  const leaderSessions = branchId
+    ? null
+    : db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM sessions s WHERE s.kind IN ('leaders', 'group') AND s.date BETWEEN ? AND ?${sessionScopeSQL(req)}`
+        )
+        .get(p.from, p.to).n;
+
+  const out = {
+    period: p,
+    today,
+    branch_id: branchId || 0,
+    branch: branchId ? { id: branches[0].id, name_fr: branches[0].name_fr, name_ar: branches[0].name_ar } : null,
+    recipient: reportRecipient(),
+    threshold,
+    branches: rows,
+    totals: {
+      sessions: distinct,
+      leader_sessions: leaderSessions,
+      rate: rateOf('attendance'),
+      prev_rate: rateOf('prev_attendance'),
+      active: sumRows((r) => r.members.active),
+      joined: sumRows((r) => r.members.joined),
+      archived: sumRows((r) => r.members.archived),
+      promoted_out: sumRows((r) => r.members.promoted_out),
+      promoted_in: sumRows((r) => r.members.promoted_in),
+      trial: sumRows((r) => r.members.trial),
+      invested: sumRows((r) => r.members.invested),
+      followup: sumRows((r) => r.followup.count),
+      followup_contacted: sumRows((r) => r.followup.contacted),
+      contacts: sumRows((r) => r.followup.contacts),
+    },
+    followup: canMembers ? followup : null,
+    admissions: null,
+    dues: null,
+    events: null,
+    treasury: null,
+    overdue: null,
+  };
+
+  // Admissions : prêts pour le تكريس (B1)
+  if (canMembers) {
+    const ready = pendingAdmissions(req).filter((a) => ids.includes(a.branch_id) && a.ready);
+    out.admissions = {
+      ready: ready.map((a) => ({
+        id: a.id,
+        first_name: a.first_name,
+        father_name: a.father_name,
+        last_name: a.last_name,
+        branch_name_fr: a.branch_name_fr,
+        branch_name_ar: a.branch_name_ar,
+        trial_days: a.trial_days,
+      })),
+    };
+  }
+
+  // Cotisations : encaissé sur la période, arriérés à ce jour (G1)
+  if (canSeeMemberDues(req)) {
+    const arrears = duesArrears(req, {});
+    const by = new Map();
+    for (const r of arrears.members) {
+      const x = by.get(r.branch_id) || { members: 0, amount: 0 };
+      x.members++;
+      x.amount += r.owed;
+      by.set(r.branch_id, x);
+    }
+    const col = new Map(
+      db
+        .prepare(
+          `SELECT COALESCE(d.branch_id, m.branch_id) AS bid, COALESCE(SUM(d.amount), 0) AS amount
+           FROM member_dues d LEFT JOIN members m ON m.id = d.member_id
+           WHERE COALESCE(d.branch_id, m.branch_id) IN (${idList}) AND d.paid_on BETWEEN ? AND ? GROUP BY bid`
+        )
+        .all(p.from, p.to)
+        .map((r) => [r.bid, r.amount])
+    );
+    out.dues = {
+      rate: arrears.rate,
+      branches: rows.map((r) => ({
+        id: r.id,
+        name_fr: r.name_fr,
+        name_ar: r.name_ar,
+        collected: col.get(r.id) || 0,
+        late_members: by.get(r.id)?.members || 0,
+        owed: by.get(r.id)?.amount || 0,
+      })),
+    };
+  }
+
+  // Camps et دورات qui touchent la période
+  if (hasPerm(req, 'events.read')) {
+    const fees = hasPerm(req, 'events.read.fees');
+    const bid = intOr(branchId);
+    const branchSQL = branchId
+      ? ` AND (NOT EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = e.id)
+             OR EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = e.id AND eb.branch_id = ${bid}))`
+      : '';
+    out.events = db
+      .prepare(
+        `SELECT e.id, e.kind, e.title, e.start_date, e.end_date, e.place,
+           (SELECT COUNT(*) FROM event_participants pp JOIN members pm ON pm.id = pp.member_id
+             WHERE pp.event_id = e.id AND pp.withdrawn_at IS NULL
+               ${branchId ? `AND pm.branch_id = ${bid}` : ''}) AS members,
+           (SELECT COUNT(*) FROM event_participants pp
+             WHERE pp.event_id = e.id AND pp.withdrawn_at IS NULL AND pp.member_id IS NULL) AS others
+           ${fees ? `, (SELECT COALESCE(SUM(pp.paid), 0) FROM event_participants pp WHERE pp.event_id = e.id AND pp.withdrawn_at IS NULL) AS paid` : ''}
+         FROM events e WHERE e.start_date <= ? AND e.end_date >= ?${eventScopeSQL(req)}${branchSQL}
+         ORDER BY e.start_date, e.id`
+      )
+      .all(p.to, p.from);
+  }
+
+  // Caisses : ouverture, entrées, sorties et clôture sur la période
+  if (hasPerm(req, 'treasury.read')) {
+    const openings = openingsOf(treasurySections(req));
+    out.treasury = treasuryBoxes(req)
+      .filter((b) => b.visible && (branchId ? b.branch_id === branchId : !b.branch_id || ids.includes(b.branch_id)))
+      .map(({ visible: _v, ...box }) => {
+        const start = boxStart(box, openings);
+        if (!start || start.date > p.to) return { ...box, opened: false };
+        let income = 0;
+        let expenses = 0;
+        for (const r of boxRows(box, start.date)) {
+          if (r.date < p.from || r.date > p.to) continue;
+          if (r.direction === 'in') income += r.amount;
+          else expenses += r.amount;
+        }
+        return {
+          ...box,
+          opened: true,
+          opening: start.date >= p.from ? start.amount : bookBalanceOn(box, shiftISO(p.from, -1)),
+          income,
+          expenses,
+          closing: bookBalanceOn(box, p.to),
+        };
+      });
+  }
+
+  // تكاليف en retard (محاضر)
+  if (hasPerm(req, 'meetings.read')) {
+    const branchSQL = branchId
+      ? ` AND (NOT EXISTS (SELECT 1 FROM meeting_branches mb WHERE mb.meeting_id = m.id)
+             OR EXISTS (SELECT 1 FROM meeting_branches mb WHERE mb.meeting_id = m.id AND mb.branch_id = ${intOr(branchId)}))`
+      : '';
+    out.overdue = db
+      .prepare(
+        `SELECT d.id, d.text, d.due_date, d.meeting_id, m.title AS meeting_title,
+           COALESCE(${fullNameSQL('l')}, d.owner) AS owner
+         FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+         LEFT JOIN leaders l ON l.id = d.leader_id
+         WHERE d.status = 'open' AND d.due_date IS NOT NULL AND d.due_date < ?${meetingScopeSQL(req)}${branchSQL}
+         ORDER BY d.due_date LIMIT 50`
+      )
+      .all(today);
+  }
+  return out;
+}
+
+app.get('/api/reports/period', requirePerm('branches.read'), (req, res) => {
+  const p = reportPeriod(req.query);
+  if (!p) return res.status(400).json({ error: 'invalid period' });
+  const branchId = req.query.branch && req.query.branch !== '0' ? intOr(req.query.branch) : 0;
+  if (branchId && !db.prepare('SELECT 1 FROM branches WHERE id = ?').get(branchId))
+    return res.status(404).json({ error: 'not found' });
+  if (branchId && (!branchOk(req, branchId) || (activeSection(req) && sectionOfBranch(branchId) !== activeSection(req))))
+    return res.status(403).json({ error: 'forbidden' });
+  res.json(periodReport(req, branchId, p));
+});
+
+// Le destinataire mémorisé (المرسَل إليه) : lu par tous, posé par l'admin
+app.get('/api/settings/report', (req, res) => res.json({ recipient: reportRecipient() }));
+app.put('/api/settings/report', requireAdmin, (req, res) => {
+  const v = optionalText(req.body?.recipient, 120);
+  if (v === undefined) return res.status(400).json({ error: 'text too long' });
+  const before = reportRecipient();
+  db.prepare(
+    `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('report_recipient', ?, datetime('now'), ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+  ).run(v || '', req.user.display_name || req.user.username);
+  auditEvent(req, 'update', 'app_setting', 'report_recipient', { value: before }, { value: v || '' });
+  res.json({ recipient: reportRecipient() });
 });
 
 // Production: serve the built client if present (npm run build at repo root)
@@ -8982,6 +11371,13 @@ const PDF_KINDS = {
   meeting: 'meetings.read',
   'meetings-list': 'meetings.read',
   'meeting-decisions': 'meetings.read',
+  // E2 : le dossier de camp (?variant=report : le rapport à la قيادة), puis ses restes à payer
+  event: 'events.read',
+  'event-unpaid': 'events.read.fees',
+  // G1 : la feuille de relance des cotisations en retard — le numéro est une فرقة (0 = toutes), ?year=
+  'dues-arrears': 'members.dues.read',
+  // I1 : le rapport périodique à la قيادة — le numéro est une فرقة (0 = le فوج), ?from=&to=&recipient=
+  period: 'branches.read',
 };
 // Filters the list sheets read from the query string — nothing else reaches Chromium's URL
 const printQuery = (q) => {
@@ -9065,6 +11461,8 @@ if (fs.existsSync(clientDist)) {
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
+
+seedAbsenceReminders();
 
 const PORT = process.env.PORT || 3001;
 // Corps trop lourd (JSON ou fichier de séance) : une erreur JSON que l'écran sait lire,

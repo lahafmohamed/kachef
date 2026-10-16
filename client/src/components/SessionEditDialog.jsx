@@ -15,11 +15,11 @@ import {
   Dialog,
   Input,
   Label,
-  RequirementGrid,
   Select,
   IconChevronDown,
   IconLock,
 } from './ui';
+import { BranchRequirementGrid } from './MatalibCatalog';
 
 const KIND_LABEL = { visit: 'session.kindVisit', leaders: 'session.kindLeaders', group: 'session.kindGroup' };
 
@@ -88,6 +88,10 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
     .map((id) => branches.find((b) => b.id === id)?.total_requirements)
     .filter((n) => n > 0);
   const total = totals.length ? Math.min(...totals) : 0;
+  // The catalogue that names the numbers: the فرقة whose total bounds them
+  const catalogBranch = (session.branch_ids || []).find(
+    (id) => branches.find((b) => b.id === id)?.total_requirements === total
+  );
   const leaderOptions = (leaders.data || [])
     .filter((l) => l.section === session.section && (l.status === 'active' || l.id === session.leader_id))
     .map((l) => ({ value: l.id, label: memberName(l) }));
@@ -279,7 +283,8 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
             </div>
             {showMatalib && (
               <div id="se_matalib">
-                <RequirementGrid
+                <BranchRequirementGrid
+                  branchId={catalogBranch}
                   total={total}
                   selected={form.matalib}
                   onToggle={toggleMatlab}

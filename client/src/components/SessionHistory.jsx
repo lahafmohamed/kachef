@@ -19,6 +19,7 @@ import {
   IconFileSheet,
   IconFileText,
   IconHandHeart,
+  IconLock,
   IconPencil,
   IconPlus,
   IconReceipt,
@@ -99,6 +100,9 @@ const TYPE_ICONS = {
   donations: IconHandHeart,
   dues: IconCoins,
   evaluation: IconStar,
+  finalized: IconLock,
+  reopened: IconLock,
+  roster: IconUsers,
 };
 const FILE_ICONS = { image: IconCamera, pdf: IconFileText, excel: IconFileSheet };
 const STATUS = {
@@ -120,7 +124,7 @@ const REMOVAL_WORD = {
 const added = (r) => r.from === null;
 const removed = (r) => r.to === null;
 // Lines named once whatever they hold; the others (lists) say whether they added or removed
-const ONE_NAME = new Set(['created', 'details', 'attendance', 'counts', 'animators']);
+const ONE_NAME = new Set(['created', 'details', 'attendance', 'counts', 'animators', 'finalized', 'reopened']);
 
 // What happened, in the reader's language: for a list, the verb comes from its rows
 function itemLabel(item, t, kind) {
@@ -216,6 +220,11 @@ function HistoryRow({ r, type, mixed, kind }) {
       change =
         s.field === 'paid' ? (
           <Change from={money(r.from, t)} to={money(r.to, t)} />
+        ) : s.field === 'reason' ? (
+          <Change
+            from={r.from ? t(`followup.reason.${r.from}`) : t('history.none')}
+            to={r.to ? t(`followup.reason.${r.to}`) : t('history.none')}
+          />
         ) : (
           <Change from={<StatusValue status={r.from} />} to={<StatusValue status={r.to} badge />} />
         );

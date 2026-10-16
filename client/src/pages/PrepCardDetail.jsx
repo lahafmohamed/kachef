@@ -30,6 +30,7 @@ import {
   IconShield,
   IconTrash,
 } from '../components/ui';
+import { MatalibNamed } from '../components/MatalibCatalog';
 
 // created_at / updated_at are UTC "YYYY-MM-DD HH:MM:SS" — show the local date
 const stampDate = (v) => (v ? fmtDate(v.slice(0, 10)) : '');
@@ -223,6 +224,11 @@ export default function PrepCardDetail() {
                   {n}
                 </Badge>
               ))}
+            </div>
+          )}
+          {card.matalib.length > 0 && card.branch_id && (
+            <div className="mt-2">
+              <MatalibNamed branchId={card.branch_id} numbers={card.matalib} />
             </div>
           )}
           {/* النشاط الذي حُضِّرت له — the same chip the نشاط shows for its card, so the link

@@ -3,6 +3,19 @@ import { phoneNumbers } from '../components/MemberParts';
 import { workbookBlob } from './excel';
 import { gendered, isOverdue, meetingScope, timeRange } from './meetings';
 import { FLOWS, INCOME_SOURCES, OUT_CATEGORIES, OUT_FIGURES, boxName, ledgerView, rowText } from './treasury';
+import { isCountedSession } from './attendance';
+import {
+  chiefLabel,
+  dayNumber,
+  dueOf,
+  eventScopeLabels,
+  participantName,
+  payState,
+  staffRoleLabel,
+} from './events';
+import { ageAt, emergencyLine, familyCount, healthNotes, parentPhones, remainingOf, rosterByGroup, unpaidOf } from './campFile';
+import { arrearsMonths, arrearsQuery } from './arrears';
+import { periodLabel, periodQuery } from './periodReport';
 import {
   LEADER_FILTER_KEYS,
   activityTypeKey,
@@ -41,6 +54,10 @@ const LABELS = {
   meeting: 'print.reportMeeting',
   'meetings-list': 'print.reportMeetingsList',
   'meeting-decisions': 'print.reportMeetingDecisions',
+  event: 'print.reportEvent',
+  'event-unpaid': 'print.reportEventUnpaid',
+  'dues-arrears': 'print.reportDuesArrears',
+  period: 'print.reportPeriod',
 };
 
 const SESSION_KIND_KEYS = {
@@ -389,6 +406,9 @@ async function promotionsList(ctx) {
               { label: t('member.age'), type: 'int', value: (p) => p.age },
               all && { label: t('promotion.oldBranch'), value: (p) => x.branch(p.current_branch) },
               { label: t('promotion.newBranch'), value: (p) => x.branch(p.target_branch) },
+              { label: t('session.requirementsShort'), value: (p) => (p.total ? `${p.earned_count}/${p.total}` : null) },
+              { label: '%', type: 'int', value: (p) => p.pct },
+              { label: t('matalib.readiness'), value: (p) => (p.total ? t(p.ready ? 'matalib.ready' : 'matalib.below') : null) },
             ],
             { empty: t('promotion.noPending') }
           ),
@@ -935,7 +955,7 @@ async function branchCard(ctx) {
   // Présence per عنصر from the participant lists, the same rows the عنصر page counts
   const perMember = new Map();
   for (const s of sessions) {
-    if (s.kind !== 'activity' || s.date > today) continue;
+    if (s.kind !== 'activity' || !isCountedSession(s, today)) continue;
     for (const k of ['present', 'absent', 'excused'])
       for (const m of s[k] || []) {
         const st = perMember.get(m.id) || { present: 0, absent: 0, excused: 0 };
@@ -1512,7 +1532,475 @@ async function meetingDecisionsList(ctx) {
   };
 }
 
+/* ============================================================
+   E2 — ملف المخيم
+   ============================================================ */
+
+const phonesText = (list, t) =>
+  list.map((ph) => (ph.mother ? `${fmtPhone(ph.number)} (${t('member.motherShort')})` : fmtPhone(ph.number))).join(' / ') ||
+  null;
+
+const payText = (p, ev, t) => {
+  const s = payState(p, ev);
+  if (s === 'free') return null;
+  return t(s === 'exempt' ? 'event.exempt' : s === 'unpaid' ? 'event.notPaid' : `event.state_${s}`);
+};
+
+/**
+ * Le dossier de camp : une feuille de synthèse (en-tête du rapport, chiffres, encadrement),
+ * la liste d'appel (une ligne par عنصر, فرقة et طليعة en colonnes pour trier et filtrer),
+ * les قادة et invités, le programme et la check-list. La variante «rapport» garde les
+ * effectifs et laisse les téléphones et la santé.
+ */
+async function eventCard(ctx) {
+  const { id, sp, t, lng, kindLabel, stamp } = ctx;
+  const x = tools(ctx);
+  const [ev, branches] = await Promise.all([api.get(`/events/${id}`), api.get('/branches')]);
+  const report = sp.get('variant') === 'report';
+  const fees = !!ev.summary;
+  const health = !!ev.health_visible && !report;
+  const people = ev.participants;
+  const others = people.filter((p) => !p.member_id);
+  const chief = chiefLabel(t, ev.kind, ev.section);
+  const marked = ev.attendance.length;
+  const present = ev.attendance.filter((a) => a.status === 'present').length;
+  const r = ev.readiness || {};
+  const sum = ev.summary;
+  const scope = eventScopeLabels(ev, branches, lng).map((s) => s.label);
+  const label = report ? t('campFile.reportVariant') : kindLabel;
+  const presentBySession = new Map();
+  for (const a of ev.attendance)
+    if (a.status === 'present') presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+  // L'ordre de l'appel : فرقة, طليعة, le عريف en tête
+  const roster = rosterByGroup(people).flatMap((b) => b.groups.flatMap((g) => g.people));
+
+  const sheets = [
+    {
+      name: label,
+      title: ev.title,
+      lines: [label, stamp],
+      blocks: [
+        ...(report
+          ? [
+              {
+                facts: [
+                  [t('campFile.to'), t('campFile.toValue')],
+                  [t('campFile.from'), ev.leader_name ? `${chief} — ${ev.leader_name}` : chief],
+                  [t('common.date'), todayISO(), 'date'],
+                  [t('campFile.subject'), t('campFile.subjectValue', { title: ev.title })],
+                ],
+              },
+            ]
+          : []),
+        {
+          facts: [
+            [t('event.kind'), t(`event.kind_${ev.kind}`)],
+            [t('event.startDate'), ev.start_date, 'date'],
+            [t('event.endDate'), ev.end_date, 'date'],
+            [t('session.place'), ev.place],
+            [t('event.branches'), scope.join(x.sep) || t('event.wholeGroup')],
+            [chief, ev.leader_name],
+            fees && [t('event.fee'), ev.fee, 'amount'],
+            [t('event.participants'), people.length, 'int'],
+            [t('campFile.attendanceRate'), rate(present, marked), 'percent'],
+            [t('campFile.consentStat'), r.consent_total ? `${r.consent_total - r.consent_missing}/${r.consent_total}` : null],
+            [t('campFile.safetyStat'), r.safety_total ? `${r.safety_done}/${r.safety_total}` : null],
+          ].filter(Boolean),
+        },
+        ...(fees
+          ? [
+              {
+                heading: t('campFile.money'),
+                facts: [
+                  [t('campFile.expected'), sum.expected, 'amount'],
+                  [t('event.collected'), sum.collected, 'amount'],
+                  [t('campFile.remaining'), sum.outstanding, 'amount'],
+                  [t('event.donations'), sum.donations, 'amount'],
+                  [t('event.fromCaisses'), sum.funded - sum.returned, 'signed'],
+                  [t('event.expenses'), sum.expenses, 'amount'],
+                  [t('event.balance'), sum.balance, 'signed'],
+                ],
+              },
+            ]
+          : []),
+        report && ev.plan && { heading: t('event.plan'), facts: [[t('event.plan'), ev.plan]] },
+        table(
+          [
+            ...(ev.leader_name ? [{ role: chief, name: ev.leader_name }] : []),
+            ...ev.staff.map((st) => ({
+              role: staffRoleLabel(t, st.role, st.title, ev.section),
+              name: st.leader_id ? memberName(st) : st.name,
+            })),
+          ],
+          [
+            { label: t('event.staffRole'), value: (s) => s.role },
+            { label: t('member.name'), value: (s) => s.name },
+          ],
+          { heading: t('event.tabStaff') }
+        ),
+      ].filter(Boolean),
+    },
+  ];
+
+  if (!report) {
+    sheets.push({
+      name: t('campFile.callList'),
+      title: t('campFile.callList'),
+      lines: [ev.title, stamp],
+      blocks: [
+        table(
+          roster,
+          [
+            x.num,
+            { label: t('member.name'), value: (p) => memberName(p) },
+            { label: t('member.branch'), value: (p) => x.branch(p) },
+            { label: t('member.group'), value: (p) => p.group_name || t('campFile.noGroup') },
+            { label: t('campFile.role'), value: (p) => (p.member_role ? t(`resp.role.${p.member_role}`) : null) },
+            { label: t('member.age'), type: 'int', value: (p) => ageAt(p.birth_date, ev.start_date) },
+            { label: t('member.parentPhone'), value: (p) => phonesText(parentPhones(p), t) },
+            { label: t('campFile.blood'), value: (p) => p.blood_type },
+            health && { label: t('campFile.health'), value: (p) => healthNotes(p.health, t).join(' — ') || null },
+            health && { label: t('safety.emergencyName'), value: (p) => emergencyLine(p.health) },
+            { label: t('campFile.consent'), type: 'date', value: (p) => p.consent_at },
+            fees && { label: t('event.payment'), value: (p) => payText(p, ev, t) },
+            fees && { label: t('campFile.remaining'), type: 'amount', sum: true, value: (p) => remainingOf(p, ev) },
+          ],
+          { empty: t('event.noParticipants'), total: fees ? t('campFile.total') : undefined }
+        ),
+      ],
+    });
+    if (others.length)
+      sheets.push({
+        name: t('campFile.leadersGuests'),
+        title: t('campFile.leadersGuests'),
+        lines: [ev.title, stamp],
+        blocks: [
+          table(others, [
+            x.num,
+            { label: t('member.name'), value: (p) => participantName(p) },
+            { label: t('event.kind'), value: (p) => t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest') },
+            { label: t('leader.phone'), value: (p) => x.phones(p.leader_phone) },
+            fees && { label: t('event.payment'), value: (p) => payText(p, ev, t) },
+            fees && { label: t('campFile.remaining'), type: 'amount', value: (p) => remainingOf(p, ev) },
+          ]),
+        ],
+      });
+  } else {
+    // Les effectifs par فرقة et طليعة
+    const counts = rosterByGroup(people).flatMap((b) =>
+      b.groups.map((g) => ({ branch: x.branch(b.branch), group: g.name || t('campFile.noGroup'), n: g.people.length }))
+    );
+    if (others.length) counts.push({ branch: t('campFile.leadersGuests'), group: null, n: others.length });
+    sheets.push({
+      name: t('event.participants'),
+      title: t('event.participants'),
+      lines: [ev.title, stamp],
+      blocks: [
+        table(
+          counts,
+          [
+            { label: t('member.branch'), value: (c) => c.branch },
+            { label: t('member.group'), value: (c) => c.group },
+            { label: t('campFile.count'), type: 'int', sum: true, value: (c) => c.n },
+          ],
+          { total: t('campFile.total') }
+        ),
+      ],
+    });
+  }
+
+  sheets.push({
+    name: t('event.program'),
+    title: t('event.program'),
+    lines: [ev.title, stamp],
+    blocks: [
+      table(
+        ev.sessions,
+        [
+          { label: t('event.day'), type: 'int', value: (s) => dayNumber(ev, s.date) },
+          { label: t('common.date'), type: 'date', value: (s) => s.date },
+          { label: t('event.startTime'), value: (s) => fmtTime(s.start_time) },
+          { label: t('event.endTime'), value: (s) => fmtTime(s.end_time) },
+          { label: t('event.sessionTitle'), value: (s) => s.title },
+          { label: t('event.responsible'), value: (s) => s.responsible },
+          { label: t('session.present'), type: 'int', value: (s) => presentBySession.get(s.id) || 0 },
+        ],
+        { empty: t('event.noSessions') }
+      ),
+    ],
+  });
+
+  if (ev.checklist.length)
+    sheets.push({
+      name: t('safety.checklistTitle'),
+      title: t('safety.checklistTitle'),
+      lines: [ev.title, stamp],
+      blocks: [
+        table(ev.checklist, [
+          { label: t('safety.itemLabel'), value: (c) => (c.item ? t(`safety.item.${c.item}`) : c.label) },
+          { label: t('safety.itemResponsible'), value: (c) => c.staff_name },
+          { label: t('campFile.doneOn'), type: 'date', value: (c) => c.done_at },
+          { label: t('campFile.doneBy'), value: (c) => c.done_by },
+        ]),
+      ],
+    });
+
+  return { title: report ? `${ev.title} — ${label}` : ev.title, sheets };
+}
+
+/** Les restes à payer, avec les téléphones : la feuille de relance */
+async function eventUnpaidList(ctx) {
+  const { id, t, kindLabel, stamp } = ctx;
+  const x = tools(ctx);
+  const ev = await api.get(`/events/${id}`);
+  const list = unpaidOf(ev);
+  const total = list.reduce((n, p) => n + remainingOf(p, ev), 0);
+  return {
+    title: ev.title,
+    sheets: [
+      {
+        name: kindLabel,
+        title: ev.title,
+        lines: [
+          list.length ? `${kindLabel} · ${t('campFile.unpaidLine', { amount: fmtAmount(total), count: familyCount(list) })}` : kindLabel,
+          stamp,
+        ],
+        blocks: [
+          table(
+            list,
+            [
+              x.num,
+              { label: t('member.name'), value: (p) => participantName(p) },
+              { label: t('member.branch'), value: (p) => (p.member_id ? x.branch(p) : t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest')) },
+              { label: t('member.group'), value: (p) => p.group_name },
+              { label: t('member.fatherShort'), value: (p) => x.phones(p.father_phone) },
+              { label: t('member.motherShort'), value: (p) => x.phones(p.mother_phone) },
+              { label: t('leader.phone'), value: (p) => x.phones(p.leader_phone) },
+              { label: t('event.dueLabel'), type: 'amount', sum: true, value: (p) => dueOf(p, ev) },
+              { label: t('campFile.paid'), type: 'amount', sum: true, value: (p) => p.paid ?? 0 },
+              { label: t('campFile.remaining'), type: 'amount', sum: true, value: (p) => remainingOf(p, ev) },
+            ],
+            { empty: t('event.allCollected'), total: t('campFile.total') }
+          ),
+        ],
+      },
+    ],
+  };
+}
+
+/** G1 : les cotisations en retard, une ligne par عنصر — actifs, puis archivés */
+async function duesArrearsList(ctx) {
+  const { id, t, lng, sp, kindLabel, stamp } = ctx;
+  const x = tools(ctx);
+  const q = arrearsQuery(id, sp);
+  const data = await api.get(`/member-dues/arrears${q ? `?${q}` : ''}`);
+  const one = Number(id) ? [...data.members, ...data.archived][0] : null;
+  const title = [one ? x.branch(one) : t('arrears.allBranches'), data.year].filter(Boolean).join(' · ');
+  const columns = [
+    x.num,
+    { label: t('member.name'), value: (r) => memberName(r) },
+    { label: t('member.branch'), value: (r) => x.branch(r) },
+    { label: t('member.group'), value: (r) => r.group_name },
+    { label: t('member.fatherShort'), value: (r) => x.phones(r.father_phone) },
+    { label: t('member.motherShort'), value: (r) => x.phones(r.mother_phone) },
+    { label: t('arrears.monthsCountCol'), type: 'int', sum: true, value: (r) => r.months.length },
+    { label: t('arrears.monthsCol'), value: (r) => arrearsMonths(r.months, lng) },
+    { label: t('arrears.lastPaidCol'), type: 'date', value: (r) => r.last_paid_on },
+    { label: t('arrears.owedCol'), type: 'amount', sum: true, value: (r) => r.owed },
+  ];
+  const sheets = [
+    {
+      name: kindLabel,
+      title,
+      lines: [
+        data.members.length
+          ? `${kindLabel} · ${t('arrears.summary', { count: data.totals.members, amount: fmtAmount(data.totals.amount) })}`
+          : kindLabel,
+        stamp,
+      ],
+      blocks: [table(data.members, columns, { empty: t('arrears.none'), total: t('campFile.total') })],
+    },
+  ];
+  if (data.archived.length)
+    sheets.push({
+      name: t('arrears.archivedTitle'),
+      title: t('arrears.archivedTitle'),
+      lines: [title, stamp],
+      blocks: [table(data.archived, columns, { total: t('campFile.total') })],
+    });
+  return { title, sheets };
+}
+
+/** I1 : le rapport périodique à la قيادة — un résumé, puis une feuille par tableau */
+async function periodCard(ctx) {
+  const { id, t, lng, sp, kindLabel, stamp } = ctx;
+  const x = tools(ctx);
+  const q = new URLSearchParams(periodQuery(sp));
+  if (Number(id)) q.set('branch', id);
+  const d = await api.get(`/reports/period?${q}`);
+  const period = periodLabel(d.period.from, d.period.to, t, lng);
+  const sender = d.branch ? x.branch(d.branch) : t('periodReport.wholeGroup');
+  const title = `${sender} · ${period}`;
+  const tot = d.totals;
+  const head = [`${kindLabel} · ${period}`, stamp];
+  const sheet = (name, blocks) => ({ name, title, lines: head, blocks });
+  const nameOf = (m) => branchName({ name_fr: m.branch_name_fr, name_ar: m.branch_name_ar }, lng) || null;
+  const sheets = [
+    sheet(t('print.summary'), [
+      {
+        facts: [
+          [t('campFile.to'), sp.get('recipient') || d.recipient || t('campFile.toValue')],
+          [t('campFile.from'), sender],
+          [t('common.date'), d.today, 'date'],
+          [t('campFile.subject'), t('periodReport.subjectValue', { period })],
+          [t('periodReport.from'), d.period.from, 'date'],
+          [t('periodReport.to'), d.period.to, 'date'],
+        ],
+      },
+      {
+        heading: t('periodReport.activitiesTitle'),
+        facts: [
+          [t('periodReport.colTotal'), tot.sessions.total, 'int'],
+          [t('periodReport.colCounted'), tot.sessions.counted, 'int'],
+          [t('periodReport.colUnconfirmed'), tot.sessions.unconfirmed, 'int'],
+          [t('periodReport.colPlanned'), tot.sessions.planned, 'int'],
+          tot.leader_sessions !== null && [t('periodReport.colLeaderSessions'), tot.leader_sessions, 'int'],
+          [t('periodReport.attendanceRate'), tot.rate, 'percent'],
+          [t('periodReport.colPrevRate'), tot.prev_rate, 'percent'],
+          [t('periodReport.activeMembers'), tot.active, 'int'],
+          [t('periodReport.toFollow'), tot.followup, 'int'],
+          [t('periodReport.colContacts'), tot.contacts, 'int'],
+        ].filter(Boolean),
+      },
+    ]),
+    sheet(t('periodReport.activitiesTitle'), [
+      table(
+        d.branches,
+        [
+          { label: t('member.branch'), value: x.branch },
+          { label: t('periodReport.colTotal'), type: 'int', sum: true, value: (b) => b.sessions.total },
+          { label: t('periodReport.colCounted'), type: 'int', sum: true, value: (b) => b.sessions.counted },
+          { label: t('periodReport.colUnconfirmed'), type: 'int', sum: true, value: (b) => b.sessions.unconfirmed },
+          { label: t('periodReport.colPlanned'), type: 'int', sum: true, value: (b) => b.sessions.planned },
+          { label: t('periodReport.colRate'), type: 'percent', value: (b) => b.attendance.rate },
+          { label: t('periodReport.colPrevRate'), type: 'percent', value: (b) => b.prev_attendance.rate },
+          { label: t('print.presentCount'), type: 'int', sum: true, value: (b) => b.attendance.present },
+          { label: t('print.absentCount'), type: 'int', sum: true, value: (b) => b.attendance.absent },
+          { label: t('print.excusedCount'), type: 'int', sum: true, value: (b) => b.attendance.excused },
+          { label: t('periodReport.colVisits'), type: 'int', sum: true, value: (b) => b.sessions.visits },
+        ],
+        { total: t('campFile.total') }
+      ),
+    ]),
+    sheet(t('periodReport.membersTitle'), [
+      table(
+        d.branches,
+        [
+          { label: t('member.branch'), value: x.branch },
+          { label: t('periodReport.colActive'), type: 'int', sum: true, value: (b) => b.members.active },
+          { label: t('periodReport.colJoined'), type: 'int', sum: true, value: (b) => b.members.joined },
+          { label: t('periodReport.colPromotedOut'), type: 'int', sum: true, value: (b) => b.members.promoted_out },
+          { label: t('periodReport.colPromotedIn'), type: 'int', sum: true, value: (b) => b.members.promoted_in },
+          { label: t('periodReport.colArchived'), type: 'int', sum: true, value: (b) => b.members.archived },
+          { label: t('periodReport.colTrial'), type: 'int', sum: true, value: (b) => b.members.trial },
+          { label: t('periodReport.colInvested'), type: 'int', sum: true, value: (b) => b.members.invested },
+          { label: t('periodReport.toFollow'), type: 'int', sum: true, value: (b) => b.followup.count },
+          { label: t('periodReport.colContacts'), type: 'int', sum: true, value: (b) => b.followup.contacts },
+        ],
+        { total: t('campFile.total') }
+      ),
+    ]),
+  ];
+  if (d.followup)
+    sheets.push(
+      sheet(t('periodReport.followupSheet'), [
+        table(
+          d.followup,
+          [
+            x.num,
+            { label: t('member.name'), value: memberName },
+            { label: t('member.branch'), value: nameOf },
+            { label: t('periodReport.colAbsences'), type: 'int', value: (m) => m.absences },
+            { label: t('periodReport.colLastContact'), type: 'date', value: (m) => m.last_contact?.slice(0, 10) || null },
+            { label: t('periodReport.colContactBy'), value: (m) => m.last_contact_by },
+          ],
+          { empty: t('periodReport.followupNone') }
+        ),
+        d.admissions?.ready.length > 0 &&
+          table(
+            d.admissions.ready,
+            [x.num, { label: t('member.name'), value: memberName }, { label: t('member.branch'), value: nameOf }],
+            { heading: t('periodReport.readyTitle') }
+          ),
+      ])
+    );
+  if (d.events)
+    sheets.push(
+      sheet(t('periodReport.eventsTitle'), [
+        table(
+          d.events,
+          [
+            { label: t('periodReport.colEvent'), value: (e) => e.title },
+            { label: t('session.kind'), value: (e) => t(`event.kind_${e.kind}`) },
+            { label: t('periodReport.from'), type: 'date', value: (e) => e.start_date },
+            { label: t('periodReport.to'), type: 'date', value: (e) => e.end_date },
+            { label: t('session.place'), value: (e) => e.place },
+            { label: t('periodReport.colParticipants'), type: 'int', sum: true, value: (e) => e.members + e.others },
+            d.events.some((e) => 'paid' in e) && { label: t('periodReport.colPaid'), type: 'amount', sum: true, value: (e) => e.paid },
+          ],
+          { empty: t('periodReport.eventsNone'), total: t('campFile.total') }
+        ),
+      ])
+    );
+  if (d.treasury?.length)
+    sheets.push(
+      sheet(t('periodReport.treasuryTitle'), [
+        table(
+          d.treasury,
+          [
+            { label: t('periodReport.colBox'), value: (b) => boxName(b, t, lng) },
+            { label: t('periodReport.colOpening'), type: 'amount', value: (b) => (b.opened ? b.opening : null) },
+            { label: t('periodReport.colIn'), type: 'amount', value: (b) => (b.opened ? b.income : null) },
+            { label: t('periodReport.colOut'), type: 'amount', value: (b) => (b.opened ? b.expenses : null) },
+            { label: t('periodReport.colClosing'), type: 'amount', value: (b) => (b.opened ? b.closing : null) },
+          ]
+        ),
+      ])
+    );
+  if (d.dues)
+    sheets.push(
+      sheet(t('periodReport.duesTitle'), [
+        table(
+          d.dues.branches,
+          [
+            { label: t('member.branch'), value: x.branch },
+            { label: t('periodReport.colCollected'), type: 'amount', sum: true, value: (b) => b.collected },
+            { label: t('periodReport.colLate'), type: 'int', sum: true, value: (b) => b.late_members },
+            { label: t('periodReport.colOwed'), type: 'amount', sum: true, value: (b) => b.owed },
+          ],
+          { total: t('campFile.total') }
+        ),
+      ])
+    );
+  if (d.overdue?.length)
+    sheets.push(
+      sheet(t('periodReport.overdueTitle'), [
+        table(d.overdue, [
+          { label: t('periodReport.colTask'), value: (r) => r.text },
+          { label: t('periodReport.colMeeting'), value: (r) => r.meeting_title },
+          { label: t('periodReport.colOwner'), value: (r) => r.owner },
+          { label: t('periodReport.colDue'), type: 'date', value: (r) => r.due_date },
+        ]),
+      ])
+    );
+  return { title, sheets };
+}
+
 const BUILDERS = {
+  period: periodCard,
+  'dues-arrears': duesArrearsList,
+  event: eventCard,
+  'event-unpaid': eventUnpaidList,
   sessions: sessionCard,
   members: memberCard,
   leaders: leaderCard,

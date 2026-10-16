@@ -196,6 +196,8 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   // تغيير فرقة عنصر مسجَّل يُحفظ في سجلّه، و الخادم يريد سببه: نقلٌ حقيقي (بتاريخه،
   // فحضوره السابق يبقى لفرقته القديمة) أو تصحيحُ فرقةٍ سُجّلت خطأً.
   const [branchChange, setBranchChange] = useState({ reason: '', date: todayISO() });
+  // B1: a new عنصر starts in فترة التجربة, unless the قائد registers one already مكرَّس
+  const [admissionStart, setAdmissionStart] = useState('trial');
   const branchChanged = editing && String(form.branch_id) !== String(member.branch_id);
 
   // فرقة مقسَّمة بالسنّ: الطليعة تتبع سنة الميلاد ما لم تُختر باليد — للتسجيل الجديد، و
@@ -245,6 +247,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
       ...form,
       branch_id: Number(form.branch_id),
       group_id: form.group_id === '' ? null : Number(form.group_id),
+      ...(!editing && { admission_status: admissionStart }),
       ...(branchChanged && {
         branch_change_reason: branchChange.reason,
         // Without a date the server dates the move today
@@ -433,6 +436,21 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
           <Field id="join_date" label={t('member.joinDate')}>
             <DatePicker id="join_date" fromYear={2000} value={form.join_date} onChange={set('join_date')} />
           </Field>
+          {!editing && (
+            <div className="space-y-1.5">
+              <Label>{t('admission.startStatus')}</Label>
+              <SegmentedControl
+                label={t('admission.startStatus')}
+                value={admissionStart}
+                onChange={setAdmissionStart}
+                className="flex w-full sm:min-h-10"
+                options={[
+                  { value: 'trial', label: t('admission.startTrial') },
+                  { value: 'invested', label: t('admission.alreadyInvested') },
+                ]}
+              />
+            </div>
+          )}
         </div>
       </Section>
 

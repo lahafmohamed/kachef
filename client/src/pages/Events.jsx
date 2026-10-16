@@ -17,6 +17,7 @@ import {
 } from '../lib/events';
 import { fmtScore, scoreTone } from '../lib/evaluations';
 import EventFormDialog from '../components/EventForm';
+import { ReadinessBadge } from '../components/CampSafety';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import {
@@ -64,6 +65,12 @@ function MoneyMeter({ e, t }) {
         <div className="flex h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
           <span className="bg-success" style={{ width: `${pct}%` }} />
         </div>
+      )}
+      {/* E2 : ce qui reste à encaisser, et combien de familles appeler */}
+      {e.outstanding > 0 && (
+        <p className="text-xs font-medium tabular-nums text-destructive">
+          {t('campFile.unpaidLine', { amount: fmtAmount(e.outstanding), count: e.unpaid_families || e.unpaid_count || 0 })}
+        </p>
       )}
       {(e.expenses > 0 || e.donations > 0 || !!e.funded) && (
         <p className="text-xs text-muted-foreground">
@@ -175,6 +182,8 @@ function EventRow({ e, lang, t, branchList, showMoney, bothSections }) {
             <Badge variant="outline">{t('event.participantCount', { count: e.participant_count })}</Badge>
             <Badge variant="outline">{t('event.sessionCount', { count: e.session_count })}</Badge>
             <EvalBadge e={e} t={t} lang={lang} />
+            {/* E1 : prêt à partir, tant que le camp n'est pas fini */}
+            {e.end_date >= todayISO() && <ReadinessBadge r={e} />}
           </div>
         </div>
 
@@ -204,6 +213,8 @@ export default function Events() {
   const [sp, patch] = useUrlFilters();
   const [q, setQ] = useUrlField(sp, patch, 'q');
   const kind = EVENT_KINDS.includes(sp.get('kind')) ? sp.get('kind') : '';
+  // E2 : les camps où quelqu'un doit encore — pour qui voit les montants
+  const unpaidOnly = canFees && sp.get('pay') === 'unpaid';
   const params = new URLSearchParams();
   if (sp.get('q')) params.set('q', sp.get('q'));
   if (kind) params.set('kind', kind);
@@ -213,8 +224,8 @@ export default function Events() {
   const [creating, setCreating] = useState(false);
 
   const branchList = branches.data || [];
-  const list = events.data || [];
-  const filtering = !!(sp.get('q') || kind);
+  const list = (events.data || []).filter((e) => !unpaidOnly || e.unpaid_count > 0);
+  const filtering = !!(sp.get('q') || kind || unpaidOnly);
   const today = todayISO();
   const groups = PHASES.map((phase) => {
     const rows = list.filter((e) => eventPhase(e, today) === phase);
@@ -225,7 +236,7 @@ export default function Events() {
 
   const clear = () => {
     setQ('');
-    patch({ q: '', kind: '' });
+    patch({ q: '', kind: '', pay: '' });
   };
 
   return (
@@ -254,6 +265,16 @@ export default function Events() {
           className="w-full sm:w-auto sm:min-w-40"
           options={EVENT_KINDS.map((k) => ({ value: k, label: t(`event.kind_${k}`) }))}
         />
+        {canFees && (
+          <FilterSelect
+            value={unpaidOnly ? 'unpaid' : ''}
+            onChange={(v) => patch({ pay: v })}
+            allLabel={t('event.allPayments')}
+            ariaLabel={t('event.payment')}
+            className="w-full sm:w-auto sm:min-w-40"
+            options={[{ value: 'unpaid', label: t('campFile.unpaidFilter') }]}
+          />
+        )}
       </div>
 
       {events.error ? (

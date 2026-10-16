@@ -22,6 +22,7 @@ import { signed } from '../lib/events';
 import AmountInput from '../components/AmountInput';
 import DatePicker from '../components/DatePicker';
 import ExportPdfButton from '../components/ExportPdfButton';
+import DuesArrearsCard from '../components/DuesArrears';
 import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import {
   Badge,
@@ -1412,6 +1413,9 @@ export default function Treasury() {
           )}
         </>
       )}
+
+      {/* G1 : cotisations en retard, par فرقة — même calcul que la fiche et la liste */}
+      {has('members.dues.read') && <DuesArrearsCard />}
 
       {canManage && (
         <>

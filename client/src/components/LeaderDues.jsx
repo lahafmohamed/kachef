@@ -147,7 +147,12 @@ export default function LeaderDues() {
   const collected = rows.reduce((n, l) => n + Object.values(l.paid).reduce((s, p) => s + (p.amount || 0), 0), 0);
   const active = rows.filter((l) => l.status === 'active');
   const lateLeaders = active.filter((l) => l.late > 0).length;
-  const owedTotal = active.reduce((n, l) => n + l.late * monthly, 0);
+  // Each month at its own rate (G1): a new rate leaves the months before it alone
+  const rateOf = (m) => data.month_rates?.[m] ?? monthly;
+  const owedTotal = active.reduce(
+    (n, l) => n + (l.status === 'active' ? owedMonths.filter((m) => !l.paid[m]).reduce((s, m) => s + rateOf(m), 0) : 0),
+    0
+  );
 
   async function toggle(leader, month) {
     const wasPaid = !!leader.paid[month];
@@ -158,7 +163,7 @@ export default function LeaderDues() {
           l.id === leader.id ? { ...l, paid: { ...l.paid, [month]: paid || undefined } } : l
         ),
       }));
-    patch(wasPaid ? null : { amount: monthly, recorded_by: null });
+    patch(wasPaid ? null : { amount: rateOf(month), recorded_by: null });
     try {
       const r = await api.put(`/leaders/${leader.id}/dues/${month}`, { paid: !wasPaid });
       patch(r.paid);
@@ -286,7 +291,10 @@ export default function LeaderDues() {
                       <span className="font-semibold tabular-nums">{l.paidCount}/12</span>
                       {l.late > 0 ? (
                         <span className="block text-xs text-destructive">
-                          {t('dues.lateCount', { count: l.late, amount: fmtAmount(l.late * monthly) })}
+                          {t('dues.lateCount', {
+                            count: l.late,
+                            amount: fmtAmount(owedMonths.filter((m) => !l.paid[m]).reduce((s, m) => s + rateOf(m), 0)),
+                          })}
                         </span>
                       ) : (
                         <span className="block text-xs text-success">{t('dues.ok')}</span>
@@ -341,7 +349,7 @@ export function DuesCard({ endpoint, title, writeUrl, bare = false }) {
     const was = data.paid[month] || null;
     const set = (p, sum) =>
       res.setData((d) => ({ ...d, paid: { ...d.paid, [month]: p || undefined }, summary: sum || d.summary }));
-    set(was ? null : { amount: data.monthly, recorded_by: null });
+    set(was ? null : { amount: data.month_rates?.[month] ?? data.monthly, recorded_by: null });
     try {
       const r = await api.put(writeUrl(data, month), { paid: !was });
       set(r.paid, r.summary);
@@ -365,9 +373,11 @@ export function DuesBody({ data, title, bare = false, onYear, onCell = null, sel
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
   const { months, monthly, current_month: currentMonth, paid, summary } = data;
-  // An عنصر no longer active is asked for nothing; what he paid stays green
+  // An عنصر no longer active is asked only for the months up to his archiving (G1),
+  // and an exempted month for nothing: the server says which months are owed
   const inactive = data.active === false;
-  const owed = inactive ? [] : dueMonths(months, currentMonth, data.start_month);
+  const owed = data.owed_months ?? (inactive ? [] : dueMonths(months, currentMonth, data.start_month));
+  const personal = data.personal_rate;
   // A month paid in part is not paid yet
   const paidCount = months.filter((m) => paid[m] && paid[m].full !== false).length;
   const paidThisYear = months.reduce((n, m) => n + (paid[m]?.amount || 0), 0);
@@ -383,14 +393,22 @@ export function DuesBody({ data, title, bare = false, onYear, onCell = null, sel
         <div className="min-w-0 flex-1">
           {!bare && <h2 className="text-base font-semibold">{title}</h2>}
           <p className="text-sm text-muted-foreground">
-            {t('dues.monthlyShort', { amount: fmtAmount(monthly) })}
+            {personal?.amount === 0
+              ? t('arrears.exemptShort')
+              : t(personal ? 'arrears.personalShort' : 'dues.monthlyShort', { amount: fmtAmount(monthly) })}
             {/* An عنصر who joined later owes from his own first month */}
             {data.member_id && !inactive && ` · ${t('dues.since', { month: monthLabel(data.start_month) })}`}
           </p>
         </div>
         <DuesYearSelect years={data.years} value={data.year} onChange={onYear} t={t} />
       </div>
-      {inactive && <p className="text-sm text-muted-foreground">{t('dues.inactive')}</p>}
+      {inactive && (
+        <p className="text-sm text-muted-foreground">
+          {data.archived_month && summary.owed_total > 0
+            ? t('arrears.archivedOwes', { month: monthLabel(data.archived_month) })
+            : t('dues.inactive')}
+        </p>
+      )}
       {children}
 
       {/* Ce que le قائد cherche d'abord : a-t-il encore quelque chose à payer ? */}

@@ -2,9 +2,12 @@ import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
+import { fmtAmount } from '../utils';
+import { useAuth } from '../auth';
 import NewBranchDialog, { AllAgesToggle } from '../components/NewBranchDialog';
 import EvalFormsPanel from '../components/EvalForms';
 import SectionField from '../components/SectionField';
+import MatalibCatalogDialog from '../components/MatalibCatalog';
 import {
   cn,
   Badge,
@@ -16,11 +19,13 @@ import {
   Input,
   Label,
   PageHeader,
+  Select,
   Skeleton,
   useConfirm,
   useTheme,
   useToast,
   IconChevronDown,
+  IconClipboard,
   IconLanguages,
   IconMoon,
   IconPencil,
@@ -388,6 +393,217 @@ function LookupListsCard() {
   );
 }
 
+/**
+ * Suivi des absences (A2) : la série d'absences qui met un عنصر «للمتابعة» et envoie
+ * l'alerte aux قادة de sa فرقة (deux fois la série : l'admin aussi).
+ */
+function AbsenceFollowupCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const { user, updateUser } = useAuth();
+  const { data, loading, error, reload } = useFetch('/settings/followup');
+  const [value, setValue] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const current = value ?? data?.absence_threshold ?? '';
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/followup', { absence_threshold: Number(current) });
+      setValue(null);
+      reload({ quiet: true });
+      // Every badge of this session follows at once
+      if (user) updateUser({ ...user, absence_threshold: res.absence_threshold });
+      toast.success(t('followup.settingsSaved'));
+    } catch (err) {
+      toast.error(err.message === 'invalid_threshold' ? t('followup.settingsInvalid') : err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsSection title={t('followup.settingsTitle')}>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">{t('followup.settingsHint')}</p>
+        {loading ? (
+          <Skeleton className="h-10 w-40" />
+        ) : error ? (
+          <ErrorState message={error} onRetry={reload} />
+        ) : (
+          <form onSubmit={save} className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="absence_threshold">{t('followup.settingsLabel')}</Label>
+              <Input
+                id="absence_threshold"
+                type="number"
+                inputMode="numeric"
+                min={2}
+                max={10}
+                required
+                className="w-28 tabular-nums"
+                value={current}
+                onChange={(e) => setValue(e.target.value)}
+              />
+            </div>
+            <Button type="submit" variant="brand" loading={saving} disabled={value === null}>
+              {t('common.save')}
+            </Button>
+          </form>
+        )}
+      </CardContent>
+    </SettingsSection>
+  );
+}
+
+/**
+ * Tarifs des cotisations (G1), datés : un tarif vaut à partir de son mois jusqu'au
+ * suivant, si bien qu'un changement ne touche jamais les mois déjà passés. Un pour les
+ * عناصر, un pour les قادة ; le dernier d'un genre ne se supprime pas.
+ */
+function DuesRatesCard() {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { data, loading, error, reload, setData } = useFetch('/due-rates');
+  const [kind, setKind] = useState('member');
+  const [amount, setAmount] = useState('');
+  const [month, setMonth] = useState('');
+  const [saving, setSaving] = useState(false);
+  const fmtMonth = (m) =>
+    new Intl.DateTimeFormat(lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { month: 'long', year: 'numeric' }).format(
+      new Date(`${m}-01T12:00:00`)
+    );
+  const effective = month || data?.current_month || '';
+
+  async function add(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      setData(await api.post('/due-rates', { kind, amount: Number(amount), effective_month: effective }));
+      setAmount('');
+      setMonth('');
+      toast.success(t('arrears.rateAdded'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(r) {
+    const ok = await confirm({
+      title: t('arrears.rateDeleteTitle'),
+      message: t('arrears.rateDeleteBody', { amount: fmtAmount(r.amount), month: fmtMonth(r.effective_month) }),
+      confirmLabel: t('common.delete'),
+    });
+    if (!ok) return;
+    try {
+      setData(await api.del(`/due-rates/${r.id}`));
+    } catch (err) {
+      toast.error(err.message === 'last_rate' ? t('arrears.lastRate') : err.message);
+    }
+  }
+
+  const list = (k) => {
+    const rows = data?.[k] || [];
+    return (
+      <div className="space-y-1.5">
+        <p className="text-sm font-semibold">{t(k === 'member' ? 'arrears.kindMember' : 'arrears.kindLeader')}</p>
+        <ul className="divide-y divide-border rounded-xl border border-border">
+          {[...rows].reverse().map((r) => {
+            const current = r.amount === data.current[k] && r.effective_month <= data.current_month &&
+              !rows.some((x) => x.effective_month > r.effective_month && x.effective_month <= data.current_month);
+            return (
+              <li key={r.id} className="flex min-h-11 items-center gap-3 px-3 py-1.5">
+                <span className="min-w-0 flex-1 text-sm">
+                  <span className="font-semibold tabular-nums">{fmtAmount(r.amount)}</span>
+                  <span className="text-muted-foreground"> · {t('arrears.rateFrom', { month: fmtMonth(r.effective_month) })}</span>
+                </span>
+                {current && <Badge variant="success">{t('arrears.rateCurrent')}</Badge>}
+                {r.effective_month > data.current_month && <Badge variant="info">{t('arrears.rateUpcoming')}</Badge>}
+                {rows.length > 1 && (
+                  <Button
+                    variant="destructive-ghost"
+                    size="icon-sm"
+                    aria-label={t('common.delete')}
+                    onClick={() => remove(r)}
+                  >
+                    <IconTrash />
+                  </Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
+
+  return (
+    <SettingsSection title={t('arrears.ratesTitle')}>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">{t('arrears.ratesHint')}</p>
+        {loading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : error ? (
+          <ErrorState message={error} onRetry={reload} />
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {list('member')}
+              {list('leader')}
+            </div>
+            <form onSubmit={add} className="flex flex-wrap items-end gap-3 border-t border-border pt-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="rate_kind">{t('arrears.rateKind')}</Label>
+                <Select id="rate_kind" value={kind} onChange={(e) => setKind(e.target.value)} className="w-40">
+                  <option value="member">{t('arrears.kindMember')}</option>
+                  <option value="leader">{t('arrears.kindLeader')}</option>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="rate_amount">{t('arrears.amountLabel')}</Label>
+                <Input
+                  id="rate_amount"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={500}
+                  required
+                  className="w-32 tabular-nums"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="rate_month">{t('arrears.fromLabel')}</Label>
+                <Input
+                  id="rate_month"
+                  type="month"
+                  required
+                  className="w-44"
+                  value={effective}
+                  onChange={(e) => setMonth(e.target.value)}
+                />
+              </div>
+              <Button type="submit" variant="brand" loading={saving}>
+                <IconPlus />
+                {t('arrears.rateAdd')}
+              </Button>
+            </form>
+            {effective && data && effective < data.current_month && (
+              <p className="text-xs font-medium text-warning">{t('arrears.pastWarning')}</p>
+            )}
+          </>
+        )}
+      </CardContent>
+    </SettingsSection>
+  );
+}
+
 export default function Settings() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -402,6 +618,8 @@ export default function Settings() {
   // Held here, not in the section: creating a branch opens it on the new one.
   const [branchesOpen, setBranchesOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  // كتالوج المطالب: the فرقة whose list is open
+  const [catalogOf, setCatalogOf] = useState(null);
 
   function setField(id, field, value) {
     setDirty(true);
@@ -420,6 +638,21 @@ export default function Settings() {
           total_requirements: Number(b.total_requirements) || 0,
           all_ages: !!b.all_ages,
           section: b.section,
+          ...(b.promotion_threshold === '' || b.promotion_threshold === null || b.promotion_threshold === undefined
+            ? {}
+            : { promotion_threshold: Math.min(100, Math.max(0, Math.round(Number(b.promotion_threshold)) || 0)) }),
+          // مطالب القبول: a field left empty is not sent, the stored value stays
+          ...Object.fromEntries(
+            [
+              ['trial_months', 12],
+              ['law_items_required', 10],
+              ['consecutive_meetings_required', 20],
+              ['cries_required', 20],
+            ]
+              .filter(([k]) => b[k] !== '' && b[k] !== null && b[k] !== undefined)
+              .map(([k, max]) => [k, Math.min(max, Math.max(0, Math.round(Number(b[k])) || 0))])
+          ),
+          internal_skip_trial: b.internal_skip_trial !== 0,
         });
       }
       setDirty(false);
@@ -544,6 +777,8 @@ export default function Settings() {
             <p>{t('settings.noLimit')}</p>
             <p>{t('section.branchHint')}</p>
             <p>{t('settings.allAgesHint')}</p>
+            <p>{t('matalib.thresholdHint')}</p>
+            <p>{t('admission.settingsHint')}</p>
           </div>
           {error ? (
             <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
@@ -647,7 +882,63 @@ export default function Settings() {
                       onChange={(e) => setField(b.id, 'total_requirements', e.target.value)}
                     />
                   </div>
+                  {!b.all_ages && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor={`thr-${b.id}`}>{t('matalib.threshold')}</Label>
+                      <Input
+                        id={`thr-${b.id}`}
+                        type="number"
+                        inputMode="numeric"
+                        min="0"
+                        max="100"
+                        value={b.promotion_threshold ?? ''}
+                        onChange={(e) => setField(b.id, 'promotion_threshold', e.target.value)}
+                      />
+                    </div>
+                  )}
                 </div>
+                {/* مطالب القبول (B1): فترة التجربة قبل التكريس */}
+                <fieldset className="space-y-2 border-t border-border pt-3">
+                  <legend className="sr-only">{t('admission.settingsTitle')}</legend>
+                  <p aria-hidden="true" className="text-sm font-medium">
+                    {t('admission.settingsTitle')}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+                    {[
+                      ['trial_months', 'admission.trialMonths', 12],
+                      ['law_items_required', 'admission.lawItems', 10],
+                      ['consecutive_meetings_required', 'admission.meetings', 20],
+                      ['cries_required', 'admission.cries', 20],
+                    ].map(([key, label, max]) => (
+                      <div key={key} className="space-y-1.5">
+                        <Label htmlFor={`${key}-${b.id}`}>{t(label)}</Label>
+                        <Input
+                          id={`${key}-${b.id}`}
+                          type="number"
+                          inputMode="numeric"
+                          min="0"
+                          max={max}
+                          value={b[key] ?? ''}
+                          onChange={(e) => setField(b.id, key, e.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm sm:min-h-0">
+                    <input
+                      type="checkbox"
+                      checked={b.internal_skip_trial !== 0}
+                      onChange={(e) => setField(b.id, 'internal_skip_trial', e.target.checked ? 1 : 0)}
+                    />
+                    {t('admission.skipInternal')}
+                  </label>
+                </fieldset>
+                {Number(b.total_requirements) > 0 && (
+                  <Button variant="outline" size="sm" onClick={() => setCatalogOf(b)} disabled={dirty}>
+                    <IconClipboard />
+                    {t('matalib.editCatalog')}
+                  </Button>
+                )}
               </div>
             ))
           )}
@@ -676,11 +967,24 @@ export default function Settings() {
         <EvalFormsPanel />
       </SettingsSection>
 
+      {/* ---------- متابعة الغياب: عتبة الغيابات المتتالية ---------- */}
+      <AbsenceFollowupCard />
+
+      {/* ---------- tarifs des cotisations (G1) ---------- */}
+      <DuesRatesCard />
+
       {/* ---------- لوائح مكان السكن والمدارس ---------- */}
       <LookupListsCard />
 
       {/* ---------- مطالب القادة (بطاقة تقدم القائد) ---------- */}
       <LeaderMatalibCard />
+
+      <MatalibCatalogDialog
+        open={!!catalogOf}
+        branch={catalogOf}
+        branches={branches}
+        onClose={() => setCatalogOf(null)}
+      />
 
       <NewBranchDialog open={creating} onClose={() => setCreating(false)} onCreated={branchCreated} />
     </div>

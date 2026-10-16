@@ -5,6 +5,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
+import { catalogMap, majalStats } from '../lib/matalib';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
@@ -21,6 +22,7 @@ import {
   ErrorState,
   ProgressBar,
   RequirementGrid,
+  MatalibLegend,
   Select,
   SkeletonPage,
   cn,
@@ -42,6 +44,10 @@ import {
   IconUsers,
   IconX,
 } from '../components/ui';
+import { RoleBadges, respLabel } from '../components/GroupResponsibilities';
+import { AdmissionBadge, MemberAdmission } from '../components/Admission';
+import { FollowupLog, useAbsenceThreshold } from '../components/Followup';
+import { MemberHealthCard } from '../components/CampSafety';
 
 const STATUS_BADGE = {
   present: ['success', 'session.present'],
@@ -49,7 +55,7 @@ const STATUS_BADGE = {
   excused: ['warning', 'session.excused'],
 };
 
-const TABS = ['attendance', 'matalib', 'events', 'dues', 'profile', 'history'];
+const TABS = ['attendance', 'followup', 'matalib', 'admission', 'events', 'dues', 'health', 'profile', 'history'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج uses — the same
 // headers as the activities journal. Latin digits, as everywhere else.
@@ -187,10 +193,15 @@ export default function MemberDetail() {
   const canEvents = has('events.read');
   // الاشتراك الشهري: لمن مُنح رؤيته
   const canDues = has('members.dues.read');
+  // الصحة (E1): معطيات حساسة، لمن مُنح members.health وحده
+  const canHealth = has('members.health');
+  const absenceThreshold = useAbsenceThreshold();
   const [sp, setSp] = useSearchParams();
   const asked = sp.get('tab');
   const tab =
-    TABS.includes(asked) && (asked !== 'events' || canEvents) && (asked !== 'dues' || canDues) ? asked : 'attendance';
+    TABS.includes(asked) && (asked !== 'events' || canEvents) && (asked !== 'dues' || canDues) && (asked !== 'health' || canHealth)
+      ? asked
+      : 'attendance';
   const setTab = (next) =>
     setSp(
       (prev) => {
@@ -280,6 +291,11 @@ export default function MemberDetail() {
   const total = member.branch_total_requirements || 0;
   const earned = Math.min(stats.requirements_earned, total);
   const reqPct = total ? Math.min(100, Math.round((stats.requirements_earned / total) * 100)) : 0;
+  // كتالوج الفرقة: أسماء الأرقام، و النسبة في كل مجال. عتبة الترفيع 0 = بلا عتبة
+  const catalog = member.matalib_catalog || [];
+  const catalogByNumber = catalogMap(catalog);
+  const byMajal = majalStats(catalog, stats.earned_numbers);
+  const threshold = member.promotion_threshold || 0;
   // الاشتراكات المدفوعة تراكميًّا — يحسبها السيرفر من خانات الأنشطة. تصل NULL لمن
   // لا يملك صلاحية رؤية المبالغ، فيختفي كل ما يخصّها.
   const subs = member.subscriptions;
@@ -394,6 +410,8 @@ export default function MemberDetail() {
                 </Badge>
               )}
               {!active && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+              <AdmissionBadge member={member} />
+              <RoleBadges items={member.responsibilities?.filter((r) => !r.end_date)} />
             </div>
           </div>
           {canModify && (
@@ -449,7 +467,7 @@ export default function MemberDetail() {
         </p>
       )}
 
-      {active && stats.consecutive_absences >= 3 && (
+      {active && stats.consecutive_absences >= absenceThreshold && (
         <p role="alert" className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
           <IconAlert className="h-5 w-5 shrink-0" />
           {t('member.consecutiveAbsences', { count: stats.consecutive_absences })}
@@ -459,6 +477,15 @@ export default function MemberDetail() {
               ? t('dashboard.followup.lastPresent', { date: fmtDate(lastPresent) })
               : t('dashboard.followup.never')}
           </span>
+          {tab !== 'followup' && (
+            <button
+              type="button"
+              onClick={() => setTab('followup')}
+              className="focus-ring ms-auto rounded text-sm font-medium underline underline-offset-2"
+            >
+              {t('followup.open')}
+            </button>
+          )}
         </p>
       )}
 
@@ -503,12 +530,15 @@ export default function MemberDetail() {
         <UnderlineTabs
           items={[
             { id: 'attendance', label: t('member.attendance') },
+            { id: 'followup', label: t('followup.tab') },
             { id: 'matalib', label: t('member.matalib') },
+            { id: 'admission', label: t('admission.tab') },
             // A camp he was taken off the list of is in his file, but not among those he took part in
             ...(canEvents
               ? [{ id: 'events', label: t('nav.events'), count: events.data?.filter((e) => !e.withdrawn).length || null }]
               : []),
             ...(canDues ? [{ id: 'dues', label: t('member.duesTab') }] : []),
+            ...(canHealth ? [{ id: 'health', label: t('safety.healthTab') }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -596,7 +626,14 @@ export default function MemberDetail() {
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <p className="text-sm text-muted-foreground">{t('member.requirementsOf', { earned, total })}</p>
-                    <span className="text-sm font-semibold tabular-nums">{reqPct}%</span>
+                    <span className="flex items-center gap-2">
+                      {threshold > 0 && (
+                        <Badge variant={reqPct >= threshold ? 'success' : 'outline'}>
+                          {t('matalib.thresholdOf', { pct: threshold })}
+                        </Badge>
+                      )}
+                      <span className="text-sm font-semibold tabular-nums">{reqPct}%</span>
+                    </span>
                   </div>
                   <ProgressBar value={reqPct} label={t('member.requirementsProgress')} />
                   {canEditMatalib && <p className="text-xs text-muted-foreground">{t('member.matalibEditHint')}</p>}
@@ -605,11 +642,36 @@ export default function MemberDetail() {
                   total={total}
                   selected={stats.earned_numbers}
                   label={t('member.requirementsProgress')}
+                  labels={catalogByNumber}
                   onToggle={
                     canEditMatalib
                       ? (n) => setMatlab(n, stats.earned_numbers.includes(n) ? 'revoked' : 'granted')
                       : undefined
                   }
+                />
+                {byMajal.length > 0 && (
+                  <div className="space-y-2.5 border-t border-border pt-3">
+                    <p className="text-xs font-medium text-muted-foreground">{t('matalib.byMajal')}</p>
+                    <ul className="grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2">
+                      {byMajal.map((r) => (
+                        <li key={r.majal} className="space-y-1">
+                          <div className="flex items-baseline justify-between gap-2 text-sm">
+                            <span>{t(`matalib.majal.${r.majal}`)}</span>
+                            <span className="tabular-nums text-muted-foreground">
+                              {r.earned}/{r.total} · {r.pct}%
+                            </span>
+                          </div>
+                          <ProgressBar value={r.pct} label={t(`matalib.majal.${r.majal}`)} />
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <MatalibLegend
+                  items={catalog}
+                  selected={stats.earned_numbers}
+                  summary={t('matalib.legend', { count: catalog.length })}
+                  majalLabel={(k) => t(`matalib.majal.${k}`)}
                 />
                 {/* مطالب corrected by hand — shown apart so what came from أنشطة stays readable */}
                 {member.manual_matalib?.length > 0 && (
@@ -678,6 +740,25 @@ export default function MemberDetail() {
                 </Fact>
                 <Fact label={t('member.status')}>{t(active ? 'member.active' : 'member.inactive')}</Fact>
               </FactGroup>
+              {/* مسؤولياته في الطليعة، الجارية ثم المنتهية، بتواريخها (C1) */}
+              {member.responsibilities?.length > 0 && (
+                <section className="space-y-3 p-4 sm:p-5">
+                  <h3 className="text-sm font-semibold">{t('resp.memberTitle')}</h3>
+                  <ul className="space-y-2">
+                    {member.responsibilities.map((r) => (
+                      <li key={r.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                        <span className={cn('font-medium', r.end_date && 'text-muted-foreground')}>{respLabel(t, r)}</span>
+                        {r.group_name && <bdi className="text-muted-foreground">{r.group_name}</bdi>}
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {r.end_date
+                            ? t('resp.period', { from: fmtDate(r.start_date), to: fmtDate(r.end_date) })
+                            : t('resp.since', { date: fmtDate(r.start_date) })}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
               <FactGroup title={t(canContact ? 'member.sectionFamily' : 'member.sectionFamilyNoContact')}>
                 <Fact label={t('member.fatherName')}>{member.father_name}</Fact>
                 <Fact label={t('member.motherName')}>{member.mother_name}</Fact>
@@ -707,9 +788,26 @@ export default function MemberDetail() {
             </Card>
           )}
 
-          {tab === 'events' && canEvents && <EventParticipations state={events} feminine={member.sex === 'F'} />}
+          {tab === 'admission' && (
+            <MemberAdmission
+              memberId={member.id}
+              onStatus={(admission_status) => setMember((m) => ({ ...m, admission_status }))}
+            />
+          )}
+
+          {tab === 'events' && canEvents &&<EventParticipations state={events} feminine={member.sex === 'F'} />}
 
           {tab === 'dues' && canDues && <MemberDuesCard member={member} />}
+
+          {tab === 'health' && canHealth && <MemberHealthCard member={member} />}
+
+          {tab === 'followup' && (
+            <FollowupLog
+              member={member}
+              absences={stats.consecutive_absences}
+              onArchived={() => reload({ quiet: true })}
+            />
+          )}
 
           {tab === 'history' && (
             <>
@@ -732,11 +830,17 @@ export default function MemberDetail() {
                             <Badge variant="secondary">{lang === 'ar' ? p.old_name_ar : p.old_name_fr}</Badge>
                             <IconArrow className="h-3.5 w-3.5 text-muted-foreground rtl:rotate-180" />
                             <Badge>{lang === 'ar' ? p.new_name_ar : p.new_name_fr}</Badge>
+                            {!!p.override && <Badge variant="warning">{t('matalib.override')}</Badge>}
                             <span className="ms-auto font-medium tabular-nums text-primary">
                               {t('member.requirementsOf', { earned: p.matalib.length, total: p.old_total_requirements })}
                             </span>
                           </summary>
-                          <div className="border-t border-border p-4 sm:p-5">
+                          <div className="space-y-3 border-t border-border p-4 sm:p-5">
+                            {!!p.override && p.override_reason && (
+                              <p className="text-sm text-muted-foreground">
+                                {t('matalib.overrideReason')}: <bdi>{p.override_reason}</bdi>
+                              </p>
+                            )}
                             <RequirementGrid total={p.old_total_requirements} selected={p.matalib} />
                           </div>
                         </details>

@@ -502,7 +502,10 @@ function PermsEditor({ perms, onChange }) {
  * One account. Phones: name and actions on the first line, the badges under the name.
  * From sm up: the badges move inline, between the name and the actions.
  */
-function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }) {
+// I4: what the account's فرق are against the قائد's تشكيلة. 'ok' / 'all' / 'amana' say nothing.
+const TACHKILA_ALERTS = ['drift', 'absent', 'archived'];
+
+function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete, onAlign, aligning }) {
   const { t } = useTranslation();
   const isSelf = u.id === me.id;
   // The icon buttons say what they do; this tells a screen reader whose account it is
@@ -546,10 +549,32 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete }
             </span>
           )}
         </div>
+        {/* The فرق his تشكيلة gives him, next to the button that copies them over */}
+        {u.active && u.tachkila_status === 'drift' && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span>
+              {t('admin.tachkila.inTachkila', { year: u.tachkila_year })}:{' '}
+              <span className="font-medium text-foreground">{u.assignment_branch_ids.map(nameOf).join('، ')}</span>
+            </span>
+            <Button size="sm" variant="outline" loading={aligning} onClick={() => onAlign(u)}>
+              <IconRefresh />
+              {t('admin.tachkila.align')}
+            </Button>
+          </div>
+        )}
       </div>
       {/* Phones: under the name and the actions both — the badges get the full width */}
       <div className="col-span-2 col-start-2 row-start-2 flex flex-wrap items-center gap-1.5 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:justify-end">
         {!u.active && <Badge variant="destructive">{t('admin.inactive')}</Badge>}
+        {u.active && TACHKILA_ALERTS.includes(u.tachkila_status) && (
+          <Badge
+            variant="warning"
+            title={t(`admin.tachkila.${u.tachkila_status}Hint`, { year: u.tachkila_year })}
+          >
+            <IconAlert className="h-3 w-3" />
+            {t(`admin.tachkila.${u.tachkila_status}`)}
+          </Badge>
+        )}
         {u.role === 'admin' ? (
           <Badge variant="warning">
             <IconShield className="h-3 w-3" />
@@ -654,6 +679,8 @@ export default function Admin() {
   const [formError, setFormError] = useState(null);
   // { username, password } right after a creation or a reset — shown exactly once
   const [credentials, setCredentials] = useState(null);
+  // 'all' or a user id while «aligner» runs
+  const [aligning, setAligning] = useState(null);
 
   // The badges name the فرق and the form lists them: the page waits for both lists
   const loading = users.loading || branches.loading;
@@ -676,6 +703,9 @@ export default function Admin() {
     return b ? branchName(b, i18n.language) : id;
   };
   const label = (u) => u.display_name || u.username;
+  const drifted = activeUsers.filter((u) => u.tachkila_status === 'drift');
+  const outOfTachkila = activeUsers.filter((u) => ['absent', 'archived'].includes(u.tachkila_status));
+  const tachkilaYear = activeUsers.find((u) => u.tachkila_year)?.tachkila_year;
 
   function describe(err) {
     const map = {
@@ -728,6 +758,30 @@ export default function Admin() {
     }
   }
 
+  // «Aligner» one account, or every drifted one after a confirmation
+  async function align(u) {
+    if (!u) {
+      const ok = await confirm({
+        title: t('admin.tachkila.alertTitle'),
+        message: t('admin.tachkila.confirmAlignAll', { count: drifted.length, year: tachkilaYear }),
+        confirmLabel: t('admin.tachkila.align'),
+      });
+      if (!ok) return;
+    }
+    setAligning(u ? u.id : 'all');
+    try {
+      const r = await api.post('/users/sync-branches', u ? { ids: [u.id] } : {});
+      users.reload({ quiet: true });
+      toast.success(
+        r.updated ? t('admin.tachkila.aligned', { count: r.updated }) : t('admin.tachkila.alignedNone')
+      );
+    } catch (err) {
+      toast.error(describe(err));
+    } finally {
+      setAligning(null);
+    }
+  }
+
   // Every opening starts clean: no error or spinner left over from the last account
   function openForm(u) {
     setFormError(null);
@@ -744,7 +798,15 @@ export default function Admin() {
       section: u.section || '',
     });
 
-  const rowProps = { me, nameOf, onEdit: edit, onDeactivate: deactivate, onReactivate: reactivate, onDelete: remove };
+  const rowProps = {
+    me,
+    nameOf,
+    onEdit: edit,
+    onDeactivate: deactivate,
+    onReactivate: reactivate,
+    onDelete: remove,
+    onAlign: align,
+  };
 
   return (
     <div className="space-y-6">
@@ -761,6 +823,28 @@ export default function Admin() {
         </Button>
       </PageHeader>
 
+      {/* I4: accounts whose فرق no longer match the التشكيلة — wrong access, wrong notifications */}
+      {!loading && !failed && (drifted.length > 0 || outOfTachkila.length > 0) && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-xl border border-warning/35 bg-warning/10 px-4 py-3"
+        >
+          <IconAlert className="h-5 w-5 shrink-0 text-warning" />
+          <div className="min-w-48 flex-1">
+            <p className="text-sm font-medium">{t('admin.tachkila.alertTitle')}</p>
+            <p className="text-xs text-muted-foreground">
+              {t('admin.tachkila.alertBody', { drift: drifted.length, other: outOfTachkila.length })}
+            </p>
+          </div>
+          {drifted.length > 0 && (
+            <Button size="sm" variant="outline" loading={aligning === 'all'} onClick={() => align(null)}>
+              <IconRefresh />
+              {t('admin.tachkila.alignAll', { count: drifted.length })}
+            </Button>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <UsersSkeleton />
       ) : failed ? (
@@ -773,7 +857,7 @@ export default function Admin() {
             ) : (
               <ul className="divide-y divide-border">
                 {activeUsers.map((u) => (
-                  <UserRow key={u.id} u={u} {...rowProps} />
+                  <UserRow key={u.id} u={u} {...rowProps} aligning={aligning === u.id} />
                 ))}
               </ul>
             )}

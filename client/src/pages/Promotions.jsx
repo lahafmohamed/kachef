@@ -7,10 +7,16 @@ import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import ExportPdfButton from '../components/ExportPdfButton';
 import FilterSelect from '../components/FilterSelect';
+import { AdmissionQueue, MissingBirthDates } from '../components/Admission';
 import {
   Avatar,
+  Badge,
   Button,
   Card,
+  Dialog,
+  Label,
+  SegmentedControl,
+  Textarea,
   EmptyState,
   ErrorState,
   PageHeader,
@@ -115,9 +121,16 @@ export default function Promotions() {
   // السجل يكبر كل سنة كشفية: السنة تحصره في دفعة واحدة. لا يُعرض الاختيار إلا حين
   // يضمّ السجل أكثر من سنة — قبل ذلك لا شيء يُفرَز.
   const [season, setSeason] = useState('');
+  // جاهزون (بلغوا عتبة مطالب فرقتهم) أو دون العتبة: '' = الكل
+  const [readiness, setReadiness] = useState('');
+  // ترفيع تحت العتبة: استثناء يُكتب سببه قبل الإرسال
+  const [override, setOverride] = useState(null); // { ids, key, below, reason }
 
   const sameBranch = (id) => !branch || String(id) === String(branch);
-  const pendingList = (pending.data || []).filter((p) => sameBranch(p.current_branch.id));
+  const inBranch = (pending.data || []).filter((p) => sameBranch(p.current_branch.id));
+  const readyCount = inBranch.filter((p) => p.ready).length;
+  const pendingList = inBranch.filter((p) => !readiness || (readiness === 'ready') === !!p.ready);
+  const readyIds = pendingList.filter((p) => p.ready).map((p) => p.id);
   const branchHistory = (history.data || []).filter((h) => sameBranch(h.old_branch_id));
   // The years of what the فرقة filter leaves: a year from another فرقة would only
   // empty the list. A year picked under another فرقة falls back to «all» — the
@@ -138,6 +151,8 @@ export default function Promotions() {
       a.current_branch.id - b.current_branch.id ||
       rung(a.target_branch) - rung(b.target_branch) ||
       a.target_branch.id - b.target_branch.id ||
+      // الجاهزون أولًا في كل عبور، ثم من لم يبلغ العتبة
+      Number(!!b.ready) - Number(!!a.ready) ||
       familyName(a).localeCompare(familyName(b))
   );
   for (const p of byLadder) {
@@ -212,6 +227,11 @@ export default function Promotions() {
   }
 
   async function promote(ids, key) {
+    const below = pendingList.filter((p) => ids.includes(p.id) && !p.ready);
+    if (below.length) {
+      setOverride({ ids, key, below, reason: '' });
+      return;
+    }
     const many = ids.length > 1;
     if (
       !(await confirm({
@@ -223,9 +243,13 @@ export default function Promotions() {
     )
       return;
 
+    await send(ids, key);
+  }
+
+  async function send(ids, key, overrides = undefined) {
     setBusy(key);
     try {
-      await api.post('/promotions/validate', { member_ids: ids });
+      await api.post('/promotions/validate', { member_ids: ids, overrides });
       setPicked((sel) => {
         const next = new Set(sel);
         for (const id of ids) next.delete(id);
@@ -235,11 +259,29 @@ export default function Promotions() {
       history.reload({ quiet: true });
       toast.success(t('promotion.promoted', { count: ids.length }));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(err.message === 'promotion_below_threshold' ? t('matalib.reasonRequired') : err.message);
     } finally {
       setBusy(null);
     }
   }
+
+  function confirmOverride(e) {
+    e.preventDefault();
+    const reason = override.reason.trim();
+    if (!reason) return;
+    const overrides = Object.fromEntries(override.below.map((p) => [p.id, reason]));
+    const { ids, key } = override;
+    setOverride(null);
+    send(ids, key, overrides);
+  }
+
+  // «مطالب X/Y (Z %)» — the badge says whether the فرقة's threshold is reached
+  const progressOf = (p) =>
+    p.total ? (
+      <Badge variant={p.ready ? 'success' : 'warning'} title={t('matalib.thresholdOf', { pct: p.threshold })}>
+        {t('matalib.progress', { earned: p.earned_count, total: p.total, pct: p.pct })}
+      </Badge>
+    ) : null;
 
   return (
     <div className="space-y-6">
@@ -294,18 +336,38 @@ export default function Promotions() {
               screen at once would compete for the same tap. A phone has no room for it
               beside the title: it takes a full line of its own rather than floating
               at the end of a half-empty one. */}
-          {editable && pendingList.length > 0 && pickedIds.length === 0 && (
+          {editable && readyIds.length > 0 && pickedIds.length === 0 && (
             <Button
               variant="brand"
               size="sm"
               loading={busy === 'all'}
               disabled={!!busy}
-              onClick={() => promote(pendingList.map((p) => p.id), 'all')}
+              onClick={() => promote(readyIds, 'all')}
               className="w-full sm:ms-auto sm:w-auto"
             >
               {busy !== 'all' && <IconTrendingUp />}
-              {t('promotion.promoteAll', { count: pendingList.length })}
+              {readyIds.length === pendingList.length
+                ? t('promotion.promoteAll', { count: readyIds.length })
+                : t('matalib.promoteReady', { count: readyIds.length })}
             </Button>
+          )}
+          {inBranch.length > 0 && readyCount < inBranch.length && (
+            <SegmentedControl
+              label={t('matalib.readiness')}
+              size="sm"
+              className="flex w-full"
+              columns={3}
+              value={readiness}
+              onChange={(v) => {
+                setReadiness(v);
+                setPicked(new Set());
+              }}
+              options={[
+                { value: '', label: `${t('matalib.all')} · ${inBranch.length}` },
+                { value: 'ready', label: `${t('matalib.ready')} · ${readyCount}` },
+                { value: 'below', label: `${t('matalib.below')} · ${inBranch.length - readyCount}` },
+              ]}
+            />
           )}
         </div>
 
@@ -399,8 +461,9 @@ export default function Promotions() {
                           >
                             {name}
                           </Link>
-                          <div className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-muted-foreground">
                             {t('common.age', { count: p.age })}
+                            {progressOf(p)}
                           </div>
                         </div>
                         {/* Phones act through the selection bar: two buttons on every row
@@ -493,6 +556,12 @@ export default function Promotions() {
         )}
       </Card>
 
+      {/* Bug 8 : ceux que la liste ci-dessus ne peut pas voir */}
+      <MissingBirthDates branch={branch} />
+
+      {/* B1 : فترة التجربة et تكريس, filtrés par la même فرقة */}
+      {has('members.read') && <AdmissionQueue branch={branch} />}
+
       <Card className="@container">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 sm:px-5">
           <h2 className="text-base font-semibold">{t('promotion.history')}</h2>
@@ -551,7 +620,17 @@ export default function Promotions() {
                     <span className="tabular-nums" title={h.matalib.join(', ')}>
                       {matalibOf(h)}
                     </span>
+                    {!!h.override && (
+                      <Badge variant="warning" title={h.override_reason || undefined}>
+                        {t('matalib.override')}
+                      </Badge>
+                    )}
                   </div>
+                  {!!h.override && h.override_reason && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t('matalib.overrideReason')}: <bdi>{h.override_reason}</bdi>
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>
@@ -593,6 +672,11 @@ export default function Promotions() {
                         className="whitespace-nowrap pe-4 text-end tabular-nums sm:pe-5"
                         title={h.matalib.join(', ')}
                       >
+                        {!!h.override && (
+                          <Badge variant="warning" className="me-2" title={h.override_reason || undefined}>
+                            {t('matalib.override')}
+                          </Badge>
+                        )}
                         {h.matalib.length}
                         {total ? <span className="text-muted-foreground"> / {total}</span> : null}
                       </Td>
@@ -604,6 +688,45 @@ export default function Promotions() {
           </>
         )}
       </Card>
+
+      <Dialog
+        open={!!override}
+        onClose={() => setOverride(null)}
+        title={t('matalib.overrideTitle')}
+        description={t('matalib.overrideHint', { count: override?.below.length || 0 })}
+      >
+        {override && (
+          <form onSubmit={confirmOverride} className="space-y-4">
+            <ul className="divide-y divide-border rounded-lg border border-border">
+              {override.below.map((p) => (
+                <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+                  <bdi className="min-w-0 truncate font-medium">{memberName(p)}</bdi>
+                  {progressOf(p)}
+                </li>
+              ))}
+            </ul>
+            <div className="space-y-1.5">
+              <Label htmlFor="override-reason">{t('matalib.overrideReason')}</Label>
+              <Textarea
+                id="override-reason"
+                rows={3}
+                required
+                value={override.reason}
+                onChange={(e) => setOverride((o) => ({ ...o, reason: e.target.value }))}
+              />
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => setOverride(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" variant="brand" disabled={!override.reason.trim()}>
+                <IconTrendingUp />
+                {t('matalib.overrideConfirm', { count: override.ids.length })}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
     </div>
   );
 }

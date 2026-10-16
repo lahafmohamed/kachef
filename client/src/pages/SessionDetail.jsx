@@ -18,7 +18,7 @@ import { UnderlineTabs } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
 import { signed } from '../lib/events';
 import { resultTone } from '../lib/treasury';
-import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName } from '../utils';
+import { activityTypeKey, avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName, todayISO } from '../utils';
 import {
   Avatar,
   Badge,
@@ -41,18 +41,23 @@ import {
   IconAlert,
   IconBack,
   IconCalendar,
+  IconCheck,
   IconCheckAll,
   IconClipboard,
   IconClock,
   IconCoins,
+  IconLock,
   IconPencil,
   IconPin,
   IconPlus,
+  IconRefresh,
   IconSearch,
   IconTag,
   IconTrash,
   IconUsers,
 } from '../components/ui';
+import { MatalibNamed } from '../components/MatalibCatalog';
+import { ABSENCE_REASONS, useAbsenceThreshold } from '../components/Followup';
 
 // Absent is where every row starts, so it is selected quietly; présence — the
 // mark the leader actually makes — keeps the solid fill and stands out
@@ -85,7 +90,9 @@ const attendanceError = (t, err) =>
     ? t('session.forbiddenBranch')
     : err.message === 'forbidden_fees'
       ? t('session.forbiddenFees')
-      : err.message;
+      : err.message === 'attendance_finalized'
+        ? t('session.finalizedLocked')
+        : err.message;
 
 // «label : value» — French spaces its colon (kept on its word), Arabic writes it close,
 // as the locale strings do («آخر تعديل:»)
@@ -298,6 +305,154 @@ function GuestsCard({ session, editable, onChange }) {
   );
 }
 
+/**
+ * Validation de la présence (A1): «تثبيت الحضور» freezes the pointage and makes the séance
+ * count in every rate; «Rouvrir» (sessions.edit) unfreezes it. Both land in the history.
+ * «Mettre à jour la liste» adds the عناصر who joined the فرقة since the séance was created
+ * and names those of the list who were archived or moved since.
+ */
+function AttendanceLockCard({ session, editable, counts, onFinalized, onSynced }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(null);
+  const [flagged, setFlagged] = useState(null);
+  const finalized = !!session.attendance_finalized_at;
+  const past = session.date <= todayISO();
+  const hasRoster = session.kind === 'activity' || session.roster.length > 0;
+
+  async function finalize() {
+    if (
+      !(await confirm({
+        title: t('session.finalize'),
+        message: t('session.finalizeConfirm', counts),
+        destructive: false,
+        confirmLabel: t('session.finalize'),
+      }))
+    )
+      return;
+    setBusy('finalize');
+    try {
+      onFinalized(await api.post(`/sessions/${session.id}/finalize`));
+      toast.success(t('session.finalizedToast'));
+    } catch (err) {
+      toast.error(attendanceError(t, err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reopen() {
+    if (
+      !(await confirm({
+        title: t('session.reopen'),
+        message: t('session.reopenConfirm'),
+        destructive: false,
+        confirmLabel: t('session.reopen'),
+      }))
+    )
+      return;
+    setBusy('reopen');
+    try {
+      onFinalized(await api.post(`/sessions/${session.id}/reopen`));
+      toast.success(t('session.reopenedToast'));
+    } catch (err) {
+      toast.error(attendanceError(t, err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function sync() {
+    setBusy('sync');
+    try {
+      const r = await api.post(`/sessions/${session.id}/roster/sync`);
+      setFlagged(r.flagged);
+      if (r.added.length) {
+        toast.success(t('session.rosterAdded', { count: r.added.length }));
+        onSynced();
+      } else if (!r.flagged.length) toast.success(t('session.rosterUpToDate'));
+    } catch (err) {
+      toast.error(attendanceError(t, err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const canValidate = !finalized && past && session.can_finalize && editable;
+  const canReopen = finalized && session.can_reopen;
+  const canSync = !finalized && editable && hasRoster;
+  if (!finalized && !session.unconfirmed && !canValidate && !canSync) return null;
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        {finalized ? (
+          <p className="flex items-start gap-2 text-sm">
+            <IconLock aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+            <span>
+              <Trans
+                i18nKey="session.finalizedBy"
+                values={{
+                  name: session.attendance_finalized_by || t('history.unknown'),
+                  date: fmtAtDate(session.attendance_finalized_at),
+                }}
+                components={{ b: <bdi className="font-medium" /> }}
+              />
+              <span className="block text-xs text-muted-foreground">{t('session.finalizedHint')}</span>
+            </span>
+          </p>
+        ) : session.unconfirmed ? (
+          <p className="flex items-start gap-2 text-sm">
+            <IconAlert aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <span>
+              <span className="font-medium text-warning">{t('session.unconfirmed')}</span>
+              <span className="block text-xs text-muted-foreground">{t('session.unconfirmedHint')}</span>
+            </span>
+          </p>
+        ) : (
+          past && <p className="text-xs text-muted-foreground">{t('session.finalizeHint')}</p>
+        )}
+        {(canValidate || canReopen || canSync) && (
+          <div className="flex flex-wrap gap-2">
+            {canValidate && (
+              <Button variant="brand" size="sm" loading={busy === 'finalize'} onClick={finalize} className="w-full sm:w-auto">
+                <IconCheck />
+                {t('session.finalize')}
+              </Button>
+            )}
+            {canReopen && (
+              <Button variant="outline" size="sm" loading={busy === 'reopen'} onClick={reopen} className="w-full sm:w-auto">
+                {t('session.reopen')}
+              </Button>
+            )}
+            {canSync && (
+              <Button variant="outline" size="sm" loading={busy === 'sync'} onClick={sync} className="w-full sm:w-auto">
+                <IconRefresh />
+                {t('session.rosterSync')}
+              </Button>
+            )}
+          </div>
+        )}
+        {flagged?.length > 0 && (
+          <div className="space-y-1 border-t border-border pt-3">
+            <p className="text-xs font-medium">{t('session.rosterFlagged', { count: flagged.length })}</p>
+            <ul className="space-y-0.5 text-xs text-muted-foreground">
+              {flagged.map((m) => (
+                <li key={m.id}>
+                  <bdi>{memberName(m)}</bdi>
+                  {colon(i18n.language)}
+                  {t(m.reason === 'archived' ? 'session.rosterArchived' : 'session.rosterTransferred')}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function SessionDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
@@ -309,6 +464,7 @@ export default function SessionDetail() {
   const { has } = usePerms();
   const { user } = useAuth();
   const editable = has('sessions.attendance');
+  const threshold = useAbsenceThreshold();
   // الاشتراك المالي صلاحية قائمة بذاتها: من لا يرى المبالغ لا تظهر له الخانة أصلًا،
   // و تسجيل الدفع يحتاج الصلاحيتين معًا (وضع الحضور + رؤية المبالغ)
   const canSeeFees = has('sessions.read.fees');
@@ -369,10 +525,27 @@ export default function SessionDetail() {
     const prev = session;
     setSession((s) => ({
       ...s,
-      roster: s.roster.map((m) => (m.id === memberId ? { ...m, status } : m)),
+      // Un présent n'a pas de motif d'absence : le serveur l'efface aussi
+      roster: s.roster.map((m) => (m.id === memberId ? { ...m, status, reason: status === 'present' ? null : m.reason } : m)),
     }));
     try {
       await api.post(`/sessions/${id}/attendance`, { member_id: memberId, status });
+      touched();
+    } catch (err) {
+      setSession(prev);
+      toast.error(attendanceError(t, err));
+    }
+  }
+
+  /** Motif d'un absent ou d'un excusé (A2) — libre même après validation de la présence. */
+  async function setReason(memberId, reason) {
+    const prev = session;
+    setSession((s) => ({
+      ...s,
+      roster: s.roster.map((m) => (m.id === memberId ? { ...m, reason } : m)),
+    }));
+    try {
+      await api.post(`/sessions/${id}/attendance`, { member_id: memberId, reason });
       touched();
     } catch (err) {
       setSession(prev);
@@ -647,6 +820,9 @@ export default function SessionDetail() {
       { replace: true }
     );
   const moneyTone = money && resultTone(money.result);
+  // Présence validée: lue seule jusqu'à «Rouvrir» — les paiements restent saisissables
+  const finalized = !!session.attendance_finalized_at;
+  const statusEditable = editable && !finalized;
 
   // الغياب هو الافتراضي: «المُنجَز» هو من قُلب حاضرًا أو عُذر، و الباقي بانتظار القائد
   const marked = session.roster.filter((m) => m.status === 'present' || m.status === 'excused').length;
@@ -768,7 +944,7 @@ export default function SessionDetail() {
         <ProgressBar value={pct} label={t('session.attendance')} />
         {/* Right under the bar they complete. اللائحة المقسّمة لها زرّ لكل فرقة، فالزرّ
             الجامع هنا يصير تكرارًا */}
-        {editable && !splitRoster && visibleLeft > 0 && (
+        {statusEditable && !splitRoster && visibleLeft > 0 && (
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
@@ -938,6 +1114,11 @@ export default function SessionDetail() {
             </Badge>
           )}
         </div>
+        {session.matalib.length > 0 && (session.branch_id || session.branch_ids?.[0]) && (
+          <div className="mt-3">
+            <MatalibNamed branchId={session.branch_id || session.branch_ids[0]} numbers={session.matalib} />
+          </div>
+        )}
         {(session.leader || session.fee !== null || money?.any || evalPending || evaluation?.count > 0) && (
           // A text-sized link or button is a 20px target: on a phone each reaches 44px
           // through an invisible margin (TAP), the rows a little apart so they do not meet
@@ -1112,6 +1293,24 @@ export default function SessionDetail() {
         />
       )}
 
+      {/* ---------- Validation de la présence, liste à jour ---------- */}
+      {(session.kind === 'activity' || isLeadersSession) && (
+        <AttendanceLockCard
+          session={session}
+          editable={editable}
+          counts={
+            isLeadersSession
+              ? { present: counts.present + leaderCounts.present, absent: counts.absent + leaderCounts.absent, excused: counts.excused }
+              : counts
+          }
+          onFinalized={(state) => {
+            touched({ ...state, unconfirmed: false });
+            reload({ quiet: true });
+          }}
+          onSynced={() => reload({ quiet: true })}
+        />
+      )}
+
       {/* ---------- Attendance progress + bulk action ---------- */}
       {!isLeadersSession && rosterProgress}
 
@@ -1140,7 +1339,7 @@ export default function SessionDetail() {
               value={leaderRoster.length ? Math.round((leaderMarked / leaderRoster.length) * 100) : 0}
               label={t('session.attendance')}
             />
-            {editable && leaderMarked < leaderRoster.length && (
+            {statusEditable && leaderMarked < leaderRoster.length && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1202,7 +1401,7 @@ export default function SessionDetail() {
                     )}
                   </div>
                   <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
-                    {editable ? (
+                    {(isLeadersSession ? statusEditable : editable) ? (
                       <>
                         <SegmentedControl
                           className="w-full sm:w-auto sm:[&>button]:whitespace-nowrap"
@@ -1363,7 +1562,7 @@ export default function SessionDetail() {
                       </Badge>
                     )}
                     <span className="grow" />
-                    {editable && left > 0 && (
+                    {statusEditable && left > 0 && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -1374,7 +1573,7 @@ export default function SessionDetail() {
                         {t('session.markRestPresent', { count: left })}
                       </Button>
                     )}
-                    {editable && rowsUntouched > 0 && (
+                    {statusEditable && rowsUntouched > 0 && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -1390,7 +1589,7 @@ export default function SessionDetail() {
                       <RosterRow
                         key={m.id}
                         m={m}
-                        editable={editable}
+                        editable={statusEditable}
                         mark={mark}
                         t={t}
                         canSeeFees={canSeeFees}
@@ -1400,6 +1599,9 @@ export default function SessionDetail() {
                         duesMonth={duesMeta?.month}
                         duesEditable={!!duesMeta?.can_edit}
                         onDues={setDuesFor}
+                        threshold={threshold}
+                        reasonEditable={editable && session.kind === 'activity'}
+                        setReason={setReason}
                       />
                     ))}
                   </ul>
@@ -1412,7 +1614,7 @@ export default function SessionDetail() {
                 <RosterRow
                   key={m.id}
                   m={m}
-                  editable={editable}
+                  editable={statusEditable}
                   mark={mark}
                   t={t}
                   canSeeFees={canSeeFees}
@@ -1422,6 +1624,9 @@ export default function SessionDetail() {
                   duesMonth={duesMeta?.month}
                   duesEditable={!!duesMeta?.can_edit}
                   onDues={setDuesFor}
+                  threshold={threshold}
+                  reasonEditable={editable && session.kind === 'activity'}
+                  setReason={setReason}
                 />
               ))}
             </ul>
@@ -1493,8 +1698,10 @@ export default function SessionDetail() {
  * سطر عنصر في لائحة الحضور: الاسم، تنبيه الغيابات المتتالية و الاشتراك المتأخّر، خانة
  * اشتراك النشاط و الاشتراك الشهري، و أزرار الحالة.
  */
-function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid, duesMonth, duesEditable, onDues }) {
+function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid, duesMonth, duesEditable, onDues, threshold = 3, reasonEditable = false, setReason }) {
   const late = m.dues?.late.length || 0;
+  // Motif d'absence (A2) : pour un absent ou un excusé seulement
+  const away = m.status === 'absent' || m.status === 'excused';
   return (
     <li className={cnRow(m.status)}>
       <Avatar photo={m.photo} name={avatarName(m)} />
@@ -1505,9 +1712,9 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
         >
           {memberName(m)}
         </Link>
-        {(m.consecutive_absences >= 3 || late > 0) && (
+        {(m.consecutive_absences >= threshold || late > 0) && (
           <div className="mt-0.5 flex flex-wrap gap-1">
-            {m.consecutive_absences >= 3 && (
+            {m.consecutive_absences >= threshold && (
               <Badge variant="destructive">
                 <IconAlert className="h-3 w-3" />
                 {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
@@ -1521,6 +1728,30 @@ function RosterRow({ m, editable, mark, t, canSeeFees, payEditable, fee, setPaid
             )}
           </div>
         )}
+        {away &&
+          (reasonEditable ? (
+            <div className="mt-1 w-40 max-w-full">
+              <Select
+                className="h-11 text-xs sm:h-8"
+                aria-label={`${t('followup.reasonLabel')} — ${memberName(m)}`}
+                value={m.reason || ''}
+                onChange={(e) => setReason(m.id, e.target.value || null)}
+              >
+                <option value="">{t('followup.reasonNone')}</option>
+                {ABSENCE_REASONS.map((r) => (
+                  <option key={r} value={r}>
+                    {t(`followup.reason.${r}`)}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : (
+            m.reason && (
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t('followup.reasonShown', { reason: t(`followup.reason.${m.reason}`) })}
+              </p>
+            )
+          ))}
       </div>
       {/* خانة الاشتراك بجانب الاسم — تبقى على سطر الاسم في الهاتف، فلا يطول السطر */}
       {canSeeFees && (

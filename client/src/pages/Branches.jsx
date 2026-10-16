@@ -11,6 +11,7 @@ import { OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
 import { ageGroupFor, ageYear as localAgeYear, bornIn, isAgeGroup } from '../lib/ageGroups';
 import SearchInput from '../components/SearchInput';
 import ExportPdfButton from '../components/ExportPdfButton';
+import PeriodReportButton from '../components/PeriodReport';
 import NewBranchDialog from '../components/NewBranchDialog';
 import TreasuryEntryDialog from '../components/TreasuryEntryDialog';
 import { RateValue, UnderlineTabs } from '../components/MemberParts';
@@ -26,7 +27,6 @@ import {
   Label,
   PageHeader,
   ProgressBar,
-  RequirementGrid,
   Select,
   Skeleton,
   cn,
@@ -48,13 +48,23 @@ import {
   IconSparkles,
   IconTrash,
   IconUnlink,
+  IconUserCheck,
   IconUsers,
 } from '../components/ui';
+import { BranchRequirementGrid } from '../components/MatalibCatalog';
+import { BranchFollowup } from '../components/Followup';
+import {
+  LEAD_ROLES,
+  LimitsDialog,
+  ResponsibilitiesDialog,
+  StaffingAlerts,
+  respLabel,
+} from '../components/GroupResponsibilities';
 
 // Scout-year order: أيلول opens the year, آب closes it
 const SCOUT_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
 
-const TABS = ['plan', 'sessions', 'groups', 'matalib', 'money'];
+const TABS = ['plan', 'sessions', 'groups', 'matalib', 'followup', 'money'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج actually uses
 const monthName = (m, lng) =>
@@ -1276,6 +1286,9 @@ function BranchGroups({ branchId }) {
   const [target, setTarget] = useState('');
   const [moving, setMoving] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  // مسؤوليات طليعة (نافذتها مفتوحة على هذه الطليعة)، و نافذة حدود العدد
+  const [respGroup, setRespGroup] = useState(null);
+  const [limitsOpen, setLimitsOpen] = useState(false);
 
   // فتح نافذة التوزيع من الصفر: بحث فارغ و لا تأشير، فما بقي من جلسة سابقة لا يفاجئ
   function openAssign(startFilter = '') {
@@ -1292,6 +1305,13 @@ function BranchGroups({ branchId }) {
 
   const groups = res.data?.groups || [];
   const members = res.data?.members || [];
+  const responsibilities = res.data?.responsibilities || [];
+  const staffing = res.data?.staffing;
+  const leadOf = (g) => responsibilities.find((r) => r.group_id === g.id && LEAD_ROLES.includes(r.role));
+  const seconderOf = (g) => responsibilities.find((r) => r.group_id === g.id && r.role === 'musaid');
+  const outOfRange = (g) =>
+    staffing && g.member_count > 0 &&
+    (g.member_count < staffing.limits.group_min || g.member_count > staffing.limits.group_max);
   const activeCount = members.filter((m) => m.status === 'active').length;
   const unassigned = members.filter((m) => !m.group_id && m.status === 'active').length;
 
@@ -1483,6 +1503,10 @@ function BranchGroups({ branchId }) {
         </div>
       </div>
 
+      {staffing && (groups.length > 0 || staffing.count > 0) && (
+        <StaffingAlerts staffing={staffing} canEdit={canEdit} onLimits={() => setLimitsOpen(true)} />
+      )}
+
       {groups.length === 0 ? (
         <EmptyState icon={<IconUsers className="h-6 w-6" />} title={t('branch.groupsEmpty')}>
           {t('branch.groupsEmptyHint')}
@@ -1512,18 +1536,54 @@ function BranchGroups({ branchId }) {
                     {isAgeGroup(g) && (
                       <p className="truncate text-xs tabular-nums text-muted-foreground">{ageLabel(g)}</p>
                     )}
+                    {/* عريف الطليعة و مساعدها: أول ما يُسأل عنه في المخيم و المجلس */}
+                    {(() => {
+                      const lead = leadOf(g);
+                      const second = seconderOf(g);
+                      if (!lead && !second && !g.member_count) return null;
+                      return (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {lead ? (
+                            <>
+                              {respLabel(t, lead)}: <bdi className="text-foreground">{memberName(lead)}</bdi>
+                            </>
+                          ) : (
+                            <span className="text-warning">{t('resp.noLead')}</span>
+                          )}
+                          {second && (
+                            <>
+                              {' · '}
+                              {respLabel(t, second)}: <bdi className="text-foreground">{memberName(second)}</bdi>
+                            </>
+                          )}
+                        </p>
+                      );
+                    })()}
                   </div>
-                  <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                  <p
+                    className={cn(
+                      'shrink-0 text-xs tabular-nums text-muted-foreground',
+                      outOfRange(g) && 'font-medium text-warning'
+                    )}
+                  >
                     {t('branch.groupMembers', { count: g.member_count })}
                   </p>
                 </div>
                 <ShareBar value={share(g.member_count)} />
               </div>
-              {(canEdit || unassigned > 0) && (
-                // From sm up every row ends on the same width as the «بلا طليعة» row's
-                // button, so the bars line up and compare
-                <div className={cn(groupRowEnd, !canEdit && 'hidden')}>
-                  {canEdit && (
+              {/* From sm up every row ends on the same width as the «بلا طليعة» row's
+                  button, so the bars line up and compare */}
+              <div className={groupRowEnd}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={`${t('resp.title')} — ${g.name}`}
+                  title={t('resp.title')}
+                  onClick={() => setRespGroup(g)}
+                >
+                  <IconUserCheck />
+                </Button>
+                {canEdit && (
                     <>
                       <Button
                         size="icon-sm"
@@ -1547,8 +1607,7 @@ function BranchGroups({ branchId }) {
                       </Button>
                     </>
                   )}
-                </div>
-              )}
+              </div>
             </li>
           ))}
 
@@ -1580,6 +1639,22 @@ function BranchGroups({ branchId }) {
           </li>
         </ul>
       )}
+
+      <ResponsibilitiesDialog
+        branchId={branchId}
+        group={respGroup}
+        members={members}
+        canEdit={canEdit}
+        onClose={() => setRespGroup(null)}
+        onChange={() => res.reload({ quiet: true })}
+      />
+      <LimitsDialog
+        branchId={branchId}
+        limits={staffing?.limits}
+        open={limitsOpen}
+        onClose={() => setLimitsOpen(false)}
+        onSaved={() => res.reload({ quiet: true })}
+      />
 
       <Dialog
         open={assigning}
@@ -1868,7 +1943,7 @@ function BranchMatalib({ b }) {
         </div>
         <ProgressBar value={pct} label={t('branch.matalibProgress')} className="h-2" />
       </div>
-      <RequirementGrid total={total} selected={covered} label={t('branch.matalibProgress')} />
+      <BranchRequirementGrid branchId={b.id} total={total} selected={covered} label={t('branch.matalibProgress')} />
     </Card>
   );
 }
@@ -2270,7 +2345,10 @@ function BranchHead({ b }) {
             )}
           </p>
         </div>
-        <ExportPdfButton kind="branches" id={b.id} compact className="shrink-0" />
+        <div className="flex shrink-0 items-center gap-2">
+          <PeriodReportButton branchId={b.id} compact />
+          <ExportPdfButton kind="branches" id={b.id} compact className="shrink-0" />
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -2337,7 +2415,7 @@ function BranchFigures({ b }) {
  * Tabs of the selected فرقة. Each panel mounts on its first visit and then stays,
  * hidden: going to the أنشطة and back must not throw away a month typed but not saved.
  */
-function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canMoney }) {
+function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canMoney, canFollowup }) {
   const { t, i18n } = useTranslation();
   const seen = useRef(new Set());
   seen.current.add(tab);
@@ -2352,6 +2430,10 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canMoney }) {
           { id: 'groups', label: t('branch.groupsTitle') },
           { id: 'matalib', label: t('branch.matalib') },
           // Amounts: for whoever sees what was paid (a نشاط's fees, or the الصندوق)
+          // عناصر للمتابعة (A2): الغيابات المتتالية و الاتصال بالأهل
+          ...(canFollowup
+            ? [{ id: 'followup', label: t('followup.tab') }]
+            : []),
           ...(canMoney ? [{ id: 'money', label: t('branch.moneyTab') }] : []),
         ]}
         value={tab}
@@ -2365,6 +2447,7 @@ function BranchPanels({ b, tab, onTab, onPlanChange, onPlanDirty, canMoney }) {
         {panel('sessions', <BranchSessions branchId={b.id} />)}
         {panel('groups', <BranchGroups branchId={b.id} />)}
         {panel('matalib', <BranchMatalib b={b} />)}
+        {canFollowup && panel('followup', <BranchFollowup branchId={b.id} />)}
         {canMoney && panel('money', <BranchMoney branchId={b.id} />)}
       </div>
     </div>
@@ -2401,7 +2484,9 @@ export default function Branches() {
   const canMoney = can('sessions.read.fees') || can('treasury.read');
   // «expenses» was the money tab's name before the تبرعات joined it
   const wanted = storedTab === 'expenses' ? 'money' : storedTab;
-  const tab = TABS.includes(wanted) && (wanted !== 'money' || canMoney) ? wanted : 'plan';
+  const canFollowup = can('members.read') && can('sessions.read');
+  const tab =
+    TABS.includes(wanted) && (wanted !== 'money' || canMoney) && (wanted !== 'followup' || canFollowup) ? wanted : 'plan';
   // فرقة جديدة إعدادٌ بنيوي كالأعمار و المطالب: للأدمن وحده، كما في الخادم
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -2542,6 +2627,7 @@ export default function Branches() {
             onPlanChange={() => plans.reload({ quiet: true })}
             onPlanDirty={onPlanDirty}
             canMoney={canMoney}
+            canFollowup={canFollowup}
           />
         </div>
       )}

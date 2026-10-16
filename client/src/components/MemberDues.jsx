@@ -10,11 +10,14 @@ import {
   cn,
   Dialog,
   ErrorState,
+  Field,
+  Input,
   SegmentedControl,
   Skeleton,
   useToast,
   IconCalendar,
   IconCalendarCheck,
+  IconPencil,
 } from './ui';
 
 // «octobre» / «تشرين الأول», and «Octobre» where it opens a line
@@ -40,12 +43,16 @@ function DuesMonth({ data, month, session, busy, onCollect, onUndo }) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
   const info = data.paid[month] || null;
-  const left = info ? info.left : data.monthly;
+  // The month at its own price (G1): the rate of that month, or his own (0 = exempted)
+  const rate = data.month_rates?.[month] ?? data.monthly;
+  const left = info ? info.left : rate;
   const [amount, setAmount] = useState(left);
   // Another month picked, or a payment in or out: back to all that is left
   useEffect(() => setAmount(left), [month, left]);
   const canEdit = !!data.can_edit;
-  const owed = data.active !== false && month >= data.start_month && month <= data.current_month;
+  const owed = data.owed_months
+    ? data.owed_months.includes(month)
+    : data.active !== false && month >= data.start_month && month <= data.current_month;
   const name = capitalize(monthName(month, lng));
 
   // Where a payment was taken: here, in another نشاط, or outside one — and by whom
@@ -122,6 +129,7 @@ function DuesMonth({ data, month, session, busy, onCollect, onUndo }) {
           {!owed && !info && <p className="text-xs text-muted-foreground">{t('session.duesNotOwed')}</p>}
         </div>
       )}
+      {!info && rate === 0 && <p className="text-sm text-muted-foreground">{t('arrears.exemptMonth', { month: name })}</p>}
     </div>
   );
 }
@@ -194,6 +202,10 @@ export function MemberDuesPanel({ memberId, name, session = null, bare = false, 
   const panel = (
     <DuesMonth data={data} month={picked} session={session} busy={busy} onCollect={collect} onUndo={undo} />
   );
+  // Tarif personnel ou exonération (G1): on the profile only — a نشاط is not where it is decided
+  const rateLine = !session && (data.personal_rate || data.can_exempt) && (
+    <PersonalRate data={data} memberId={memberId} onSaved={() => res.reload({ quiet: true })} />
+  );
   const hint = (
     <p className="text-xs text-muted-foreground">
       {data.can_edit ? t(session ? 'session.duesHint' : 'dues.memberHint') : t('dues.memberLegend')}
@@ -215,9 +227,143 @@ export function MemberDuesPanel({ memberId, name, session = null, bare = false, 
     );
   return body(
     <>
+      {rateLine}
       {panel}
       {hint}
     </>
+  );
+}
+
+/**
+ * An عنصر's own rate (G1): the general one, a reduced one or none at all (exempted —
+ * siblings, a family in need), always with its reason and the month it starts from:
+ * the months before keep what they owed. Read by whoever sees the dues; changed with
+ * members.dues.exempt.
+ */
+function PersonalRate({ data, memberId, onSaved }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const toast = useToast();
+  const p = data.personal_rate;
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState('general');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [from, setFrom] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const monthLabel = (m) => `${monthName(m, lng)} ${m.slice(0, 4)}`;
+  const general = fmtAmount(data.general_rate ?? data.monthly);
+
+  function start() {
+    setMode(!p ? 'general' : p.amount === 0 ? 'exempt' : 'reduced');
+    setAmount(p && p.amount > 0 ? String(p.amount) : '');
+    setNote(p?.note || '');
+    setFrom(p?.from || data.current_month);
+    setError('');
+    setOpen(true);
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      const body =
+        mode === 'general'
+          ? { amount: null }
+          : { amount: mode === 'exempt' ? 0 : Number(amount), note: note.trim(), from };
+      await api.put(`/members/${memberId}/dues-rate`, body);
+      setOpen(false);
+      toast.success(t('arrears.rateSaved'));
+      onSaved?.();
+    } catch (err) {
+      setError(err.message === 'note_required' ? t('arrears.noteRequired') : err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const label = !p
+    ? t('arrears.rateGeneral', { amount: general })
+    : p.amount === 0
+      ? t('arrears.rateExempt', { month: monthLabel(p.from || data.start_month) })
+      : t('arrears.ratePersonal', { amount: fmtAmount(p.amount), month: monthLabel(p.from || data.start_month) });
+
+  return (
+    <div className="flex max-w-xl flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-border px-3 py-2">
+      <div className="min-w-0 flex-1 text-sm">
+        <p className={cn('font-medium', p && 'text-info')}>{label}</p>
+        {p?.note && <p className="text-xs text-muted-foreground">{t('arrears.reason', { note: p.note })}</p>}
+      </div>
+      {data.can_exempt && (
+        <Button variant="ghost" size="sm" onClick={start}>
+          <IconPencil />
+          {t('common.edit')}
+        </Button>
+      )}
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={t('arrears.rateTitle')}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" form="dues-rate-form" variant="brand" loading={saving}>
+              {t('common.save')}
+            </Button>
+          </div>
+        }
+      >
+        <form id="dues-rate-form" onSubmit={save} className="space-y-4">
+          <SegmentedControl
+            label={t('arrears.rateTitle')}
+            value={mode}
+            onChange={setMode}
+            className="flex w-full"
+            options={[
+              { value: 'general', label: t('arrears.modeGeneral') },
+              { value: 'reduced', label: t('arrears.modeReduced') },
+              { value: 'exempt', label: t('arrears.modeExempt') },
+            ]}
+          />
+          {mode === 'general' ? (
+            <p className="text-sm text-muted-foreground">{t('arrears.rateGeneral', { amount: general })}</p>
+          ) : (
+            <>
+              {mode === 'reduced' && (
+                <Field label={t('arrears.amountLabel')}>
+                  {(a) => (
+                    <Input
+                      {...a}
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      step={500}
+                      required
+                      className="w-40 tabular-nums"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                    />
+                  )}
+                </Field>
+              )}
+              <Field label={t('arrears.fromLabel')} hint={t('arrears.fromHint')}>
+                {(a) => (
+                  <Input {...a} type="month" required className="w-48" value={from} onChange={(e) => setFrom(e.target.value)} />
+                )}
+              </Field>
+              <Field label={t('arrears.noteLabel')} hint={t('arrears.noteHint')}>
+                {(a) => <Input {...a} required maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} />}
+              </Field>
+            </>
+          )}
+          {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+        </form>
+      </Dialog>
+    </div>
   );
 }
 
@@ -249,9 +395,11 @@ export function DuesChip({ m, month, editable, onOpen }) {
       ? t('dues.paid')
       : part
         ? t('dues.partPaid', { amount: fmtAmount(part), left: fmtAmount(info.left) })
-        : m.dues.owes
-          ? t('dues.unpaid')
-          : t('dues.notYet'),
+        : m.dues.exempt
+          ? t('arrears.exemptShort')
+          : m.dues.owes
+            ? t('dues.unpaid')
+            : t('dues.notYet'),
   });
   const amount = part && <span className="tabular-nums">{fmtAmount(part, { unit: false })}</span>;
   if (!editable)

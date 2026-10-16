@@ -27,6 +27,10 @@ const EXCEL_KINDS = new Set([
   'meeting',
   'meetings-list',
   'meeting-decisions',
+  'event',
+  'event-unpaid',
+  'dues-arrears',
+  'period',
 ]);
 
 // Up/Down step through the choices the way a menu does; Tab keeps working too
@@ -74,6 +78,9 @@ export default function ExportPdfButton({
   variant = 'outline',
   // Icon only on phones, where a header already holds the page's primary action
   compact = false,
+  // More PDFs of the same sheet, under the two usual choices: [{ title, hint, query }]
+  // (the camp file's «rapport à la قيادة», ?variant=report)
+  extra = [],
 }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -88,17 +95,18 @@ export default function ExportPdfButton({
   const qs = String(query || '').replace(/^\?/, '');
   const excel = EXCEL_KINDS.has(kind);
 
-  async function pdf() {
+  async function pdf(override) {
+    const q = typeof override === 'string' ? override : qs;
     setBusy(true);
     try {
       const { blob, filename } = await api.download(
-        `/export/${kind}/${id}.pdf?lang=${encodeURIComponent(i18n.language)}${qs ? `&${qs}` : ''}`
+        `/export/${kind}/${id}.pdf?lang=${encodeURIComponent(i18n.language)}${q ? `&${q}` : ''}`
       );
       await saveFile(blob, filename || `${t('print.exportPdf')}.pdf`);
     } catch (err) {
       if (err.status === 501) {
         toast.error(t('print.unavailable'));
-        if (!location.pathname.startsWith('/print/')) navigate(`/print/${kind}/${id}${qs ? `?${qs}` : ''}`);
+        if (!location.pathname.startsWith('/print/')) navigate(`/print/${kind}/${id}${q ? `?${q}` : ''}`);
       } else {
         toast.error(t('print.failed'));
       }
@@ -168,6 +176,15 @@ export default function ExportPdfButton({
             hint={t('excel.xlsxHint')}
             onSelect={pick(workbook)}
           />
+          {extra.map((x) => (
+            <Choice
+              key={x.query}
+              icon={<IconFileText />}
+              title={x.title}
+              hint={x.hint}
+              onSelect={pick(() => pdf(x.query))}
+            />
+          ))}
         </div>
       </PopoverContent>
     </Popover>

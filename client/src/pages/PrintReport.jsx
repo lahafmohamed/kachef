@@ -30,7 +30,18 @@ import {
   rowText,
   sessionMeta,
 } from '../lib/treasury';
-import { signed } from '../lib/events';
+import {
+  chiefLabel,
+  dayNumber,
+  dueOf,
+  eventScopeLabels,
+  fmtDateRange,
+  participantName,
+  payState,
+  signed,
+  staffRoleLabel,
+} from '../lib/events';
+import { ageAt, emergencyLine, familyCount, healthNotes, parentPhones, remainingOf, rosterByGroup, unpaidOf } from '../lib/campFile';
 import {
   attendanceCounts,
   attendeesByStatus,
@@ -43,6 +54,9 @@ import {
   userText,
 } from '../lib/meetings';
 import { attendanceLine } from '../components/MeetingParts';
+import { arrearsMonths, arrearsQuery, groupArrears } from '../lib/arrears';
+import { isCountedSession } from '../lib/attendance';
+import { periodLabel, periodQuery, rateDelta } from '../lib/periodReport';
 import {
   LEADER_FILTER_KEYS,
   activityTypeKey,
@@ -99,6 +113,13 @@ const KINDS = {
   meeting: { perm: 'meetings.read', label: 'print.reportMeeting', back: '/meetings' },
   'meetings-list': { perm: 'meetings.read', label: 'print.reportMeetingsList', back: '/meetings' },
   'meeting-decisions': { perm: 'meetings.read', label: 'print.reportMeetingDecisions', back: '/meetings?view=decisions' },
+  // E2 : le dossier d'un camp (?variant=report : le rapport à la قيادة), et ses restes à payer
+  event: { perm: 'events.read', label: 'print.reportEvent', back: '/events' },
+  'event-unpaid': { perm: 'events.read.fees', label: 'print.reportEventUnpaid', back: '/events' },
+  // G1 : les cotisations en retard — le numéro est une فرقة (0 = toutes), ?year= & ?current=1
+  'dues-arrears': { perm: 'members.dues.read', label: 'print.reportDuesArrears', back: '/treasury' },
+  // I1 : le rapport périodique à la قيادة — le numéro est une فرقة (0 = le فوج), ?from=&to=&recipient=
+  period: { perm: 'branches.read', label: 'print.reportPeriod', back: '/' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -467,7 +488,7 @@ function SessionReport({ id, onReady, kindLabel }) {
           <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
           <td className={cn(td, 'font-medium')}>
             {memberName(m)}
-            {m.consecutive_absences >= 3 && (
+            {m.consecutive_absences >= (session.absence_threshold ?? 3) && (
               <Tag tone="destructive" className="ms-2">
                 {t('member.consecutiveAbsences', { count: m.consecutive_absences })}
               </Tag>
@@ -747,7 +768,7 @@ function MemberReport({ id, onReady, kindLabel }) {
           {
             value: stats.consecutive_absences,
             label: t('print.consecutive'),
-            cls: stats.consecutive_absences >= 3 ? 'text-destructive' : undefined,
+            cls: stats.consecutive_absences >= (m.absence_threshold ?? 3) ? 'text-destructive' : undefined,
           },
           // المجموع التراكمي لاشتراكاته — يغيب عمّن لا يرى المبالغ، فلا يصله الحقل
           ...(m.subscriptions
@@ -1130,7 +1151,7 @@ function BranchReport({ id, onReady, kindLabel }) {
   // loads: the same rows the عنصر page counts, so both print the same figures.
   const perMember = new Map();
   for (const s of sessions) {
-    if (s.kind !== 'activity' || s.date > today) continue;
+    if (s.kind !== 'activity' || !isCountedSession(s, today)) continue;
     for (const k of ['present', 'absent', 'excused'])
       for (const m of s[k] || []) {
         const st = perMember.get(m.id) || { present: 0, absent: 0, excused: 0 };
@@ -1398,6 +1419,7 @@ function PromotionsReport({ id, onReady, kindLabel }) {
     { label: t('member.age'), className: 'w-14' },
     ...(all ? [t('promotion.oldBranch')] : []),
     t('promotion.newBranch'),
+    { label: t('session.requirementsShort'), className: 'w-28' },
   ];
 
   return (
@@ -1422,6 +1444,10 @@ function PromotionsReport({ id, onReady, kindLabel }) {
                 <td className={cn(td, 'text-muted-foreground')}>{branchName(p.current_branch, lng)}</td>
               )}
               <td className={cn(td, 'font-medium')}>{branchName(p.target_branch, lng)}</td>
+              <td className={cn(tdNum, !p.ready && 'font-semibold')}>
+                {p.total ? `${p.earned_count}/${p.total} · ${p.pct}%` : ''}
+                {p.total && !p.ready ? ` (${t('matalib.below')})` : ''}
+              </td>
             </tr>
           ))}
         </Table>
@@ -2607,7 +2633,920 @@ function BranchMoneyReport({ id, onReady, kindLabel }) {
   );
 }
 
+/* ============================================================
+   E2 — ملف المخيم : liste d'appel, encadrement, programme, bilan, check-list
+   ============================================================ */
+
+/** Les numéros d'une personne, chacun dans son îlot LTR ; «(الأم)» après celui de la mère */
+function PhoneList({ phones }) {
+  const { t } = useTranslation();
+  if (!phones.length) return '—';
+  return phones.map((ph, i) => (
+    <div key={i} className="whitespace-nowrap">
+      <span dir="ltr">{fmtPhone(ph.number)}</span>
+      {ph.mother && <span className="text-[11px]"> ({t('member.motherShort')})</span>}
+    </div>
+  ));
+}
+
+const leaderPhones = (p) => phoneNumbers(p.leader_phone).map((number) => ({ number, mother: false }));
+
+/** «Payé», «En partie · reste 3 000», «Non payé · reste 5 000», «Exempté» */
+function PayCell({ p, ev }) {
+  const { t } = useTranslation();
+  const state = payState(p, ev);
+  if (state === 'free') return <span className="text-muted-foreground">—</span>;
+  const left = remainingOf(p, ev);
+  const tone = state === 'paid' || state === 'exempt' ? 'text-success' : state === 'partial' ? 'text-warning' : 'text-destructive';
+  return (
+    <span className={cn('font-medium', tone)}>
+      {t(state === 'exempt' ? 'event.exempt' : state === 'unpaid' ? 'event.notPaid' : `event.state_${state}`)}
+      {left > 0 && (
+        <span className="block whitespace-nowrap text-[11px] font-normal tabular-nums text-muted-foreground">
+          {t('event.outstandingShort', { amount: fmtAmount(left) })}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Une case vide à cocher au crayon, à chaque appel
+const CheckBox = () => <span aria-hidden="true" className="inline-block h-3.5 w-3.5 rounded-sm border border-muted-foreground" />;
+
+function EventReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const report = sp.get('variant') === 'report';
+  const res = useFetch(`/events/${id}`);
+  const branches = useFetch('/branches');
+  const ev = res.data;
+  useEffect(() => {
+    if (ev) onReady(report ? `${ev.title} — ${t('campFile.reportVariant')}` : ev.title);
+  }, [ev, report, onReady, t]);
+
+  if (res.loading || branches.loading) return <SkeletonPage rows={8} />;
+  if (res.error || !ev) return <LoadError onRetry={res.reload} />;
+
+  const fees = !!ev.summary;
+  const health = !!ev.health_visible;
+  const people = ev.participants;
+  const members = people.filter((p) => p.member_id);
+  const others = people.filter((p) => !p.member_id);
+  const roster = rosterByGroup(people);
+  const scope = eventScopeLabels(ev, branches.data || [], lng);
+  const chief = chiefLabel(t, ev.kind, ev.section);
+  const marked = ev.attendance.length;
+  const present = ev.attendance.filter((a) => a.status === 'present').length;
+  const r = ev.readiness || {};
+  const sum = ev.summary;
+  const staffName = (st) => (st.leader_id ? memberName(st) : st.name);
+  const label = report ? t('campFile.reportVariant') : kindLabel;
+  const presentBySession = new Map();
+  for (const a of ev.attendance)
+    if (a.status === 'present') presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+
+  const callHead = [
+    { label: '#', className: 'w-7' },
+    t('member.name'),
+    { label: t('member.age'), className: 'w-10' },
+    t('member.parentPhone'),
+    { label: t('campFile.blood'), className: 'w-10' },
+    ...(health ? [t('campFile.health')] : []),
+    t('campFile.consent'),
+    ...(fees ? [t('event.payment')] : []),
+    { label: t('campFile.check'), className: 'w-10' },
+  ];
+
+  return (
+    <Sheet kindLabel={label}>
+      <H1>
+        <bdi>{ev.title}</bdi>
+      </H1>
+      <Tags>
+        <Tag>{t(`event.kind_${ev.kind}`)}</Tag>
+        {scope.length ? (
+          scope.map((s) => (
+            <Tag key={s.id} tone="neutral">
+              {s.label}
+            </Tag>
+          ))
+        ) : (
+          <Tag tone="neutral">{t('event.wholeGroup')}</Tag>
+        )}
+      </Tags>
+
+      {/* I1 : l'en-tête normalisé d'un rapport (التقرير الجيد) — destinataire, émetteur, date, objet */}
+      {report && (
+        <div className="avoid-break mt-4 rounded-lg border border-border px-4 py-3">
+          <Facts
+            items={[
+              [t('campFile.to'), t('campFile.toValue')],
+              [t('campFile.from'), ev.leader_name ? `${chief} — ${ev.leader_name}` : chief],
+              [t('common.date'), fmtDate(todayISO())],
+              [t('campFile.subject'), t('campFile.subjectValue', { title: ev.title })],
+            ]}
+          />
+        </div>
+      )}
+
+      <div className="mt-4">
+        <Facts
+          items={[
+            [t('campFile.dates'), `${fmtDateRange(ev.start_date, ev.end_date)} · ${t('event.dayCount', { count: dayNumber(ev, ev.end_date) })}`],
+            [t('session.place'), ev.place],
+            [chief, ev.leader_name],
+            [t('event.fee'), fees && ev.fee ? fmtAmount(ev.fee) : null],
+          ]}
+        />
+      </div>
+
+      <div className="mt-4">
+        <Stats
+          items={[
+            { label: t('event.participants'), value: people.length, hint: t('campFile.split', { members: members.length, others: others.length }) },
+            { label: t('campFile.attendanceRate'), value: pct(present, marked) },
+            { label: t('campFile.consentStat'), value: r.consent_total ? `${r.consent_total - r.consent_missing}/${r.consent_total}` : '—' },
+            { label: t('campFile.safetyStat'), value: r.safety_total ? `${r.safety_done}/${r.safety_total}` : '—' },
+            ...(fees
+              ? [{ label: t('campFile.remaining'), value: fmtAmount(sum.outstanding), cls: sum.outstanding > 0 ? 'text-destructive' : undefined }]
+              : []),
+          ]}
+        />
+      </div>
+
+      {report && ev.plan && (
+        <>
+          <H2>{t('event.plan')}</H2>
+          <p dir="auto" className="whitespace-pre-line text-start leading-relaxed">
+            {ev.plan}
+          </p>
+        </>
+      )}
+
+      <H2 aside={ev.staff.length + (ev.leader_id ? 1 : 0) || null}>{t('event.tabStaff')}</H2>
+      <Table head={[t('event.staffRole'), t('member.name')]}>
+        {ev.leader_name && (
+          <tr>
+            <td className={cn(td, 'w-1/3 text-muted-foreground')}>{chief}</td>
+            <td className={cn(td, 'font-medium')}>{ev.leader_name}</td>
+          </tr>
+        )}
+        {ev.staff.map((st) => (
+          <tr key={st.id}>
+            <td className={cn(td, 'w-1/3 text-muted-foreground')}>{staffRoleLabel(t, st.role, st.title, ev.section)}</td>
+            <td className={cn(td, 'font-medium')}>{staffName(st) || '—'}</td>
+          </tr>
+        ))}
+      </Table>
+
+      {report ? (
+        // Le rapport à la قيادة : les effectifs, pas les téléphones ni la santé
+        <>
+          <H2 aside={t('event.participantCount', { count: people.length })}>{t('event.participants')}</H2>
+          <Table head={[t('member.branch'), t('member.group'), { label: t('campFile.count'), className: 'w-16' }]}>
+            {roster.flatMap((b) =>
+              b.groups.map((g) => (
+                <tr key={`${b.key}-${g.key}`}>
+                  <td className={td}>{branchName(b.branch, lng) || '—'}</td>
+                  <td className={cn(td, 'text-muted-foreground')}>{g.name || t('campFile.noGroup')}</td>
+                  <td className={tdNum}>{g.people.length}</td>
+                </tr>
+              ))
+            )}
+            {others.length > 0 && (
+              <tr>
+                <td className={td} colSpan={2}>
+                  {t('campFile.leadersGuests')}
+                </td>
+                <td className={tdNum}>{others.length}</td>
+              </tr>
+            )}
+          </Table>
+        </>
+      ) : (
+        <>
+          <H2 aside={t('event.participantCount', { count: members.length })}>{t('campFile.callList')}</H2>
+          {members.length === 0 ? (
+            <p className="text-muted-foreground">{t('event.noParticipants')}</p>
+          ) : (
+            roster.map((b) => (
+              <div key={b.key} className="mt-3">
+                <h3 className="mb-1 text-[13px] font-bold">{branchName(b.branch, lng) || '—'}</h3>
+                {b.groups.map((g) => (
+                  <div key={g.key} className="mb-3">
+                    <div className="avoid-break break-after-avoid text-[12px] font-semibold text-muted-foreground">
+                      {g.name || t('campFile.noGroup')} <span className="tabular-nums">({g.people.length})</span>
+                    </div>
+                    <Table head={callHead}>
+                      {g.people.map((p, i) => {
+                        const notes = healthNotes(p.health, t);
+                        const urgent = emergencyLine(p.health);
+                        const age = ageAt(p.birth_date, ev.start_date);
+                        return (
+                          <tr key={p.id} className="avoid-break">
+                            <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                            <td className={cn(td, 'font-medium')}>
+                              {memberName(p)}
+                              {p.member_role && (
+                                <span className="block text-[11px] font-normal text-primary">{t(`resp.role.${p.member_role}`)}</span>
+                              )}
+                            </td>
+                            <td className={tdNum}>{age ?? '—'}</td>
+                            <td className={cn(tdNum, 'text-muted-foreground')}>
+                              <PhoneList phones={parentPhones(p)} />
+                            </td>
+                            <td className={tdNum}>
+                              <span dir="ltr">{p.blood_type || '—'}</span>
+                            </td>
+                            {health && (
+                              <td className={cn(td, 'text-[11px]')}>
+                                {notes.length === 0 && !urgent ? (
+                                  <span className="text-muted-foreground">—</span>
+                                ) : (
+                                  <>
+                                    {notes.map((n) => (
+                                      <div key={n} className="font-medium text-destructive">
+                                        {n}
+                                      </div>
+                                    ))}
+                                    {urgent && (
+                                      <div className="text-muted-foreground">
+                                        {t('campFile.labelValue', { label: t('safety.emergencyName'), value: urgent })}
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </td>
+                            )}
+                            <td className={td}>
+                              {p.consent_at ? (
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap text-success">
+                                  <Mark kind="check" />
+                                  <span className="tabular-nums">{fmtDate(p.consent_at)}</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-destructive">
+                                  <Mark kind="x" />
+                                  {t('campFile.consentMissing')}
+                                </span>
+                              )}
+                            </td>
+                            {fees && (
+                              <td className={td}>
+                                <PayCell p={p} ev={ev} />
+                              </td>
+                            )}
+                            <td className={td}>
+                              <CheckBox />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Table>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+
+          {others.length > 0 && (
+            <>
+              <H2 aside={others.length}>{t('campFile.leadersGuests')}</H2>
+              <Table
+                head={[
+                  { label: '#', className: 'w-7' },
+                  t('member.name'),
+                  t('leader.phone'),
+                  ...(fees ? [t('event.payment')] : []),
+                  { label: t('campFile.check'), className: 'w-10' },
+                ]}
+              >
+                {others.map((p, i) => (
+                  <tr key={p.id} className="avoid-break">
+                    <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                    <td className={cn(td, 'font-medium')}>
+                      {participantName(p)}
+                      <span className="block text-[11px] font-normal text-muted-foreground">
+                        {t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest')}
+                      </span>
+                    </td>
+                    <td className={cn(tdNum, 'text-muted-foreground')}>
+                      <PhoneList phones={leaderPhones(p)} />
+                    </td>
+                    {fees && (
+                      <td className={td}>
+                        <PayCell p={p} ev={ev} />
+                      </td>
+                    )}
+                    <td className={td}>
+                      <CheckBox />
+                    </td>
+                  </tr>
+                ))}
+              </Table>
+            </>
+          )}
+        </>
+      )}
+
+      <H2 aside={ev.sessions.length || null}>{t('event.program')}</H2>
+      {ev.sessions.length === 0 ? (
+        <p className="text-muted-foreground">{t('event.noSessions')}</p>
+      ) : (
+        <Table
+          head={[
+            { label: t('event.day'), className: 'w-16' },
+            { label: t('session.time'), className: 'w-24' },
+            t('event.sessionTitle'),
+            t('event.responsible'),
+            { label: t('session.present'), className: 'w-16' },
+          ]}
+        >
+          {ev.sessions.map((s) => (
+            <tr key={s.id} className="avoid-break">
+              <td className={tdNum}>
+                {t('event.dayN', { n: dayNumber(ev, s.date) })}
+                <span className="block text-[11px] text-muted-foreground">{fmtDate(s.date)}</span>
+              </td>
+              <td className={tdNum}>{[fmtTime(s.start_time), fmtTime(s.end_time)].filter(Boolean).join(' – ') || '—'}</td>
+              <td className={cn(td, 'font-medium')}>
+                <bdi>{s.title}</bdi>
+              </td>
+              <td className={cn(td, 'text-muted-foreground')}>{s.responsible || '—'}</td>
+              <td className={tdNum}>{presentBySession.get(s.id) || '—'}</td>
+            </tr>
+          ))}
+        </Table>
+      )}
+
+      {fees && (
+        <>
+          <H2>{t('campFile.money')}</H2>
+          <Table head={[t('campFile.line'), { label: t('event.amount'), className: 'w-32' }]}>
+            {[
+              [t('campFile.expected'), fmtAmount(sum.expected)],
+              [t('event.collected'), fmtAmount(sum.collected)],
+              [t('campFile.remaining'), fmtAmount(sum.outstanding)],
+              [t('event.donations'), fmtAmount(sum.donations)],
+              [t('event.fromCaisses'), signed(sum.funded - sum.returned)],
+              [t('event.expenses'), fmtAmount(sum.expenses)],
+            ].map(([k, v]) => (
+              <tr key={k}>
+                <td className={td}>{k}</td>
+                <td className={tdNum}>
+                  <span dir="ltr">{v}</span>
+                </td>
+              </tr>
+            ))}
+            <tr className="font-bold">
+              <td className={td}>{t('event.balance')}</td>
+              <td className={cn(tdNum, sum.balance < 0 ? 'text-destructive' : 'text-success')}>
+                <span dir="ltr">{signed(sum.balance)}</span>
+              </td>
+            </tr>
+          </Table>
+        </>
+      )}
+
+      {ev.checklist.length > 0 && (
+        <>
+          <H2 aside={`${r.safety_done ?? 0}/${r.safety_total ?? ev.checklist.length}`}>{t('safety.checklistTitle')}</H2>
+          <Table
+            head={[
+              t('safety.itemLabel'),
+              t('safety.itemResponsible'),
+              t('campFile.state'),
+              ...(report ? [] : [{ label: t('campFile.checkSign'), className: 'w-24' }]),
+            ]}
+          >
+            {ev.checklist.map((c) => (
+              <tr key={c.id} className="avoid-break">
+                <td className={cn(td, 'font-medium')}>{c.item ? t(`safety.item.${c.item}`) : c.label}</td>
+                <td className={cn(td, 'text-muted-foreground')}>{c.staff_name || '—'}</td>
+                <td className={td}>
+                  {c.done_at ? (
+                    <span className="text-success">
+                      <Mark kind="check" /> {t('safety.doneBy', { name: c.done_by || '—', date: fmtDate(c.done_at) })}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </td>
+                {!report && <td className={td} />}
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      <Signatures labels={[chief, t('campFile.signHead')]} />
+    </Sheet>
+  );
+}
+
+/** Les restes à payer d'un camp, avec les téléphones des parents : la feuille de relance */
+function EventUnpaidReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const res = useFetch(`/events/${id}`);
+  const ev = res.data;
+  useEffect(() => {
+    if (ev) onReady(ev.title);
+  }, [ev, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error || !ev) return <LoadError onRetry={res.reload} />;
+
+  const list = unpaidOf(ev);
+  const total = list.reduce((n, p) => n + remainingOf(p, ev), 0);
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>
+        <bdi>{ev.title}</bdi>
+      </H1>
+      <Tags>
+        <Tag tone="neutral">{fmtDateRange(ev.start_date, ev.end_date)}</Tag>
+        {list.length > 0 && (
+          <Tag tone="destructive">
+            {t('campFile.unpaidLine', { amount: fmtAmount(total), count: familyCount(list) })}
+          </Tag>
+        )}
+      </Tags>
+      <H2 aside={list.length || null}>{kindLabel}</H2>
+      {list.length === 0 ? (
+        <p className="text-muted-foreground">{t('event.allCollected')}</p>
+      ) : (
+        <Table
+          head={[
+            { label: '#', className: 'w-7' },
+            t('member.name'),
+            t('member.parentPhone'),
+            { label: t('event.dueLabel'), className: 'w-20' },
+            { label: t('campFile.paid'), className: 'w-20' },
+            { label: t('campFile.remaining'), className: 'w-20' },
+          ]}
+        >
+          {list.map((p, i) => (
+            <tr key={p.id} className="avoid-break">
+              <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+              <td className={cn(td, 'font-medium')}>
+                {participantName(p)}
+                <span className="block text-[11px] font-normal text-muted-foreground">
+                  {p.member_id
+                    ? [branchName(p, lng), p.group_name].filter(Boolean).join(' · ')
+                    : t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest')}
+                </span>
+              </td>
+              <td className={cn(tdNum, 'text-muted-foreground')}>
+                <PhoneList phones={p.member_id ? parentPhones(p) : leaderPhones(p)} />
+              </td>
+              <td className={tdNum}>{fmtAmount(dueOf(p, ev))}</td>
+              <td className={tdNum}>{fmtAmount(p.paid ?? 0)}</td>
+              <td className={cn(tdNum, 'font-semibold text-destructive')}>{fmtAmount(remainingOf(p, ev))}</td>
+            </tr>
+          ))}
+          <tr className="font-bold">
+            <td className={td} />
+            <td className={td} colSpan={4}>
+              {t('campFile.total')}
+            </td>
+            <td className={cn(tdNum, 'text-destructive')}>{fmtAmount(total)}</td>
+          </tr>
+        </Table>
+      )}
+      <Signature label={t('event.role_treasurer')} />
+    </Sheet>
+  );
+}
+
+/** G1 : la feuille de relance des cotisations en retard, par فرقة, avec les téléphones */
+function DuesArrearsReport({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const q = arrearsQuery(id, sp);
+  const res = useFetch(`/member-dues/arrears${q ? `?${q}` : ''}`);
+  const data = res.data;
+  const one = Number(id) ? [...(data?.members || []), ...(data?.archived || [])][0] : null;
+  const title = !data
+    ? ''
+    : [one ? branchName({ name_fr: one.branch_name_fr, name_ar: one.branch_name_ar }, lng) : t('arrears.allBranches'), data.year]
+        .filter(Boolean)
+        .join(' · ');
+  useEffect(() => {
+    if (title) onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error || !data) return <LoadError onRetry={res.reload} />;
+
+  const table = (rows) => (
+    <Table
+      head={[
+        { label: '#', className: 'w-7' },
+        t('member.name'),
+        t('member.parentPhone'),
+        t('arrears.monthsCol'),
+        { label: t('arrears.lastPaidCol'), className: 'w-20' },
+        { label: t('arrears.owedCol'), className: 'w-20' },
+      ]}
+    >
+      {rows.map((r, i) => (
+        <tr key={r.id} className="avoid-break">
+          <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+          <td className={cn(td, 'font-medium')}>
+            {memberName(r)}
+            {r.group_name && <span className="block text-[11px] font-normal text-muted-foreground">{r.group_name}</span>}
+          </td>
+          <td className={cn(tdNum, 'text-muted-foreground')}>
+            <PhoneList phones={parentPhones(r)} />
+          </td>
+          <td className={td}>{arrearsMonths(r.months, lng)}</td>
+          <td className={tdNum}>{r.last_paid_on ? fmtDate(r.last_paid_on) : '—'}</td>
+          <td className={cn(tdNum, 'font-semibold text-destructive')}>{fmtAmount(r.owed)}</td>
+        </tr>
+      ))}
+      <tr className="font-bold">
+        <td className={td} />
+        <td className={td} colSpan={4}>
+          {t('campFile.total')}
+        </td>
+        <td className={cn(tdNum, 'text-destructive')}>{fmtAmount(rows.reduce((n, r) => n + r.owed, 0))}</td>
+      </tr>
+    </Table>
+  );
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>
+        <bdi>{title}</bdi>
+      </H1>
+      <Tags>
+        <Tag tone="neutral">{t('dues.monthlyShort', { amount: fmtAmount(data.rate) })}</Tag>
+        {data.with_current && <Tag tone="neutral">{t('arrears.filterAllOwed')}</Tag>}
+        {data.members.length > 0 && (
+          <Tag tone="destructive">
+            {t('arrears.summary', { count: data.totals.members, amount: fmtAmount(data.totals.amount) })}
+          </Tag>
+        )}
+      </Tags>
+      {data.members.length === 0 ? (
+        <p className="text-muted-foreground">{t('arrears.none')}</p>
+      ) : (
+        groupArrears(data.members).map((g) => (
+          <Fragment key={g.id}>
+            <H2 aside={g.rows.length}>{branchName(g, lng)}</H2>
+            {table(g.rows)}
+          </Fragment>
+        ))
+      )}
+      {data.archived.length > 0 && (
+        <>
+          <H2 aside={data.archived.length}>{t('arrears.archivedTitle')}</H2>
+          {table(data.archived)}
+        </>
+      )}
+      <Signature label={t('event.role_treasurer')} />
+    </Sheet>
+  );
+}
+
+/**
+ * I1 : le rapport périodique à la قيادة, avec l'en-tête du التقرير الجيد (destinataire,
+ * émetteur, date, objet, période) et les signatures. Le numéro est une فرقة (0 = le فوج).
+ * Chaque partie n'apparaît que pour un compte qui la voit sur l'écran.
+ */
+function PeriodReportSheet({ id, onReady, kindLabel }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const [sp] = useSearchParams();
+  const q = new URLSearchParams(periodQuery(sp));
+  if (Number(id)) q.set('branch', id);
+  const res = useFetch(`/reports/period?${q}`);
+  const d = res.data;
+  const period = d ? periodLabel(d.period.from, d.period.to, t, lng) : '';
+  const sender = d ? (d.branch ? branchName(d.branch, lng) : t('periodReport.wholeGroup')) : '';
+  const title = d ? `${sender} · ${period}` : '';
+  useEffect(() => {
+    if (title) onReady(title);
+  }, [title, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={8} />;
+  if (res.error || !d) return <LoadError onRetry={res.reload} />;
+
+  const tot = d.totals;
+  const many = d.branches.length > 1;
+  const recipient = sp.get('recipient') || d.recipient || t('campFile.toValue');
+  const delta = rateDelta(tot.rate, tot.prev_rate);
+  const pctOf = (v) => (v === null || v === undefined ? '—' : `${v}%`);
+  const signedDelta = (v) => (v === null ? '' : ` (${v > 0 ? '+' : ''}${v})`);
+  const dash = (v) => v || '—';
+  // Always left to right: «−3 / +5» must not turn into «5+ / 3−» on an Arabic sheet
+  const promo = (m) =>
+    m.promoted_out || m.promoted_in ? <span dir="ltr">{`−${m.promoted_out} / +${m.promoted_in}`}</span> : '—';
+  const owedTotal = d.dues ? d.dues.branches.reduce((n, b) => n + b.owed, 0) : 0;
+  const boxesOpen = (d.treasury || []).some((b) => b.opened);
+  const nameOf = (m) => branchName({ name_fr: m.branch_name_fr, name_ar: m.branch_name_ar }, lng);
+
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <div className="avoid-break mt-4 rounded-lg border border-border px-4 py-3">
+        <Facts
+          items={[
+            [t('campFile.to'), recipient],
+            [t('campFile.from'), sender],
+            [t('common.date'), fmtDate(d.today)],
+            [t('campFile.subject'), t('periodReport.subjectValue', { period })],
+            [t('periodReport.period'), `${fmtDate(d.period.from)} – ${fmtDate(d.period.to)}`, true],
+          ]}
+        />
+      </div>
+      <H1>
+        <bdi>{t('periodReport.heading', { period })}</bdi>
+      </H1>
+
+      <div className="mt-4">
+        <Stats
+          items={[
+            {
+              label: t('periodReport.sessionsCounted'),
+              value: `${tot.sessions.counted}/${tot.sessions.total}`,
+              hint: tot.sessions.unconfirmed ? t('periodReport.unconfirmedHint', { count: tot.sessions.unconfirmed }) : null,
+              cls: tot.sessions.unconfirmed ? 'text-warning' : undefined,
+            },
+            {
+              label: t('periodReport.attendanceRate'),
+              value: pctOf(tot.rate),
+              hint: tot.prev_rate !== null ? t('periodReport.prevRate', { rate: `${tot.prev_rate}%${signedDelta(delta)}` }) : null,
+            },
+            { label: t('periodReport.activeMembers'), value: tot.active },
+            {
+              label: t('periodReport.toFollow'),
+              value: tot.followup,
+              hint: tot.followup ? t('periodReport.contactedHint', { count: tot.followup_contacted }) : null,
+              cls: tot.followup ? 'text-destructive' : undefined,
+            },
+          ]}
+        />
+      </div>
+
+      <H2 aside={tot.leader_sessions ? t('periodReport.leaderSessions', { count: tot.leader_sessions }) : null}>
+        {t('periodReport.activitiesTitle')}
+      </H2>
+      <Table
+        head={[
+          t('member.branch'),
+          { label: t('periodReport.colCounted'), className: 'w-16' },
+          { label: t('periodReport.colUnconfirmed'), className: 'w-16' },
+          { label: t('periodReport.colPlanned'), className: 'w-14' },
+          { label: t('periodReport.colRate'), className: 'w-14' },
+          { label: t('periodReport.colPrevRate'), className: 'w-16' },
+          { label: t('periodReport.colVisits'), className: 'w-14' },
+        ]}
+      >
+        {d.branches.map((b) => (
+          <tr key={b.id} className="avoid-break">
+            <td className={cn(td, 'font-medium')}>{branchName(b, lng)}</td>
+            <td className={tdNum}>{`${b.sessions.counted}/${b.sessions.total}`}</td>
+            <td className={cn(tdNum, b.sessions.unconfirmed > 0 && 'font-semibold text-warning')}>
+              {dash(b.sessions.unconfirmed)}
+            </td>
+            <td className={tdNum}>{dash(b.sessions.planned)}</td>
+            <td className={cn(tdNum, 'font-semibold')}>{pctOf(b.attendance.rate)}</td>
+            <td className={cn(tdNum, 'text-muted-foreground')}>{pctOf(b.prev_attendance.rate)}</td>
+            <td className={tdNum}>{dash(b.sessions.visits)}</td>
+          </tr>
+        ))}
+      </Table>
+      <p className="mt-1 text-[11px] text-muted-foreground">{t('periodReport.countedNote')}</p>
+
+      <H2>{t('periodReport.membersTitle')}</H2>
+      <Table
+        head={[
+          t('member.branch'),
+          { label: t('periodReport.colActive'), className: 'w-14' },
+          { label: t('periodReport.colJoined'), className: 'w-14' },
+          { label: t('periodReport.colPromoted'), className: 'w-16' },
+          { label: t('periodReport.colArchived'), className: 'w-14' },
+          { label: t('periodReport.colTrial'), className: 'w-14' },
+          { label: t('periodReport.colInvested'), className: 'w-14' },
+        ]}
+      >
+        {d.branches.map((b) => (
+          <tr key={b.id} className="avoid-break">
+            <td className={cn(td, 'font-medium')}>{branchName(b, lng)}</td>
+            <td className={cn(tdNum, 'font-semibold')}>{b.members.active}</td>
+            <td className={tdNum}>{dash(b.members.joined)}</td>
+            <td className={tdNum}>{promo(b.members)}</td>
+            <td className={tdNum}>{dash(b.members.archived)}</td>
+            <td className={tdNum}>{dash(b.members.trial)}</td>
+            <td className={tdNum}>{dash(b.members.invested)}</td>
+          </tr>
+        ))}
+        {many && (
+          <tr className="font-bold">
+            <td className={td}>{t('campFile.total')}</td>
+            <td className={tdNum}>{tot.active}</td>
+            <td className={tdNum}>{dash(tot.joined)}</td>
+            <td className={tdNum}>{promo(tot)}</td>
+            <td className={tdNum}>{dash(tot.archived)}</td>
+            <td className={tdNum}>{dash(tot.trial)}</td>
+            <td className={tdNum}>{dash(tot.invested)}</td>
+          </tr>
+        )}
+      </Table>
+
+      {d.followup && (
+        <>
+          <H2 aside={t('periodReport.contactsAside', { count: tot.contacts })}>
+            {t('periodReport.followupTitle', { count: d.threshold })}
+          </H2>
+          {d.followup.length === 0 ? (
+            <p className="text-muted-foreground">{t('periodReport.followupNone')}</p>
+          ) : (
+            <Table
+              head={[
+                { label: '#', className: 'w-7' },
+                t('member.name'),
+                many && t('member.branch'),
+                { label: t('periodReport.colAbsences'), className: 'w-16' },
+                t('periodReport.colLastContact'),
+              ].filter(Boolean)}
+            >
+              {d.followup.map((m, i) => (
+                <tr key={m.id} className="avoid-break">
+                  <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                  <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
+                  {many && <td className={td}>{nameOf(m)}</td>}
+                  <td className={cn(tdNum, 'font-semibold text-destructive')}>{m.absences}</td>
+                  <td className={cn(td, 'text-muted-foreground')}>
+                    {m.last_contact
+                      ? `${fmtDate(m.last_contact.slice(0, 10))} · ${m.last_contact_by}`
+                      : t('periodReport.notContacted')}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </>
+      )}
+
+      {d.admissions && d.admissions.ready.length > 0 && (
+        <>
+          <H2 aside={d.admissions.ready.length}>{t('periodReport.readyTitle')}</H2>
+          <p>{d.admissions.ready.map((m) => (many ? `${memberName(m)} (${nameOf(m)})` : memberName(m))).join(listSep(lng))}</p>
+        </>
+      )}
+
+      {d.events && (
+        <>
+          <H2 aside={d.events.length || null}>{t('periodReport.eventsTitle')}</H2>
+          {d.events.length === 0 ? (
+            <p className="text-muted-foreground">{t('periodReport.eventsNone')}</p>
+          ) : (
+            <Table
+              head={[
+                t('periodReport.colEvent'),
+                t('campFile.dates'),
+                { label: t('periodReport.colParticipants'), className: 'w-16' },
+                d.events.some((e) => 'paid' in e) && { label: t('periodReport.colPaid'), className: 'w-20' },
+              ].filter(Boolean)}
+            >
+              {d.events.map((e) => (
+                <tr key={e.id} className="avoid-break">
+                  <td className={cn(td, 'font-medium')}>
+                    {e.title}
+                    <span className="block text-[11px] font-normal text-muted-foreground">
+                      {[t(`event.kind_${e.kind}`), e.place].filter(Boolean).join(' · ')}
+                    </span>
+                  </td>
+                  <td className={tdNum}>{fmtDateRange(e.start_date, e.end_date)}</td>
+                  <td className={tdNum}>{e.members + e.others}</td>
+                  {'paid' in e && <td className={tdNum}>{fmtAmount(e.paid)}</td>}
+                </tr>
+              ))}
+            </Table>
+          )}
+        </>
+      )}
+
+      {d.treasury && d.treasury.length > 0 && !boxesOpen && (
+        <>
+          <H2>{t('periodReport.treasuryTitle')}</H2>
+          <p className="text-muted-foreground">{t('periodReport.boxesNotOpen')}</p>
+        </>
+      )}
+      {boxesOpen && (
+        <>
+          <H2>{t('periodReport.treasuryTitle')}</H2>
+          <Table
+            head={[
+              t('periodReport.colBox'),
+              { label: t('periodReport.colOpening'), className: 'w-20' },
+              { label: t('periodReport.colIn'), className: 'w-20' },
+              { label: t('periodReport.colOut'), className: 'w-20' },
+              { label: t('periodReport.colClosing'), className: 'w-20' },
+            ]}
+          >
+            {d.treasury.map((b) => (
+              <tr key={b.key} className="avoid-break">
+                <td className={cn(td, 'font-medium')}>{boxName(b, t, lng)}</td>
+                {b.opened ? (
+                  <>
+                    <td className={tdNum}>{fmtAmount(b.opening ?? 0)}</td>
+                    <td className={cn(tdNum, 'text-success')}>{fmtAmount(b.income)}</td>
+                    <td className={cn(tdNum, 'text-destructive')}>{fmtAmount(b.expenses)}</td>
+                    <td className={cn(tdNum, 'font-semibold')}>{fmtAmount(b.closing ?? 0)}</td>
+                  </>
+                ) : (
+                  <td className={cn(td, 'text-muted-foreground')} colSpan={4}>
+                    {t('periodReport.boxNotOpen')}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </Table>
+          {d.treasury.length > 1 && (
+            <p className="mt-1 text-[11px] text-muted-foreground">{t('periodReport.transfersNote')}</p>
+          )}
+        </>
+      )}
+
+      {d.dues && (
+        <>
+          <H2 aside={t('dues.monthlyShort', { amount: fmtAmount(d.dues.rate) })}>{t('periodReport.duesTitle')}</H2>
+          <Table
+            head={[
+              t('member.branch'),
+              { label: t('periodReport.colCollected'), className: 'w-24' },
+              { label: t('periodReport.colLate'), className: 'w-20' },
+              { label: t('periodReport.colOwed'), className: 'w-24' },
+            ]}
+          >
+            {d.dues.branches.map((b) => (
+              <tr key={b.id} className="avoid-break">
+                <td className={cn(td, 'font-medium')}>{branchName(b, lng)}</td>
+                <td className={tdNum}>{fmtAmount(b.collected)}</td>
+                <td className={tdNum}>{dash(b.late_members)}</td>
+                <td className={cn(tdNum, b.owed > 0 && 'font-semibold text-destructive')}>{fmtAmount(b.owed)}</td>
+              </tr>
+            ))}
+            {many && (
+              <tr className="font-bold">
+                <td className={td}>{t('campFile.total')}</td>
+                <td className={tdNum}>{fmtAmount(d.dues.branches.reduce((n, b) => n + b.collected, 0))}</td>
+                <td className={tdNum}>{d.dues.branches.reduce((n, b) => n + b.late_members, 0)}</td>
+                <td className={cn(tdNum, owedTotal > 0 && 'text-destructive')}>{fmtAmount(owedTotal)}</td>
+              </tr>
+            )}
+          </Table>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t('periodReport.duesNote')}</p>
+        </>
+      )}
+
+      {d.overdue && d.overdue.length > 0 && (
+        <>
+          <H2 aside={d.overdue.length}>{t('periodReport.overdueTitle')}</H2>
+          <Table
+            head={[t('periodReport.colTask'), t('periodReport.colOwner'), { label: t('periodReport.colDue'), className: 'w-20' }]}
+          >
+            {d.overdue.map((x) => (
+              <tr key={x.id} className="avoid-break">
+                <td className={td}>
+                  {x.text}
+                  <span className="block text-[11px] text-muted-foreground">{x.meeting_title}</span>
+                </td>
+                <td className={td}>{x.owner || '—'}</td>
+                <td className={cn(tdNum, 'text-destructive')}>{fmtDate(x.due_date)}</td>
+              </tr>
+            ))}
+          </Table>
+        </>
+      )}
+
+      {/* Observations and signatures stay together: a page holding only the signatures
+          would read as signing nothing */}
+      <div className="avoid-break">
+        <H2>{t('periodReport.observations')}</H2>
+        <div className="space-y-7 pt-3">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="border-b border-dashed border-muted-foreground/60" />
+          ))}
+        </div>
+        <Signatures
+          labels={[d.branch ? t('periodReport.signChief') : t('periodReport.signSender'), t('periodReport.signDean')]}
+        />
+      </div>
+    </Sheet>
+  );
+}
+
 const REPORTS = {
+  period: PeriodReportSheet,
+  'dues-arrears': DuesArrearsReport,
+  event: EventReport,
+  'event-unpaid': EventUnpaidReport,
   treasury: TreasuryReport,
   'branch-money': BranchMoneyReport,
   sessions: SessionReport,

@@ -1472,7 +1472,7 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
  * Numbered matalib grid. Read-only by default; pass `onToggle` to make the
  * cells tappable. Cells are 44px on phones so they are reliably hittable.
  */
-export function RequirementGrid({ total, selected = [], onToggle, label }) {
+export function RequirementGrid({ total, selected = [], onToggle, label, labels }) {
   const set = new Set(selected);
   // `animate-pop` acknowledges a tap, so only the tapped cell may play it.
   // Keying it off `on` alone fired the animation for every already-earned cell
@@ -1489,6 +1489,9 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
       {Array.from({ length: total }, (_, i) => {
         const n = i + 1;
         const on = set.has(n);
+        // The فرقة's catalogue names the number: a hover title on desktop, the spoken name
+        const text = labels?.get(n)?.label;
+        const named = text ? { title: `${n}. ${text}`, 'aria-label': `${n}. ${text}` } : {};
         const cls = cn(
           'flex h-11 items-center justify-center rounded-md border text-xs font-semibold transition-[color,background-color,border-color,box-shadow] sm:h-9',
           on
@@ -1500,6 +1503,7 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
             key={n}
             type="button"
             aria-pressed={on}
+            {...named}
             onClick={() => {
               setPopped(n);
               onToggle(n);
@@ -1515,12 +1519,53 @@ export function RequirementGrid({ total, selected = [], onToggle, label }) {
             {n}
           </button>
         ) : (
-          <div key={n} role="listitem" className={cls}>
+          <div key={n} role="listitem" className={cls} {...named}>
             {n}
           </div>
         );
       })}
     </div>
+  );
+}
+
+/**
+ * The catalogued مطالب of a grid, by number, with what each one means — the grid's
+ * titles do not exist on a phone. Folded by default; `selected` ticks the earned ones,
+ * `only` limits the list to those numbers (the ones a نشاط worked on).
+ */
+export function MatalibLegend({ items = [], selected, only, summary, majalLabel }) {
+  const set = selected ? new Set(selected) : null;
+  const keep = only ? new Set(only) : null;
+  const rows = keep ? items.filter((it) => keep.has(it.number)) : items;
+  if (!rows.length) return null;
+  return (
+    <details className="group rounded-lg border border-border">
+      <summary className="focus-ring flex min-h-11 cursor-pointer select-none list-none items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent/40 [&::-webkit-details-marker]:hidden">
+        <IconChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+        {summary}
+      </summary>
+      <ol className="divide-y divide-border border-t border-border">
+        {rows.map((it) => {
+          const on = set?.has(it.number);
+          return (
+            <li key={it.number} className="flex items-start gap-3 px-3 py-2 text-sm">
+              <span
+                className={cn(
+                  'mt-0.5 flex h-6 w-8 shrink-0 items-center justify-center rounded text-xs font-semibold tabular-nums',
+                  on ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {it.number}
+              </span>
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{it.label}</span>
+              {it.majal && majalLabel && (
+                <span className="shrink-0 text-xs text-muted-foreground">{majalLabel(it.majal)}</span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
   );
 }
 

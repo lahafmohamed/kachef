@@ -35,6 +35,9 @@ import TimePicker from '../components/TimePicker';
 import { UnderlineTabs } from '../components/MemberParts';
 import AttachedFiles from '../components/AttachedFiles';
 import { EventEvaluation } from '../components/SessionEvaluation';
+import { EventSafetyTab, readinessFacts } from '../components/CampSafety';
+import ExportPdfButton from '../components/ExportPdfButton';
+import { familyCount, remainingOf, unpaidOf } from '../lib/campFile';
 import { fmtScore, scoreTone } from '../lib/evaluations';
 import {
   Avatar,
@@ -77,7 +80,7 @@ import {
   IconX,
 } from '../components/ui';
 
-const TABS = ['program', 'staff', 'participants', 'money', 'eval', 'files'];
+const TABS = ['program', 'staff', 'participants', 'safety', 'money', 'eval', 'files'];
 
 // The same three marks as a نشاط; absence starts quiet, présence stands out
 const STATUSES = [
@@ -288,7 +291,7 @@ function ParticipantLine({ p, t, lng, section, showBranch = true, showGroup = tr
   const kind = participantKind(p);
   const parts =
     kind === 'member'
-      ? [showBranch && branchName(p, lng), showGroup && p.group_name]
+      ? [showBranch && branchName(p, lng), showGroup && p.group_name, p.member_role && t(`resp.role.${p.member_role}`)]
       : [t(kind === 'leader' ? (isFeminine(section) ? 'event.kindLeaderF' : 'event.kindLeader') : 'event.kindGuest')];
   if (p.status === 'inactive') parts.push(t('member.inactive'));
   if (extra) parts.push(extra);
@@ -1271,6 +1274,9 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
   const showBranch = mixedBranches(ev);
   // A free event asks nothing: no payment chip on every row, unless money was recorded anyway
   const showPay = canFees && (ev.fee > 0 || people.some((p) => p.paid !== null || p.amount_due !== null));
+  // E2 : qui doit encore, et la feuille de relance avec les téléphones des parents
+  const unpaid = showPay ? unpaidOf(ev) : [];
+  const unpaidTotal = unpaid.reduce((n, p) => n + remainingOf(p, ev), 0);
 
   return (
     <Card>
@@ -1305,6 +1311,14 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
               options={payOptions}
             />
           )}
+        </div>
+      )}
+      {unpaid.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-3 sm:px-5">
+          <p className="text-sm font-medium tabular-nums text-destructive">
+            {t('campFile.unpaidLine', { amount: fmtAmount(unpaidTotal), count: familyCount(unpaid) })}
+          </p>
+          <ExportPdfButton kind="event-unpaid" id={ev.id} />
         </div>
       )}
       {hidden > 0 && (
@@ -2679,6 +2693,20 @@ export default function EventDetail() {
     { id: 'program', label: t('event.tabProgram'), count: ev.sessions.length },
     { id: 'staff', label: t('event.tabStaff'), count: ev.staff.length + (ev.leader_id ? 1 : 0) },
     { id: 'participants', label: t('event.tabParticipants'), count: ev.participants.length },
+    // E1 : prêt à partir — un point quand il manque une autorisation ou un point de sécurité
+    {
+      id: 'safety',
+      label:
+        readinessFacts(t, ev.readiness)?.ready === false ? (
+          <>
+            {t('safety.tab')}
+            <span aria-hidden="true" className="h-2 w-2 rounded-full bg-warning" />
+            <span className="sr-only">— {t('safety.notReady')}</span>
+          </>
+        ) : (
+          t('safety.tab')
+        ),
+    },
     ...(canFees
       ? [
           {
@@ -2720,6 +2748,14 @@ export default function EventDetail() {
           {t('common.back')}
         </Button>
         <div className="flex items-center gap-2">
+          {/* E2 : le dossier de camp (liste d'appel, encadrement, programme, bilan, check-list),
+              et sa variante «rapport à la قيادة» */}
+          <ExportPdfButton
+            kind="event"
+            id={ev.id}
+            compact
+            extra={[{ query: 'variant=report', title: t('campFile.reportVariant'), hint: t('campFile.reportHint') }]}
+          />
           {canEdit && (
             <Button
               variant="outline"
@@ -2882,6 +2918,9 @@ export default function EventDetail() {
             onRemove={removeParticipant}
             onRestore={restoreParticipant}
           />
+        )}
+        {tab === 'safety' && (
+          <EventSafetyTab ev={ev} setEv={setEv} canEdit={canEdit} links={{ members: has('members.read') }} />
         )}
         {tab === 'money' && canFees && (
           <div className="space-y-4">

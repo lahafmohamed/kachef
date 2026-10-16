@@ -1,13 +1,14 @@
 import { Fragment, useId, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { readinessFacts } from '../components/CampSafety';
 import { useFetch } from '../hooks';
 import { useAuth } from '../auth';
 import { LeaderDuesCard } from '../components/LeaderDues';
-import { avatarName, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
+import PeriodReportButton from '../components/PeriodReport';
+import { branchName, fmtAmount, fmtDate, memberName } from '../utils';
 import {
   cn,
-  Avatar,
   Badge,
   Button,
   Card,
@@ -23,6 +24,7 @@ import {
   Th,
   IconAlert,
   IconArrow,
+  IconAward,
   IconCake,
   IconCalendar,
   IconCheck,
@@ -30,11 +32,14 @@ import {
   IconClipboard,
   IconClock,
   IconCoins,
-  IconPhone,
   IconStar,
+  IconShield,
   IconTrendingUp,
   IconUserCheck,
+  IconUsers,
 } from '../components/ui';
+import { staffingLines } from '../components/GroupResponsibilities';
+import { FollowupList } from '../components/Followup';
 
 /* ============================================================
    Helpers
@@ -120,7 +125,8 @@ function PrefLink({ pref, onClick, ...props }) {
       onClick={(e) => {
         if (pref) {
           try {
-            localStorage.setItem(pref[0], JSON.stringify(pref[1]));
+            // One [key, value] pair, or several: the فرقة and the tab it opens on
+            for (const [k, v] of Array.isArray(pref[0]) ? pref : [pref]) localStorage.setItem(k, JSON.stringify(v));
           } catch {
             /* storage blocked — the page simply opens on its default */
           }
@@ -172,14 +178,26 @@ function buildTodos(d, t, f, lng) {
       level: 'now',
       Icon: IconUserCheck,
       title: t('dashboard.todo.unmarked'),
-      count: sum(d.unmarked, 'count'),
-      items: d.unmarked.map((u) => ({
-        key: u.session_id,
-        label: u.title,
-        meta: t('dashboard.todo.unmarkedMeta', { date: f.date(u.date), count: u.count }),
-        // Straight to the rows still to mark
-        to: `/sessions/${u.session_id}?status=unmarked`,
-      })),
+      // Séances, not عناصر — and every one of them, not just the ten listed (bug 10)
+      count: d.unmarked_total ?? d.unmarked.length,
+      items: [
+        ...d.unmarked.map((u) => ({
+          key: u.session_id,
+          label: u.title,
+          meta: t('dashboard.todo.unmarkedMeta', { date: f.date(u.date), count: u.count }),
+          to: `/sessions/${u.session_id}`,
+        })),
+        // More than the ten shown: the journal's «À régulariser» lists them all
+        ...((d.unmarked_total ?? 0) > d.unmarked.length
+          ? [
+              {
+                key: 'more',
+                label: t('dashboard.todo.unmarkedAll', { count: d.unmarked_total }),
+                to: '/sessions?todo=attendance',
+              },
+            ]
+          : []),
+      ],
     });
 
   // Nothing on the plan between today and Saturday: the weekly نشاط has no subject yet
@@ -250,6 +268,22 @@ function buildTodos(d, t, f, lng) {
       })),
     });
 
+  // G1 : cotisations en retard, par فرقة — straight to the فرقة's late list
+  if (d.dues_arrears?.members)
+    todos.push({
+      key: 'dues-arrears',
+      level: 'watch',
+      Icon: IconCoins,
+      title: t('dashboard.todo.duesArrears'),
+      count: d.dues_arrears.members,
+      items: d.dues_arrears.branches.map((b) => ({
+        key: b.id,
+        label: bname(b),
+        meta: t('arrears.groupLine', { count: b.members, amount: fmtAmount(b.amount) }),
+        to: `/members?branch=${b.id}&dues=late`,
+      })),
+    });
+
   // أنشطة قادها صاحب الحساب في الأسبوعين الأخيرين و لم يقيّمها بعد
   if (d.to_evaluate?.length)
     todos.push({
@@ -264,6 +298,22 @@ function buildTodos(d, t, f, lng) {
         meta: f.date(s.date),
         // Straight to the form
         to: `/sessions/${s.session_id}?tab=eval`,
+      })),
+    });
+
+  // E1 : les camps des trois semaines à venir pas encore prêts à partir
+  if (d.events_to_prepare?.length)
+    todos.push({
+      key: 'prepare-events',
+      level: 'week',
+      Icon: IconShield,
+      title: t('dashboard.todo.prepareEvents'),
+      count: d.events_to_prepare.length,
+      items: d.events_to_prepare.map((e) => ({
+        key: e.event_id,
+        label: e.title,
+        meta: [f.date(e.start_date), ...(readinessFacts(t, e)?.parts || [])].join(' · '),
+        to: `/events/${e.event_id}?tab=safety`,
       })),
     });
 
@@ -312,6 +362,49 @@ function buildTodos(d, t, f, lng) {
     });
   }
 
+  // B1 : prêts pour le تكريس (durée et مطالب القبول complètes), sinon combien sont en essai
+  if (d.admissions?.ready?.length)
+    todos.push({
+      key: 'admission-ready',
+      level: 'week',
+      Icon: IconAward,
+      title: t('admission.todoReady'),
+      count: d.admissions.ready.length,
+      items: d.admissions.ready.map((a) => ({
+        key: a.id,
+        label: memberName(a),
+        meta: [
+          bidi(branchName({ name_fr: a.branch_name_fr, name_ar: a.branch_name_ar }, lng)),
+          a.trial_days != null && t('admission.trialDay', { count: a.trial_days }),
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        to: `/members/${a.id}?tab=admission`,
+      })),
+    });
+  else if (d.admissions?.trial_count)
+    todos.push({
+      key: 'admission-trial',
+      level: 'watch',
+      Icon: IconAward,
+      title: t('admission.todoTrial'),
+      count: d.admissions.trial_count,
+      meta: t('admission.todoTrialMeta'),
+      to: '/promotions#admissions',
+    });
+
+  // Bug 8 : sans date de naissance, le ترفيع ne les voit jamais
+  if (d.promotions?.missing_birth_date)
+    todos.push({
+      key: 'missing-birth-date',
+      level: 'watch',
+      Icon: IconAlert,
+      title: t('admission.todoMissingBirth'),
+      count: d.promotions.missing_birth_date,
+      meta: t('admission.todoMissingBirthMeta'),
+      to: '/promotions#missing-birth-date',
+    });
+
   // A فرقة with عناصر and no نشاط for two weeks — or none at all this season
   const idle = live.filter(
     (b) =>
@@ -333,6 +426,25 @@ function buildTodos(d, t, f, lng) {
           : t('dashboard.todo.idleNever'),
         to: '/branches',
         pref: ['branches.selected', b.id],
+      })),
+    });
+
+  // طليعة بلا عريف، عدد خارج الحدّين، فرقة تحتاج قسمة، نشطون بلا طليعة (C1)
+  if (d.staffing?.length)
+    todos.push({
+      key: 'staffing',
+      level: 'watch',
+      Icon: IconUsers,
+      title: t('dashboard.todo.staffing'),
+      items: d.staffing.map((b) => ({
+        key: b.id,
+        label: bname(b),
+        meta: staffingLines(t, b).join(' · '),
+        to: '/branches',
+        pref: [
+          ['branches.selected', b.id],
+          ['branches.tab', 'groups'],
+        ],
       })),
     });
 
@@ -424,7 +536,7 @@ function TodoRow({ todo }) {
       <div id={regionId} hidden={!open} className="border-t border-border bg-muted/40">
         {todo.followup ? (
           <div className="px-4 py-1 sm:px-5">
-            <FollowUpList items={todo.followup} initial={5} />
+            <FollowupList items={todo.followup} initial={5} />
           </div>
         ) : (
           <ul className="divide-y divide-border">
@@ -459,98 +571,6 @@ function TodoRow({ todo }) {
    Follow-up — عناصر absent three activities in a row or more
    ============================================================ */
 
-// First dialable number in a phone field (a field sometimes holds two numbers)
-function telOf(raw) {
-  const m = String(raw || '').match(/\+?\d[\d\s.-]{6,}\d/);
-  return m ? m[0].replace(/[^\d+]/g, '') : null;
-}
-
-function FollowUpList({ items, initial = 5 }) {
-  const { t, i18n } = useTranslation();
-  const f = useFmt();
-  const [all, setAll] = useState(false);
-  const listId = useId();
-  if (!items?.length) return <p className="py-2 text-sm text-muted-foreground">{t('dashboard.followup.none')}</p>;
-  const shown = all ? items : items.slice(0, initial);
-
-  return (
-    <div>
-      <ul id={listId} className="divide-y divide-border">
-        {shown.map((m) => {
-          const name = memberName(m);
-          // The عنصر's own number is offered only when neither parent has one
-          const calls = [
-            ['father', m.father_phone, 'callFather'],
-            ['mother', m.mother_phone, 'callMother'],
-            !telOf(m.father_phone) && !telOf(m.mother_phone) && ['self', m.member_phone, 'callSelf'],
-          ].filter((c) => c && telOf(c[1]));
-          return (
-            <li key={m.id} className="flex items-center gap-3 py-2.5">
-              <Avatar name={avatarName(m)} className="h-9 w-9 max-[359px]:hidden" />
-              <Link to={`/members/${m.id}`} className="focus-ring min-w-0 flex-1 rounded-md">
-                <span className="block font-medium [overflow-wrap:anywhere]">{name}</span>
-                <span className="block text-xs text-muted-foreground">
-                  {[branchName(m, i18n.language), m.group_name].filter(Boolean).map(bidi).join(' · ')}
-                </span>
-                <span className="block text-xs text-muted-foreground">
-                  <span className="font-medium text-destructive">
-                    {t('member.consecutiveAbsences', { count: m.absences })}
-                  </span>
-                  {' · '}
-                  {m.last_present
-                    ? t('dashboard.followup.lastPresent', { date: f.date(m.last_present) })
-                    : t('dashboard.followup.never')}
-                </span>
-              </Link>
-              {calls.length > 0 && (
-                <div className="flex shrink-0 flex-col gap-1.5 min-[400px]:flex-row">
-                  {calls.map(([who, phone, key]) => {
-                    const label = t(`dashboard.followup.${who}`);
-                    return (
-                      <a
-                        key={who}
-                        href={`tel:${telOf(phone)}`}
-                        // Starts with the visible word, so voice control can say it
-                        aria-label={`${label} — ${t(`dashboard.followup.${key}`, { name })}`}
-                        title={fmtPhone(phone)}
-                        className="focus-ring inline-flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-xs font-medium shadow-xs transition-colors hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.96] sm:h-8"
-                      >
-                        <IconPhone className="h-3.5 w-3.5 max-sm:hidden" />
-                        {label}
-                      </a>
-                    );
-                  })}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
-        {items.length > initial && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ms-3"
-            aria-expanded={all}
-            aria-controls={listId}
-            onClick={() => setAll((v) => !v)}
-          >
-            {all ? t('dashboard.followup.showLess') : t('dashboard.followup.showAll', { count: items.length })}
-          </Button>
-        )}
-        {/* The same عناصر as a filtered list: cut by فرقة, exported as a calling sheet */}
-        <Link
-          to="/members?follow=1"
-          className="focus-ring inline-flex min-h-11 items-center gap-1 rounded text-sm font-medium text-primary hover:underline sm:min-h-0"
-        >
-          {t('dashboard.followup.openMembers')}
-          <IconArrow className="h-3.5 w-3.5 rtl:rotate-180" />
-        </Link>
-      </div>
-    </div>
-  );
-}
 
 /* ============================================================
    Présence charts
@@ -768,8 +788,12 @@ function RecentList({ items }) {
               {/* The figures keep their own column at the row's end: dropped under
                   the title on some rows only, they read as a ragged list */}
               <span className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center">
-                {x.unmarked_count > 0 && (
-                  <Badge variant="warning">{t('dashboard.recent.unmarked', { count: x.unmarked_count })}</Badge>
+                {x.unconfirmed ? (
+                  <Badge variant="warning">{t('session.unconfirmed')}</Badge>
+                ) : (
+                  x.unmarked_count > 0 && (
+                    <Badge variant="warning">{t('dashboard.recent.unmarked', { count: x.unmarked_count })}</Badge>
+                  )
                 )}
                 <Badge variant="secondary">
                   {counted
@@ -854,6 +878,8 @@ export default function Dashboard() {
   const { user } = useAuth();
   const res = useFetch('/dashboard');
   const d = res.data;
+  const [sp] = useSearchParams();
+  const reportMonth = sp.get('report');
   const todos = useMemo(() => (d ? buildTodos(d, t, f, i18n.language) : []), [d, t, f, i18n.language]);
 
   if (res.loading) return <DashboardSkeleton />;
@@ -975,7 +1001,10 @@ export default function Dashboard() {
       <PageHeader
         title={t('dashboard.title')}
         description={[t('dashboard.season', { year: d.year }), f.dayCap(d.today)].join(' · ')}
-      />
+      >
+        {/* I1 : le rappel du 1er du mois ouvre ici, sur le mois écoulé (?report=YYYY-MM) */}
+        <PeriodReportButton month={/^\d{4}-\d{2}$/.test(reportMonth || '') ? reportMonth : null} />
+      </PageHeader>
 
       {/* Le قائد voit tout de suite ce qu'il a payé et ce qu'il doit encore */}
       {user?.leader_id && <LeaderDuesCard endpoint="/me/dues" compact />}

@@ -1257,6 +1257,12 @@ function LeaderRow({ l, page, onOpen }) {
                   </span>
                 </span>
               )}
+              {/* I4: the account no longer follows the التشكيلة — fixed from the admin page */}
+              {isAdmin && ['drift', 'absent', 'archived'].includes(l.account_tachkila_status) && (
+                <Badge variant="warning" title={t(`admin.tachkila.${l.account_tachkila_status}Hint`, { year: l.year })}>
+                  {t(`admin.tachkila.${l.account_tachkila_status}`)}
+                </Badge>
+              )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
               {/* All أقسام in one register: whoever is not of الفتيان says which قسم */}
               {bothSections && l.section !== 'M' && (
