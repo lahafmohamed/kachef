@@ -59,8 +59,12 @@ const TYPES = {
   event_readiness: { group: 'events', perm: 'events.read', leader: true, on: () => true },
   // ----- الاجتماعات -----
   meeting_created: { group: 'meetings', perm: 'meetings.read', on: () => true },
+  // Bug 28 : un اجتماع à venir change de jour, d'heure ou de lieu
+  meeting_changed: { group: 'meetings', perm: 'meetings.read', on: () => true },
   decision_assigned: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
-  decision_due: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
+  // Not personal to a قائد file: a تكليف with no قائد reminds its meeting's رئيس, else
+  // the account that opened the minutes — which may be an admin without a قائد file
+  decision_due: { group: 'meetings', perm: 'meetings.read', on: () => true },
   // ----- التقييم -----
   evaluation_pending: { group: 'evaluations', perm: ['sessions.read', 'events.read'], leader: true, on: () => true },
   // Quiet until asked for: a نشاط of twelve قادة would ring twelve times
@@ -614,6 +618,56 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     });
   }
 
+  /**
+   * A meeting still ahead moved to another day or hour, or another place: whoever follows
+   * its فرق (or its whole قسم), plus the قادة already on its attendance list and its
+   * رئيس / أمين السر, even when they follow other فرق.
+   */
+  function meetingChanged(req, before, after) {
+    const today = todayISO();
+    if (after.date < today && before.date < today) return;
+    const moved =
+      after.date !== before.date ||
+      (after.start_time || null) !== (before.start_time || null) ||
+      (after.end_time || null) !== (before.end_time || null);
+    const newPlace = (after.place || null) !== (before.place || null) && !!after.place;
+    if (!moved && !newPlace) return;
+    const branchIds = after.branch_ids || [];
+    const users = audience({ section: after.section, branchIds, type: 'meeting_changed', except: req.user.id });
+    const told = new Set(users.map((u) => u.id));
+    const invited = db
+      .prepare('SELECT leader_id FROM meeting_attendees WHERE meeting_id = ? AND leader_id IS NOT NULL')
+      .all(after.id)
+      .map((r) => r.leader_id);
+    for (const u of usersOfLeaders([...invited, after.chair_id, after.secretary_id]))
+      if (u.id !== req.user.id && !told.has(u.id) && hears(u, 'meeting_changed', after.section)) {
+        told.add(u.id);
+        users.push(u);
+      }
+    const actor = actorName(req.user);
+    const fem = feminine(req.user);
+    deliver(users, {
+      type: 'meeting_changed',
+      url: `/meetings/${after.id}`,
+      tag: `m${after.id}`,
+      ttl: 7 * DAY_S,
+      text: (lang) => {
+        const head =
+          lang === 'ar'
+            ? moved ? 'تغيّر موعد اجتماع' : 'تغيّر مكان اجتماع'
+            : moved ? 'Réunion déplacée' : 'Réunion : lieu modifié';
+        const what = moved
+          ? `${lang === 'ar' ? 'الموعد الجديد:' : 'nouvelle date :'} ${joinLine(fmtWhen(after.date, after.start_time, lang), after.place)}`
+          : `${lang === 'ar' ? 'المكان الجديد:' : 'nouveau lieu :'} ${after.place}`;
+        return {
+          title: titleWith(head, branchNames(branchIds, lang)),
+          body: `«${after.title}» · ${what}
+${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée par ${actor}`}`,
+        };
+      },
+    });
+  }
+
   const decisionBody = (d, meetingTitle, lang) =>
     joinLine(
       `«${d.text}»`,
@@ -951,20 +1005,37 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     return sent;
   }
 
-  /** An open مقرّر due tomorrow, and once more the day after its date has passed. */
+  // Who a تكليف reminds: its قائد; without one (a جهة named in words, or nobody), the
+  // meeting's رئيس, else the account that opened the minutes
+  const userById = db.prepare(
+    'SELECT id, username, display_name, role, branches, perms, section, leader_id FROM users WHERE active = 1 AND id = ?'
+  );
+  function decisionOwners(d) {
+    if (d.leader_id) return usersOfLeaders([d.leader_id]);
+    const chair = d.chair_id ? usersOfLeaders([d.chair_id]) : [];
+    if (chair.length) return chair;
+    const creator = d.creator_user_id ? userById.get(d.creator_user_id) : null;
+    return creator ? [creator] : [];
+  }
+
+  /** An open مقرّر due tomorrow, and once more the day after its date has passed — to its owner (decisionOwners). */
   function decisionReminders(now = new Date()) {
     if (now.getUTCHours() < REMINDER_HOUR) return 0;
     let sent = 0;
     const rows = db
       .prepare(
-        `SELECT d.*, m.title AS meeting_title, m.section FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
-         WHERE d.status = 'open' AND d.leader_id IS NOT NULL AND d.due_date IN (?, ?)`
+        `SELECT d.*, m.title AS meeting_title, m.section, m.chair_id,
+           (SELECT e.actor_user_id FROM audit_events e WHERE e.entity_type = 'meeting' AND e.action = 'create'
+              AND e.entity_id = CAST(m.id AS TEXT) ORDER BY e.id LIMIT 1) AS creator_user_id
+         FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+         WHERE d.status = 'open' AND d.due_date IN (?, ?)`
       )
       .all(isoDay(now, 1), isoDay(now, -1));
     for (const d of rows) {
       const late = d.due_date < now.toISOString().slice(0, 10);
       if (!claim(`decision-${late ? 'late' : 'due'}:${d.id}`)) continue;
-      const users = usersOfLeaders([d.leader_id]).filter((u) => hears(u, 'decision_due', d.section));
+      const users = decisionOwners(d).filter((u) => hears(u, 'decision_due', d.section));
+      const unassigned = !d.leader_id;
       sent += users.length;
       deliver(users, {
         type: 'decision_due',
@@ -972,9 +1043,13 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
         tag: `d${d.id}`,
         ttl: DAY_S,
         text: (lang) => ({
-          title: late
-            ? lang === 'ar' ? 'تكليف متأخّر' : 'Tâche en retard'
-            : lang === 'ar' ? 'تكليف موعده غدًا' : 'Tâche à rendre demain',
+          title: unassigned
+            ? late
+              ? lang === 'ar' ? 'تكليف بلا مسؤول متأخّر' : 'Tâche sans responsable en retard'
+              : lang === 'ar' ? 'تكليف بلا مسؤول موعده غدًا' : 'Tâche sans responsable à rendre demain'
+            : late
+              ? lang === 'ar' ? 'تكليف متأخّر' : 'Tâche en retard'
+              : lang === 'ar' ? 'تكليف موعده غدًا' : 'Tâche à rendre demain',
           body: decisionBody(d, d.meeting_title, lang),
         }),
       });
@@ -1407,6 +1482,7 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
     eventChanged,
     eventRole,
     meetingCreated,
+    meetingChanged,
     decisionAssigned,
     evaluationReceived,
     memberCreated,

@@ -14,6 +14,8 @@ import {
   Button,
   Card,
   Dialog,
+  Field,
+  Input,
   Label,
   SegmentedControl,
   Textarea,
@@ -28,14 +30,18 @@ import {
   useConfirm,
   useToast,
   IconArchive,
+  IconArchiveRestore,
   IconArrow,
   IconAward,
   IconCalendar,
   IconShield,
   IconTrendingUp,
   IconUserCheck,
+  IconUsers,
   IconX,
 } from '../components/ui';
+
+const today = () => new Date().toISOString().slice(0, 10);
 
 // A scout year "2025-2026" runs September 1st to August 31st, as on the server
 function scoutYearOf(iso) {
@@ -110,6 +116,8 @@ export default function Promotions() {
   const canPick = editable || canArchive;
   const pending = useFetch('/promotions/pending');
   const history = useFetch('/promotions/history');
+  // Bug 20 : طلائع d'âge qui ne correspondent plus à l'âge de leurs عناصر
+  const realign = useFetch('/promotions/group-realign');
   const branches = useFetch('/branches');
   const [busy, setBusy] = useState(null); // null | 'all' | 'picked' | member id
   // '' = كل الفرق. الفلترة على الفرقة التي يخرج منها العنصر، كما يفعل الخادم حين
@@ -123,15 +131,20 @@ export default function Promotions() {
   const [season, setSeason] = useState('');
   // جاهزون (بلغوا عتبة مطالب فرقتهم) أو دون العتبة: '' = الكل
   const [readiness, setReadiness] = useState('');
-  // ترفيع تحت العتبة: استثناء يُكتب سببه قبل الإرسال
-  const [override, setOverride] = useState(null); // { ids, key, below, reason }
+  // نافذة الترفيع: تاريخه (اليوم افتراضيًا، أو تاريخ سابق لترفيعٍ متأخّر)، و تحت العتبة
+  // استثناء يُكتب سببه قبل الإرسال
+  const [override, setOverride] = useState(null); // { ids, key, below, reason, date }
+  // إلغاء ترفيع: يعود العنصر إلى فرقته السابقة
+  const [reversing, setReversing] = useState(null); // { h, reason }
 
   const sameBranch = (id) => !branch || String(id) === String(branch);
   const inBranch = (pending.data || []).filter((p) => sameBranch(p.current_branch.id));
   const readyCount = inBranch.filter((p) => p.ready).length;
   const pendingList = inBranch.filter((p) => !readiness || (readiness === 'ready') === !!p.ready);
   const readyIds = pendingList.filter((p) => p.ready).map((p) => p.id);
-  const branchHistory = (history.data || []).filter((h) => sameBranch(h.old_branch_id));
+  // Bug 20 : la فرقة d'arrivée voit aussi ses ترفيعات entrants
+  const branchHistory = (history.data || []).filter((h) => sameBranch(h.old_branch_id) || sameBranch(h.new_branch_id));
+  const realignList = (realign.data?.branches || []).filter((r) => sameBranch(r.branch_id));
   // The years of what the فرقة filter leaves: a year from another فرقة would only
   // empty the list. A year picked under another فرقة falls back to «all» — the
   // select may be hidden by then, and the list must not stay filtered out of sight.
@@ -226,30 +239,22 @@ export default function Promotions() {
     }
   }
 
-  async function promote(ids, key) {
+  function promote(ids, key) {
     const below = pendingList.filter((p) => ids.includes(p.id) && !p.ready);
-    if (below.length) {
-      setOverride({ ids, key, below, reason: '' });
-      return;
-    }
-    const many = ids.length > 1;
-    if (
-      !(await confirm({
-        title: t('promotion.promote'),
-        message: t(many ? 'promotion.confirmAll' : 'promotion.confirmOne', { count: ids.length }),
-        destructive: false,
-        confirmLabel: t('promotion.promote'),
-      }))
-    )
-      return;
-
-    await send(ids, key);
+    setOverride({ ids, key, below, reason: '', date: today() });
   }
 
-  async function send(ids, key, overrides = undefined) {
+  const promoteError = (code) =>
+    ({
+      promotion_below_threshold: t('matalib.reasonRequired'),
+      promotion_date_in_future: t('promotion.dateInFuture'),
+      promotion_date_before_last_move: t('promotion.dateBeforeLastMove'),
+    })[code] || code;
+
+  async function send(ids, key, overrides, date) {
     setBusy(key);
     try {
-      await api.post('/promotions/validate', { member_ids: ids, overrides });
+      await api.post('/promotions/validate', { member_ids: ids, overrides, promoted_at: date });
       setPicked((sel) => {
         const next = new Set(sel);
         for (const id of ids) next.delete(id);
@@ -257,9 +262,10 @@ export default function Promotions() {
       });
       pending.reload({ quiet: true });
       history.reload({ quiet: true });
+      realign.reload({ quiet: true });
       toast.success(t('promotion.promoted', { count: ids.length }));
     } catch (err) {
-      toast.error(err.message === 'promotion_below_threshold' ? t('matalib.reasonRequired') : err.message);
+      toast.error(promoteError(err.message));
     } finally {
       setBusy(null);
     }
@@ -268,12 +274,74 @@ export default function Promotions() {
   function confirmOverride(e) {
     e.preventDefault();
     const reason = override.reason.trim();
-    if (!reason) return;
-    const overrides = Object.fromEntries(override.below.map((p) => [p.id, reason]));
-    const { ids, key } = override;
+    if (override.below.length && !reason) return;
+    if (!override.date || override.date > today()) return;
+    const overrides = override.below.length
+      ? Object.fromEntries(override.below.map((p) => [p.id, reason]))
+      : undefined;
+    const { ids, key, date } = override;
     setOverride(null);
-    send(ids, key, overrides);
+    send(ids, key, overrides, date);
   }
+
+  async function reverse(e) {
+    e.preventDefault();
+    const { h, reason } = reversing;
+    setBusy(`reverse-${h.id}`);
+    try {
+      await api.post(`/promotions/${h.id}/reverse`, { reason: reason.trim() || undefined });
+      setReversing(null);
+      pending.reload({ quiet: true });
+      history.reload({ quiet: true });
+      realign.reload({ quiet: true });
+      toast.success(t('promotion.reversedToast'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function applyRealign(r) {
+    setBusy(`realign-${r.branch_id}`);
+    try {
+      const res = await api.post(`/branches/${r.branch_id}/groups/by-age`, { member_ids: r.moves.map((m) => m.id) });
+      realign.reload({ quiet: true });
+      toast.success(t('promotion.realigned', { count: res.moved }));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Une promotion annulée reste visible, barrée et marquée « annulée »
+  const reversedBadge = (h) =>
+    h.reversed_at ? (
+      <Badge
+        variant="destructive"
+        title={[t('promotion.reversedOn', { date: fmtDate(h.reversed_at.slice(0, 10)) }), h.reversal_reason]
+          .filter(Boolean)
+          .join(' · ')}
+      >
+        {t('promotion.reversed')}
+      </Badge>
+    ) : null;
+  const reverseButton = (h, className) =>
+    editable && h.reversible ? (
+      <Button
+        size="sm"
+        variant="ghost"
+        className={cn('text-muted-foreground', className)}
+        disabled={!!busy}
+        onClick={() => setReversing({ h, reason: '' })}
+        aria-label={t('promotion.reverseOne', { name: memberName(h) })}
+      >
+        <IconArchiveRestore />
+        {t('promotion.reverse')}
+      </Button>
+    ) : null;
+  const anyReversible = editable && historyList.some((h) => h.reversible);
 
   // «مطالب X/Y (Z %)» — the badge says whether the فرقة's threshold is reached
   const progressOf = (p) =>
@@ -562,6 +630,67 @@ export default function Promotions() {
       {/* B1 : فترة التجربة et تكريس, filtrés par la même فرقة */}
       {has('members.read') && <AdmissionQueue branch={branch} />}
 
+      {/* Bug 20 : طليعة d'âge à réajuster quand l'élément a vieilli */}
+      {realignList.length > 0 && (
+        <Card>
+          <div className="border-b border-border px-4 py-3 sm:px-5">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <IconUsers className="h-4 w-4 text-muted-foreground" />
+              {t('promotion.realignTitle')}
+            </h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">{t('promotion.realignHint')}</p>
+          </div>
+          <div className="divide-y divide-border">
+            {realignList.map((r) => (
+              <div key={r.branch_id}>
+                <div className="flex flex-wrap items-center gap-2 bg-muted/40 px-4 py-2 sm:px-5">
+                  <bdi className="text-sm font-medium">{lang === 'ar' ? r.branch_name_ar : r.branch_name_fr}</bdi>
+                  <Count value={r.moves.length} />
+                  {realign.data?.can_apply && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ms-auto"
+                      loading={busy === `realign-${r.branch_id}`}
+                      disabled={!!busy}
+                      onClick={() => applyRealign(r)}
+                      aria-label={t('promotion.realignOne', {
+                        branch: lang === 'ar' ? r.branch_name_ar : r.branch_name_fr,
+                      })}
+                    >
+                      {t('promotion.realignApply', { count: r.moves.length })}
+                    </Button>
+                  )}
+                </div>
+                <ul className="divide-y divide-border border-t border-border">
+                  {r.moves.map((m) => (
+                    <li key={m.id} className="flex items-center gap-3 px-4 py-2.5 sm:px-5">
+                      <Avatar
+                        photo={m.photo}
+                        name={avatarName(m)}
+                        className="h-8 w-8 bg-secondary text-secondary-foreground"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          to={`/members/${m.id}`}
+                          dir="auto"
+                          className="focus-ring line-clamp-1 w-fit max-w-full rounded-sm text-sm font-medium hover:text-primary hover:underline"
+                        >
+                          {memberName(m)}
+                        </Link>
+                        <div className="mt-0.5 flex min-w-0 text-xs text-muted-foreground">
+                          <Transition from={m.from_group_name || t('branch.groupNone')} to={m.to_group_name} />
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <Card className="@container">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 sm:px-5">
           <h2 className="text-base font-semibold">{t('promotion.history')}</h2>
@@ -610,7 +739,9 @@ export default function Promotions() {
                     >
                       {memberName(h)}
                     </Link>
-                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    <span
+                      className={cn('shrink-0 text-xs tabular-nums text-muted-foreground', h.reversed_at && 'line-through')}
+                    >
                       {fmtDate(h.promoted_at)}
                     </span>
                   </div>
@@ -625,12 +756,14 @@ export default function Promotions() {
                         {t('matalib.override')}
                       </Badge>
                     )}
+                    {reversedBadge(h)}
                   </div>
                   {!!h.override && h.override_reason && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {t('matalib.overrideReason')}: <bdi>{h.override_reason}</bdi>
                     </p>
                   )}
+                  {reverseButton(h, '-ms-2 mt-1')}
                 </li>
               ))}
             </ul>
@@ -642,7 +775,12 @@ export default function Promotions() {
                   <Th>{t('promotion.member')}</Th>
                   <Th>{t('promotion.oldBranch')}</Th>
                   <Th>{t('promotion.newBranch')}</Th>
-                  <Th className="pe-4 text-end sm:pe-5">{t('session.requirementsShort')}</Th>
+                  <Th className={cn('text-end', !anyReversible && 'pe-4 sm:pe-5')}>{t('session.requirementsShort')}</Th>
+                  {anyReversible && (
+                    <Th className="pe-4 sm:pe-5">
+                      <span className="sr-only">{t('promotion.reverse')}</span>
+                    </Th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -650,7 +788,12 @@ export default function Promotions() {
                   const total = totals.get(h.old_branch_id);
                   return (
                     <tr key={h.id} className="transition-colors hover:bg-accent/40">
-                      <Td className="whitespace-nowrap ps-4 tabular-nums text-muted-foreground sm:ps-5">
+                      <Td
+                        className={cn(
+                          'whitespace-nowrap ps-4 tabular-nums text-muted-foreground sm:ps-5',
+                          h.reversed_at && 'line-through'
+                        )}
+                      >
                         {fmtDate(h.promoted_at)}
                       </Td>
                       <Td>
@@ -669,9 +812,10 @@ export default function Promotions() {
                         <bdi>{newName(h)}</bdi>
                       </Td>
                       <Td
-                        className="whitespace-nowrap pe-4 text-end tabular-nums sm:pe-5"
+                        className={cn('whitespace-nowrap text-end tabular-nums', !anyReversible && 'pe-4 sm:pe-5')}
                         title={h.matalib.join(', ')}
                       >
+                        {h.reversed_at && <span className="me-2">{reversedBadge(h)}</span>}
                         {!!h.override && (
                           <Badge variant="warning" className="me-2" title={h.override_reason || undefined}>
                             {t('matalib.override')}
@@ -680,6 +824,7 @@ export default function Promotions() {
                         {h.matalib.length}
                         {total ? <span className="text-muted-foreground"> / {total}</span> : null}
                       </Td>
+                      {anyReversible && <Td className="pe-4 text-end sm:pe-5">{reverseButton(h)}</Td>}
                     </tr>
                   );
                 })}
@@ -692,11 +837,18 @@ export default function Promotions() {
       <Dialog
         open={!!override}
         onClose={() => setOverride(null)}
-        title={t('matalib.overrideTitle')}
-        description={t('matalib.overrideHint', { count: override?.below.length || 0 })}
+        title={override?.below.length ? t('matalib.overrideTitle') : t('promotion.promote')}
+        description={
+          override?.below.length
+            ? t('matalib.overrideHint', { count: override.below.length })
+            : t(override?.ids.length > 1 ? 'promotion.confirmAll' : 'promotion.confirmOne', {
+                count: override?.ids.length || 0,
+              })
+        }
       >
         {override && (
           <form onSubmit={confirmOverride} className="space-y-4">
+            {override.below.length > 0 && (
             <ul className="divide-y divide-border rounded-lg border border-border">
               {override.below.map((p) => (
                 <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
@@ -705,23 +857,81 @@ export default function Promotions() {
                 </li>
               ))}
             </ul>
-            <div className="space-y-1.5">
-              <Label htmlFor="override-reason">{t('matalib.overrideReason')}</Label>
-              <Textarea
-                id="override-reason"
-                rows={3}
-                required
-                value={override.reason}
-                onChange={(e) => setOverride((o) => ({ ...o, reason: e.target.value }))}
-              />
-            </div>
+            )}
+            {override.below.length > 0 && (
+              <div className="space-y-1.5">
+                <Label htmlFor="override-reason">{t('matalib.overrideReason')}</Label>
+                <Textarea
+                  id="override-reason"
+                  rows={3}
+                  required
+                  value={override.reason}
+                  onChange={(e) => setOverride((o) => ({ ...o, reason: e.target.value }))}
+                />
+              </div>
+            )}
+            <Field
+              label={t('promotion.effectiveDate')}
+              hint={t('promotion.effectiveDateHint')}
+              error={override.date > today() ? t('promotion.dateInFuture') : null}
+            >
+              {(p) => (
+                <Input
+                  {...p}
+                  type="date"
+                  required
+                  max={today()}
+                  value={override.date}
+                  onChange={(e) => setOverride((o) => ({ ...o, date: e.target.value }))}
+                />
+              )}
+            </Field>
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button type="button" variant="outline" onClick={() => setOverride(null)}>
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" variant="brand" disabled={!override.reason.trim()}>
+              <Button
+                type="submit"
+                variant="brand"
+                disabled={
+                  (override.below.length > 0 && !override.reason.trim()) || !override.date || override.date > today()
+                }
+              >
                 <IconTrendingUp />
-                {t('matalib.overrideConfirm', { count: override.ids.length })}
+                {override.below.length
+                  ? t('matalib.overrideConfirm', { count: override.ids.length })
+                  : t('promotion.promote')}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={!!reversing}
+        onClose={() => setReversing(null)}
+        title={t('promotion.reverseTitle')}
+        description={
+          reversing ? t('promotion.reverseHint', { name: memberName(reversing.h), branch: oldName(reversing.h) }) : ''
+        }
+      >
+        {reversing && (
+          <form onSubmit={reverse} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="reverse-reason">{t('promotion.reverseReason')}</Label>
+              <Textarea
+                id="reverse-reason"
+                rows={2}
+                value={reversing.reason}
+                onChange={(e) => setReversing((r) => ({ ...r, reason: e.target.value }))}
+              />
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => setReversing(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" variant="destructive" loading={busy === `reverse-${reversing.h.id}`}>
+                {t('promotion.reverseConfirm')}
               </Button>
             </div>
           </form>

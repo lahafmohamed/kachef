@@ -218,6 +218,16 @@ export const IconCheckAll = (p) => (
     <path d="m22 10-7.5 7.5L13 16" />
   </Icon>
 );
+// A list with ticks: tasks to carry out (the meetings' تكاليف)
+export const IconListChecks = (p) => (
+  <Icon {...p}>
+    <path d="m3 17 2 2 4-4" />
+    <path d="m3 7 2 2 4-4" />
+    <path d="M13 6h8" />
+    <path d="M13 12h8" />
+    <path d="M13 18h8" />
+  </Icon>
+);
 export const IconSun = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="4" />

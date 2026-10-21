@@ -994,6 +994,16 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
   PRIMARY KEY (user_id, type)
 );
 
+-- إعدادات الواجهة التي تتبع الحساب على كل جهاز (ما يُعرض في «بحاجة إلى إجراء»…):
+-- قيمة JSON لكل مفتاح
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, key)
+);
+
 -- التذكيرات تخرج مرّة واحدة: مفتاحٌ لكل تذكير ('attendance:<session_id>')
 CREATE TABLE IF NOT EXISTS notification_reminders (
   key TEXT PRIMARY KEY,

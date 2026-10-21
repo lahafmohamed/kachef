@@ -41,7 +41,7 @@ import {
   signed,
   staffRoleLabel,
 } from '../lib/events';
-import { ageAt, emergencyLine, familyCount, healthNotes, parentPhones, remainingOf, rosterByGroup, unpaidOf } from '../lib/campFile';
+import { familyCount, parentPhones, remainingOf, rosterByGroup, unpaidOf } from '../lib/campFile';
 import {
   attendanceCounts,
   attendeesByStatus,
@@ -811,10 +811,18 @@ function MemberReport({ id, onReady, kindLabel }) {
           <Table head={[t('common.date'), t('member.branch'), t('session.requirementsShort')]}>
             {m.promotions.map((p) => (
               <tr key={p.id}>
-                <td className={cn(tdNum, 'w-24 text-muted-foreground')}>{fmtDate(p.promoted_at)}</td>
+                <td className={cn(tdNum, 'w-24 text-muted-foreground', p.reversed_at && 'line-through')}>
+                  {fmtDate(p.promoted_at)}
+                </td>
                 <td className={cn(td, 'font-medium')}>
                   {lng === 'ar' ? p.old_name_ar : p.old_name_fr} →{' '}
                   {lng === 'ar' ? p.new_name_ar : p.new_name_fr}
+                  {p.reversed_at && (
+                    <span className="font-normal text-muted-foreground">
+                      {' '}
+                      · {t('promotion.reversedOn', { date: fmtDate(p.reversed_at.slice(0, 10)) })}
+                    </span>
+                  )}
                 </td>
                 <td className={tdNum}>
                   {t('member.requirementsOf', { earned: p.matalib.length, total: p.old_total_requirements })}
@@ -2670,9 +2678,6 @@ function PayCell({ p, ev }) {
   );
 }
 
-// Une case vide à cocher au crayon, à chaque appel
-const CheckBox = () => <span aria-hidden="true" className="inline-block h-3.5 w-3.5 rounded-sm border border-muted-foreground" />;
-
 function EventReport({ id, onReady, kindLabel }) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
@@ -2689,8 +2694,9 @@ function EventReport({ id, onReady, kindLabel }) {
   if (res.error || !ev) return <LoadError onRetry={res.reload} />;
 
   const fees = !!ev.summary;
-  const health = !!ev.health_visible;
   const people = ev.participants;
+  // Pas de colonne «Autorisation» quand personne n'en doit (un camp des seuls العلياء)
+  const consents = people.some((p) => p.consent_needed);
   const members = people.filter((p) => p.member_id);
   const others = people.filter((p) => !p.member_id);
   const roster = rosterByGroup(people);
@@ -2703,19 +2709,21 @@ function EventReport({ id, onReady, kindLabel }) {
   const staffName = (st) => (st.leader_id ? memberName(st) : st.name);
   const label = report ? t('campFile.reportVariant') : kindLabel;
   const presentBySession = new Map();
+  const presentByPerson = new Map();
   for (const a of ev.attendance)
-    if (a.status === 'present') presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+    if (a.status === 'present') {
+      presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+      presentByPerson.set(a.participant_id, (presentByPerson.get(a.participant_id) || 0) + 1);
+    }
+  // «3/5» : les séances où il était présent, sur toutes celles du programme
+  const presences = (p) => `${presentByPerson.get(p.id) || 0}/${ev.sessions.length}`;
 
   const callHead = [
     { label: '#', className: 'w-7' },
     t('member.name'),
-    { label: t('member.age'), className: 'w-10' },
-    t('member.parentPhone'),
-    { label: t('campFile.blood'), className: 'w-10' },
-    ...(health ? [t('campFile.health')] : []),
-    t('campFile.consent'),
+    ...(consents ? [t('campFile.consent')] : []),
     ...(fees ? [t('event.payment')] : []),
-    { label: t('campFile.check'), className: 'w-10' },
+    { label: t('campFile.presences'), className: 'w-16' },
   ];
 
   return (
@@ -2840,9 +2848,6 @@ function EventReport({ id, onReady, kindLabel }) {
                     </div>
                     <Table head={callHead}>
                       {g.people.map((p, i) => {
-                        const notes = healthNotes(p.health, t);
-                        const urgent = emergencyLine(p.health);
-                        const age = ageAt(p.birth_date, ev.start_date);
                         return (
                           <tr key={p.id} className="avoid-break">
                             <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
@@ -2852,53 +2857,30 @@ function EventReport({ id, onReady, kindLabel }) {
                                 <span className="block text-[11px] font-normal text-primary">{t(`resp.role.${p.member_role}`)}</span>
                               )}
                             </td>
-                            <td className={tdNum}>{age ?? '—'}</td>
-                            <td className={cn(tdNum, 'text-muted-foreground')}>
-                              <PhoneList phones={parentPhones(p)} />
-                            </td>
-                            <td className={tdNum}>
-                              <span dir="ltr">{p.blood_type || '—'}</span>
-                            </td>
-                            {health && (
-                              <td className={cn(td, 'text-[11px]')}>
-                                {notes.length === 0 && !urgent ? (
-                                  <span className="text-muted-foreground">—</span>
+                            {consents && (
+                              <td className={td}>
+                                {!p.consent_needed ? (
+                                  <span className="text-muted-foreground">{t('campFile.consentNotNeeded')}</span>
+                                ) : p.consent_at ? (
+                                  <span className="inline-flex items-center gap-1 whitespace-nowrap text-success">
+                                    <Mark kind="check" />
+                                    <span className="tabular-nums">{fmtDate(p.consent_at)}</span>
+                                  </span>
                                 ) : (
-                                  <>
-                                    {notes.map((n) => (
-                                      <div key={n} className="font-medium text-destructive">
-                                        {n}
-                                      </div>
-                                    ))}
-                                    {urgent && (
-                                      <div className="text-muted-foreground">
-                                        {t('campFile.labelValue', { label: t('safety.emergencyName'), value: urgent })}
-                                      </div>
-                                    )}
-                                  </>
+                                  <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-destructive">
+                                    <Mark kind="x" />
+                                    {t('campFile.consentMissing')}
+                                  </span>
                                 )}
                               </td>
                             )}
-                            <td className={td}>
-                              {p.consent_at ? (
-                                <span className="inline-flex items-center gap-1 whitespace-nowrap text-success">
-                                  <Mark kind="check" />
-                                  <span className="tabular-nums">{fmtDate(p.consent_at)}</span>
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-destructive">
-                                  <Mark kind="x" />
-                                  {t('campFile.consentMissing')}
-                                </span>
-                              )}
-                            </td>
                             {fees && (
                               <td className={td}>
                                 <PayCell p={p} ev={ev} />
                               </td>
                             )}
-                            <td className={td}>
-                              <CheckBox />
+                            <td className={tdNum}>
+                              <span dir="ltr">{presences(p)}</span>
                             </td>
                           </tr>
                         );
@@ -2917,9 +2899,8 @@ function EventReport({ id, onReady, kindLabel }) {
                 head={[
                   { label: '#', className: 'w-7' },
                   t('member.name'),
-                  t('leader.phone'),
                   ...(fees ? [t('event.payment')] : []),
-                  { label: t('campFile.check'), className: 'w-10' },
+                  { label: t('campFile.presences'), className: 'w-16' },
                 ]}
               >
                 {others.map((p, i) => (
@@ -2931,16 +2912,13 @@ function EventReport({ id, onReady, kindLabel }) {
                         {t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest')}
                       </span>
                     </td>
-                    <td className={cn(tdNum, 'text-muted-foreground')}>
-                      <PhoneList phones={leaderPhones(p)} />
-                    </td>
                     {fees && (
                       <td className={td}>
                         <PayCell p={p} ev={ev} />
                       </td>
                     )}
-                    <td className={td}>
-                      <CheckBox />
+                    <td className={tdNum}>
+                      <span dir="ltr">{presences(p)}</span>
                     </td>
                   </tr>
                 ))}

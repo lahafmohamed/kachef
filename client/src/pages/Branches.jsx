@@ -2377,10 +2377,18 @@ function BranchHead({ b }) {
 }
 
 /** The four numbers a قائد checks first — the عنصر profile's figures strip, for a فرقة. */
-function BranchFigures({ b }) {
+function BranchFigures({ b, period, onPeriod }) {
   const { t } = useTranslation();
   const { covered_count: covered, total } = b.matalib;
   return (
+    <div className="space-y-2">
+    {/* The période of the أنشطة and présence figures (bug 13) */}
+    <div className="flex justify-end">
+      <Select value={period} onChange={(e) => onPeriod(e.target.value)} aria-label={t('statsPeriod.label')} className="w-auto">
+        <option value="">{t('statsPeriod.thisYear')}</option>
+        <option value="all">{t('statsPeriod.allTime')}</option>
+      </Select>
+    </div>
     <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border sm:grid-cols-4">
       <Stat label={t('branch.members')}>
         <p className="text-2xl font-bold tabular-nums">{b.members.active}</p>
@@ -2408,6 +2416,7 @@ function BranchFigures({ b }) {
         {total > 0 && <ShareBar value={(covered / total) * 100} className="mt-1" />}
       </Stat>
     </Card>
+    </div>
   );
 }
 
@@ -2473,7 +2482,9 @@ function BranchesSkeleton() {
 export default function Branches() {
   const { t, i18n } = useTranslation();
   const confirm = useConfirm();
-  const res = useFetch('/branches/overview');
+  // Bug 13 : أنشطة et présence de l'année scoute en cours, ou ('all') depuis toujours
+  const [statsPeriod, setStatsPeriod] = useState('');
+  const res = useFetch(statsPeriod ? `/branches/overview?period=${statsPeriod}` : '/branches/overview');
   // Plan status of every فرقة, for the tiles. Optional: without it the tiles just
   // lose their mark.
   const plans = useFetch('/plans/overview');
@@ -2498,7 +2509,7 @@ export default function Branches() {
     planDirty.current = v;
   }, []);
 
-  if (res.loading) return <BranchesSkeleton />;
+  if (res.loading && !res.data) return <BranchesSkeleton />;
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
 
@@ -2619,7 +2630,7 @@ export default function Branches() {
       ) : (
         <div key={b.id} className="space-y-6 pt-2">
           <BranchHead b={b} />
-          <BranchFigures b={b} />
+          <BranchFigures b={b} period={statsPeriod} onPeriod={setStatsPeriod} />
           <BranchPanels
             b={b}
             tab={tab}

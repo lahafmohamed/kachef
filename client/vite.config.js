@@ -24,10 +24,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // Another project on this machine may already hold 3001. Run both with
-      // PORT=3011 (server) and API_URL=http://127.0.0.1:3011 (client) to move out
-      // of its way — the default stays 3001 so nothing else changes.
-      '/api': process.env.API_URL || 'http://127.0.0.1:3001',
+      // Another project on this machine holds 3001, so the dev server runs on 3011
+      // (server/.env.dev). Production serves the built client itself, no proxy.
+      '/api': process.env.API_URL || 'http://127.0.0.1:3011',
     },
   },
 });

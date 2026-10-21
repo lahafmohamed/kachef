@@ -145,6 +145,7 @@ const TYPE_ICONS = {
   event_reminder: IconTent,
   event_readiness: IconTent,
   meeting_created: IconMessages,
+  meeting_changed: IconMessages,
   decision_assigned: IconMessages,
   decision_due: IconClock,
   evaluation_pending: IconStar,

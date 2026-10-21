@@ -1,6 +1,6 @@
 import ExportPdfButton from '../components/ExportPdfButton';
 import PeriodReportButton from '../components/PeriodReport';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -531,6 +531,20 @@ export default function Sessions() {
     }));
   }
 
+  // قادة الفرقة في التشكيلة الأخيرة: القائد الرئيسي (أوّل توصيف للفرقة نفسها، لا لطليعة)
+  // ثم بقية قادتها. يملأ المنشّط و القادة المساعدين افتراضيًا، و يبقى كلاهما قابلًا للتغيير.
+  function branchLeaders(branchId) {
+    const slots = sectionLeaders
+      .filter((l) => l.status === 'active')
+      .flatMap((l) =>
+        (l.roles || [])
+          .filter((r) => r.role_type === 'branch' && r.branch_id === branchId)
+          .map((r) => ({ id: l.id, main: !r.group_id, order: r.sort_order ?? 0 }))
+      )
+      .sort((a, b) => b.main - a.main || a.order - b.order);
+    return { main: slots.find((s) => s.main)?.id ?? null, all: [...new Set(slots.map((s) => s.id))] };
+  }
+
   // إضافة فرقة أو إزالتها — الحفظ وحده يشترط فرقة واحدة على الأقل.
   // تغيّر الفرقة الرئيسية يُسقط المطالب و بند الخطة: كلاهما يخصّ فرقة بعينها.
   function toggleBranch(branchId) {
@@ -539,6 +553,24 @@ export default function Sessions() {
       const has = f.branch_ids.includes(id);
       const next = has ? f.branch_ids.filter((x) => x !== id) : [...f.branch_ids, id];
       const primaryChanged = next[0] !== f.branch_ids[0];
+      // نشاط القادة: الفرق مدعوّة فقط، فلا تُملأ قادتها
+      let leaderPatch = {};
+      if (f.kind !== 'leaders') {
+        // قادة فرقة دخلت يُضافون، و قادة فرقة خرجت يُنزعون ما لم يكونوا من فرقة باقية
+        const kept = new Set(next.flatMap((b) => branchLeaders(b).all));
+        const toggled = branchLeaders(id).all;
+        let helpers = has
+          ? f.helper_ids.filter((h) => !toggled.includes(h) || kept.has(h))
+          : [...new Set([...f.helper_ids, ...toggled])];
+        let leader = f.leader_id;
+        if (primaryChanged) {
+          const main = next.length ? branchLeaders(next[0]).main : null;
+          if (main) leader = String(main);
+          else if (!next.length) leader = '';
+        }
+        helpers = helpers.filter((h) => h !== Number(leader));
+        leaderPatch = { leader_id: leader, helper_ids: helpers };
+      }
       // مجموعات فرقة خرجت من النشاط لم تعد تشارك فيه
       const liveGroups = new Set(
         branchList.filter((x) => next.includes(x.id)).flatMap((x) => (x.groups || []).map((g) => g.id))
@@ -551,8 +583,7 @@ export default function Sessions() {
         member_ids: f.member_ids.filter((m) =>
           (members.data || []).some((x) => x.id === m && next.includes(x.branch_id))
         ),
-        // القائد لا يُملأ تلقائيًا من الفرقة: من يغيّر الفرقة الرئيسية لا يفقد اختياره
-        // للمنشّط، و من لم يختر بعد يبقى الحقل فارغًا حتى يختار هو — لا افتراض مفروض
+        ...leaderPatch,
         ...(primaryChanged ? { matalib: [], plan_item_id: '', prep_card_id: '' } : {}),
       };
     });
@@ -782,9 +813,17 @@ export default function Sessions() {
       form.branch_ids.includes(m.branch_id) &&
       (!memberQuery || form.member_ids.includes(m.id) || matches(m, memberQuery))
   );
-  const shownHelpers = availableHelpers.filter(
-    (l) => !helperQuery || form.helper_ids.includes(l.id) || matches(l, helperQuery)
+  // Les cochés passent en tête, figés au choix des فرق : cocher ou décocher une ligne
+  // ne la fait pas sauter sous le doigt.
+  const pinnedKey = `${creating}|${form.kind}|${form.branch_ids.join(',')}|${form.leader_id}`;
+  const pinnedHelpers = useMemo(
+    () => new Set(form.helper_ids),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pinnedKey]
   );
+  const shownHelpers = availableHelpers
+    .filter((l) => !helperQuery || form.helper_ids.includes(l.id) || matches(l, helperQuery))
+    .sort((a, b) => pinnedHelpers.has(b.id) - pinnedHelpers.has(a.id));
   const allMembersPicked =
     visitableMembers.length > 0 && visitableMembers.every((m) => form.member_ids.includes(m.id));
   const allHelpersPicked =

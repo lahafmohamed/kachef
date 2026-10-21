@@ -298,7 +298,8 @@ export function EventSafetyTab({ ev, setEv, canEdit, links }) {
   const [itemDialog, setItemDialog] = useState(null);
   const [busy, setBusy] = useState(null);
   const canAct = !!ev.can_safety;
-  const members = ev.participants.filter((p) => p.member_id);
+  // العلياء (18 ans et plus) n'ont pas d'autorisation parentale à fournir
+  const members = ev.participants.filter((p) => p.consent_needed);
   // Missing first: the list is the one to go through before leaving
   const consentRows = [...members].sort((a, b) => !!a.consent_at - !!b.consent_at);
   const facts = readinessFacts(t, ev.readiness);

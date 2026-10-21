@@ -12,6 +12,8 @@ import {
   decisionCounts,
   fmtLongDate,
   gendered,
+  LEGACY_MEETING_KINDS,
+  meetingScope,
   timeRange,
   userText,
 } from '../lib/meetings';
@@ -156,9 +158,13 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
   const [guestName, setGuestName] = useState('');
   const [q, setQ] = useState('');
   const [saving, setSaving] = useState(false);
+  // اجتماع فرقة: قادتها في التشكيلة أولًا (m.branch_leader_ids)، و قادة القسم كلهم بطلب
+  const [showAll, setShowAll] = useState(false);
+  const { i18n } = useTranslation();
 
   useEffect(() => {
     if (!open) return;
+    setShowAll(false);
     const next = {};
     for (const a of m.attendees) if (!a.guest && a.leader_id) next[a.leader_id] = a.status;
     setMarks(next);
@@ -167,7 +173,11 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
     setQ('');
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pool = leaders.filter((l) => l.section === m.section && (l.status === 'active' || marks[l.id]));
+  const sectionPool = leaders.filter((l) => l.section === m.section && (l.status === 'active' || marks[l.id]));
+  const ownIds = new Set(m.branch_leader_ids || []);
+  // Narrowed only when it leaves someone out — a قائد already marked always stays
+  const narrowed = ownIds.size > 0 && sectionPool.some((l) => !ownIds.has(l.id) && !marks[l.id]);
+  const pool = narrowed && !showAll ? sectionPool.filter((l) => ownIds.has(l.id) || marks[l.id]) : sectionPool;
   const query = q.trim().toLowerCase();
   const shown = query ? pool.filter((l) => memberName(l).toLowerCase().includes(query)) : pool;
   const c = { present: 0, absent: 0, excused: 0, guests: guests.length };
@@ -232,6 +242,19 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
             {t('meeting.allPresent')}
           </Button>
         </div>
+
+        {narrowed && (
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+            <span className="text-muted-foreground">
+              {showAll
+                ? null
+                : t('meeting.branchLeadersOnly', { branches: meetingScope(m, i18n.language, t) })}
+            </span>
+            <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setShowAll((v) => !v)}>
+              {showAll ? t('meeting.showBranchLeaders') : t('meeting.showAllLeaders')}
+            </Button>
+          </div>
+        )}
 
         {pool.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t('meeting.noLeaders')}</p>
@@ -830,6 +853,8 @@ export default function MeetingDetail() {
   const { data: m, setData: setM, loading, error, errorStatus, reload } = useFetch(`/meetings/${id}`);
   const leaders = useFetch('/leader-options', { skip: !canEdit });
   const [editing, setEditing] = useState(false);
+  // «تحضير الاجتماع المقبل»: a new meeting on next_date, same فرق, place and people
+  const [preparingNext, setPreparingNext] = useState(false);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
   // { item } / { decision } — null = closed; null inside = a new one
   const [itemDialog, setItemDialog] = useState(null);
@@ -1056,6 +1081,21 @@ export default function MeetingDetail() {
                 </span>
               </p>
             )}
+            {m.next_date && m.next_meeting_id ? (
+              <Button variant="outline" size="sm" onClick={() => navigate(`/meetings/${m.next_meeting_id}`)}>
+                <IconCalendar />
+                {t('meeting.openNext')}
+              </Button>
+            ) : (
+              m.next_date &&
+              canEdit &&
+              m.next_date >= today && (
+                <Button variant="outline" size="sm" onClick={() => setPreparingNext(true)}>
+                  <IconPlus />
+                  {t('meeting.prepareNext')}
+                </Button>
+              )
+            )}
           </CardContent>
         </Card>
       )}
@@ -1076,6 +1116,27 @@ export default function MeetingDetail() {
 
       {canEdit && (
         <>
+          <MeetingFormDialog
+            open={preparingNext}
+            initial={null}
+            seed={{
+              kind: LEGACY_MEETING_KINDS.includes(m.kind) ? 'leaders' : m.kind,
+              date: m.next_date,
+              start_time: m.start_time || '',
+              end_time: m.end_time || '',
+              place: m.place || '',
+              branch_ids: m.branch_ids || [],
+              section: m.section,
+              chair: { id: m.chair_id, name: m.chair || '' },
+              secretary: { id: m.secretary_id, name: m.secretary || '' },
+            }}
+            onClose={() => setPreparingNext(false)}
+            onSaved={(payload) => {
+              setPreparingNext(false);
+              toast.success(t('meeting.created'));
+              navigate(`/meetings/${payload.id}`);
+            }}
+          />
           <MeetingFormDialog
             open={editing}
             initial={m}

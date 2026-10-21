@@ -1,9 +1,12 @@
 import { Fragment, useId, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { readinessFacts } from '../components/CampSafety';
+import { ReadinessBadge, readinessFacts } from '../components/CampSafety';
+import { DecisionCheck, DecisionMeta } from '../components/MeetingParts';
+import { userText } from '../lib/meetings';
 import { useFetch } from '../hooks';
-import { useAuth } from '../auth';
+import { api } from '../api';
+import { useAuth, usePerms } from '../auth';
 import { LeaderDuesCard } from '../components/LeaderDues';
 import PeriodReportButton from '../components/PeriodReport';
 import { branchName, fmtAmount, fmtDate, memberName } from '../utils';
@@ -32,11 +35,18 @@ import {
   IconClipboard,
   IconClock,
   IconCoins,
+  IconListChecks,
+  IconMessages,
   IconStar,
   IconShield,
+  IconTent,
   IconTrendingUp,
   IconUserCheck,
   IconUsers,
+  IconX,
+  IconSettings,
+  Dialog,
+  useToast,
 } from '../components/ui';
 import { staffingLines } from '../components/GroupResponsibilities';
 import { FollowupList } from '../components/Followup';
@@ -144,9 +154,10 @@ function PrefLink({ pref, onClick, ...props }) {
 /**
  * Everything that asks something of the قائد, most pressing first: `now`
  * (overdue or today), `week` (before the next Saturday), `watch`. Each entry
- * either points at one page (`to`) or opens a sub-list (`items`).
+ * either points at one page (`to`) or opens a sub-list (`items`). `decided`: the
+ * تكاليف ticked off (or opened again) on this visit, id → status.
  */
-function buildTodos(d, t, f, lng) {
+function buildTodos(d, t, f, lng, decided = {}) {
   const todos = [];
   const live = d.branches.filter(isLive);
   const bname = (b) => branchName(b, lng);
@@ -200,18 +211,53 @@ function buildTodos(d, t, f, lng) {
       ],
     });
 
-  // Nothing on the plan between today and Saturday: the weekly نشاط has no subject yet
+  // H1 : ce que les réunions ont confié au قائد du compte, coché d'ici même. Ce qui est
+  // coché pendant la visite reste dans la liste, coché, jusqu'au prochain chargement ;
+  // le plus pressé de ce qui reste fixe le niveau
+  if (d.my_decisions?.length) {
+    const status = (x) => decided[x.id] ?? x.status;
+    const open = d.my_decisions.filter((x) => status(x) === 'open');
+    const late = open.filter((x) => x.due_date && x.due_date < d.today);
+    const next = open.find((x) => x.due_date && x.due_date >= d.today);
+    todos.push({
+      key: 'my-decisions',
+      level: late.length ? 'now' : next && daysBetween(d.today, next.due_date) <= 7 ? 'week' : 'watch',
+      Icon: IconListChecks,
+      title: t('dashboard.todo.myDecisions'),
+      count: open.length || null,
+      meta: open.length
+        ? [
+            late.length > 0 && t('meeting.overdueCount', { count: late.length }),
+            next && t('dashboard.todo.nextDue', { date: f.date(next.due_date) }),
+            !late.length && !next && t('dashboard.todo.noDue'),
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : t('dashboard.todo.myDecisionsDone'),
+      // Ticked here: done today, as the server records it
+      decisions: d.my_decisions.map((x) =>
+        status(x) === x.status ? x : { ...x, status: status(x), status_at: status(x) === 'done' ? d.today : null }
+      ),
+    });
+  }
+
+  // Nothing on the plan between today and the فرقة's next نشاط day — the weekday it
+  // usually meets on, Saturday by default (bug 12): that نشاط has no subject yet
   const planned = live.filter((b) => b.plan);
-  const notPlanned = planned.filter((b) => !b.plan.next || b.plan.next.date > d.next_day);
+  const dayOf = (b) => b.next_day || d.next_day;
+  const notPlanned = planned.filter((b) => !b.plan.next || b.plan.next.date > dayOf(b));
+  const oneDay = new Set(notPlanned.map(dayOf)).size === 1;
   if (notPlanned.length)
     todos.push({
       key: 'plan',
       level: 'week',
       Icon: IconCalendar,
-      title: t('dashboard.todo.notPlanned', { day: unbroken(f.day(d.next_day)) }),
+      title: oneDay
+        ? t('dashboard.todo.notPlanned', { day: unbroken(f.day(dayOf(notPlanned[0]))) })
+        : t('dashboard.todo.notPlannedNext'),
       items: notPlanned.map((b) => ({
         key: b.id,
-        label: bname(b),
+        label: oneDay ? bname(b) : `${bidi(bname(b))} · ${f.day(dayOf(b))}`,
         meta: b.plan.next
           ? t('dashboard.todo.nextPlanned', { date: f.date(b.plan.next.date) })
           : t('dashboard.todo.planEmpty'),
@@ -224,7 +270,7 @@ function buildTodos(d, t, f, lng) {
     (b) =>
       b.upcoming_prep &&
       b.plan.next &&
-      b.plan.next.date <= d.next_day &&
+      b.plan.next.date <= dayOf(b) &&
       !b.plan.next.done &&
       !b.upcoming_prep.some((p) => p.date === b.plan.next.date)
   );
@@ -344,6 +390,34 @@ function buildTodos(d, t, f, lng) {
       followup: d.followup,
     });
 
+  // H1 : les تكاليف des autres dont l'échéance est passée, pour qui suit les décisions —
+  // les dix plus anciennes, chacune vers sa réunion, et le vrai total
+  if (d.late_decisions?.length)
+    todos.push({
+      key: 'late-decisions',
+      level: 'watch',
+      Icon: IconMessages,
+      title: t('dashboard.todo.lateDecisions'),
+      count: d.late_decisions_total ?? d.late_decisions.length,
+      items: [
+        ...d.late_decisions.map((x) => ({
+          key: x.id,
+          label: userText(x.text),
+          meta: [
+            x.owner && bidi(x.owner),
+            t('meeting.overdueSince', { date: f.date(x.due_date) }),
+            bidi(userText(x.meeting_title)),
+          ]
+            .filter(Boolean)
+            .join(' · '),
+          to: `/meetings/${x.meeting_id}`,
+        })),
+        ...((d.late_decisions_total ?? 0) > d.late_decisions.length
+          ? [{ key: 'more', label: t('dashboard.todo.lateDecisionsAll'), to: '/meetings' }]
+          : []),
+      ],
+    });
+
   if (d.promotions?.count) {
     const more = d.promotions.count - d.promotions.sample.length;
     todos.push({
@@ -451,6 +525,39 @@ function buildTodos(d, t, f, lng) {
   return todos;
 }
 
+/** Every kind of to-do, in list order, for the «Personnaliser» panel. */
+const TODO_TYPES = [
+  ['birthday-today', 'dashboard.todo.birthdayToday'],
+  ['unmarked', 'dashboard.todo.unmarked'],
+  ['my-decisions', 'dashboard.todo.myDecisions'],
+  ['plan', 'dashboard.todo.notPlannedNext'],
+  ['prep', 'dashboard.todo.noPrep'],
+  ['birthday-tomorrow', 'dashboard.todo.birthdayTomorrow'],
+  ['unpaid', 'dashboard.todo.unpaid'],
+  ['dues-arrears', 'dashboard.todo.duesArrears'],
+  ['evaluate', 'dashboard.todo.evaluate'],
+  ['prepare-events', 'dashboard.todo.prepareEvents'],
+  ['evaluate-events', 'dashboard.todo.evaluateEvents'],
+  ['followup', 'dashboard.todo.followup'],
+  ['late-decisions', 'dashboard.todo.lateDecisions'],
+  ['promotions', 'dashboard.pendingPromotions'],
+  ['admission-ready', 'admission.todoReady'],
+  ['admission-trial', 'admission.todoTrial'],
+  ['missing-birth-date', 'admission.todoMissingBirth'],
+  ['idle', 'dashboard.todo.idle'],
+  ['staffing', 'dashboard.todo.staffing'],
+];
+
+/**
+ * What a to-do holds right now. A masked to-do stays masked while this holds,
+ * and comes back on its own once something new joins it (another séance, a
+ * new name): masking says «seen», not «never again».
+ */
+const todoSig = (todo) => {
+  const list = todo.items || todo.followup || todo.decisions;
+  return [todo.count ?? '', ...(list ? list.map((i) => i.key ?? i.id) : [todo.meta ?? ''])].join('|');
+};
+
 // Tint of the icon square: what is overdue reads hot, what can wait reads cool.
 // The words carry the meaning; the tint only repeats it.
 const LEVEL_TONES = {
@@ -460,13 +567,62 @@ const LEVEL_TONES = {
 };
 
 /**
- * One to-do. A single destination makes the whole row a link; several make it a
- * disclosure whose sub-list opens under it (the follow-up to-do opens the people).
+ * «Mes تكاليف» opened: each one with its tick — a button for who follows decisions up
+ * (meetings.followup), a plain mark otherwise — and the text, which opens its meeting.
+ * Tick and text line up with the to-do's icon and title above: the tick's circle sits
+ * on the icon's centre line, the text where the title starts.
  */
-function TodoRow({ todo }) {
+function DecisionList({ decisions, today, canFollow, busy, onToggle }) {
+  const { t } = useTranslation();
+  return (
+    <ul className="divide-y divide-border">
+      {decisions.map((x) => (
+        <li key={x.id} className="flex items-start gap-2 ps-3 pe-4 sm:gap-3 sm:ps-5 sm:pe-5">
+          <DecisionCheck
+            status={x.status}
+            busy={busy === x.id}
+            onToggle={canFollow ? () => onToggle(x) : null}
+            label={t(x.status === 'done' ? 'meeting.markOpen' : 'meeting.markDone', { text: x.text })}
+          />
+          <Link
+            to={`/meetings/${x.meeting_id}`}
+            className="focus-ring group/decision flex min-w-0 flex-1 items-start gap-3 rounded-md py-3 text-sm sm:py-2"
+          >
+            <span className="min-w-0 flex-1">
+              <span
+                className={cn(
+                  'block font-medium [overflow-wrap:anywhere] group-hover/decision:text-primary',
+                  x.status !== 'open' && 'text-muted-foreground'
+                )}
+              >
+                <bdi>{userText(x.text)}</bdi>
+              </span>
+              {/* Mine, so no owner: the deadline, then the meeting it came from */}
+              <DecisionMeta
+                d={{ ...x, owner: null }}
+                t={t}
+                today={today}
+                extra={[<span key="meeting">{userText(x.meeting_title)}</span>]}
+              />
+            </span>
+            <IconArrow className="mt-0.5 shrink-0 text-muted-foreground rtl:rotate-180" />
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One to-do. A single destination makes the whole row a link; several make it a
+ * disclosure whose sub-list opens under it (the follow-up to-do opens the people,
+ * «Mes تكاليف» its decisions, each with its tick).
+ */
+function TodoRow({ todo, onDismiss, decisionProps }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const regionId = useId();
-  const single = !todo.followup && todo.items?.length === 1 ? todo.items[0] : null;
+  const single = !todo.followup && !todo.decisions && todo.items?.length === 1 ? todo.items[0] : null;
   const target = todo.to ? todo : single;
   const meta = single ? [bidi(single.label), single.meta].filter(Boolean).join(' · ') : todo.meta;
   // A sub-list says how many it holds before it is opened
@@ -475,8 +631,26 @@ function TodoRow({ todo }) {
 
   // Rows run edge to edge inside a clipped card: the focus ring is drawn inside them.
   // Their inset follows the card header's (p-4, sm:p-5) so icon and title line up.
+  // The end inset leaves room for the «Masquer» button laid over the row.
   const rowCls =
-    'focus-ring flex w-full items-start gap-3 px-4 py-2.5 text-start transition-colors hover:bg-accent/50 focus-visible:[outline-offset:-2px]! sm:px-5';
+    'focus-ring flex w-full items-start gap-3 ps-4 pe-12 py-2.5 text-start transition-colors hover:bg-accent/50 focus-visible:[outline-offset:-2px]! sm:ps-5 sm:pe-13';
+  // Outside the link or disclosure (a button can't sit inside either). Shown on
+  // hover or focus where there is a mouse; always there on touch screens.
+  const dismiss = (
+    <button
+      type="button"
+      onClick={() => onDismiss(todo)}
+      aria-label={t('dashboard.todo.dismissOne', { title: todo.title })}
+      title={t('dashboard.todo.dismiss')}
+      className={cn(
+        'focus-ring absolute end-2 top-3 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground sm:end-3',
+        'opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/todo:opacity-100 pointer-coarse:opacity-100',
+        'before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-11 before:-translate-x-1/2 before:-translate-y-1/2 before:content-[""]'
+      )}
+    >
+      <IconX className="h-4 w-4" />
+    </button>
+  );
   const body = (
     <>
       <span
@@ -515,15 +689,16 @@ function TodoRow({ todo }) {
 
   if (target)
     return (
-      <li>
+      <li className="group/todo relative">
         <PrefLink to={target.to} pref={target.pref} className={rowCls}>
           {body}
         </PrefLink>
+        {dismiss}
       </li>
     );
 
   return (
-    <li>
+    <li className="group/todo relative">
       <button
         type="button"
         aria-expanded={open}
@@ -533,11 +708,14 @@ function TodoRow({ todo }) {
       >
         {body}
       </button>
+      {dismiss}
       <div id={regionId} hidden={!open} className="border-t border-border bg-muted/40">
         {todo.followup ? (
           <div className="px-4 py-1 sm:px-5">
             <FollowupList items={todo.followup} initial={5} />
           </div>
+        ) : todo.decisions ? (
+          <DecisionList decisions={todo.decisions} {...decisionProps} />
         ) : (
           <ul className="divide-y divide-border">
             {todo.items.map((item) => (
@@ -571,6 +749,298 @@ function TodoRow({ todo }) {
    Follow-up — عناصر absent three activities in a row or more
    ============================================================ */
 
+
+/* ============================================================
+   À venir — the month ahead, day by day
+   ============================================================ */
+
+// Within one day: camps and دورات first, then the أنشطة, then meetings
+const AGENDA_ORDER = { event: 0, plan: 1, meeting: 2 };
+// Rows shown before «Afficher tout»: the next week or so, on most months
+const AGENDA_ROWS = 6;
+
+/**
+ * What the coming month holds, one group per day: camps, دورات and sorties (starting, or
+ * already under way — those open the list, under «En cours»), meetings opened ahead or
+ * announced by the last one, and each فرقة's next نشاط on the plan with the state of its
+ * بطاقة التحضير. A day's several أنشطة fold into one row that opens on them.
+ */
+function buildAgenda(d, lng) {
+  const horizon = d.agenda?.days ?? 30;
+  const rows = [];
+  const plans = new Map();
+  for (const b of d.branches.filter(isLive)) {
+    const n = b.plan?.next;
+    if (!n || daysBetween(d.today, n.date) > horizon) continue;
+    // The بطاقة's state only for who reads them (upcoming_prep is null otherwise)
+    const prep = b.upcoming_prep?.find((p) => p.date === n.date) ?? null;
+    const state = n.done ? 'done' : !b.upcoming_prep ? null : prep ? 'prep' : 'noPrep';
+    if (!plans.has(n.date)) plans.set(n.date, []);
+    plans.get(n.date).push({
+      key: b.id,
+      branch: branchName(b, lng),
+      title: n.title,
+      state,
+      // The séance once there is one, else its بطاقة, else the فرقة's plan
+      to: n.session_id ? `/sessions/${n.session_id}` : prep ? `/prep-cards/${prep.id}` : '/branches',
+      pref:
+        n.session_id || prep
+          ? null
+          : [
+              ['branches.selected', b.id],
+              ['branches.tab', 'plan'],
+            ],
+    });
+  }
+  for (const [date, items] of plans) rows.push({ key: `plan-${date}`, type: 'plan', date, items });
+  for (const e of d.agenda?.events || [])
+    rows.push({ key: `event-${e.event_id}`, type: 'event', date: e.start_date, ongoing: e.start_date < d.today, e });
+  for (const m of d.agenda?.meetings || [])
+    rows.push({ key: `meeting-${m.meeting_id}${m.announced ? '-next' : ''}`, type: 'meeting', date: m.date, m });
+  rows.sort(
+    (x, y) => !!y.ongoing - !!x.ongoing || x.date.localeCompare(y.date) || AGENDA_ORDER[x.type] - AGENDA_ORDER[y.type]
+  );
+  const days = [];
+  for (const r of rows) {
+    const day = r.ongoing ? 'ongoing' : r.date;
+    if (days.at(-1)?.day !== day) days.push({ day, rows: [] });
+    days.at(-1).rows.push(r);
+  }
+  return days;
+}
+
+/** The state of a planned نشاط: its séance exists, its بطاقة is written, or not yet. */
+function PlanState({ state }) {
+  const { t } = useTranslation();
+  if (state === 'done') return <Badge variant="secondary">{t('dashboard.agenda.sessionCreated')}</Badge>;
+  if (state === 'prep') return <Badge variant="success">{t('dashboard.agenda.prepReady')}</Badge>;
+  if (state === 'noPrep') return <Badge variant="warning">{t('dashboard.agenda.noPrep')}</Badge>;
+  return null;
+}
+
+// Same frame as a to-do row, so both lists read alike: icon column, title, a meta line
+// that may carry a badge, the arrow or chevron at the end
+const agendaRowCls =
+  'focus-ring flex w-full items-start gap-3 px-4 py-2.5 text-start transition-colors hover:bg-accent/50 focus-visible:[outline-offset:-2px]! sm:px-5';
+
+function AgendaLine({ Icon, title, meta, badge, end }) {
+  return (
+    <>
+      <Icon aria-hidden="true" className="mt-0.5 h-[1.1rem] w-[1.1rem] shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium [overflow-wrap:anywhere]">{title}</span>
+        {(meta || badge) && (
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            {meta && (
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                <Facts text={meta} />
+              </span>
+            )}
+            {badge}
+          </span>
+        )}
+      </span>
+      {end}
+    </>
+  );
+}
+
+const arrowEnd = <IconArrow className="mt-0.5 shrink-0 text-muted-foreground rtl:rotate-180" />;
+
+function AgendaRow({ r }) {
+  const { t } = useTranslation();
+  const f = useFmt();
+  const [open, setOpen] = useState(false);
+  const regionId = useId();
+
+  if (r.type === 'event') {
+    const { e } = r;
+    const ready = readinessFacts(t, e);
+    const meta = [
+      t(`event.kind_${e.kind}`),
+      // Weeks away at most: day and month say it, the year is noise
+      (r.ongoing || e.end_date !== e.start_date) && t('dashboard.agenda.until', { date: f.short(e.end_date) }),
+      e.place && bidi(userText(e.place)),
+      e.participants > 0 && t('event.participantCount', { count: e.participants }),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return (
+      <li>
+        {/* A camp not ready to leave opens on its safety tab, as in «À traiter» */}
+        <Link to={`/events/${e.event_id}${ready && !ready.ready ? '?tab=safety' : ''}`} className={agendaRowCls}>
+          <AgendaLine
+            Icon={IconTent}
+            title={<bdi>{userText(e.title)}</bdi>}
+            meta={meta}
+            badge={<ReadinessBadge r={e} />}
+            end={arrowEnd}
+          />
+        </Link>
+      </li>
+    );
+  }
+
+  if (r.type === 'meeting') {
+    const { m } = r;
+    // Announced only: its kind names it, and the meeting that set the date opens it
+    const meta = m.announced
+      ? t('dashboard.agenda.announced', { date: f.short(m.from_date) })
+      : [t(`meeting.kind_${m.kind}`), m.start_time, m.place && bidi(userText(m.place))].filter(Boolean).join(' · ');
+    return (
+      <li>
+        <Link to={`/meetings/${m.meeting_id}`} className={agendaRowCls}>
+          <AgendaLine
+            Icon={IconMessages}
+            title={m.announced ? t(`meeting.kind_${m.kind}`) : <bdi>{userText(m.title)}</bdi>}
+            meta={meta}
+            end={arrowEnd}
+          />
+        </Link>
+      </li>
+    );
+  }
+
+  // أنشطة on the plan: one فرقة is a row of its own, several fold into one
+  const { items } = r;
+  if (items.length === 1) {
+    const [x] = items;
+    return (
+      <li>
+        <PrefLink to={x.to} pref={x.pref} className={agendaRowCls}>
+          <AgendaLine
+            Icon={IconCalendar}
+            title={<bdi>{userText(x.title)}</bdi>}
+            meta={bidi(x.branch)}
+            badge={<PlanState state={x.state} />}
+            end={arrowEnd}
+          />
+        </PrefLink>
+      </li>
+    );
+  }
+  const noPrep = items.filter((x) => x.state === 'noPrep').length;
+  return (
+    <li>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={regionId}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(agendaRowCls, 'cursor-pointer')}
+      >
+        <AgendaLine
+          Icon={IconCalendar}
+          title={t('dashboard.agenda.activities', { count: items.length })}
+          meta={items.map((x) => bidi(x.branch)).join(' · ')}
+          badge={noPrep > 0 && <Badge variant="warning">{t('dashboard.agenda.noPrepCount', { count: noPrep })}</Badge>}
+          end={
+            <IconChevronDown
+              className={cn(
+                'mt-0.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+                open && 'rotate-180'
+              )}
+            />
+          }
+        />
+      </button>
+      <ul id={regionId} hidden={!open} className="divide-y divide-border border-y border-border bg-muted/40">
+        {items.map((x) => (
+          <li key={x.key}>
+            <PrefLink
+              to={x.to}
+              pref={x.pref}
+              // Indented to the title above: row inset + icon (1.1rem) + gap (0.75rem)
+              className="focus-ring flex items-start gap-3 py-2.5 ps-[2.85rem] pe-4 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:ps-[3.1rem] sm:pe-5"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium [overflow-wrap:anywhere]">
+                  <bdi>{userText(x.title)}</bdi>
+                </span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+                  <span>{x.branch}</span>
+                  <PlanState state={x.state} />
+                </span>
+              </span>
+              {arrowEnd}
+            </PrefLink>
+          </li>
+        ))}
+      </ul>
+    </li>
+  );
+}
+
+/**
+ * The «À venir» card. Each day says when it is from today («Demain», «Dans 3 jours»):
+ * the date alone makes the reader count. The first days show, the rest on demand.
+ */
+function AgendaCard({ days, today }) {
+  const { t } = useTranslation();
+  const f = useFmt();
+  const [all, setAll] = useState(false);
+  const total = days.reduce((n, day) => n + day.rows.length, 0);
+  // Whole days only: a day cut in half would read as all it holds
+  let shown = days;
+  if (!all && total > AGENDA_ROWS) {
+    shown = [];
+    let n = 0;
+    for (const day of days) {
+      if (n > 0 && n + day.rows.length > AGENDA_ROWS) break;
+      shown.push(day);
+      n += day.rows.length;
+    }
+  }
+  const hidden = total - shown.reduce((n, day) => n + day.rows.length, 0);
+
+  const dayLabel = (day) => {
+    if (day === 'ongoing') return t('event.phase_ongoing');
+    const n = daysBetween(today, day);
+    if (n === 0) return `${t('common.today')} · ${f.day(day)}`;
+    if (n === 1) return `${t('dashboard.agenda.tomorrow')} · ${f.day(day)}`;
+    return `${f.dayCap(day)} · ${t('dashboard.agenda.inDays', { count: n })}`;
+  };
+
+  return (
+    <section aria-labelledby="dashboard-agenda">
+      <Card className="overflow-hidden">
+        <CardHeader>
+          <CardTitle id="dashboard-agenda">{t('dashboard.agenda.title')}</CardTitle>
+          <CardDescription>{t('dashboard.agenda.hint')}</CardDescription>
+        </CardHeader>
+        {days.length ? (
+          <ol className="divide-y divide-border border-t border-border">
+            {shown.map((day) => (
+              <li key={day.day}>
+                <h3 className="px-4 pt-3 pb-0.5 text-xs font-medium text-muted-foreground sm:px-5">
+                  <Facts text={dayLabel(day.day)} />
+                </h3>
+                <ul>
+                  {day.rows.map((r) => (
+                    <AgendaRow key={r.key} r={r} />
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <CardContent className="text-sm text-muted-foreground">{t('dashboard.agenda.empty')}</CardContent>
+        )}
+        {(hidden > 0 || all) && (
+          <div className="border-t border-border px-4 py-2.5 sm:px-5">
+            <button
+              type="button"
+              onClick={() => setAll((v) => !v)}
+              className='focus-ring relative rounded text-sm font-medium text-primary before:absolute before:-inset-x-2 before:-inset-y-3 before:content-[""] hover:underline'
+            >
+              {all ? t('dashboard.followup.showLess') : t('dashboard.agenda.showMore', { count: hidden })}
+            </button>
+          </div>
+        )}
+      </Card>
+    </section>
+  );
+}
 
 /* ============================================================
    Présence charts
@@ -686,7 +1156,9 @@ function TrendChart({ points, height = 176 }) {
                     style={{ bottom: `calc(${p.rate}% + 0.5rem)` }}
                   >
                     <span className="block text-sm font-semibold tabular-nums">{p.rate}%</span>
-                    <span className="block text-muted-foreground">{f.dayCap(p.date)}</span>
+                    <span className="block text-muted-foreground">
+                      {p.week ? t('dashboard.trend.week', { date: f.date(p.week) }) : f.dayCap(p.date)}
+                    </span>
                     <span className="block text-muted-foreground">
                       {t('dashboard.trend.tip', { present: p.present, marked: p.marked })}
                     </span>
@@ -876,13 +1348,75 @@ export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const f = useFmt();
   const { user } = useAuth();
+  const { can } = usePerms();
   const res = useFetch('/dashboard');
   const d = res.data;
   const [sp] = useSearchParams();
   const reportMonth = sp.get('report');
-  const todos = useMemo(() => (d ? buildTodos(d, t, f, i18n.language) : []), [d, t, f, i18n.language]);
+  // تكاليف ticked off (or opened again) on this visit: id → status
+  const [decided, setDecided] = useState({});
+  const [decisionBusy, setDecisionBusy] = useState(null);
+  const todos = useMemo(
+    () => (d ? buildTodos(d, t, f, i18n.language, decided) : []),
+    [d, t, f, i18n.language, decided]
+  );
+  const agenda = useMemo(() => (d ? buildAgenda(d, i18n.language) : []), [d, i18n.language]);
+  // Kept on the server, so they follow the account to every device: kinds turned
+  // off for good, and to-dos masked until they change (key → what they held)
+  const todoPrefs = useFetch('/me/settings/dashboard.todo');
+  const hiddenKinds = todoPrefs.data?.hidden ?? [];
+  const masked = todoPrefs.data?.masked ?? {};
+  const [customizing, setCustomizing] = useState(false);
+  const toast = useToast();
+  // Shown at once, saved behind; a failed save puts the previous choice back
+  const saveTodoPrefs = (patch) => {
+    const prev = todoPrefs.data;
+    const next = { hidden: hiddenKinds, masked, ...patch };
+    todoPrefs.setData(next);
+    api.put('/me/settings/dashboard.todo', next).catch(() => {
+      todoPrefs.setData(prev);
+      toast.error(t('dashboard.todo.saveFailed'));
+    });
+    return next;
+  };
+  const kept = todos.filter((todo) => !hiddenKinds.includes(todo.key));
+  const shownTodos = kept.filter((todo) => masked[todo.key] !== todoSig(todo));
+  const maskedCount = kept.length - shownTodos.length;
+  const setHiddenKinds = (hidden) => saveTodoPrefs({ hidden });
+  const setMasked = (m) => saveTodoPrefs({ masked: m });
+  const dismissTodo = (todo) => {
+    // Only what is still on the list is kept: a to-do gone and back is new again
+    setMasked({
+      ...Object.fromEntries(todos.filter((x) => masked[x.key] === todoSig(x)).map((x) => [x.key, masked[x.key]])),
+      [todo.key]: todoSig(todo),
+    });
+    toast.info(t('dashboard.todo.dismissed'));
+  };
+  const toggleKind = (key) =>
+    setHiddenKinds(hiddenKinds.includes(key) ? hiddenKinds.filter((k) => k !== key) : [...hiddenKinds, key]);
+  // A تكليف ticked here is ticked at once; a refusal puts it back and says why
+  const toggleDecision = async (x) => {
+    const next = x.status === 'done' ? 'open' : 'done';
+    setDecided((s) => ({ ...s, [x.id]: next }));
+    setDecisionBusy(x.id);
+    try {
+      await api.put(`/meetings/${x.meeting_id}/decisions/${x.id}/status`, { status: next });
+    } catch (err) {
+      setDecided((s) => ({ ...s, [x.id]: x.status }));
+      toast.error(err.message);
+    } finally {
+      setDecisionBusy(null);
+    }
+  };
+  const decisionProps = {
+    today: d?.today,
+    canFollow: can('meetings.followup'),
+    busy: decisionBusy,
+    onToggle: toggleDecision,
+  };
 
-  if (res.loading) return <DashboardSkeleton />;
+  // Settings too: otherwise masked to-dos flash in, then vanish
+  if (res.loading || todoPrefs.loading) return <DashboardSkeleton />;
   if (res.error)
     return (
       <div className="space-y-6">
@@ -995,6 +1529,9 @@ export default function Dashboard() {
   const hasSessions = !!d.month;
   const hasPlan = live.some((b) => b.plan);
   const hasFollowup = d.followup != null;
+  // Shown as soon as the account reads one of what it gathers, even with nothing ahead:
+  // «Rien de prévu» is an answer too
+  const hasAgenda = !!(d.agenda?.events || d.agenda?.meetings || hasPlan);
 
   return (
     <div className="space-y-6">
@@ -1027,14 +1564,26 @@ export default function Dashboard() {
         <aside className="space-y-4 xl:col-start-3 xl:row-start-1">
           <section aria-labelledby="dashboard-todo">
             <Card className="overflow-hidden">
-              <CardHeader className="flex-row items-center justify-between gap-3">
-                <CardTitle id="dashboard-todo">{t('dashboard.todo.title')}</CardTitle>
-                {todos.length > 0 && <Badge variant="secondary">{todos.length}</Badge>}
+              <CardHeader className="flex-row items-center gap-2">
+                <CardTitle id="dashboard-todo" className="me-auto">
+                  {t('dashboard.todo.title')}
+                </CardTitle>
+                {shownTodos.length > 0 && <Badge variant="secondary">{shownTodos.length}</Badge>}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="-my-1.5 -me-1.5 text-muted-foreground"
+                  onClick={() => setCustomizing(true)}
+                  aria-label={t('dashboard.todo.customize')}
+                  title={t('dashboard.todo.customize')}
+                >
+                  <IconSettings className="h-4 w-4" />
+                </Button>
               </CardHeader>
-              {todos.length > 0 ? (
+              {shownTodos.length > 0 ? (
                 <ul className="divide-y divide-border border-t border-border">
-                  {todos.map((todo) => (
-                    <TodoRow key={todo.key} todo={todo} />
+                  {shownTodos.map((todo) => (
+                    <TodoRow key={todo.key} todo={todo} onDismiss={dismissTodo} decisionProps={decisionProps} />
                   ))}
                 </ul>
               ) : (
@@ -1043,11 +1592,60 @@ export default function Dashboard() {
                   <span>{t('dashboard.todo.allClear')}</span>
                 </CardContent>
               )}
+              {maskedCount > 0 && (
+                <div className="border-t border-border px-4 py-2.5 text-sm text-muted-foreground sm:px-5">
+                  {t('dashboard.todo.maskedCount', { count: maskedCount })}
+                  {' · '}
+                  <button
+                    type="button"
+                    onClick={() => setMasked({})}
+                    className="focus-ring rounded font-medium text-primary hover:underline"
+                  >
+                    {t('dashboard.todo.showMasked')}
+                  </button>
+                </div>
+              )}
             </Card>
+            <Dialog
+              open={customizing}
+              onClose={() => setCustomizing(false)}
+              title={t('dashboard.todo.customize')}
+              description={t('dashboard.todo.customizeHint')}
+              size="sm"
+              autoFocus={false}
+              footer={
+                <div className="flex flex-wrap justify-end gap-2">
+                  {hiddenKinds.length > 0 && (
+                    <Button variant="ghost" onClick={() => setHiddenKinds([])} className="me-auto">
+                      {t('dashboard.todo.showAll')}
+                    </Button>
+                  )}
+                  <Button onClick={() => setCustomizing(false)}>{t('common.close')}</Button>
+                </div>
+              }
+            >
+              <ul className="divide-y divide-border">
+                {TODO_TYPES.map(([key, label]) => (
+                  <li key={key}>
+                    <label className="flex cursor-pointer items-center gap-3 py-2.5 text-sm">
+                      <input type="checkbox" checked={!hiddenKinds.includes(key)} onChange={() => toggleKind(key)} />
+                      <span className="flex-1">{t(label)}</span>
+                      {todos.some((x) => x.key === key) && (
+                        <span className="text-xs text-muted-foreground">{t('dashboard.todo.currentlyThere')}</span>
+                      )}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </Dialog>
           </section>
         </aside>
 
         <div className="space-y-4 xl:col-span-2 xl:col-start-1 xl:row-start-1">
+          {/* What comes next leads the main column: on a phone it follows «À traiter»,
+              before the figures of what already happened */}
+          {hasAgenda && <AgendaCard days={agenda} today={d.today} />}
+
           {hasSessions && (
             <section aria-labelledby="dashboard-trend">
               <Card>

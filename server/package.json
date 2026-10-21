@@ -3,7 +3,7 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "dev": "node index.js"
+    "dev": "node --env-file-if-exists=.env.dev index.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",

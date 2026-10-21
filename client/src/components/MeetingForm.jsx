@@ -96,7 +96,7 @@ export const ERRORS = {
  * notes and the next meeting's date come at the end, from the edit. The قسم is settled
  * at creation — the attendance is made of its قادة — so an edit never moves it.
  */
-export default function MeetingFormDialog({ open, initial, previous = null, onClose, onSaved }) {
+export default function MeetingFormDialog({ open, initial, previous = null, seed = null, onClose, onSaved }) {
   const { t, i18n } = useTranslation();
   const { section: onScreen } = useSection();
   const branches = useFetch('/branches', { skip: !open });
@@ -109,7 +109,8 @@ export default function MeetingFormDialog({ open, initial, previous = null, onCl
   // Every opening starts from the saved meeting, or from a blank one dated today
   useEffect(() => {
     if (!open) return;
-    setForm(initial ? fromMeeting(initial) : emptyMeeting(previous));
+    // seed: the next meeting announced by a محضر (next_date), opened with what is known of it
+    setForm(initial ? fromMeeting(initial) : { ...emptyMeeting(previous), ...(seed || {}) });
     setError(null);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 

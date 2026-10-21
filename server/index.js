@@ -11,6 +11,11 @@ seedLeaders();
 
 const app = express();
 app.set('trust proxy', 1);
+// Answered by this very process only — the startup check below asks 127.0.0.1 for it
+const instanceProbe = crypto.randomBytes(16).toString('hex');
+app.use((req, res, next) =>
+  req.headers['x-instance-probe'] === instanceProbe ? res.status(204).end() : next()
+);
 app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -1652,10 +1657,10 @@ app.get('/api/branches', (req, res) => {
       `SELECT b.*,
         (SELECT COUNT(*) FROM members m WHERE m.branch_id = b.id AND m.status = 'active') AS member_count,
         (SELECT ${fullNameSQL('l')} FROM assignments a JOIN leaders l ON l.id = a.leader_id
-          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(a2.year) FROM assignments a2 WHERE a2.branch_id = b.id)
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_name,
         (SELECT a.leader_id FROM assignments a
-          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(year) FROM assignments)
+          WHERE a.branch_id = b.id AND a.year = (SELECT MAX(a2.year) FROM assignments a2 WHERE a2.branch_id = b.id)
             AND a.leader_id IS NOT NULL
           ORDER BY a.sort_order, a.id LIMIT 1) AS leader_id
        FROM branches b WHERE 1=1${branchFilterSQL(req, 'b.id')} ORDER BY ${sectionOrderSQL('b.section')}, b.sort_order`
@@ -1671,6 +1676,9 @@ app.get('/api/branches', (req, res) => {
 app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
   const ym = todayISO().slice(0, 7);
   const year = latestYear();
+  // Bug 13 : أنشطة et présence de l'année scoute en cours, ou ?period=all
+  const period = statsPeriod(req);
+  const inPeriod = periodSQL(period);
   const branches = db
     .prepare(`SELECT * FROM branches WHERE 1=1${branchFilterSQL(req, 'id')} ORDER BY ${sectionOrderSQL('section')}, sort_order, id`)
     .all();
@@ -1692,7 +1700,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
            COALESCE(SUM(kind = 'activity'), 0) AS total,
            COALESCE(SUM(kind = 'activity' AND substr(date, 1, 7) = ?), 0) AS this_month,
            COALESCE(SUM(kind = 'visit'), 0) AS visits
-         FROM sessions s WHERE ${sessionInBranchSQL(id)}`
+         FROM sessions s WHERE ${sessionInBranchSQL(id)}${inPeriod}`
       )
       .get(ym);
   const attendanceOf = (id) =>
@@ -1703,7 +1711,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
            COALESCE(SUM(a.status = 'absent'), 0) AS absent,
            COALESCE(SUM(a.status = 'excused'), 0) AS excused
          FROM attendance a JOIN sessions s ON s.id = a.session_id
-         WHERE s.kind = 'activity' AND ${attendanceInBranchSQL(id)} AND ${countedSessionSQL('s')}`
+         WHERE s.kind = 'activity' AND ${attendanceInBranchSQL(id)} AND ${countedSessionSQL('s')}${inPeriod}`
       )
       .get();
   const leadersStmt = db.prepare(
@@ -1743,6 +1751,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
       members,
       leaders: year ? leadersStmt.all(b.id, year) : [],
       year,
+      stats_period: period,
       sessions_count: sessions.total,
       sessions_month: sessions.this_month,
       visits_count: sessions.visits,
@@ -1819,6 +1828,27 @@ function currentScoutYear() {
   const start = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
   return `${start}-${start + 1}`;
 }
+
+// Bug 13 : les statistiques des فرق et des قادة portent sur l'année scoute en cours
+// (septembre → août). ?period=all les cumule depuis toujours, ?period=2025-2026 vise une
+// année. Les bornes viennent de scoutYearRange (chiffres seuls), on peut les inliner.
+function statsPeriod(req) {
+  const q = String(req.query.period || '');
+  if (q === 'all') return { period: 'all', from: null, to: null };
+  const year = scoutYearRange(q) ? normYear(q) : currentScoutYear();
+  return { period: year, ...scoutYearRange(year) };
+}
+const periodSQL = (p, col = 's.date') => (p.from ? ` AND ${col} BETWEEN '${p.from}' AND '${p.to}'` : '');
+
+// Bug 13 : une seule source pour «les أنشطة d'un قائد» — session_leaders (principal et
+// aides, avec leur présence), complétée par sessions.leader_id quand aucune ligne de
+// session_leaders ne le cite pour cette séance (présence alors non pointée)
+const LEADER_SESSIONS_SQL = `(
+  SELECT sl0.leader_id, sl0.session_id, sl0.role, sl0.status FROM session_leaders sl0
+  UNION ALL
+  SELECT s0.leader_id, s0.id, 'main', NULL FROM sessions s0
+   WHERE s0.leader_id IS NOT NULL AND NOT EXISTS (
+     SELECT 1 FROM session_leaders x0 WHERE x0.session_id = s0.id AND x0.leader_id = s0.leader_id))`;
 
 // Titles compare trimmed and case-folded, so a stray space or capital never
 // costs the فرقة its achievement
@@ -3068,6 +3098,7 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   const promotions = db
     .prepare(
       `SELECT p.id, p.promoted_at, p.matalib, p.override, p.override_reason, p.old_branch_id,
+        p.reversed_at, p.reversed_by, p.reversal_reason,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         ob.total_requirements AS old_total_requirements,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
@@ -3079,6 +3110,19 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
     )
     .all(m.id)
     .map((p) => ({ ...p, matalib: JSON.parse(p.matalib || '[]') }));
+  // Bug 5 : les changements de فرقة hors ترفيع (mutation, correction). Les ترفيعات et leurs
+  // annulations sont déjà dans `promotions` (annulée = reversed_at), on ne les double pas.
+  const branch_moves = db
+    .prepare(
+      `SELECT h.id, h.effective_date, h.reason, h.changed_by, h.old_branch_id, h.new_branch_id,
+        ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar, nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
+       FROM member_branch_history h
+       JOIN branches ob ON ob.id = h.old_branch_id
+       JOIN branches nb ON nb.id = h.new_branch_id
+       WHERE h.member_id = ? AND h.source_promotion_id IS NULL AND h.reason IN ('transfer', 'correction')
+       ORDER BY h.effective_date DESC, h.id DESC`
+    )
+    .all(m.id);
   // المبالغ صلاحية قائمة بذاتها، كالهواتف: من لا يراها لا تصله أرقامها أصلًا
   const canSeeFees = hasPerm(req, 'sessions.read.fees');
   const { periodsAsc, rows: allRows } = attributedAttendance(m, { withFees: canSeeFees });
@@ -3116,6 +3160,7 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
         db.prepare('SELECT name_ar, promotion_threshold FROM branches WHERE id = ?').get(m.branch_id)
       ),
       promotions,
+      branch_moves,
       // مسؤولياته في الطليعة، الجارية أولًا ثم المنتهية (C1)
       responsibilities: db
         .prepare(
@@ -3816,6 +3861,41 @@ app.get('/api/promotions/missing-birth-date', requirePerm('promotions.read'), (r
 
 // ---------- Promotions ----------
 
+// Bug 20 : طليعة d'âge jamais réajustée. Les عناصر actifs dont la طليعة n'est plus celle de
+// leur âge (même règle que « répartir par âge » des فرق), فرقة par فرقة. L'action réutilise
+// POST /api/branches/:id/groups/by-age (branches.groups).
+function ageGroupRealignments(req) {
+  const year = ageYear();
+  const out = [];
+  for (const b of getBranches()) {
+    if (!branchOk(req, b.id)) continue;
+    const groups = groupsOfBranch(b.id);
+    if (!groups.some(isAgeGroup)) continue;
+    const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
+    const moves = db
+      .prepare(
+        `SELECT id, first_name, father_name, last_name, photo, birth_date, group_id
+           FROM members WHERE branch_id = ? AND status = 'active' AND birth_date IS NOT NULL
+          ORDER BY last_name, first_name`
+      )
+      .all(b.id)
+      .map((m) => ({ m, g: ageGroupFor(m.birth_date, groups, year) }))
+      .filter(({ m, g }) => g && g.id !== m.group_id)
+      .map(({ m, g }) => ({
+        ...m,
+        from_group_name: byId[m.group_id]?.name ?? null,
+        to_group_id: g.id,
+        to_group_name: g.name,
+      }));
+    if (moves.length)
+      out.push({ branch_id: b.id, branch_name_fr: b.name_fr, branch_name_ar: b.name_ar, moves });
+  }
+  return out;
+}
+app.get('/api/promotions/group-realign', requirePerm('promotions.read'), (req, res) =>
+  res.json({ can_apply: hasPerm(req, 'branches.groups'), branches: ageGroupRealignments(req) })
+);
+
 app.get('/api/promotions/pending', requirePerm('promotions.read'), (req, res) => {
   // A scoped قائد only sees promotions leaving one of his فرق
   res.json(pendingPromotions().filter((p) => branchOk(req, p.current_branch.id)));
@@ -3842,6 +3922,18 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   );
   const invalid = ids.filter((id) => !byId[id]);
   if (invalid.length) return res.status(409).json({ error: 'promotion_not_eligible', member_ids: invalid });
+  // Bug 20 : date d'effet libre (un ترفيع saisi en retard), jamais dans le futur, ni avant
+  // le dernier changement de فرقة de l'élément — sinon l'attribution des présences se croise.
+  const promotedAt = req.body?.promoted_at ? String(req.body.promoted_at) : todayISO();
+  if (!validISODate(promotedAt)) return res.status(400).json({ error: 'invalid_date' });
+  if (promotedAt > todayISO()) return res.status(400).json({ error: 'promotion_date_in_future' });
+  const lastMove = db.prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?');
+  const tooEarly = ids.filter((id) => {
+    const d = lastMove.get(id).d;
+    return d && promotedAt < d;
+  });
+  if (tooEarly.length)
+    return res.status(409).json({ error: 'promotion_date_before_last_move', member_ids: tooEarly });
   // تحت العتبة: ترفيع استثنائي، لا يمرّ إلا بسببٍ مكتوب لكل عنصر
   const overrides = req.body?.overrides && typeof req.body.overrides === 'object' ? req.body.overrides : {};
   const reasonOf = (id) => String(overrides[id] ?? '').trim().slice(0, 500);
@@ -3858,7 +3950,7 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
         p.id,
         p.current_branch.id,
         p.target_branch.id,
-        todayISO(),
+        promotedAt,
         JSON.stringify(acquired),
         override ? 1 : 0,
         override ? reasonOf(p.id) : null
@@ -3868,7 +3960,7 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
         p.id,
         p.current_branch.id,
         p.target_branch.id,
-        todayISO(),
+        promotedAt,
         req.user.display_name || req.user.username,
         info.lastInsertRowid
       );
@@ -3876,6 +3968,7 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
         member_id: p.id,
         old_branch_id: p.current_branch.id,
         new_branch_id: p.target_branch.id,
+        promoted_at: promotedAt,
         pct: p.pct,
         override,
         override_reason: override ? reasonOf(p.id) : null,
@@ -3887,6 +3980,18 @@ app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res)
   res.json({ promoted });
 });
 
+// Bug 20 : la فرقة d'arrivée voit aussi ses ترفيعات entrants, pas seulement celle de départ
+function promotionScopeSQL(req) {
+  const scope = allowedBranches(req);
+  if (!scope) return '';
+  const ids = [...scope].map(Number).filter(Number.isInteger);
+  const list = ids.length ? ids.join(',') : -1;
+  return ` AND (p.old_branch_id IN (${list}) OR p.new_branch_id IN (${list}))`;
+}
+// L'annulation renvoie l'élément dans sa فرقة d'origine : c'est elle qui décide (ou un admin)
+const canReversePromotion = (req, p) =>
+  hasPerm(req, 'promotions.apply') && (req.user.role === 'admin' || branchOk(req, p.old_branch_id));
+
 app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) => {
   const rows = db
     .prepare(
@@ -3895,17 +4000,25 @@ app.get('/api/promotions/history', requirePerm('promotions.read'), (req, res) =>
         p.reversed_at, p.reversed_by, p.reversal_reason, p.override, p.override_reason,
         ob.total_requirements AS old_total_requirements,
         m.first_name, m.father_name, m.last_name,
+        (p.reversed_at IS NULL AND m.branch_id = p.new_branch_id AND p.id = (
+          SELECT p2.id FROM promotions p2 WHERE p2.member_id = p.member_id AND p2.reversed_at IS NULL
+          ORDER BY p2.promoted_at DESC, p2.id DESC LIMIT 1)) AS latest_active,
         ob.name_fr AS old_name_fr, ob.name_ar AS old_name_ar,
         nb.name_fr AS new_name_fr, nb.name_ar AS new_name_ar
        FROM promotions p
        JOIN members m ON m.id = p.member_id
        JOIN branches ob ON ob.id = p.old_branch_id
        JOIN branches nb ON nb.id = p.new_branch_id
-       WHERE 1=1${branchFilterSQL(req, 'p.old_branch_id')}
+       WHERE 1=1${promotionScopeSQL(req)}
        ORDER BY p.promoted_at DESC, p.id DESC`
     )
     .all()
-    .map((p) => ({ ...p, matalib: JSON.parse(p.matalib || '[]') }));
+    .map(({ latest_active, ...p }) => ({
+      ...p,
+      matalib: JSON.parse(p.matalib || '[]'),
+      // Seul le dernier ترفيع en cours, élément toujours dans la فرقة d'arrivée
+      reversible: !!latest_active && canReversePromotion(req, p),
+    }));
   res.json(rows);
 });
 
@@ -3913,8 +4026,7 @@ app.post('/api/promotions/:id/reverse', requirePerm('promotions.apply'), (req, r
   const promotion = db.prepare('SELECT * FROM promotions WHERE id = ?').get(req.params.id);
   if (!promotion) return res.status(404).json({ error: 'promotion not found' });
   if (promotion.reversed_at) return res.status(409).json({ error: 'promotion_already_reversed' });
-  if (!branchOk(req, promotion.old_branch_id) || !branchOk(req, promotion.new_branch_id))
-    return res.status(403).json({ error: 'forbidden' });
+  if (!canReversePromotion(req, promotion)) return res.status(403).json({ error: 'forbidden' });
   const member = db.prepare('SELECT * FROM members WHERE id = ?').get(promotion.member_id);
   if (!member) return res.status(404).json({ error: 'member not found' });
   const latest = db
@@ -4209,21 +4321,25 @@ app.get(
 );
 
 app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
+  // Bug 13 : une seule source (LEADER_SESSIONS_SQL, aides compris), sur l'année scoute en
+  // cours par défaut (?period=all : depuis toujours). Les séances à venir ne comptent pas.
+  const period = statsPeriod(req);
+  const mine = (cond) =>
+    `(SELECT COUNT(*) FROM ${LEADER_SESSIONS_SQL} ls JOIN sessions s ON s.id = ls.session_id
+       WHERE ls.leader_id = l.id AND s.date <= @today AND ${cond}${periodSQL(period)})`;
   const rows = db
     .prepare(
       `SELECT l.*,
         (SELECT u.id FROM users u WHERE u.leader_id = l.id AND u.active = 1 LIMIT 1) AS account_user_id,
         (SELECT u.username FROM users u WHERE u.leader_id = l.id AND u.active = 1 LIMIT 1) AS account_username,
-        (SELECT COUNT(*) FROM sessions s WHERE s.leader_id = l.id AND s.kind != 'visit') AS sessions_count,
-        (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
-          WHERE sl.leader_id = l.id AND sl.status = 'present' AND s.kind != 'visit') AS present_count,
-        (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
-          WHERE sl.leader_id = l.id AND sl.status = 'absent' AND s.kind != 'visit') AS absent_count,
-        (SELECT COUNT(*) FROM session_leaders sl JOIN sessions s ON s.id = sl.session_id
-          WHERE sl.leader_id = l.id AND s.kind = 'visit') AS visits_count
+        ${mine("s.kind != 'visit'")} AS sessions_count,
+        ${mine("s.kind != 'visit' AND ls.role = 'main'")} AS led_count,
+        ${mine("s.kind != 'visit' AND ls.status = 'present'")} AS present_count,
+        ${mine("s.kind != 'visit' AND ls.status = 'absent'")} AS absent_count,
+        ${mine("s.kind = 'visit'")} AS visits_count
        FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY l.last_name, l.first_name`
     )
-    .all();
+    .all({ today: todayISO() });
   const year = latestYear();
   const roles = {};
   for (const a of assignmentsForYear(year)) {
@@ -4232,6 +4348,8 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
       title: a.title,
       role_type: a.role_type,
       branch_id: a.branch_id,
+      group_id: a.group_id,
+      sort_order: a.sort_order,
       branch_name_fr: a.branch_name_fr,
       branch_name_ar: a.branch_name_ar,
     });
@@ -4254,6 +4372,7 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
       ),
       roles: roles[l.id] || [],
       year,
+      stats_period: period,
       // Admin only: is the قائد's account still on the فرق of his تشكيلة (I4)
       ...(req.user.role === 'admin' && l.account_user_id
         ? (() => {
@@ -4277,13 +4396,14 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
        WHERE a.leader_id = ? ORDER BY a.year DESC, a.id`
     )
     .all(l.id);
-  // All sessions where the leader is animator (main or helper), with their own présence
+  // All sessions where the leader is animator (main or helper), with their own présence —
+  // the same source as the list (LEADER_SESSIONS_SQL, bug 13)
   const sessions = db
     .prepare(
       `SELECT s.id, s.title, s.date, s.matalib, s.kind, sl.role, sl.status AS my_status,
         b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id AND a.status = 'present') AS present_count
-       FROM session_leaders sl
+       FROM ${LEADER_SESSIONS_SQL} sl
        JOIN sessions s ON s.id = sl.session_id
        LEFT JOIN branches b ON b.id = s.branch_id
        WHERE sl.leader_id = ?${sessionScopeSQL(req)} ORDER BY s.date DESC, s.id DESC`
@@ -4301,10 +4421,19 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
   const visits = sessions
     .filter((s) => s.kind === 'visit')
     .map((s) => ({ ...s, members: visitedNames.all(s.id) }));
+  // Bug 13 : les chiffres portent sur l'année scoute en cours (?period=all : depuis
+  // toujours), séances à venir exclues ; la liste, elle, garde tout l'historique
+  const period = statsPeriod(req);
+  const today = todayISO();
+  const counted = activities.filter(
+    (s) => s.date <= today && (!period.from || (s.date >= period.from && s.date <= period.to))
+  );
   const attendance = {
-    present: activities.filter((s) => s.my_status === 'present').length,
-    absent: activities.filter((s) => s.my_status === 'absent').length,
-    unmarked: activities.filter((s) => !s.my_status).length,
+    present: counted.filter((s) => s.my_status === 'present').length,
+    absent: counted.filter((s) => s.my_status === 'absent').length,
+    unmarked: counted.filter((s) => !s.my_status).length,
+    sessions: counted.length,
+    led: counted.filter((s) => s.role === 'main').length,
   };
   // بطاقات التحضير التي أعدّها — تنزل في سجلّه أنه حضّر لأنشطته
   const prepCards = db
@@ -4327,6 +4456,7 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
     // His بطاقات التحضير, for whoever reads the بطاقات
     prep_cards: hasPerm(req, 'prep.read') ? prepCards : [],
     attendance,
+    stats_period: period,
     card_years: years,
     card: progressCard(l.id, selectedYear),
   });
@@ -4539,6 +4669,49 @@ function sendLeaderDues(req, res, leaderId) {
     can_edit: hasPerm(req, 'leaders.dues.record'),
   });
 }
+
+// إعدادات الواجهة الخاصة بالحساب — بلا أي صلاحية، كلٌّ يرى إعداداته وحده. المفاتيح
+// معدودة، و لكل مفتاح شكلٌ يُتحقّق منه: لا يُخزَّن ما لا تعرفه الواجهة.
+const isStrList = (v) => Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === 'string' && s.length <= 60);
+const USER_SETTINGS = {
+  // الأنواع المطفأة، و ما أُخفي حتى يستجدّ فيه شيء (المفتاح ← ما كان فيه عند الإخفاء)
+  'dashboard.todo': {
+    empty: { hidden: [], masked: {} },
+    valid: (v) =>
+      v &&
+      typeof v === 'object' &&
+      isStrList(v.hidden) &&
+      v.masked &&
+      typeof v.masked === 'object' &&
+      !Array.isArray(v.masked) &&
+      Object.entries(v.masked).length <= 100 &&
+      Object.entries(v.masked).every(([k, s]) => k.length <= 60 && typeof s === 'string' && s.length <= 4000),
+  },
+};
+
+app.get('/api/me/settings/:key', (req, res) => {
+  const def = USER_SETTINGS[req.params.key];
+  if (!def) return res.status(404).json({ error: 'unknown setting' });
+  const row = db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?').get(req.user.id, req.params.key);
+  let value = def.empty;
+  try {
+    if (row) value = JSON.parse(row.value);
+  } catch {
+    /* a broken row reads as the default */
+  }
+  res.json(def.valid(value) ? value : def.empty);
+});
+
+app.put('/api/me/settings/:key', (req, res) => {
+  const def = USER_SETTINGS[req.params.key];
+  if (!def) return res.status(404).json({ error: 'unknown setting' });
+  if (!def.valid(req.body)) return res.status(400).json({ error: 'invalid setting' });
+  db.prepare(
+    `INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
+  ).run(req.user.id, req.params.key, JSON.stringify(req.body));
+  res.json(req.body);
+});
 
 // اشتراك القائد صاحب الحساب — بلا أي صلاحية: كل قائد يعرف ما دفعه و ما بقي عليه
 app.get('/api/me/dues', (req, res) => {
@@ -7810,12 +7983,16 @@ function eventSummary(ev) {
   };
 }
 
+// Les عناصر d'une شعبة d'adultes (العلياء, 18 ans et plus) partent sans autorisation parentale
+const CONSENT_NEEDED_SQL = (m, b) => `(${m}.id IS NOT NULL AND COALESCE(${b}.min_age, 0) < 18)`;
+
 // المشارك بشكل واحد أيًّا كان: اسم العنصر أو القائد، أو اسم الضيف وحده
 const EVENT_PARTICIPANT_SQL = `
   SELECT p.id, p.member_id, p.leader_id, p.guest_name, p.amount_due, p.paid, p.paid_at, p.recorded_by,
     p.withdrawn_at, p.withdrawn_by,
     -- E1 : l'autorisation parentale ; le scan lui-même ne vient qu'à la demande
     p.consent_at, p.consent_by, p.consent_recorded_by, p.consent_scan IS NOT NULL AS consent_has_scan,
+    ${CONSENT_NEEDED_SQL('m', 'b')} AS consent_needed,
     COALESCE(m.first_name, l.first_name) AS first_name,
     COALESCE(m.father_name, l.father_name) AS father_name,
     COALESCE(m.last_name, l.last_name) AS last_name,
@@ -7931,6 +8108,7 @@ function eventPayload(req, ev) {
       .map((p) => {
         const out = participantOut(req, p);
         out.consent_has_scan = !!p.consent_has_scan;
+        out.consent_needed = !!p.consent_needed;
         if (health && p.member_id && health.has(p.member_id)) out.health = health.get(p.member_id);
         return out;
       });
@@ -8845,10 +9023,14 @@ const checklistOf = (eventId) =>
 
 // L'état «prêt à partir» : autorisations manquantes (عناصر inscrits), points de sécurité cochés
 const EVENT_READINESS_SQL = (alias = 'e') => `
-  (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
-     AND p.member_id IS NOT NULL AND p.consent_at IS NULL) AS consent_missing,
-  (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
-     AND p.member_id IS NOT NULL) AS consent_total,
+  (SELECT COUNT(*) FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
+     LEFT JOIN branches b ON b.id = m.branch_id
+     WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
+     AND ${CONSENT_NEEDED_SQL('m', 'b')} AND p.consent_at IS NULL) AS consent_missing,
+  (SELECT COUNT(*) FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
+     LEFT JOIN branches b ON b.id = m.branch_id
+     WHERE p.event_id = ${alias}.id AND p.withdrawn_at IS NULL
+     AND ${CONSENT_NEEDED_SQL('m', 'b')}) AS consent_total,
   (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = ${alias}.id) AS safety_total,
   (SELECT COUNT(*) FROM event_checklist c WHERE c.event_id = ${alias}.id AND c.done_at IS NOT NULL) AS safety_done`;
 
@@ -9142,6 +9324,9 @@ app.delete('/api/events/:id/fundings/:fid', ...requireEventCaisse, (req, res) =>
 // كالأنشطة: قسم الطلب أولًا، ثم فرق الحساب المقيَّد — اجتماع الفوج (بلا فرقة) يمرّ.
 
 const MEETING_KINDS = ['leaders', 'branch', 'amana', 'prep', 'review', 'parents', 'other'];
+// أنواع قديمة: تبقى مقروءة في المحاضر التي كُتبت بها، و لا يُفتح بها اجتماع جديد (كالواجهة،
+// client/src/lib/meetings.js LEGACY_MEETING_KINDS)
+const LEGACY_MEETING_KINDS = ['prep', 'review', 'parents'];
 const DECISION_STATUSES = ['open', 'done', 'dropped'];
 const ATTENDANCE_STATUSES = ['present', 'absent', 'excused'];
 const optionalISODate = (v) => (v === undefined || v === null || v === '' ? null : validISODate(v) ? v : undefined);
@@ -9248,12 +9433,22 @@ const decisionsOf = (meetingId) =>
     .all(meetingId);
 
 // «متابعة تكاليف الجلسة الماضية»: قرارات الاجتماعات التي سبقته في نطاقه نفسه (اجتماعات
-// الفوج، أو اجتماعات فرقته): ما بقي قيد التنفيذ، و ما نُفِّذ أو أُلغي منذ الاجتماع السابق —
-// ما أُغلق قبله تابعه محضرُ ذلك الاجتماع. IS: الفرقة NULL تساوي NULL
-const EARLIER_MEETING_SQL = `p.section = @section AND p.branch_id IS @branch
-  AND (p.date < @date OR (p.date = @date AND p.id < @id))`;
+// الفوج، أو اجتماعات تشاركه فرقةً واحدة على الأقل من فرقه في meeting_branches — اجتماعٌ
+// لعدّة فرق يتابع قرارات كل فرقه، لا الأولى وحدها): ما بقي قيد التنفيذ، و ما نُفِّذ أو أُلغي
+// منذ الاجتماع السابق — ما أُغلق قبله تابعه محضرُ ذلك الاجتماع.
+const SAME_SCOPE_SQL = `p.section = @section AND (CASE WHEN @branches = '[]'
+    THEN NOT EXISTS (SELECT 1 FROM meeting_branches x WHERE x.meeting_id = p.id)
+    ELSE EXISTS (SELECT 1 FROM meeting_branches x WHERE x.meeting_id = p.id
+                 AND x.branch_id IN (SELECT value FROM json_each(@branches))) END)`;
+const EARLIER_MEETING_SQL = `${SAME_SCOPE_SQL} AND (p.date < @date OR (p.date = @date AND p.id < @id))`;
+const meetingScopeOf = (m) => ({
+  section: m.section,
+  branches: JSON.stringify(m.branch_ids || meetingBranchIds(m.id)),
+  date: m.date,
+  id: m.id,
+});
 function followupsOf(m) {
-  const scope = { section: m.section, branch: m.branch_id, date: m.date, id: m.id };
+  const scope = meetingScopeOf(m);
   const previous = db
     .prepare(`SELECT p.date FROM meetings p WHERE ${EARLIER_MEETING_SQL} ORDER BY p.date DESC, p.id DESC LIMIT 1`)
     .get(scope);
@@ -9271,14 +9466,42 @@ function followupsOf(m) {
     .all({ ...scope, since: previous.date });
 }
 
+// «الاجتماع المقبل» (next_date): الاجتماع المفتوح في ذلك اليوم في النطاق نفسه، إن فُتح —
+// و إلا تعرض الصفحة زرّ فتحه بما يُعرف عنه مسبقًا
+const nextMeetingOf = (m) =>
+  m.next_date
+    ? db
+        .prepare(`SELECT p.id FROM meetings p WHERE ${SAME_SCOPE_SQL} AND p.date = @next AND p.id != @id ORDER BY p.id LIMIT 1`)
+        .get({ ...meetingScopeOf(m), next: m.next_date })?.id ?? null
+    : null;
+
+// اجتماع فرقة أو أكثر: قادتها في تشكيلة السنة الأخيرة — يقترحهم الحضور أولًا، و الباقون
+// بطلب. [] لاجتماع الفوج أو لفرق لا تشكيلة لها بعد: الحضور يقترح القسم كله.
+const meetingBranchLeaderIds = (branchIds) => {
+  const year = latestYear();
+  if (!year || !branchIds.length) return [];
+  return db
+    .prepare(
+      `SELECT DISTINCT a.leader_id AS id FROM assignments a
+       WHERE a.year = ? AND a.leader_id IS NOT NULL AND a.branch_id IN (SELECT value FROM json_each(?))`
+    )
+    .all(year, JSON.stringify(branchIds))
+    .map((r) => r.id);
+};
+
 // المحضر كله في طلب واحد
-const meetingPayload = (m) => ({
-  ...withMeetingBranches([db.prepare(`SELECT ${MEETING_COLUMNS} ${MEETING_JOINS} WHERE m.id = ?`).get(m.id)])[0],
-  attendees: attendeesOf(m.id),
-  followups: followupsOf(m),
-  items: itemsOf(m.id),
-  decisions: decisionsOf(m.id),
-});
+const meetingPayload = (m) => {
+  const row = withMeetingBranches([db.prepare(`SELECT ${MEETING_COLUMNS} ${MEETING_JOINS} WHERE m.id = ?`).get(m.id)])[0];
+  return {
+    ...row,
+    attendees: attendeesOf(m.id),
+    followups: followupsOf(row),
+    next_meeting_id: nextMeetingOf(row),
+    branch_leader_ids: meetingBranchLeaderIds(row.branch_ids),
+    items: itemsOf(m.id),
+    decisions: decisionsOf(m.id),
+  };
+};
 
 // كل تعديل في المحضر — حضور، بند، قرار — تعديلٌ له: «آخر تعديل» يقوله
 const touchMeeting = (req, id) =>
@@ -9302,6 +9525,7 @@ function parseMeeting(req, existing = null) {
   const b = req.body || {};
   const kind = b.kind === undefined ? (existing?.kind ?? 'leaders') : b.kind;
   if (!MEETING_KINDS.includes(kind)) return { error: 'invalid kind' };
+  if (LEGACY_MEETING_KINDS.includes(kind) && kind !== existing?.kind) return { error: 'invalid kind' };
   const title = optionalText(b.title, 200);
   if (!title) return { error: 'invalid title' };
   if (!validISODate(b.date)) return { error: 'invalid date' };
@@ -9500,6 +9724,7 @@ app.put('/api/meetings/:id', requirePerm('meetings.manage'), (req, res) => {
   })();
   const updated = { ...db.prepare('SELECT * FROM meetings WHERE id = ?').get(m.id), branch_ids: parsed.branchIds };
   auditEvent(req, 'update', 'meeting', m.id, beforeUpdate, updated);
+  notifications.meetingChanged(req, m, updated);
   res.json(meetingPayload(updated));
 });
 
@@ -10601,15 +10826,39 @@ app.get('/api/branches/:id/money', requirePerm('branches.read'), (req, res) => {
 // restricted قائد's dashboard only talks about his own فرق.
 
 
-// The weekly نشاط day: next Saturday, or today when today is a Saturday
-function nextSaturday(iso) {
+// The weekly نشاط day: the next given weekday (0 = Sunday … 6 = Saturday, the default),
+// or today when today is that day
+function nextWeekday(iso, weekday = 6) {
   const d = new Date(`${iso}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + ((6 - d.getUTCDay() + 7) % 7));
+  d.setUTCDate(d.getUTCDate() + ((weekday - d.getUTCDay() + 7) % 7));
   return d.toISOString().slice(0, 10);
+}
+const nextSaturday = (iso) => nextWeekday(iso, 6);
+
+// Bug 12 : le jour où une فرقة se réunit d'habitude — le jour de la semaine le plus
+// fréquent parmi ses huit dernières أنشطة passées. Samedi à défaut : sans historique,
+// quand aucun jour ne revient au moins deux fois (une sortie isolée ne fait pas une
+// habitude), ou quand samedi est à égalité ; sinon, à égalité, le plus récent.
+function usualWeekday(branchId, today) {
+  const rows = db
+    .prepare(
+      `SELECT CAST(strftime('%w', s.date) AS INTEGER) AS wd FROM sessions s
+        WHERE s.kind = 'activity' AND s.date <= ? AND ${sessionInBranchSQL(branchId)}
+        ORDER BY s.date DESC, s.id DESC LIMIT 8`
+    )
+    .all(today);
+  const n = new Map();
+  for (const r of rows) n.set(r.wd, (n.get(r.wd) || 0) + 1);
+  const top = Math.max(0, ...n.values());
+  if (top < 2 || n.get(6) === top) return 6;
+  return rows.find((r) => n.get(r.wd) === top).wd;
 }
 
 // Present over marked; null when nothing is marked, never a made-up 0%
 const rateOf = (present, marked) => (marked ? Math.round((present / marked) * 100) : null);
+
+// How far «À venir» looks for camps, دورات and meetings
+const AGENDA_DAYS = 30;
 
 app.get('/api/dashboard', (req, res) => {
   const today = todayISO();
@@ -10652,13 +10901,17 @@ app.get('/api/dashboard', (req, res) => {
       prev_rate: rateOf(before.present, before.marked),
       collected: canFees ? cur.collected : null,
     };
-    // The last eight activity days, oldest first — one point per day, all فرق together
+    // The last eight activity weeks, oldest first (bug 16). One point per week (Monday to
+    // Sunday), all فرق together and weighted by their pointed عناصر: a small فرقة meeting
+    // mid-week joins its week instead of making a point as heavy as a full Saturday.
+    // `date` is the week's last activity day, `week` its Monday.
     trend = db
       .prepare(
-        `SELECT s.date, COUNT(DISTINCT s.id) AS sessions, ${tally}
+        `SELECT date(s.date, 'weekday 0', '-6 days') AS week, MAX(s.date) AS date,
+                COUNT(DISTINCT s.id) AS sessions, ${tally}
          FROM attendance a JOIN sessions s ON s.id = a.session_id JOIN members m ON m.id = a.member_id
          WHERE s.kind = 'activity' AND ${countedSessionSQL('s', '?')}${scoped}
-         GROUP BY s.date HAVING marked > 0 ORDER BY s.date DESC LIMIT 8`
+         GROUP BY week HAVING marked > 0 ORDER BY week DESC LIMIT 8`
       )
       .all(today)
       .reverse()
@@ -10668,7 +10921,7 @@ app.get('/api/dashboard', (req, res) => {
   const memberCount = db.prepare("SELECT COUNT(*) AS n FROM members WHERE branch_id = ? AND status = 'active'");
   const headOf = db.prepare(
     `SELECT ${fullNameSQL('l')} AS name FROM assignments a JOIN leaders l ON l.id = a.leader_id
-     WHERE a.branch_id = ? AND a.year = (SELECT MAX(year) FROM assignments)
+     WHERE a.branch_id = ? AND a.year = (SELECT MAX(a2.year) FROM assignments a2 WHERE a2.branch_id = a.branch_id)
      ORDER BY a.sort_order, a.id LIMIT 1`
   );
   const upcomingPrep = db.prepare(
@@ -10685,6 +10938,8 @@ app.get('/api/dashboard', (req, res) => {
         ...b,
         member_count: canMembers ? memberCount.get(b.id).n : null,
         leader_name: headOf.get(b.id)?.name ?? null,
+        // Bug 12 : son prochain jour de نشاط, selon le jour où elle se réunit d'habitude
+        next_day: nextWeekday(today, usualWeekday(b.id, today)),
       };
       if (canSessions) {
         // Counted for this فرقة: a shared نشاط splits its roster by each عنصر's فرقة
@@ -10732,7 +10987,9 @@ app.get('/api/dashboard', (req, res) => {
         out.plan = {
           due: due.length,
           due_done: due.filter((i) => i.session).length,
-          next: next ? { date: next.date, title: next.title, done: !!next.session } : null,
+          next: next
+            ? { date: next.date, title: next.title, done: !!next.session, session_id: next.session?.id ?? null }
+            : null,
         };
       }
       return out;
@@ -10852,6 +11109,80 @@ app.get('/api/dashboard', (req, res) => {
         .all({ today })
     : [];
 
+  // À venir : les camps, دورات et sorties en cours ou qui commencent dans les 30 jours, avec
+  // leurs inscrits et leur état «prêt à partir» ; les réunions déjà ouvertes à une date à
+  // venir, et celles qu'une réunion a annoncées (next_date) sans qu'on les ait encore ouvertes
+  // — tant qu'aucune réunion plus récente du même cadre ne les a remplacées
+  const agendaEvents = hasPerm(req, 'events.read')
+    ? db
+        .prepare(
+          `SELECT e.id AS event_id, e.kind, e.title, e.start_date, e.end_date, e.place,
+                  (SELECT COUNT(*) FROM event_participants p
+                    WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS participants,
+                  ${EVENT_READINESS_SQL('e')}
+           FROM events e
+           WHERE e.end_date >= @today AND e.start_date <= date(@today, '+${AGENDA_DAYS} days')${eventScopeSQL(req)}
+           ORDER BY e.start_date, e.id LIMIT 8`
+        )
+        .all({ today })
+    : null;
+  let agendaMeetings = null;
+  if (hasPerm(req, 'meetings.read')) {
+    const scheduled = db
+      .prepare(
+        `SELECT m.id AS meeting_id, m.kind, m.title, m.date, m.start_time, m.place
+         FROM meetings m
+         WHERE m.date >= @today AND m.date <= date(@today, '+${AGENDA_DAYS} days')${meetingScopeSQL(req)}
+         ORDER BY m.date, COALESCE(m.start_time, ''), m.id LIMIT 8`
+      )
+      .all({ today });
+    const later = db.prepare(
+      `SELECT 1 FROM meetings p WHERE ${SAME_SCOPE_SQL} AND (p.date > @date OR (p.date = @date AND p.id > @id)) LIMIT 1`
+    );
+    const announced = db
+      .prepare(
+        `SELECT m.id, m.kind, m.title, m.date, m.next_date, m.section
+         FROM meetings m
+         WHERE m.next_date >= @today AND m.next_date <= date(@today, '+${AGENDA_DAYS} days')${meetingScopeSQL(req)}
+         ORDER BY m.next_date, m.id LIMIT 8`
+      )
+      .all({ today })
+      .filter((m) => !nextMeetingOf(m) && !later.get(meetingScopeOf(m)))
+      .map((m) => ({ meeting_id: m.id, kind: m.kind, title: m.title, date: m.next_date, from_date: m.date, announced: true }));
+    agendaMeetings = [...scheduled, ...announced].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
+  }
+
+  // H1 : les تكاليف des réunions. Celles du قائد du compte, toutes celles encore à faire — la
+  // plus pressée d'abord, sans échéance en dernier ; et, pour qui suit les décisions, celles
+  // des autres dont l'échéance est passée : les siennes sont déjà dans la première liste
+  const mine = Number.isInteger(me) && me > 0 ? me : -1;
+  const openDecisionSQL = `SELECT ${DECISION_COLUMNS}, m.title AS meeting_title, m.date AS meeting_date
+       FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id LEFT JOIN leaders o ON o.id = d.leader_id
+       WHERE d.status = 'open'`;
+  const myDecisions =
+    hasPerm(req, 'meetings.read') && mine > 0
+      ? db
+          .prepare(
+            `${openDecisionSQL} AND d.leader_id = @me${meetingScopeSQL(req)}
+             ORDER BY COALESCE(d.due_date, '9999-12-31'), m.date, d.position, d.id LIMIT 30`
+          )
+          .all({ me: mine })
+      : null;
+  const lateDecisionsWhere = `AND d.due_date < @today AND d.leader_id IS NOT @me${meetingScopeSQL(req)}`;
+  const lateDecisions = hasPerm(req, 'meetings.followup')
+    ? db
+        .prepare(`${openDecisionSQL} ${lateDecisionsWhere} ORDER BY d.due_date, m.date, d.position, d.id LIMIT 10`)
+        .all({ today, me: mine })
+    : null;
+  const lateDecisionsTotal = lateDecisions
+    ? db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+           WHERE d.status = 'open' ${lateDecisionsWhere}`
+        )
+        .get({ today, me: mine }).n
+    : 0;
+
   const recent = canSessions
     ? db
         .prepare(
@@ -10929,6 +11260,10 @@ app.get('/api/dashboard', (req, res) => {
     to_evaluate: toEvaluate,
     events_to_evaluate: eventsToEvaluate,
     events_to_prepare: eventsToPrepare,
+    agenda: { events: agendaEvents, meetings: agendaMeetings, days: AGENDA_DAYS },
+    my_decisions: myDecisions,
+    late_decisions: lateDecisions,
+    late_decisions_total: lateDecisionsTotal,
     recent,
     promotions,
     admissions,
@@ -11472,6 +11807,23 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`API server listening on http://localhost:${PORT}`);
+  // Windows lets this server take [::]:PORT while another project already holds
+  // 0.0.0.0:PORT. Nothing fails, but the Vite proxy and Puppeteer dial 127.0.0.1 and
+  // reach that other API: every call comes back 401. Stop here instead.
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/`, {
+      headers: { 'X-Instance-Probe': instanceProbe },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.status === 204) return;
+    console.error(
+      `\n127.0.0.1:${PORT} is answered by another program, not this server.\n` +
+        `Stop it, or move this app: PORT=3011 for the server, API_URL=http://127.0.0.1:3011 for Vite.\n`
+    );
+    process.exit(1);
+  } catch {
+    /* nothing on IPv4 at all (IPv6-only host): no clash to report */
+  }
 });

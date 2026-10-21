@@ -1323,7 +1323,7 @@ function LeaderRow({ l, page, onOpen }) {
             )}
             {l.sessions_count > 0 && (
               <div className="mt-0.5 text-xs text-muted-foreground">
-                {t('leader.ledShort', { count: l.sessions_count })}
+                {t('leader.ledOf', { led: l.led_count ?? 0, count: l.sessions_count })}
               </div>
             )}
           </div>
@@ -1509,7 +1509,9 @@ export default function Leaders() {
   const [accountFor, setAccountFor] = useState(null);
   const [creatingYear, setCreatingYear] = useState(false);
 
-  const leadersRes = useFetch('/leaders');
+  // Bug 13 : présence et أنشطة de l'année scoute en cours, ou depuis toujours
+  const [statsPeriod, setStatsPeriod] = useState('');
+  const leadersRes = useFetch(statsPeriod ? `/leaders?period=${statsPeriod}` : '/leaders');
   const branchesRes = useFetch('/branches');
   // null = both أقسام on screen (an admin who has not narrowed the app to one)
   const { section: onScreen } = useSection();
@@ -1939,6 +1941,15 @@ export default function Leaders() {
                         { value: 'none', label: t('leader.noCourse') },
                       ]}
                     />
+                    {/* The période of the présence column: shown where that column is */}
+                    <FilterSelect
+                      value={statsPeriod}
+                      onChange={setStatsPeriod}
+                      allLabel={t('statsPeriod.thisYear')}
+                      ariaLabel={t('statsPeriod.label')}
+                      className="hidden w-auto min-w-40 @3xl:flex"
+                      options={[{ value: 'all', label: t('statsPeriod.allTime') }]}
+                    />
                     {isAdmin && (
                       <FilterSelect
                         value={lf.account}
@@ -1983,7 +1994,7 @@ export default function Leaders() {
                 )}
               </div>
 
-              {leadersRes.loading ? (
+              {leadersRes.loading && !leadersRes.data ? (
                 <RegisterSkeleton />
               ) : filteredLeaders.length === 0 ? (
                 filtering ? (

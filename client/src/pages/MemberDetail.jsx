@@ -811,7 +811,7 @@ export default function MemberDetail() {
 
           {tab === 'history' && (
             <>
-              {member.promotions.length === 0 && !member.visits?.length && !subs?.count && (
+              {member.promotions.length === 0 && !member.branch_moves?.length && !member.visits?.length && !subs?.count && (
                 <Card>
                   <EmptyState icon={<IconAward className="h-6 w-6" />} title={t('member.historyEmpty')} />
                 </Card>
@@ -825,17 +825,27 @@ export default function MemberDetail() {
                       <li key={p.id}>
                         <details className="group">
                           <summary className="focus-ring flex cursor-pointer select-none list-none flex-wrap items-center gap-2 px-4 py-3 text-sm hover:bg-accent/40 sm:px-5 [&::-webkit-details-marker]:hidden">
-                            <IconAward className="h-4 w-4 text-primary" />
-                            <span className="tabular-nums text-muted-foreground">{fmtDate(p.promoted_at)}</span>
+                            <IconAward className={cn('h-4 w-4', p.reversed_at ? 'text-muted-foreground' : 'text-primary')} />
+                            <span className={cn('tabular-nums text-muted-foreground', p.reversed_at && 'line-through')}>
+                              {fmtDate(p.promoted_at)}
+                            </span>
                             <Badge variant="secondary">{lang === 'ar' ? p.old_name_ar : p.old_name_fr}</Badge>
                             <IconArrow className="h-3.5 w-3.5 text-muted-foreground rtl:rotate-180" />
-                            <Badge>{lang === 'ar' ? p.new_name_ar : p.new_name_fr}</Badge>
+                            <Badge variant={p.reversed_at ? 'secondary' : undefined}>{lang === 'ar' ? p.new_name_ar : p.new_name_fr}</Badge>
+                            {!!p.reversed_at && <Badge variant="destructive">{t('promotion.reversed')}</Badge>}
                             {!!p.override && <Badge variant="warning">{t('matalib.override')}</Badge>}
-                            <span className="ms-auto font-medium tabular-nums text-primary">
+                            <span className={cn('ms-auto font-medium tabular-nums', p.reversed_at ? 'text-muted-foreground' : 'text-primary')}>
                               {t('member.requirementsOf', { earned: p.matalib.length, total: p.old_total_requirements })}
                             </span>
                           </summary>
                           <div className="space-y-3 border-t border-border p-4 sm:p-5">
+                            {!!p.reversed_at && (
+                              <p className="text-sm text-muted-foreground">
+                                {t('promotion.reversedOn', { date: fmtDate(p.reversed_at.slice(0, 10)) })}
+                                {p.reversed_by && <> {t('promotion.reversedBy', { name: '' })}<bdi>{p.reversed_by}</bdi></>}
+                                {p.reversal_reason && <> · <bdi>{p.reversal_reason}</bdi></>}
+                              </p>
+                            )}
                             {!!p.override && p.override_reason && (
                               <p className="text-sm text-muted-foreground">
                                 {t('matalib.overrideReason')}: <bdi>{p.override_reason}</bdi>
@@ -844,6 +854,32 @@ export default function MemberDetail() {
                             <RequirementGrid total={p.old_total_requirements} selected={p.matalib} />
                           </div>
                         </details>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+              )}
+
+              {/* Bug 5 : mutations et corrections de فرقة, hors ترفيع */}
+              {member.branch_moves?.length > 0 && (
+                <Card className="overflow-hidden">
+                  <h2 className="px-4 pt-4 pb-3 text-base font-semibold sm:px-5">{t('member.branchMoves')}</h2>
+                  <ul className="divide-y divide-border border-t border-border">
+                    {member.branch_moves.map((h) => (
+                      <li key={h.id} className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm sm:px-5">
+                        <span className="tabular-nums text-muted-foreground">{fmtDate(h.effective_date)}</span>
+                        <Badge variant="secondary">{lang === 'ar' ? h.old_name_ar : h.old_name_fr}</Badge>
+                        <IconArrow className="h-3.5 w-3.5 text-muted-foreground rtl:rotate-180" />
+                        <Badge>{lang === 'ar' ? h.new_name_ar : h.new_name_fr}</Badge>
+                        <Badge variant="outline">
+                          {t(h.reason === 'correction' ? 'member.moveCorrection' : 'member.moveTransfer')}
+                        </Badge>
+                        {h.changed_by && (
+                          <span className="ms-auto text-xs text-muted-foreground">
+                            {t('member.moveBy', { name: '' })}
+                            <bdi>{h.changed_by}</bdi>
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ul>

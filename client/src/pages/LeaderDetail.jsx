@@ -317,6 +317,8 @@ export default function LeaderDetail() {
     has('leaders.progress.manage') || (has('leaders.progress.self') && Number(user?.leader_id) === Number(id));
   // '' = the year the server picks (the latest تشكيلة year)
   const [cardYear, setCardYear] = useState('');
+  // Bug 13 : les chiffres de l'année scoute en cours, ou ('all') depuis toujours
+  const [statsPeriod, setStatsPeriod] = useState('');
   const [sp, setSp] = useSearchParams();
   // الاشتراك الشهري: لمن يملك صلاحيته، و للقائد نفسه في صفحته
   const canSeeDues = has('leaders.dues') || Number(user?.leader_id) === Number(id);
@@ -340,7 +342,12 @@ export default function LeaderDetail() {
     error,
     errorStatus,
     reload,
-  } = useFetch(`/leaders/${id}${cardYear ? `?year=${encodeURIComponent(cardYear)}` : ''}`);
+  } = useFetch(
+    `/leaders/${id}?${new URLSearchParams({
+      ...(cardYear ? { year: cardYear } : {}),
+      ...(statsPeriod ? { period: statsPeriod } : {}),
+    })}`
+  );
   const events = useFetch(`/leaders/${id}/events`, { skip: !canEvents });
 
   async function toggleMatlab(item) {
@@ -384,14 +391,18 @@ export default function LeaderDetail() {
   const roles = leader.current_roles;
 
   // Présence as an animator: marked أنشطة only — an unmarked one says nothing yet
+  // The figures cover the chosen période (the server's stats_period); the list keeps it all
   const att = leader.attendance || { present: 0, absent: 0 };
   const marked = att.present + att.absent;
   const rate = marked ? Math.round((att.present / marked) * 100) : null;
+  const statsRange = leader.stats_period;
+  const inPeriod = (s) => !statsRange?.from || (s.date >= statsRange.from && s.date <= statsRange.to);
   const recent = leader.sessions
-    .filter((s) => s.my_status === 'present' || s.my_status === 'absent')
+    .filter((s) => (s.my_status === 'present' || s.my_status === 'absent') && inPeriod(s))
     .slice(0, 10)
     .map((s) => ({ date: s.date, status: s.my_status }));
-  const led = leader.sessions.filter((s) => s.role === 'main').length;
+  const done = att.sessions ?? leader.sessions.length;
+  const led = att.led ?? leader.sessions.filter((s) => s.role === 'main').length;
 
   // بطاقة تقدم القائد for the selected سنة — empty until the مطالب list is filled in
   const card = leader.card || { year: '', total: 0, done_count: 0, items: [] };
@@ -476,7 +487,18 @@ export default function LeaderDetail() {
       </section>
 
       {/* ---------- The four figures a قائد المسؤول checks ---------- */}
-      <Card className="grid grid-cols-2 gap-px overflow-hidden bg-border sm:grid-cols-4">
+      <div className="flex justify-end">
+        <Select
+          value={statsPeriod}
+          onChange={(e) => setStatsPeriod(e.target.value)}
+          aria-label={t('statsPeriod.label')}
+          className="w-auto"
+        >
+          <option value="">{t('statsPeriod.thisYear')}</option>
+          <option value="all">{t('statsPeriod.allTime')}</option>
+        </Select>
+      </div>
+      <Card className="-mt-3 grid grid-cols-2 gap-px overflow-hidden bg-border sm:grid-cols-4">
         <Stat label={t('leader.colPresence')}>
           <div className="flex flex-wrap items-baseline gap-x-2">
             <RateValue rate={rate} className="text-2xl font-bold" />
@@ -489,10 +511,10 @@ export default function LeaderDetail() {
           <AttendanceStrip recent={recent} size="md" />
         </Stat>
         <Stat label={t('leader.colActivities')}>
-          <p className="text-2xl font-bold tabular-nums">{leader.sessions.length}</p>
+          <p className="text-2xl font-bold tabular-nums">{done}</p>
           <p className="text-xs text-muted-foreground">
             {/* «none yet» only when there is none at all: one he only helped in still counts */}
-            {leader.sessions.length > 0 ? t('leader.ledShort', { count: led }) : t('leader.noActivities')}
+            {done > 0 ? t('leader.ledShort', { count: led }) : t('leader.noActivities')}
           </p>
         </Stat>
         <Stat label={t('leader.colService')}>

@@ -13,7 +13,7 @@ import {
   payState,
   staffRoleLabel,
 } from './events';
-import { ageAt, emergencyLine, familyCount, healthNotes, parentPhones, remainingOf, rosterByGroup, unpaidOf } from './campFile';
+import { familyCount, remainingOf, rosterByGroup, unpaidOf } from './campFile';
 import { arrearsMonths, arrearsQuery } from './arrears';
 import { periodLabel, periodQuery } from './periodReport';
 import {
@@ -789,6 +789,10 @@ async function memberCard(ctx) {
             label: t('branch.matalib'),
             value: (p) => t('member.requirementsOf', { earned: p.matalib.length, total: p.old_total_requirements }),
           },
+          {
+            label: t('promotion.reversed'),
+            value: (p) => (p.reversed_at ? t('promotion.reversedOn', { date: fmtDate(p.reversed_at.slice(0, 10)) }) : ''),
+          },
         ]),
       ])
     );
@@ -1536,10 +1540,6 @@ async function meetingDecisionsList(ctx) {
    E2 — ملف المخيم
    ============================================================ */
 
-const phonesText = (list, t) =>
-  list.map((ph) => (ph.mother ? `${fmtPhone(ph.number)} (${t('member.motherShort')})` : fmtPhone(ph.number))).join(' / ') ||
-  null;
-
 const payText = (p, ev, t) => {
   const s = payState(p, ev);
   if (s === 'free') return null;
@@ -1558,8 +1558,8 @@ async function eventCard(ctx) {
   const [ev, branches] = await Promise.all([api.get(`/events/${id}`), api.get('/branches')]);
   const report = sp.get('variant') === 'report';
   const fees = !!ev.summary;
-  const health = !!ev.health_visible && !report;
   const people = ev.participants;
+  const consents = people.some((p) => p.consent_needed);
   const others = people.filter((p) => !p.member_id);
   const chief = chiefLabel(t, ev.kind, ev.section);
   const marked = ev.attendance.length;
@@ -1569,8 +1569,13 @@ async function eventCard(ctx) {
   const scope = eventScopeLabels(ev, branches, lng).map((s) => s.label);
   const label = report ? t('campFile.reportVariant') : kindLabel;
   const presentBySession = new Map();
+  const presentByPerson = new Map();
   for (const a of ev.attendance)
-    if (a.status === 'present') presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+    if (a.status === 'present') {
+      presentBySession.set(a.session_id, (presentBySession.get(a.session_id) || 0) + 1);
+      presentByPerson.set(a.participant_id, (presentByPerson.get(a.participant_id) || 0) + 1);
+    }
+  const presences = (p) => `${presentByPerson.get(p.id) || 0}/${ev.sessions.length}`;
   // L'ordre de l'appel : فرقة, طليعة, le عريف en tête
   const roster = rosterByGroup(people).flatMap((b) => b.groups.flatMap((g) => g.people));
 
@@ -1656,14 +1661,13 @@ async function eventCard(ctx) {
             { label: t('member.branch'), value: (p) => x.branch(p) },
             { label: t('member.group'), value: (p) => p.group_name || t('campFile.noGroup') },
             { label: t('campFile.role'), value: (p) => (p.member_role ? t(`resp.role.${p.member_role}`) : null) },
-            { label: t('member.age'), type: 'int', value: (p) => ageAt(p.birth_date, ev.start_date) },
-            { label: t('member.parentPhone'), value: (p) => phonesText(parentPhones(p), t) },
-            { label: t('campFile.blood'), value: (p) => p.blood_type },
-            health && { label: t('campFile.health'), value: (p) => healthNotes(p.health, t).join(' — ') || null },
-            health && { label: t('safety.emergencyName'), value: (p) => emergencyLine(p.health) },
-            { label: t('campFile.consent'), type: 'date', value: (p) => p.consent_at },
+            consents && {
+              label: t('campFile.consent'),
+              value: (p) => (!p.consent_needed ? t('campFile.consentNotNeeded') : p.consent_at ? fmtDate(p.consent_at) : t('campFile.consentMissing')),
+            },
             fees && { label: t('event.payment'), value: (p) => payText(p, ev, t) },
             fees && { label: t('campFile.remaining'), type: 'amount', sum: true, value: (p) => remainingOf(p, ev) },
+            { label: t('campFile.presences'), value: presences },
           ],
           { empty: t('event.noParticipants'), total: fees ? t('campFile.total') : undefined }
         ),
@@ -1679,9 +1683,9 @@ async function eventCard(ctx) {
             x.num,
             { label: t('member.name'), value: (p) => participantName(p) },
             { label: t('event.kind'), value: (p) => t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest') },
-            { label: t('leader.phone'), value: (p) => x.phones(p.leader_phone) },
             fees && { label: t('event.payment'), value: (p) => payText(p, ev, t) },
             fees && { label: t('campFile.remaining'), type: 'amount', value: (p) => remainingOf(p, ev) },
+            { label: t('campFile.presences'), value: presences },
           ]),
         ],
       });
