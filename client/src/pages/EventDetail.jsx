@@ -1212,7 +1212,8 @@ function StaffDialog({ ev, staff, presetRole, open, onClose, onSaved, leaders, t
 /** What a participant paid, as a chip: tapping it opens the payment when allowed. */
 function PayChip({ p, ev, t, onOpen }) {
   const state = payState(p, ev);
-  if (state === 'free' && !onOpen) return null;
+  // A guest is never charged: nothing to show or to record for him
+  if (state === 'free' && (!onOpen || p.guest_name)) return null;
   const due = dueOf(p, ev);
   const label = {
     paid: fmtAmount(p.paid),

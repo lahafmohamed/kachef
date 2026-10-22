@@ -48,11 +48,16 @@ export function eventScopeLabels(ev, branchList, lng) {
 // A tint per kind, so a دورة reads apart from a مخيم down the list
 export const KIND_BADGE = { camp: 'default', course: 'info', trip: 'warning', other: 'secondary' };
 
-/** What a participant is asked for: his own amount when set (0 = معفى), else the event's fee. */
-export const dueOf = (p, ev) => p.amount_due ?? ev.fee ?? 0;
+/**
+ * What a participant is asked for: his own amount when set (0 = معفى), else the event's
+ * fee. A guest is never charged: he owes nothing, so no report lists him as unpaid and
+ * he adds nothing to what the camp expects to collect.
+ */
+export const dueOf = (p, ev) => (p.guest_name ? 0 : (p.amount_due ?? ev.fee ?? 0));
 
 /** 'exempt' | 'free' | 'paid' | 'partial' | 'unpaid' */
 export function payState(p, ev) {
+  if (p.guest_name) return (p.paid ?? 0) > 0 ? 'paid' : 'free';
   if (p.amount_due === 0) return 'exempt';
   const due = dueOf(p, ev);
   const paid = p.paid ?? 0;

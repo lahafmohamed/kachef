@@ -7935,8 +7935,10 @@ function loadEvent(req, res) {
   return ev;
 }
 
-// ما يُطلب من مشارك: مبلغه الخاص إن حُدّد (0 = معفى)، و إلا قيمة الاشتراك
-const eventDueOf = (p, ev) => p.amount_due ?? ev.fee ?? 0;
+// ما يُطلب من مشارك: مبلغه الخاص إن حُدّد (0 = معفى)، و إلا قيمة الاشتراك.
+// الضيف لا يُطلب منه شيء: لا يُعدّ فيما ينتظره المخيم و لا فيمن لم يدفع.
+const eventDueOf = (p, ev) => (p.guest_name ? 0 : (p.amount_due ?? ev.fee ?? 0));
+const EVENT_DUE_SQL = (p, e) => `CASE WHEN ${p}.guest_name IS NOT NULL THEN 0 ELSE COALESCE(${p}.amount_due, ${e}.fee, 0) END`;
 
 // حساب المخيم كله، من خانات المشاركين و التبرعات و المصاريف عند القراءة — لا مجموع يُخزَّن فيشيخ.
 // العدّ بالحال: معفى، دفع (كامل المطلوب أو أكثر)، جزئي، لم يدفع؛ مخيم مجّاني لا حال فيه.
@@ -7944,7 +7946,7 @@ function eventSummary(ev) {
   const out = { participants: 0, expected: 0, collected: 0, outstanding: 0, paid: 0, partial: 0, unpaid: 0, exempt: 0 };
   // Whoever was taken off the list counts for nothing here: not as a participant, not as money due or paid
   for (const p of db
-    .prepare('SELECT amount_due, paid FROM event_participants WHERE event_id = ? AND withdrawn_at IS NULL')
+    .prepare('SELECT guest_name, amount_due, paid FROM event_participants WHERE event_id = ? AND withdrawn_at IS NULL')
     .all(ev.id)) {
     const due = eventDueOf(p, ev);
     const paid = p.paid ?? 0;
@@ -7952,7 +7954,7 @@ function eventSummary(ev) {
     out.expected += due;
     out.collected += paid;
     out.outstanding += Math.max(due - paid, 0);
-    if (p.amount_due === 0) out.exempt += 1;
+    if (p.amount_due === 0 && !p.guest_name) out.exempt += 1;
     else if (due === 0) out.paid += paid > 0 ? 1 : 0;
     else if (paid >= due) out.paid += 1;
     else if (paid > 0) out.partial += 1;
@@ -8261,18 +8263,18 @@ app.get('/api/events', requirePerm('events.read'), (req, res) => {
       ${EVENT_READINESS_SQL('e')},
       (SELECT COALESCE(SUM(p.paid), 0) FROM event_participants p
          WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS collected,
-      (SELECT COALESCE(SUM(COALESCE(p.amount_due, e.fee, 0)), 0)
+      (SELECT COALESCE(SUM(${EVENT_DUE_SQL('p', 'e')}), 0)
          FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS expected,
-      (SELECT COALESCE(SUM(MAX(COALESCE(p.amount_due, e.fee, 0) - COALESCE(p.paid, 0), 0)), 0)
+      (SELECT COALESCE(SUM(MAX(${EVENT_DUE_SQL('p', 'e')} - COALESCE(p.paid, 0), 0)), 0)
          FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL) AS outstanding,
       -- E2 : qui doit encore, et combien de familles appeler (des frères et sœurs partagent le
       -- téléphone d'un parent : un seul appel)
       (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id AND p.withdrawn_at IS NULL
-         AND COALESCE(p.paid, 0) < COALESCE(p.amount_due, e.fee, 0)) AS unpaid_count,
+         AND COALESCE(p.paid, 0) < ${EVENT_DUE_SQL('p', 'e')}) AS unpaid_count,
       (SELECT COUNT(DISTINCT COALESCE(NULLIF(m.father_phone, ''), NULLIF(m.mother_phone, ''), 'p' || p.id))
          FROM event_participants p LEFT JOIN members m ON m.id = p.member_id
          WHERE p.event_id = e.id AND p.withdrawn_at IS NULL
-           AND COALESCE(p.paid, 0) < COALESCE(p.amount_due, e.fee, 0)) AS unpaid_families,
+           AND COALESCE(p.paid, 0) < ${EVENT_DUE_SQL('p', 'e')}) AS unpaid_families,
       (SELECT COALESCE(SUM(d.amount), 0) FROM event_donations d WHERE d.event_id = e.id) AS donations,
       (SELECT COALESCE(SUM(x.amount), 0) FROM event_expenses x WHERE x.event_id = e.id) AS expenses,
       (SELECT COALESCE(SUM(CASE WHEN f.direction = 'to_event' THEN f.amount ELSE -f.amount END), 0)
