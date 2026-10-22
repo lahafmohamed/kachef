@@ -1120,6 +1120,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
             without a home indicator, so a form's own buttons sat on the screen edge */}
         <div
           ref={contentRef}
+          data-dialog-body={frame.footer ? undefined : ''}
           className={cn(
             'flex-1 overflow-y-auto p-4 sm:p-5',
             !frame.footer &&

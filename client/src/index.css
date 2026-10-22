@@ -312,6 +312,29 @@ body[data-scroll-locked] {
   }
 }
 
+/* A sheet without a `footer` keeps its buttons at the end of the form: on a phone
+   a long form (Nouveau chef) put «Enregistrer» two screens down. That trailing
+   row becomes the sheet's footer instead — pinned to the bottom edge while the
+   fields scroll, Annuler and Enregistrer side by side like the other sheets.
+   Sticky stops at the body's content box, so the body gives up its bottom
+   padding (the row carries the safe area) and fields never peek out below it. */
+@media (max-width: 639.98px) {
+  [data-dialog-body]:has(> form > :last-child > button[type="submit"]) {
+    padding-bottom: 0;
+  }
+  [data-dialog-body] > form > :last-child:has(> button[type="submit"]) {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    flex-direction: row;
+    justify-content: flex-end;
+    margin-inline: -1rem;
+    border-top: 1px solid var(--border);
+    background: var(--card);
+    padding: 0.75rem 1rem max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+}
+
 /* Native checkbox in brand color, sized for touch */
 input[type="checkbox"],
 input[type="radio"] {

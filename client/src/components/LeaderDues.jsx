@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -125,6 +125,21 @@ export default function LeaderDues() {
   const [show, setShow] = useState('');
   const res = useFetch(`/leader-dues${year ? `?year=${encodeURIComponent(year)}` : ''}`);
   const data = res.data;
+  // A phone shows three months of the twelve: open the grid on the current one,
+  // not on janvier. Once per year shown, so a tap on a cell never moves it.
+  const revealCurrent = useCallback(
+    (el) => {
+      const th = el?.querySelector('[data-current]');
+      if (!th) return;
+      const box = el.getBoundingClientRect();
+      const r = th.getBoundingClientRect();
+      const rtl = getComputedStyle(el).direction === 'rtl';
+      const past = rtl ? r.left - box.left : r.right - box.right;
+      if (rtl ? past < 0 : past > 0) el.scrollLeft += past;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [res.data?.year]
+  );
 
   if (res.error)
     return <ErrorState message={t('error.loadFailed')} onRetry={res.reload} retryLabel={t('error.retry')} />;
@@ -238,7 +253,7 @@ export default function LeaderDues() {
             {rows.length ? t('common.noResultsHint') : null}
           </EmptyState>
         ) : (
-          <div className="overflow-x-auto">
+          <div ref={revealCurrent} className="overflow-x-auto">
             <table className="w-full border-separate border-spacing-0 text-sm">
               <thead>
                 <tr className="text-xs text-muted-foreground">
@@ -247,6 +262,7 @@ export default function LeaderDues() {
                     <th
                       key={m}
                       scope="col"
+                      data-current={m === currentMonth || undefined}
                       className={cn('px-0.5 py-3 text-center font-medium', m === currentMonth && 'text-primary')}
                     >
                       {fmtDueMonth(m, lng)}

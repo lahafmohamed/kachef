@@ -1498,7 +1498,8 @@ export default function Dashboard() {
       <>
         <Link
           to={`/sessions/${b.last_activity.id}`}
-          className="focus-ring rounded font-medium tabular-nums hover:text-primary hover:underline"
+          // The pseudo-element takes the 17px line to a thumb's height, as on «Voir tout»
+          className='focus-ring relative rounded font-medium tabular-nums before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[""] hover:text-primary hover:underline'
         >
           {f.date(b.last_activity.date)}
         </Link>
