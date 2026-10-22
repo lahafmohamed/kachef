@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
-import { staffRoleLabel } from '../lib/events';
+import { participantName, staffRoleLabel } from '../lib/events';
+import { contactPhones } from '../lib/campFile';
 import { avatarName, fmtDate, fmtPhone, memberName, todayISO } from '../utils';
 import DatePicker from './DatePicker';
 import { telHref } from './MemberParts';
@@ -30,9 +31,12 @@ import {
   IconDroplet,
   IconFileText,
   IconPencil,
+  IconPhone,
   IconPlus,
   IconShield,
   IconTrash,
+  IconUsers,
+  ProgressBar,
 } from './ui';
 
 // ---------- Camp prêt à partir (E1) ----------
@@ -290,11 +294,217 @@ function HealthDialog({ open, onClose, member, health, onSaved }) {
 
 const staffName = (st) => (st.leader_id ? memberName(st) : st.name);
 
-export function EventSafetyTab({ ev, setEv, canEdit, links }) {
+// ---------- Appel du car : départ et retour ----------
+
+const LEGS = ['out', 'back'];
+
+// The chip a participant falls under: his طليعة, «sans طليعة», or the قادة and guests together
+const chipOf = (p) => (p.member_id ? (p.group_id ? `g${p.group_id}` : 'none') : 'others');
+
+// «14:32», from the server's UTC datetime('now')
+function clockOf(v) {
+  const d = new Date(`${String(v).replace(' ', 'T')}Z`);
+  return Number.isNaN(d.getTime()) ? '' : d.toTimeString().slice(0, 5);
+}
+
+/** A طليعة chip, as the attendance list draws them */
+function CountChip({ on, onClick, label, count }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={cn(
+        'focus-ring inline-flex h-10 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 text-sm font-medium transition-colors sm:h-8 sm:px-3 sm:text-xs',
+        on
+          ? 'border-primary/30 bg-accent text-accent-foreground'
+          : 'border-border bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+      )}
+    >
+      {label}
+      <span className={cn('tabular-nums', !on && 'opacity-70')}>{count}</span>
+    </button>
+  );
+}
+
+/**
+ * L'appel au car, téléphone en main : un tap par enfant qui monte, le compteur «32/35 à bord»,
+ * la طليعة à l'écran, et les manquants avec le numéro des parents à appeler. Le pointage part
+ * tout de suite au serveur ; un refus le reprend.
+ */
+function HeadcountDialog({ ev, setEv, people, canMark, open, onClose }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  // From the camp's last day on, the call is the return one
+  const [leg, setLeg] = useState(() => (todayISO() >= ev.end_date ? 'back' : 'out'));
+  const [chip, setChip] = useState('');
+  const [missingOnly, setMissingOnly] = useState(false);
+  const at = `${leg}_at`;
+  const by = `${leg}_by`;
+
+  const groups = new Map();
+  for (const p of people) {
+    const key = chipOf(p);
+    if (!groups.has(key))
+      groups.set(key, {
+        value: key,
+        label: key === 'none' ? t('campFile.noGroup') : key === 'others' ? t('campFile.leadersGuests') : p.group_name,
+        people: [],
+      });
+    groups.get(key).people.push(p);
+  }
+  const ordered = [...groups.values()].sort(
+    (x, y) =>
+      (x.value[0] === 'g' ? 0 : x.value === 'none' ? 1 : 2) - (y.value[0] === 'g' ? 0 : y.value === 'none' ? 1 : 2) ||
+      String(x.label).localeCompare(String(y.label), undefined, { numeric: true })
+  );
+  const aboardOf = (list) => list.filter((p) => p[at]).length;
+  const chips =
+    ordered.length > 1
+      ? [
+          { value: '', label: t('safety.chipAll'), count: `${aboardOf(people)}/${people.length}` },
+          ...ordered.map((g) => ({ value: g.value, label: g.label, count: `${aboardOf(g.people)}/${g.people.length}` })),
+        ]
+      : null;
+  const scope = chip && groups.has(chip) ? groups.get(chip).people : people;
+  const aboard = aboardOf(scope);
+  const missing = scope.filter((p) => !p[at]);
+  const rows = missingOnly ? missing : scope;
+
+  const patch = (id, fields) =>
+    setEv((e) => ({ ...e, participants: e.participants.map((x) => (x.id === id ? { ...x, ...fields } : x)) }));
+
+  async function toggle(p) {
+    const done = !p[at];
+    const before = { [at]: p[at], [by]: p[by] };
+    patch(p.id, { [at]: done ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null, [by]: null });
+    try {
+      const { participant } = await api.put(`/events/${ev.id}/participants/${p.id}/checkin`, { leg, done });
+      patch(p.id, { [at]: participant[at], [by]: participant[by] });
+    } catch (err) {
+      patch(p.id, before);
+      toast.error(err.message);
+    }
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} title={t('safety.headcountTitle')} description={t('safety.headcountHint')} size="lg" autoFocus={false}>
+      <div className="space-y-4">
+        <SegmentedControl
+          className="flex w-full"
+          label={t('safety.headcountTitle')}
+          value={leg}
+          onChange={setLeg}
+          options={LEGS.map((l) => ({ value: l, label: t(`safety.leg_${l}`) }))}
+        />
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-2xl font-semibold tabular-nums" aria-live="polite">
+              {t('safety.onBoard', { done: aboard, total: scope.length })}
+            </p>
+            {aboard === scope.length && scope.length > 0 && (
+              <span className="text-sm font-medium text-success">{t('safety.allAboard')}</span>
+            )}
+          </div>
+          <ProgressBar value={scope.length ? (100 * aboard) / scope.length : 0} label={t('safety.headcountTitle')} />
+        </div>
+        {chips && (
+          <div
+            role="group"
+            aria-label={t('safety.chipGroup')}
+            className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
+          >
+            {chips.map((c) => (
+              <CountChip key={c.value || 'all'} on={c.value === chip} onClick={() => setChip(c.value)} label={c.label} count={c.count} />
+            ))}
+          </div>
+        )}
+        <SegmentedControl
+          className="flex w-full"
+          size="sm"
+          label={t('safety.headcountShow')}
+          value={missingOnly ? 'missing' : 'all'}
+          onChange={(v) => setMissingOnly(v === 'missing')}
+          options={[
+            { value: 'all', label: t('safety.showAll', { count: scope.length }) },
+            { value: 'missing', label: t('safety.showMissing', { count: missing.length }) },
+          ]}
+        />
+        {rows.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">{t('safety.allAboard')}</p>
+        ) : (
+          <ul className="space-y-2">
+            {rows.map((p) => {
+              const on = !!p[at];
+              const phone = on ? null : contactPhones(p)[0];
+              const name = participantName(p);
+              return (
+                <li key={p.id} className="flex items-stretch gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={on}
+                    disabled={!canMark}
+                    onClick={() => toggle(p)}
+                    className={cn(
+                      'focus-ring flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-start transition-colors',
+                      on ? 'border-success/40 bg-success/10' : 'border-border bg-card',
+                      canMark ? 'cursor-pointer active:scale-[0.99]' : 'cursor-default',
+                      canMark && !on && 'hover:bg-accent/60'
+                    )}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2',
+                        on ? 'border-success bg-success text-white' : 'border-input bg-background'
+                      )}
+                    >
+                      {on && <IconCheck className="h-4 w-4" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">
+                        <bdi>{name}</bdi>
+                      </span>
+                      {(p.group_name || !p.member_id) && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          <bdi>{p.group_name || t('campFile.leadersGuests')}</bdi>
+                        </span>
+                      )}
+                    </span>
+                    {on && (
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground" title={p[by] || undefined}>
+                        {clockOf(p[at])}
+                      </span>
+                    )}
+                  </button>
+                  {phone && (
+                    <a
+                      href={telHref(phone.number)}
+                      aria-label={t('safety.callFor', { name, number: fmtPhone(phone.number) })}
+                      title={fmtPhone(phone.number)}
+                      className="focus-ring flex w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-primary shadow-xs transition-colors hover:bg-accent/60"
+                    >
+                      <IconPhone className="h-5 w-5" />
+                    </a>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+export function EventSafetyTab({ ev, setEv, canEdit, canMark, links }) {
   const { t } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
   const [consentFor, setConsentFor] = useState(null);
+  const [counting, setCounting] = useState(false);
+  // Who boards the car: the list, without whoever was taken off it
+  const headcount = ev.participants.filter((p) => !p.withdrawn_at);
   const [itemDialog, setItemDialog] = useState(null);
   const [busy, setBusy] = useState(null);
   const canAct = !!ev.can_safety;
@@ -354,6 +564,28 @@ export function EventSafetyTab({ ev, setEv, canEdit, links }) {
         </div>
         {facts && <ReadinessBadge r={ev.readiness} />}
       </Card>
+
+      {/* ----- Appel départ / retour ----- */}
+      {headcount.length > 0 && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+          <div className="min-w-0 space-y-1">
+            <h3 className="text-sm font-semibold">{t('safety.headcountTitle')}</h3>
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {LEGS.map((leg) =>
+                t('safety.legCount', {
+                  leg: t(`safety.leg_${leg}`),
+                  done: headcount.filter((p) => p[`${leg}_at`]).length,
+                  total: headcount.length,
+                })
+              ).join(' · ')}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setCounting(true)} className="w-full sm:w-auto">
+            <IconUsers />
+            {t(canMark ? 'safety.headcountOpen' : 'safety.headcountView')}
+          </Button>
+        </Card>
+      )}
 
       {/* ----- Check-list sécurité ----- */}
       <Card>
@@ -542,6 +774,14 @@ export function EventSafetyTab({ ev, setEv, canEdit, links }) {
         </Card>
       )}
 
+      <HeadcountDialog
+        ev={ev}
+        setEv={setEv}
+        people={headcount}
+        canMark={!!canMark}
+        open={counting}
+        onClose={() => setCounting(false)}
+      />
       {canAct && (
         <ConsentDialog
           ev={ev}

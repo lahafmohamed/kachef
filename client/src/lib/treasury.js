@@ -1,4 +1,4 @@
-import { toDate } from './date';
+import { toDate, toISO } from './date';
 import { branchName, fmtAmount, fmtDate } from '../utils';
 
 /**
@@ -139,28 +139,142 @@ export function byMonth(rows) {
 
 export const FLOWS = ['in', 'out'];
 
+// ---------- Période (G2) ----------
+// '' : tout, depuis l'ouverture — la page d'avant. Le reste se lit dans le navigateur :
+// la page reçoit déjà toutes les lignes.
+export const PERIODS = ['month', 'prev', 'year', 'dates'];
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+// The day before an ISO day
+const dayBefore = (iso) => {
+  const d = toDate(iso);
+  d.setDate(d.getDate() - 1);
+  return toISO(d);
+};
+const lastDay = (y, m) => toISO(new Date(y, m + 1, 0));
+
+/**
+ * The days a period covers, both included, as of `today`: this month, the one before,
+ * the scout year (1 September – 31 August, as on the server) or the dates given. Nothing
+ * (from and to '') for «Tout», or dates not given yet.
+ */
+export function periodRange(period, today, { from = '', to = '' } = {}) {
+  const [y, m] = today.split('-').map(Number);
+  if (period === 'month') return { from: `${today.slice(0, 7)}-01`, to: lastDay(y, m - 1) };
+  if (period === 'prev') {
+    const d = new Date(y, m - 2, 1);
+    return { from: toISO(d), to: lastDay(d.getFullYear(), d.getMonth()) };
+  }
+  if (period === 'year') {
+    const start = m >= 9 ? y : y - 1;
+    return { from: `${start}-09-01`, to: `${start + 1}-08-31` };
+  }
+  if (period === 'dates') {
+    const f = ISO_DAY.test(from) ? from : '';
+    const t = ISO_DAY.test(to) ? to : '';
+    return f && t && f > t ? { from: t, to: f } : { from: f, to: t };
+  }
+  return { from: '', to: '' };
+}
+
+/** «Du 1 oct. 2026 au 31 oct. 2026», «Depuis…», «Jusqu'au…» — a period on a page or a file */
+export const boxPeriodLabel = ({ from, to }, t) =>
+  from && to
+    ? t('treasury.periodRange', { from: fmtDate(from), to: fmtDate(to) })
+    : from
+      ? t('treasury.periodSince', { date: fmtDate(from) })
+      : t('treasury.periodUntil', { date: fmtDate(to) });
+
+/** The period asked for in an address (?from=&to=, as the page passes it to its exports) */
+export const periodOfQuery = (sp) => periodRange('dates', '2000-01-01', { from: sp.get('from') || '', to: sp.get('to') || '' });
+
+const inPeriod = (date, from, to) => (!from || date >= from) && (!to || date <= to);
+
+/**
+ * One caisse over a period: what it held when the period began — the evening before,
+ * or its opening count when it opened within it — and at its end (today at the latest).
+ * null: not opened by the end of the period.
+ */
+function boxPeriod(box, rows, from, to, today) {
+  if (!box?.start) return null;
+  const end = to && to < today ? to : today;
+  if (end < box.start.date) return null;
+  const started = !from || from <= box.start.date;
+  return {
+    started,
+    openingDate: started ? box.start.date : dayBefore(from),
+    opening: started ? box.start.amount : bookBalanceOn(box, rows, dayBefore(from)),
+    closingDate: end,
+    closing: bookBalanceOn(box, rows, end),
+  };
+}
+
+/**
+ * The figures of a period, rebuilt from its lines: what came in and went out within it
+ * (all caisses together, a transfer between two of them is neither), what was held when
+ * it began and when it ended. `balance` is that end, so a figure reads it as before.
+ */
+function periodFigures(data, sel, from, to, today) {
+  const fig = {
+    income: { ...Object.fromEntries(INCOME_SOURCES.map((k) => [k, 0])), total: 0 },
+    expenses: { ...Object.fromEntries(OUT_FIGURES.map((k) => [k, 0])), total: 0 },
+  };
+  for (const r of data.rows) {
+    if ((sel ? r.box !== sel.key : r.internal) || !inPeriod(r.date, from, to)) continue;
+    const side = r.direction === 'in' ? fig.income : fig.expenses;
+    side[r.category] = (side[r.category] || 0) + r.amount;
+    side.total += r.amount;
+  }
+  const parts = (sel ? [sel] : data.boxes.filter((b) => b.visible))
+    .map((b) => boxPeriod(b, data.rows, from, to, today))
+    .filter(Boolean);
+  const round = (n) => Math.round(n * 100) / 100;
+  const period = {
+    from,
+    to,
+    // One caisse opened within the period: its opening count, on its day
+    started: sel ? !!parts[0]?.started : !from,
+    openingDate: sel
+      ? parts[0]?.openingDate
+      : from
+        ? dayBefore(from)
+        : parts.map((p) => p.openingDate).sort()[0],
+    opening: round(parts.reduce((n, p) => n + p.opening, 0)),
+    closingDate: parts[0]?.closingDate ?? (to && to < today ? to : today),
+    closing: round(parts.reduce((n, p) => n + p.closing, 0)),
+  };
+  return { ...fig, balance: period.closing, owed: sel ? sel.owed : data.summary.owed, period };
+}
+
 /**
  * What the الصناديق page shows for the caisse picked in its address (`box`; none: all of
  * them together, or the only one there is) and a direction (`flow`: 'in', 'out' or ''):
  * the page and its PDF read the same lines. All together, a transfer between two of
  * them is one line that moves nothing; each نشاط is one line, its مصاريف still owed
  * counted in its result — not once only one direction is shown.
+ * `from` / `to` (G2): only the lines of those days; the figures are then those of the
+ * period (fig.period: what was held when it began and ended), and `balanceOf(box)` what
+ * each caisse held at its end. Neither: everything since the opening, as before.
  */
-export function ledgerView(data, { box = '', flow = '' } = {}) {
+export function ledgerView(data, { box = '', flow = '', from = '', to = '', today = toISO(new Date()) } = {}) {
   const boxes = data?.boxes || [];
   const byKey = Object.fromEntries(boxes.map((b) => [b.key, b]));
   const held = boxes.filter((b) => b.visible);
   const multi = held.length > 1;
   const sel = byKey[box]?.visible ? byKey[box] : multi ? null : held[0] || null;
+  const period = !!(data && (from || to));
   const viewRows = (data?.rows || [])
     .filter((r) => (sel ? r.box === sel.key : !(r.internal && r.direction === 'in')))
+    .filter((r) => !period || inPeriod(r.date, from, to))
     .map((r) => (!sel && r.internal ? { ...r, direction: 'move' } : r));
   const owed = (data?.owed || []).filter((x) => !sel || x.box === sel.key);
   const rows = bySession(
     viewRows.filter((r) => !flow || r.direction === flow),
     flow ? [] : owed
   );
-  return { boxes, byKey, held, multi, sel, owed, rows, months: byMonth(rows), fig: sel || data?.summary };
+  const fig = period ? periodFigures(data, sel, from, to, today) : sel || data?.summary;
+  const balanceOf = (b) => (period ? (boxPeriod(b, data.rows, from, to, today)?.closing ?? null) : b.balance);
+  return { boxes, byKey, held, multi, sel, owed, rows, months: byMonth(rows), fig, balanceOf };
 }
 
 /**

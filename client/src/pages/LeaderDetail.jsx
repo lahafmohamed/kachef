@@ -5,6 +5,8 @@ import { api, isFeminine } from '../api';
 import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
+import { gendered, userText } from '../lib/meetings';
+import { DecisionMeta, MeetingKindBadge } from '../components/MeetingParts';
 import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { LeaderDuesCard } from '../components/LeaderDues';
@@ -31,7 +33,14 @@ import {
   IconShield,
 } from '../components/ui';
 
-const TABS = ['activities', 'card', 'dues', 'events', 'profile', 'history'];
+const TABS = ['activities', 'card', 'dues', 'events', 'meetings', 'profile', 'history'];
+
+// His state on a meeting's list, as the minutes show it
+const MEETING_STATUS = {
+  present: { key: 'session.present', variant: 'success' },
+  excused: { key: 'session.excused', variant: 'warning' },
+  absent: { key: 'session.absent', variant: 'destructive' },
+};
 
 // الدورات التدريبية، بترتيب تدرّجها — مطابقة لـ TRAINING_COURSES في الخادم
 const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
@@ -304,6 +313,120 @@ function CourseLadder({ courses, t }) {
   );
 }
 
+/**
+ * The قائد in the meetings: how often he came over the last twelve months, the absences
+ * without word in a row, the تكاليف handed to him still to do, and his last ten meetings.
+ */
+function LeaderMeetings({ data, section, t }) {
+  const a = data.attendance;
+  const d = data.decisions;
+  const today = new Date().toISOString().slice(0, 10);
+  const called = a.present + a.excused + a.absent;
+  return (
+    <>
+      <Card className="grid grid-cols-3 gap-px overflow-hidden bg-border">
+        {[
+          ['present', 'text-success'],
+          ['excused', 'text-warning'],
+          ['absent', 'text-destructive'],
+        ].map(([k, tone]) => (
+          <Stat key={k} label={t(MEETING_STATUS[k].key)}>
+            <p className={cn('text-2xl font-bold tabular-nums', a[k] > 0 ? tone : 'text-muted-foreground')}>{a[k]}</p>
+          </Stat>
+        ))}
+      </Card>
+      <p className="-mt-2 text-xs text-muted-foreground">
+        {called ? t('leader.meetingsSince', { count: called }) : t('leader.meetingsNone')}
+        {data.absent_streak >= 2 && (
+          <span className="font-medium text-destructive">
+            {' · '}
+            {t('leader.meetingsStreak', { count: data.absent_streak })}
+          </span>
+        )}
+      </p>
+
+      {/* التكاليف: what is still his to do, the late ones first by date */}
+      <Card className="overflow-hidden">
+        <div className="px-4 pb-3 pt-4 sm:px-5">
+          <h2 className="text-base font-semibold">{t('leader.meetingsTasks')}</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {d.open + d.done === 0
+              ? t('leader.meetingsTasksNone')
+              : [d.open > 0 && t('meeting.openCount', { count: d.open }), d.done > 0 && t('meeting.doneCount', { count: d.done })]
+                  .filter(Boolean)
+                  .join(' · ')}
+            {d.late > 0 && (
+              <span className="font-medium text-destructive">
+                {' · '}
+                {t('meeting.overdueCount', { count: d.late })}
+              </span>
+            )}
+          </p>
+        </div>
+        {d.open_list.length > 0 && (
+          <ul className="divide-y divide-border border-t border-border">
+            {d.open_list.map((x) => (
+              <li key={x.id}>
+                <Link
+                  to={`/meetings/${x.meeting_id}`}
+                  className="focus-ring block px-4 py-3 transition-colors hover:bg-accent/40 sm:px-5"
+                >
+                  <span className="block text-sm font-medium [overflow-wrap:anywhere]">
+                    <bdi>{userText(x.text)}</bdi>
+                  </span>
+                  <DecisionMeta
+                    d={x}
+                    t={t}
+                    today={today}
+                    extra={[
+                      <span key="from">
+                        {t('meeting.fromMeeting', { date: fmtDate(x.meeting_date), title: userText(x.meeting_title) })}
+                      </span>,
+                    ]}
+                  />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {data.recent.length > 0 && (
+        <Card className="overflow-hidden">
+          <h2 className="px-4 pb-3 pt-4 text-base font-semibold sm:px-5">{t('leader.meetingsRecent')}</h2>
+          <ul className="divide-y divide-border border-t border-border">
+            {data.recent.map((m) => (
+              <li key={m.id}>
+                <Link
+                  to={`/meetings/${m.id}`}
+                  className="focus-ring flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40 sm:px-5"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium [overflow-wrap:anywhere]">
+                      <bdi>{userText(m.title)}</bdi>
+                    </span>
+                    <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      <span className="tabular-nums">{fmtDate(m.date)}</span>
+                      <MeetingKindBadge kind={m.kind} t={t} />
+                      {m.chair && <span>{gendered(t, 'meeting.chair', section)}</span>}
+                      {m.secretary && <span>{gendered(t, 'meeting.secretary', section)}</span>}
+                    </span>
+                  </span>
+                  {MEETING_STATUS[m.status] && (
+                    <Badge variant={MEETING_STATUS[m.status].variant} className="shrink-0">
+                      {t(MEETING_STATUS[m.status].key)}
+                    </Badge>
+                  )}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </>
+  );
+}
+
 export default function LeaderDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
@@ -324,7 +447,10 @@ export default function LeaderDetail() {
   const canSeeDues = has('leaders.dues') || Number(user?.leader_id) === Number(id);
   // المخيمات و الدورات: لمن يرى المخيمات
   const canEvents = has('events.read');
-  const allowed = (v) => (v !== 'dues' || canSeeDues) && (v !== 'events' || canEvents);
+  // الاجتماعات: لمن يقرأ المحاضر
+  const canMeetings = has('meetings.read');
+  const allowed = (v) =>
+    (v !== 'dues' || canSeeDues) && (v !== 'events' || canEvents) && (v !== 'meetings' || canMeetings);
   const tab = TABS.includes(sp.get('tab')) && allowed(sp.get('tab')) ? sp.get('tab') : 'activities';
   const setTab = (next) =>
     setSp(
@@ -564,6 +690,9 @@ export default function LeaderDetail() {
             ...(canEvents
               ? [{ id: 'events', label: t('nav.events'), count: events.data?.filter((e) => !e.withdrawn).length || null }]
               : []),
+            ...(leader.meetings
+              ? [{ id: 'meetings', label: t('meeting.title') }]
+              : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -683,6 +812,8 @@ export default function LeaderDetail() {
           )}
 
           {tab === 'events' && canEvents && <EventParticipations state={events} feminine={isFeminine(leader.section)} />}
+
+          {tab === 'meetings' && leader.meetings && <LeaderMeetings data={leader.meetings} section={leader.section} t={t} />}
 
           {tab === 'history' && (
             <>

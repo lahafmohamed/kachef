@@ -284,7 +284,7 @@ function buildTodos(d, t, f, lng, decided = {}) {
         key: b.id,
         label: b.plan.next.title,
         meta: t('dashboard.todo.noPrepMeta', { branch: bidi(bname(b)), date: f.date(b.plan.next.date) }),
-        to: '/prep-cards',
+        to: `/prep-cards?${new URLSearchParams({ new: '1', branch: String(b.id), date: b.plan.next.date, title: b.plan.next.title })}`,
       })),
     });
 
@@ -1410,7 +1410,8 @@ export default function Dashboard() {
   };
   const decisionProps = {
     today: d?.today,
-    canFollow: can('meetings.followup'),
+    // Without meetings.followup the only تكاليف listed are his own (my_decisions): he ticks them
+    canFollow: can('meetings.followup') || !!user?.leader_id,
     busy: decisionBusy,
     onToggle: toggleDecision,
   };

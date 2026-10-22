@@ -1403,7 +1403,12 @@ function matalibProgress(memberId, branch) {
   };
 }
 
-function pendingPromotions() {
+// ref (YYYY-MM-DD, défaut aujourd'hui) : l'âge se compte à cette date — «fin d'année
+// scoute» montre qui sera éligible au 31 août. Ceux qui ne le sont qu'à ref portent
+// upcoming:true + eligible_on ; la validation rappelle sans ref, donc compte aujourd'hui.
+function pendingPromotions({ ref } = {}) {
+  const today = new Date();
+  const refDate = ref && ref > todayISO() ? new Date(ref + 'T00:00:00') : null;
   // فرقة كل الأعمار خارج سلّم السنّ: عناصرها يبقون فيها، و لا يُرقّى إليها أحد.
   // عنصرٌ فيها يسقط أدناه عند !cur.
   const branches = getBranches().filter((b) => !b.all_ages);
@@ -1418,16 +1423,30 @@ function pendingPromotions() {
   for (const m of members) {
     const cur = byId[m.branch_id];
     if (!cur || cur.max_age === null) continue;
-    const age = calcAge(m.birth_date);
+    const age = calcAge(m.birth_date, refDate || today);
     // بلا تاريخ ميلاد لا يُعرف السنّ، فلا تُقترح ترفيعة: الفرقة تُغيَّر يدويًا من ملفّه
     if (age === null) continue;
     // حدود الفرق متقاطعة قصدًا (الكشافة ١٢–١٤، الجوالة ١٤–١٨): ابن الأربعة عشر
     // بلغ أدنى سنّ الجوالة و هو بعدُ في سنّ الكشافة. فالترقية تُقترح ببلوغ الفرقة
     // الأعلى لا بتجاوز أقصى سنّ فرقته — و إلا ظلّ المتقاطعون بلا ترقية أبدًا.
-    const target = targetBranchFor(age, ladders[cur.section] || []);
+    const ladder = ladders[cur.section] || [];
+    const target = targetBranchFor(age, ladder);
     // فرقة أدنى تعني عنصرًا وُضع فوق سنّه: ذاك تصحيح يدوي لا ترقية
     if (!target || rank.get(target.id) <= rank.get(cur.id)) continue;
+    // Éligible à ref mais pas encore aujourd'hui : à venir, date = anniversaire de min_age
+    let upcoming = false;
+    let eligibleOn = null;
+    if (refDate) {
+      const nowTarget = targetBranchFor(calcAge(m.birth_date, today), ladder);
+      if (!nowTarget || rank.get(nowTarget.id) <= rank.get(cur.id)) {
+        upcoming = true;
+        const y = Number(m.birth_date.slice(0, 4)) + target.min_age;
+        eligibleOn = `${y}${m.birth_date.slice(4, 10)}`;
+      }
+    }
     out.push({
+      upcoming,
+      eligible_on: eligibleOn,
       id: m.id,
       first_name: m.first_name,
       father_name: m.father_name,
@@ -1589,21 +1608,25 @@ function statsFromRows(rows) {
 // فرقة العنصر يوم النشاط (من سجلّ الترقيات). فالترقية تعيد نسبته من الصفر —
 // حتى لو وقع نشاط الفرقتين في اليوم نفسه — و حضوره القديم بطاقة لفرقته السابقة.
 // ملفّ العنصر و قائمة العناصر يحسبان منه، فالنسبة واحدة في الموضعين.
-const branchPeriodsStmt = db.prepare(
-  `SELECT h.effective_date AS promoted_at, h.old_branch_id, b.name_fr, b.name_ar
+// Bug 26 : deux requêtes pour toute une liste d'عناصر (ids en json_each), au lieu de deux
+// par عنصر. Les فرق d'une séance sont groupées une fois (CTE), pas par ligne.
+const branchPeriodsManyStmt = db.prepare(
+  `SELECT h.member_id, h.effective_date AS promoted_at, h.old_branch_id, b.name_fr, b.name_ar
    FROM member_branch_history h JOIN branches b ON b.id = h.old_branch_id
-   WHERE h.member_id = ? ORDER BY h.effective_date ASC, h.id ASC`
+   WHERE h.member_id IN (SELECT value FROM json_each(?))
+   ORDER BY h.member_id, h.effective_date ASC, h.id ASC`
 );
-const attendanceRowsStmt = db.prepare(
-  `SELECT a.status, a.paid, s.date, s.title, s.matalib, s.id AS session_id,
-    (SELECT GROUP_CONCAT(sb.branch_id) FROM session_branches sb WHERE sb.session_id = s.id) AS sb_ids
-   FROM attendance a JOIN sessions s ON s.id = a.session_id
-   WHERE a.member_id = ? AND s.kind = 'activity' AND a.status != 'unmarked'
+const attendanceRowsManyStmt = db.prepare(
+  `WITH sb AS (SELECT session_id, GROUP_CONCAT(branch_id) AS sb_ids FROM session_branches GROUP BY session_id)
+   SELECT a.member_id, a.status, a.paid, s.date, s.title, s.matalib, s.id AS session_id, sb.sb_ids
+   FROM attendance a JOIN sessions s ON s.id = a.session_id LEFT JOIN sb ON sb.session_id = s.id
+   WHERE a.member_id IN (SELECT value FROM json_each(?)) AND s.kind = 'activity' AND a.status != 'unmarked'
      AND ${countedSessionSQL('s', '?')}
-   ORDER BY s.date DESC, s.id DESC`
+   ORDER BY a.member_id, s.date DESC, s.id DESC`
 );
-function attributedAttendance(m, { withFees = false } = {}) {
-  const periodsAsc = branchPeriodsStmt.all(m.id);
+// La règle d'attribution elle-même, pure : périodes (ASC) et lignes brutes (récentes d'abord)
+// d'un seul عنصر. `withMatalib: false` évite le JSON.parse quand l'appelant ne s'en sert pas.
+function attributeAttendanceRows(m, periodsAsc, raw, { withFees = false, withMatalib = true } = {}) {
   const branchAt = (date) => {
     for (const p of periodsAsc) if (date < p.promoted_at) return p.old_branch_id;
     return m.branch_id;
@@ -1611,7 +1634,7 @@ function attributedAttendance(m, { withFees = false } = {}) {
   // فرق العنصر عبر الزمن، الأحدث أولًا — للمشترك الواقع يوم الترقية نفسه:
   // فرقته الجديدة قد لا تكون من فرق النشاط، فيُنسب لآخر فرقة له فيه.
   const branchTimeline = [m.branch_id, ...periodsAsc.map((p) => p.old_branch_id).reverse()];
-  const rows = attendanceRowsStmt.all(m.id, todayISO()).map((r) => {
+  return raw.map((r) => {
     const ids = (r.sb_ids || '').split(',').filter(Boolean).map(Number);
     const at = branchAt(r.date);
     const branch =
@@ -1620,25 +1643,56 @@ function attributedAttendance(m, { withFees = false } = {}) {
         : ids.includes(at)
           ? at
           : (branchTimeline.find((b) => ids.includes(b)) ?? ids[0]);
-    return { status: r.status, paid: withFees ? r.paid : null, date: r.date, title: r.title, session_id: r.session_id, matalib: JSON.parse(r.matalib || '[]'), attributed_branch: branch };
+    return { status: r.status, paid: withFees ? r.paid : null, date: r.date, title: r.title, session_id: r.session_id, matalib: withMatalib ? JSON.parse(r.matalib || '[]') : null, attributed_branch: branch };
   });
-  return { periodsAsc, rows };
+}
+// Map id → { periodsAsc, rows }, une entrée par عنصر (vide s'il n'a rien)
+function attributedAttendanceMany(members, opts = {}) {
+  const out = new Map();
+  if (!members.length) return out;
+  const ids = JSON.stringify([...new Set(members.map((m) => m.id))]);
+  const periods = new Map();
+  const raw = new Map();
+  for (const { member_id: id, ...p } of branchPeriodsManyStmt.all(ids)) {
+    if (!periods.has(id)) periods.set(id, []);
+    periods.get(id).push(p);
+  }
+  for (const { member_id: id, ...r } of attendanceRowsManyStmt.all(ids, todayISO())) {
+    if (!raw.has(id)) raw.set(id, []);
+    raw.get(id).push(r);
+  }
+  for (const m of members) {
+    const periodsAsc = periods.get(m.id) || [];
+    out.set(m.id, { periodsAsc, rows: attributeAttendanceRows(m, periodsAsc, raw.get(m.id) || [], opts) });
+  }
+  return out;
+}
+function attributedAttendance(m, opts = {}) {
+  return attributedAttendanceMany([m], opts).get(m.id);
+}
+// La présence comptée dans la فرقة actuelle seule, pour chaque عنصر de la liste
+function currentBranchAttendanceMany(members, opts = { withMatalib: false }) {
+  const all = attributedAttendanceMany(members, opts);
+  const out = new Map();
+  for (const m of members) out.set(m.id, all.get(m.id).rows.filter((r) => r.attributed_branch === m.branch_id));
+  return out;
 }
 
 // `until` (inclusive) bounds the history to a day: a séance's badge counts the streak as
 // it stood on that séance, not as it stands today (bug 15)
+// préparée une fois : la liste de pointage l'appelle pour chaque عنصر
+const attendanceStatsStmt = db.prepare(
+  `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
+   FROM attendance a JOIN sessions s ON s.id = a.session_id
+   WHERE a.member_id = ? AND s.kind = 'activity'
+      AND a.status != 'unmarked' AND ${countedSessionSQL('s', '?')}
+      AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?) AND (? IS NULL OR s.date <= ?)
+   ORDER BY s.date DESC, s.id DESC`
+);
 function attendanceStats(memberId, branchId, { from = null, to = null, until = null } = {}) {
   // نافذة زمنية اختيارية: الترقية تعيد عدّاد الحضور من الصفر، فتاريخ الترقية
   // يحدّ الإحصاء — و ما قبله يُعرض بطاقةً تاريخية للفرقة السابقة.
-  const rows = db
-    .prepare(
-      `SELECT a.status, s.date, s.title, s.matalib, s.id AS session_id
-       FROM attendance a JOIN sessions s ON s.id = a.session_id
-       WHERE a.member_id = ? AND s.kind = 'activity'
-          AND a.status != 'unmarked' AND ${countedSessionSQL('s', '?')}
-          AND (? IS NULL OR s.date >= ?) AND (? IS NULL OR s.date < ?) AND (? IS NULL OR s.date <= ?)
-       ORDER BY s.date DESC, s.id DESC`
-    )
+  const rows = attendanceStatsStmt
     .all(memberId, todayISO(), from, from, to, to, until, until)
     .map((r) => ({ ...r, matalib: JSON.parse(r.matalib || '[]') }));
   const earned = branchId ? earnedNumbersInBranch(memberId, branchId) : [];
@@ -2925,6 +2979,12 @@ const MEMBER_MISSING = {
   parent_phone: (contact) => contact && `(${blankSQL('m.father_phone')} AND ${blankSQL('m.mother_phone')})`,
   residence: (contact) => contact && blankSQL('m.address_abidjan'),
   blood: () => blankSQL('m.blood_type'),
+  photo: () => blankSQL('m.photo'),
+  // Hors tranche d'âge : عنصر actif plus jeune que le min_age de sa فرقة ou plus âgé que
+  // son max_age (même règle que calcAge, en birth_date). فرقة كل الأعمار n'a pas de tranche.
+  age_range: () => `(m.status = 'active' AND b.all_ages = 0 AND m.birth_date IS NOT NULL AND m.birth_date <> ''
+    AND (m.birth_date > date('now', 'localtime', '-' || b.min_age || ' years')
+      OR (b.max_age IS NOT NULL AND m.birth_date <= date('now', 'localtime', '-' || (b.max_age + 1) || ' years'))))`,
 };
 const PROFILE_FIELDS = ['birth_date', 'father_name', 'school', 'parent_phone', 'residence'];
 
@@ -3021,13 +3081,14 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     sql += ` AND (${or.join(' OR ')})`;
   }
   sql += ` ORDER BY ${MEMBER_SORTS[req.query.sort] || MEMBER_SORTS.name}`;
-  const rows = db
-    .prepare(sql)
-    .all(...params)
+  const listed = db.prepare(sql).all(...params);
+  // كل الحضور في استعلامين للقائمة كلها، لا استعلامين لكل عنصر (bug 26)
+  const currentAtt = currentBranchAttendanceMany(listed);
+  const rows = listed
     .map((m) => {
       // الحضور في الفرقة الحالية، محسوبًا كما في ملفّ العنصر: من توقّف عن المجيء
       // يظهر في القائمة نفسها، قبل أن يُفتح ملفّه
-      const st = statsFromRows(attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id));
+      const st = statsFromRows(currentAtt.get(m.id));
       const attendance = {
         rate: st.rate,
         present: st.present,
@@ -3897,8 +3958,10 @@ app.get('/api/promotions/group-realign', requirePerm('promotions.read'), (req, r
 );
 
 app.get('/api/promotions/pending', requirePerm('promotions.read'), (req, res) => {
-  // A scoped قائد only sees promotions leaving one of his فرق
-  res.json(pendingPromotions().filter((p) => branchOk(req, p.current_branch.id)));
+  // A scoped قائد only sees promotions leaving one of his فرق. ?ref=YYYY-MM-DD : âges à
+  // cette date (fin d'année scoute), les éligibles d'ici là marqués upcoming
+  const ref = validISODate(String(req.query.ref || '')) ? String(req.query.ref) : undefined;
+  res.json(pendingPromotions({ ref }).filter((p) => branchOk(req, p.current_branch.id)));
 });
 
 app.post('/api/promotions/validate', requirePerm('promotions.apply'), (req, res) => {
@@ -4344,7 +4407,14 @@ app.get('/api/leaders', requirePerm('leaders.read'), (req, res) => {
         ${mine("s.kind != 'visit' AND ls.role = 'main'")} AS led_count,
         ${mine("s.kind != 'visit' AND ls.status = 'present'")} AS present_count,
         ${mine("s.kind != 'visit' AND ls.status = 'absent'")} AS absent_count,
-        ${mine("s.kind = 'visit'")} AS visits_count
+        ${mine("s.kind = 'visit'")} AS visits_count,
+        ${
+          // تكاليف past their date, for whoever reads the minutes
+          hasPerm(req, 'meetings.read')
+            ? `(SELECT COUNT(*) FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+                WHERE d.leader_id = l.id AND d.status = 'open' AND d.due_date < @today${meetingScopeSQL(req)})`
+            : 'NULL'
+        } AS late_decisions
        FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY l.last_name, l.first_name`
     )
     .all({ today: todayISO() });
@@ -4467,8 +4537,58 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
     stats_period: period,
     card_years: years,
     card: progressCard(l.id, selectedYear),
+    // الاجتماعات: for whoever reads the minutes
+    ...(hasPerm(req, 'meetings.read') ? { meetings: leaderMeetings(req, l.id) } : {}),
   });
 });
+
+/**
+ * A قائد in the meetings: his attendance over the last twelve months, how many in a row
+ * he has missed without word, his last ten meetings, and the تكاليف handed to him.
+ * Only the minutes this account may open count.
+ */
+function leaderMeetings(req, leaderId) {
+  const today = todayISO();
+  const yearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const rows = db
+    .prepare(
+      `SELECT m.id, m.title, m.date, m.kind, a.status,
+         (m.chair_id = @id) AS chair, (m.secretary_id = @id) AS secretary
+       FROM meeting_attendees a JOIN meetings m ON m.id = a.meeting_id
+       WHERE a.leader_id = @id AND a.guest = 0 AND m.date <= @today${meetingScopeSQL(req)}
+       ORDER BY m.date DESC, m.id DESC`
+    )
+    .all({ id: leaderId, today });
+  const counts = { present: 0, absent: 0, excused: 0 };
+  for (const r of rows) if (r.date >= yearAgo && counts[r.status] !== undefined) counts[r.status]++;
+  // Missed without word, the latest ones in a row: an excused absence or a presence ends it
+  let streak = 0;
+  for (const r of rows) {
+    if (r.status !== 'absent') break;
+    streak++;
+  }
+  const decisions = db
+    .prepare(
+      `SELECT d.id, d.meeting_id, d.text, d.due_date, d.status, d.status_at, m.title AS meeting_title, m.date AS meeting_date
+       FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id
+       WHERE d.leader_id = ?${meetingScopeSQL(req)}
+       ORDER BY COALESCE(d.due_date, '9999-12-31'), m.date, d.position, d.id`
+    )
+    .all(leaderId);
+  const open = decisions.filter((d) => d.status === 'open');
+  return {
+    since: yearAgo,
+    attendance: counts,
+    absent_streak: streak,
+    recent: rows.slice(0, 10).map((r) => ({ ...r, chair: !!r.chair, secretary: !!r.secretary })),
+    decisions: {
+      open: open.length,
+      late: open.filter((d) => d.due_date && d.due_date < today).length,
+      done: decisions.filter((d) => d.status === 'done').length,
+      open_list: open,
+    },
+  };
+}
 
 // الحالة الاجتماعية — قائمة مغلقة: نصّ حرّ يمتلئ بـ«متزوج» و«متزوّج» و«marié»
 const MARITAL_STATUSES = ['single', 'married'];
@@ -4941,6 +5061,8 @@ function memberDuesSummary(m) {
   return {
     paid_total: rows.reduce((n, r) => n + r.amount, 0),
     unpaid_months: unpaid,
+    // Ce qui reste de chacun, pour répartir un règlement de plusieurs mois
+    unpaid_left: Object.fromEntries(unpaid.map((x) => [x, dueLeft(paid.get(x), memberRate(m, x))])),
     owed_total: unpaid.reduce((n, x) => n + dueLeft(paid.get(x), memberRate(m, x)), 0),
     last_paid_on: rows.reduce((d, r) => (r.paid_on && (!d || r.paid_on > d) ? r.paid_on : d), null),
   };
@@ -5069,6 +5191,46 @@ app.get('/api/members/:id/dues', (req, res) => {
     paid: memberDuesOf(m, months[0], months[11]),
     summary: memberDuesSummary(m),
     can_edit: canWriteMemberDues(req),
+  });
+});
+
+// Ce qu'un عنصر donne à la fois va par 500 (le client propose les mêmes pas)
+const MEMBER_DUE_STEP = 500;
+
+// Régler plusieurs mois d'un coup : amount remplit les mois dus (atteints et pas réglés
+// en entier), le plus ancien d'abord — une dépense par mois, dans la même transaction.
+// amount : un multiple du pas, ou tout ce qui est dû ; jamais plus. session_id comme
+// pour un mois. Rend la répartition (mois, montant, ce qu'il en reste) et le compte.
+app.post('/api/members/:id/dues/settle', (req, res) => {
+  if (!canWriteMemberDues(req)) return res.status(403).json({ error: 'forbidden' });
+  const m = loadDuesMember(req, res);
+  if (!m) return;
+  const session = duesSession(req, res, m);
+  if (session === undefined) return;
+  const amount = parsePaid(req.body?.amount);
+  if (!amount || !Number.isInteger(amount)) return res.status(400).json({ error: 'invalid amount' });
+  const owed = memberDuesSummary(m);
+  if (!owed.owed_total) return res.status(400).json({ error: 'already paid' });
+  if (amount > owed.owed_total) return res.status(400).json({ error: 'more than owed' });
+  if (amount % MEMBER_DUE_STEP !== 0 && amount !== owed.owed_total)
+    return res.status(400).json({ error: 'invalid amount' });
+  const split = [];
+  db.transaction(() => {
+    let rest = amount;
+    for (const month of owed.unpaid_months) {
+      if (!rest) break;
+      const left = monthLeft(m, month);
+      const part = Math.min(left, rest);
+      if (!part) continue;
+      insertMemberDue(req, m, month, part, session);
+      split.push({ month, amount: part, left: left - part });
+      rest -= part;
+    }
+  })();
+  res.status(201).json({
+    amount,
+    months: split.map((s) => ({ ...s, paid: memberMonthOf(m, s.month) })),
+    summary: memberDuesSummary(m),
   });
 });
 
@@ -6282,6 +6444,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   // عام للفوج has no عناصر roster at all.
   // النشاط المحصور بمجموعات لا يعرض إلا عناصرها: الفرقة كبيرة و الحصّة لا تسعها،
   // فالقائد يضع حضور مجموعته وحدها بدل التنقيب عن أسمائها في قائمة الفرقة كلها.
+  const lastPromotionStmt = db.prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?');
   const roster = s.kind === 'group' ? [] : db
     .prepare(
       `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
@@ -6298,10 +6461,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       ...m,
       // الغيابات المتتالية تُحسب من آخر ترقية: سجلّ الفرقة السابقة لا يلاحق العنصر
       consecutive_absences: attendanceStats(m.id, null, {
-        from:
-          db
-            .prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?')
-            .get(m.id).d || null,
+        from: lastPromotionStmt.get(m.id).d || null,
         // borné à la date de la séance : sur une séance ancienne, la série d'alors
         until: s.date,
       }).consecutive_absences,
@@ -6808,8 +6968,9 @@ function absenceStreakAlerts(req, s) {
     )
     .all(s.id);
   let sent = 0;
+  const currentAtt = currentBranchAttendanceMany(absent);
   for (const m of absent) {
-    const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
+    const rows = currentAtt.get(m.id);
     const streak = statsFromRows(rows).consecutive_absences;
     if (streak < threshold) continue;
     // Cette séance doit faire partie de la série (une ancienne validée plus tard n'alerte pas)
@@ -6831,9 +6992,10 @@ function seedAbsenceReminders() {
   const threshold = absenceThreshold();
   const mark = db.prepare('INSERT OR IGNORE INTO notification_reminders (key) VALUES (?)');
   const members = db.prepare("SELECT * FROM members WHERE status = 'active'").all();
+  const currentAtt = currentBranchAttendanceMany(members);
   db.transaction(() => {
     for (const m of members) {
-      const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
+      const rows = currentAtt.get(m.id);
       const streak = statsFromRows(rows).consecutive_absences;
       if (streak < threshold) continue;
       const startId = rows[streak - 1].session_id;
@@ -8003,6 +8165,8 @@ const EVENT_PARTICIPANT_SQL = `
     -- E1 : l'autorisation parentale ; le scan lui-même ne vient qu'à la demande
     p.consent_at, p.consent_by, p.consent_recorded_by, p.consent_scan IS NOT NULL AS consent_has_scan,
     ${CONSENT_NEEDED_SQL('m', 'b')} AS consent_needed,
+    -- L'appel du car, aller et retour
+    p.out_at, p.out_by, p.back_at, p.back_by,
     COALESCE(m.first_name, l.first_name) AS first_name,
     COALESCE(m.father_name, l.father_name) AS father_name,
     COALESCE(m.last_name, l.last_name) AS last_name,
@@ -8294,6 +8458,19 @@ app.get('/api/events', requirePerm('events.read'), (req, res) => {
     sql += ' AND e.kind = ?';
     params.push(req.query.kind);
   }
+  // L'année scoute (septembre → août) : le camp y commence
+  const year = scoutYearRange(String(req.query.year || ''));
+  if (year) {
+    sql += ' AND e.start_date BETWEEN ? AND ?';
+    params.push(year.from, year.to);
+  }
+  // Une فرقة : ses camps, et ceux du فوج entier (sans فرقة) qui la concernent aussi
+  const branchId = intOr(req.query.branch_id);
+  if (Number.isInteger(branchId) && branchId > 0) {
+    sql += ` AND (EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = e.id AND eb.branch_id = ?)
+      OR NOT EXISTS (SELECT 1 FROM event_branches eb WHERE eb.event_id = e.id))`;
+    params.push(branchId);
+  }
   if (req.query.q) {
     // E2 : un participant aussi — un عنصر des فرق du compte, un قائد ou un invité
     sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR ${fullNameSQL('l')} LIKE ?
@@ -8421,6 +8598,66 @@ app.post('/api/events', requirePerm('events.manage'), (req, res) => {
   })();
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
   auditEvent(req, 'create', 'event', id, null, { ...ev, branch_ids: parsed.branchIds, group_ids: parsed.groupIds });
+  notifications.eventCreated(req, ev);
+  notifications.eventRole(req, ev, ev.leader_id, 'chief');
+  res.status(201).json(eventPayload(req, ev));
+});
+
+// Dupliquer : le camp de l'an dernier refait, sous un autre titre et à une autre date. Tout le
+// cadre suit, décalé d'autant de jours — فرق, طلائع, programme, هيئة قيادية, check-list (rien de
+// coché, chaque point gardant son responsable). Ni participants, ni argent, ni autorisations,
+// ni évaluations : ils sont à ce camp-là. Un قائد archivé ne passe pas au nouveau camp.
+app.post('/api/events/:id/duplicate', requirePerm('events.manage'), (req, res) => {
+  const src = loadEvent(req, res);
+  if (!src) return;
+  const b = req.body || {};
+  const title = optionalText(b.title, 200);
+  if (!title) return res.status(400).json({ error: 'invalid title' });
+  if (!validISODate(b.start_date)) return res.status(400).json({ error: 'invalid dates' });
+  const DAY = 86400000;
+  const at = (iso) => Date.parse(`${iso}T12:00:00Z`);
+  const delta = Math.round((at(b.start_date) - at(src.start_date)) / DAY);
+  const shift = (iso) => new Date(at(iso) + delta * DAY).toISOString().slice(0, 10);
+  const activeLeader = db.prepare("SELECT 1 FROM leaders WHERE id = ? AND status = 'active'");
+  const leaderId = src.leader_id && activeLeader.get(src.leader_id) ? src.leader_id : null;
+  const by = req.user.display_name || req.user.username;
+  let id;
+  db.transaction(() => {
+    id = db
+      .prepare(
+        `INSERT INTO events (kind, title, start_date, end_date, place, fee, plan, leader_id, section, created_by,
+           safety_seeded)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(src.kind, title, b.start_date, shift(src.end_date), src.place, src.fee, src.plan, leaderId, src.section,
+        by, src.safety_seeded).lastInsertRowid;
+    setEventBranches(id, eventBranchIds(src.id), eventGroupIds(src.id));
+    const insertSession = db.prepare(
+      `INSERT INTO event_sessions (event_id, title, date, start_time, end_time, responsible, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const s of db.prepare('SELECT * FROM event_sessions WHERE event_id = ? ORDER BY id').all(src.id))
+      insertSession.run(id, s.title, shift(s.date), s.start_time, s.end_time, s.responsible, s.notes);
+    // Old staff row -> new one, for the check-list's responsables
+    const staffMap = new Map();
+    const insertStaff = db.prepare('INSERT INTO event_staff (event_id, role, title, leader_id, name) VALUES (?, ?, ?, ?, ?)');
+    for (const st of db.prepare('SELECT * FROM event_staff WHERE event_id = ? ORDER BY id').all(src.id)) {
+      if (st.leader_id && !activeLeader.get(st.leader_id)) continue;
+      staffMap.set(st.id, insertStaff.run(id, st.role, st.title, st.leader_id, st.name).lastInsertRowid);
+    }
+    const insertItem = db.prepare(
+      'INSERT INTO event_checklist (event_id, item, label, staff_id, sort_order) VALUES (?, ?, ?, ?, ?)'
+    );
+    for (const c of db.prepare('SELECT * FROM event_checklist WHERE event_id = ? ORDER BY sort_order, id').all(src.id))
+      insertItem.run(id, c.item, c.label, staffMap.get(c.staff_id) ?? null, c.sort_order);
+  })();
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  auditEvent(req, 'create', 'event', id, null, {
+    ...ev,
+    branch_ids: eventBranchIds(id),
+    group_ids: eventGroupIds(id),
+    duplicated_from: src.id,
+  });
   notifications.eventCreated(req, ev);
   notifications.eventRole(req, ev, ev.leader_id, 'chief');
   res.status(201).json(eventPayload(req, ev));
@@ -9096,6 +9333,24 @@ app.put('/api/events/:id/participants/:pid/consent', requirePerm('events.read'),
     participant: participantOut(req, db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id)),
     readiness: eventReadiness(ev.id),
   });
+});
+
+// L'appel du car : leg 'out' (départ) ou 'back' (retour), done = à bord ou pas. Un pointage par
+// tap, comme la présence d'une séance ; pas d'audit ligne à ligne, l'heure et le قائد suffisent.
+app.put('/api/events/:id/participants/:pid/checkin', requirePerm('events.attendance'), (req, res) => {
+  const ev = loadEvent(req, res);
+  if (!ev) return;
+  const p = loadParticipant(req, res, ev);
+  if (!p) return;
+  if (p.withdrawn_at) return res.status(404).json({ error: 'participant not found' });
+  const b = req.body || {};
+  if (!['out', 'back'].includes(b.leg) || typeof b.done !== 'boolean') return res.status(400).json({ error: 'invalid checkin' });
+  // leg vient de la liste ci-dessus : le nom de colonne est sûr
+  db.prepare(
+    `UPDATE event_participants SET ${b.leg}_at = CASE WHEN @done THEN datetime('now') END,
+       ${b.leg}_by = CASE WHEN @done THEN @by END WHERE id = @id`
+  ).run({ done: b.done ? 1 : 0, by: req.user.display_name || req.user.username, id: p.id });
+  res.json({ participant: participantOut(req, db.prepare(`${EVENT_PARTICIPANT_SQL} AND p.id = ?`).get(ev.id, p.id)) });
 });
 
 app.get('/api/events/:id/participants/:pid/consent-scan', requirePerm('events.read'), (req, res) => {
@@ -9937,11 +10192,14 @@ app.put('/api/meetings/:id/decisions/:did', requirePerm('meetings.manage'), (req
 });
 
 // Only the state — the follow-up list ticks a decision off without reopening its form
-app.put('/api/meetings/:id/decisions/:did/status', requirePerm('meetings.followup'), (req, res) => {
+// The follow-up's (meetings.followup); the قائد a تكليف is handed to ticks his own without it
+app.put('/api/meetings/:id/decisions/:did/status', requirePerm('meetings.read'), (req, res) => {
   const m = loadMeeting(req, res);
   if (!m) return;
   const d = loadDecision(req, res, m);
   if (!d) return;
+  const owns = !!req.user.leader_id && !!d.leader_id && Number(req.user.leader_id) === Number(d.leader_id);
+  if (!owns && !hasPerm(req, 'meetings.followup')) return res.status(403).json({ error: 'forbidden' });
   const status = req.body?.status;
   if (!DECISION_STATUSES.includes(status)) return res.status(400).json({ error: 'invalid status' });
   if (status !== d.status) {
@@ -11020,10 +11278,12 @@ app.get('/api/dashboard', (req, res) => {
          WHERE m.status = 'active'${branchFilterSQL(req, 'm.branch_id')}`
       )
       .all();
+    const currentAtt = currentBranchAttendanceMany(members);
+    const threshold = absenceThreshold();
     for (const m of members) {
-      const rows = attributedAttendance(m).rows.filter((r) => r.attributed_branch === m.branch_id);
+      const rows = currentAtt.get(m.id);
       const absences = statsFromRows(rows).consecutive_absences;
-      if (absences < absenceThreshold()) continue;
+      if (absences < threshold) continue;
       followup.push(
         stripContact(req, { ...m, absences, last_present: rows.find((r) => r.status === 'present')?.date || null })
       );

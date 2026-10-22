@@ -1291,6 +1291,10 @@ function LeaderRow({ l, page, onOpen }) {
                 </Badge>
               )}
               {inactive && <Badge variant="secondary">{t('member.inactive')}</Badge>}
+              {/* تكاليف past their date (meetings.read only): his «Réunions» tab lists them */}
+              {l.late_decisions > 0 && (
+                <Badge variant="destructive">{t('leader.lateTasks', { count: l.late_decisions })}</Badge>
+              )}
               {/* All أقسام in one register: whoever is not of الفتيان says which قسم */}
               {bothSections && l.section !== 'M' && (
                 <Badge variant={isFeminine(l.section) ? 'info' : 'outline'}>{t(`section.${l.section}`)}</Badge>

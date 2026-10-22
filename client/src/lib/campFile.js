@@ -99,3 +99,29 @@ export function familyCount(list) {
   }
   return keys.size;
 }
+
+/** Les numéros d'un قائد inscrit, sous la même forme que ceux des parents */
+export const leaderPhones = (p) => phoneNumbers(p.leader_phone).map((number) => ({ number, mother: false }));
+
+/** Qui appeler pour un participant : les parents d'un عنصر, le قائد lui-même */
+export const contactPhones = (p) => (p.member_id ? parentPhones(p) : leaderPhones(p));
+
+/**
+ * La relance des impayés, famille par famille : des frères et sœurs partagent le numéro d'un
+ * parent, un seul message pour tous (même clé que familyCount). La plus grosse somme d'abord.
+ * [{ key, people: [p], phones: [{ number, mother }], amount }]
+ */
+export function unpaidFamilies(ev) {
+  const families = new Map();
+  for (const p of unpaidOf(ev)) {
+    const phones = contactPhones(p);
+    const key = phones[0] ? `t${phones[0].number}` : `p${p.id}`;
+    if (!families.has(key)) families.set(key, { key, people: [], phones, amount: 0 });
+    const f = families.get(key);
+    f.people.push(p);
+    f.amount += remainingOf(p, ev);
+    // A brother's file may carry the other parent's number
+    for (const ph of phones) if (!f.phones.some((x) => x.number === ph.number)) f.phones.push(ph);
+  }
+  return [...families.values()].sort((a, b) => b.amount - a.amount);
+}

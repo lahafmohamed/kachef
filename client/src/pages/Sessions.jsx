@@ -1,6 +1,6 @@
 import ExportPdfButton from '../components/ExportPdfButton';
 import PeriodReportButton from '../components/PeriodReport';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -9,7 +9,7 @@ import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks'
 import { isFeminine, useSection } from '../section';
 import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
-import { toDate } from '../lib/date';
+import { toDate, toISO } from '../lib/date';
 import { signed } from '../lib/events';
 import { resultTone } from '../lib/treasury';
 import { fmtScore, scoreTone } from '../lib/evaluations';
@@ -473,6 +473,58 @@ export default function Sessions() {
     if (creating) setStep(0);
   }, [creating]);
   useEffect(() => {
+    // «Dupliquer» from a séance's page: same فرق, طلائع, قادة, hour, place, type and fee
+    // — never its title, مطالب, plan بند or fiche, which belong to that one day
+    const src = location.state?.copyOf;
+    if (src) {
+      navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
+      // A week later by default — still ahead of today when the source is older
+      const d = toDate(src.date);
+      do {
+        d.setDate(d.getDate() + 7);
+      } while (toISO(d) < todayISO());
+      const kind = src.kind || 'activity';
+      const branchIds = (src.branch_ids || []).map(Number);
+      setForm({
+        ...EMPTY,
+        kind,
+        title: kind === 'visit' ? t('session.familyVisit') : '',
+        date: toISO(d),
+        section: src.section || '',
+        branch_ids: kind === 'group' ? [] : branchIds,
+        group_ids: kind === 'activity' ? (src.groups || []).map((g) => g.id) : [],
+        leader_id: src.leader_id ? String(src.leader_id) : '',
+        helper_ids: (src.animators || [])
+          .filter((a) => a.role === 'helper' && a.leader_id !== src.leader_id)
+          .map((a) => a.leader_id),
+        start_time: src.start_time || '',
+        place: src.place || '',
+        activity_type: src.activity_type || '',
+        fee: src.fee === null || src.fee === undefined ? '' : String(src.fee),
+      });
+      setCreating(true);
+      // The فرقة's next بند still without a نشاط, if its plan has one: its date, and its
+      // name proposed as the title (linked — «unlink» stays one tap away)
+      const primary = branchIds[0];
+      if (kind === 'activity' && primary) {
+        api
+          .get(`/branches/${primary}/plan/options`)
+          .then(({ items = [] }) => {
+            const next = items
+              .filter((i) => i.date >= todayISO())
+              .sort((a, b) => a.date.localeCompare(b.date))[0];
+            if (!next) return;
+            setForm((f) =>
+              // Only while the قائد has not taken the form elsewhere meanwhile
+              f.branch_ids[0] === primary && !f.title && !f.plan_item_id
+                ? { ...f, date: next.date, title: next.title, plan_item_id: String(next.id) }
+                : f
+            );
+          })
+          .catch(() => {});
+      }
+      return;
+    }
     const card = location.state?.prepCard;
     if (!card) return;
     navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
@@ -489,7 +541,7 @@ export default function Sessions() {
       prep_card_id: String(card.id),
     });
     setCreating(true);
-  }, [location, navigate]);
+  }, [location, navigate, t]);
 
   // بنود خطة الفرقة التي لم تُنفَّذ بعد — loaded only while the dialog is open on a
   // نشاط فرقة, so picking one is a one-tap way to fill the title and the date.
@@ -575,8 +627,22 @@ export default function Sessions() {
       const liveGroups = new Set(
         branchList.filter((x) => next.includes(x.id)).flatMap((x) => (x.groups || []).map((g) => g.id))
       );
+      // A فرقة meets at the same hour and place week after week: an empty hour or place
+      // takes its latest نشاط's from the journal on screen — still editable
+      let wherePatch = {};
+      if (primaryChanged && next.length && f.kind === 'activity' && (!f.start_time || !f.place)) {
+        const last = list
+          .filter((s) => s.kind === 'activity' && s.branch_id === next[0] && (s.start_time || s.place))
+          .reduce((a, s) => (!a || s.date > a.date ? s : a), null);
+        if (last)
+          wherePatch = {
+            start_time: f.start_time || last.start_time || '',
+            place: f.place || last.place || '',
+          };
+      }
       return {
         ...f,
+        ...wherePatch,
         branch_ids: next,
         group_ids: f.group_ids.filter((g) => liveGroups.has(g)),
         // عناصر فرقة خرجت من النشاط لم يعد يمكن زيارتهم فيه
@@ -588,6 +654,21 @@ export default function Sessions() {
       };
     });
   }
+
+  // A قائد who sees one فرقة only finds it already ticked — with its قادة, hour and place —
+  // once per opening, so unticking it is not undone behind his back
+  const autoPicked = useRef(false);
+  useEffect(() => {
+    if (!creating) {
+      autoPicked.current = false;
+      return;
+    }
+    if (autoPicked.current || !branches.data || !leaders.data) return;
+    autoPicked.current = true;
+    if (form.kind === 'activity' && form.branch_ids.length === 0 && sectionBranches.length === 1)
+      toggleBranch(sectionBranches[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creating, branches.data, leaders.data]);
 
   // Taking the بند announced by the plan: its name goes into the title and the نشاط
   // is linked to it. The date stays the one the قائد picked — a نشاط held a day late

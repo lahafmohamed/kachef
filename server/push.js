@@ -61,6 +61,8 @@ const TYPES = {
   meeting_created: { group: 'meetings', perm: 'meetings.read', on: () => true },
   // Bug 28 : un اجتماع à venir change de jour, d'heure ou de lieu
   meeting_changed: { group: 'meetings', perm: 'meetings.read', on: () => true },
+  // La veille d'une réunion, à ceux que meeting_changed préviendrait
+  meeting_tomorrow: { group: 'meetings', perm: 'meetings.read', on: () => true },
   decision_assigned: { group: 'meetings', perm: 'meetings.read', leader: true, on: () => true },
   // Not personal to a قائد file: a تكليف with no قائد reminds its meeting's رئيس, else
   // the account that opened the minutes — which may be an admin without a قائد file
@@ -1058,6 +1060,60 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
   }
 
   /**
+   * The evening before a اجتماع, the same people meetingChanged tells: whoever follows its
+   * فرق (or its whole قسم), plus its invited قادة and its رئيس / أمين السر.
+   */
+  function meetingReminders(now = new Date()) {
+    if (now.getUTCHours() < REMINDER_HOUR) return 0;
+    let sent = 0;
+    const rows = db
+      .prepare(
+        `SELECT m.*, (SELECT COUNT(*) FROM meeting_items i WHERE i.meeting_id = m.id) AS items
+         FROM meetings m WHERE m.date = ?`
+      )
+      .all(isoDay(now, 1));
+    for (const m of rows) {
+      if (!claim(`meeting-eve:${m.id}`)) continue;
+      const branchIds = db
+        .prepare('SELECT branch_id FROM meeting_branches WHERE meeting_id = ? ORDER BY branch_id')
+        .all(m.id)
+        .map((r) => r.branch_id);
+      const users = audience({ section: m.section, branchIds, type: 'meeting_tomorrow' });
+      const told = new Set(users.map((u) => u.id));
+      const invited = db
+        .prepare('SELECT leader_id FROM meeting_attendees WHERE meeting_id = ? AND leader_id IS NOT NULL')
+        .all(m.id)
+        .map((r) => r.leader_id);
+      for (const u of usersOfLeaders([...invited, m.chair_id, m.secretary_id]))
+        if (!told.has(u.id) && hears(u, 'meeting_tomorrow', m.section)) {
+          told.add(u.id);
+          users.push(u);
+        }
+      sent += users.length;
+      deliver(users, {
+        type: 'meeting_tomorrow',
+        url: `/meetings/${m.id}`,
+        tag: `m${m.id}`,
+        ttl: DAY_S,
+        text: (lang) => ({
+          title: titleWith(lang === 'ar' ? 'اجتماع غدًا' : 'Réunion demain', branchNames(branchIds, lang)),
+          body: joinLine(
+            `«${m.title}»`,
+            fmtWhen(m.date, m.start_time, lang),
+            m.place,
+            m.items
+              ? lang === 'ar'
+                ? `${m.items} ${m.items === 1 ? 'بند' : m.items === 2 ? 'بندان' : m.items <= 10 ? 'بنود' : 'بندًا'}`
+                : `${m.items} point${m.items > 1 ? 's' : ''} à l'ordre du jour`
+              : null
+          ),
+        }),
+      });
+    }
+    return sent;
+  }
+
+  /**
    * The evening after a نشاط, its قادة who have not rated it yet; the evening after a
    * مخيم's last day, the same for its قادة. Only where a form is set for its kind (or it
    * was rated already).
@@ -1138,13 +1194,24 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
     for (const b of db.prepare('SELECT id, section FROM branches').all()) {
       const next = nextPlanned(b.id, today);
       if (!next || next.date !== target) continue;
-      if (db.prepare('SELECT 1 FROM prep_cards WHERE branch_id = ? AND date = ?').get(b.id, target)) continue;
+      // A card of the فرقة dated that day or the day before counts — a day off the plan,
+      // it is still that نشاط's (wider, today's own نشاط card would hide this one)
+      const dayBefore = isoDay(now, PREP_DAYS_AHEAD - 1);
+      if (db.prepare('SELECT 1 FROM prep_cards WHERE branch_id = ? AND date BETWEEN ? AND ?').get(b.id, dayBefore, target))
+        continue;
       if (!claim(`prep:${b.id}:${target}`)) continue;
       const users = audience({ section: b.section, branchIds: [b.id], type: 'prep_missing' });
       sent += users.length;
       deliver(users, {
         type: 'prep_missing',
-        url: '/prep-cards',
+        // Opens a new card already set to the فرقة, the day and the بند's title
+        url: `/prep-cards?${new URLSearchParams({
+          new: '1',
+          branch: String(b.id),
+          date: next.date,
+          title: next.title,
+          ...(next.session?.id ? { session: String(next.session.id) } : {}),
+        })}`,
         tag: `prep${b.id}`,
         ttl: 2 * DAY_S,
         text: (lang) => ({
@@ -1274,6 +1341,7 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
       eventReminders,
       readinessReminders,
       decisionReminders,
+      meetingReminders,
       evaluationReminders,
       prepReminders,
       birthdayReminders,
@@ -1493,6 +1561,7 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
     eventReminders,
     readinessReminders,
     decisionReminders,
+    meetingReminders,
     evaluationReminders,
     prepReminders,
     birthdayReminders,

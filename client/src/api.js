@@ -1,3 +1,5 @@
+import i18n from './i18n';
+
 const BASE = '/api';
 
 const TOKEN_KEY = 'auth.token';
@@ -56,16 +58,58 @@ function authHeaders(section) {
   };
 }
 
+// Weak 3G: a request that hangs is cut after 20 s rather than spinning forever
+const TIMEOUT_MS = 20000;
+
+/** The error for a request that never got an answer (no network, or timed out). */
+// The message is already translated: most screens show err.message as is
+function networkError(cause) {
+  const err = new Error(i18n.t('error.network'));
+  err.network = true;
+  err.cause = cause;
+  return err;
+}
+
+/**
+ * fetch, but a dropped connection or a timeout throws `networkError` — the screens
+ * say «connexion perdue» instead of the browser's «Failed to fetch». `timeout`
+ * 0 = none (uploads and PDF exports can legitimately take longer on 3G).
+ */
+async function send(url, init, timeout = TIMEOUT_MS) {
+  const ctrl = timeout ? new AbortController() : null;
+  const timer = ctrl && setTimeout(() => ctrl.abort(), timeout);
+  try {
+    return await fetch(url, ctrl ? { ...init, signal: ctrl.signal } : init);
+  } catch (e) {
+    throw networkError(e);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request(path, { section, ...options } = {}) {
-  const res = await fetch(BASE + path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(section),
+  // Only reads are cut: an aborted write may still land on the server, and a «retry»
+  // would then pay a month or duplicate a camp twice
+  const read = !options.method || options.method === 'GET';
+  const res = await send(
+    BASE + path,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(section),
+      },
+      ...options,
     },
-    ...options,
-  });
+    read ? TIMEOUT_MS : 0
+  );
   if (!res.ok) throw await failure(res, path);
-  return res.status === 204 ? null : res.json();
+  if (res.status === 204) return null;
+  // the body can still be cut mid-way on a dying connection
+  try {
+    return await res.json();
+  } catch (e) {
+    throw networkError(e);
+  }
 }
 
 /** The error for a failed response — and the trip back to the login screen on a dead token. */
@@ -88,7 +132,7 @@ async function failure(res, path) {
 
 /** GET a file (PDF export) with the session token: { blob, filename }. */
 async function download(path) {
-  const res = await fetch(BASE + path, { headers: authHeaders() });
+  const res = await send(BASE + path, { headers: authHeaders() }, 0);
   if (!res.ok) throw await failure(res, path);
   const disposition = res.headers.get('Content-Disposition') || '';
   const m = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
@@ -97,11 +141,15 @@ async function download(path) {
 
 /** POST raw bytes (a file upload), with extra headers; JSON back. */
 async function upload(path, body, headers = {}) {
-  const res = await fetch(BASE + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream', ...authHeaders(), ...headers },
-    body,
-  });
+  const res = await send(
+    BASE + path,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...authHeaders(), ...headers },
+      body,
+    },
+    0
+  );
   if (!res.ok) throw await failure(res, path);
   return res.json();
 }

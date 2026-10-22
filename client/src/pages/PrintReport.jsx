@@ -26,6 +26,8 @@ import {
   byMonth,
   fmtMonth,
   ledgerView,
+  boxPeriodLabel,
+  periodOfQuery,
   resultTone,
   rowText,
   sessionMeta,
@@ -112,7 +114,7 @@ const KINDS = {
   // محضر اجتماع; then the list (id 0, the page's filters in the query) and the follow-up
   meeting: { perm: 'meetings.read', label: 'print.reportMeeting', back: '/meetings' },
   'meetings-list': { perm: 'meetings.read', label: 'print.reportMeetingsList', back: '/meetings' },
-  'meeting-decisions': { perm: 'meetings.read', label: 'print.reportMeetingDecisions', back: '/meetings?view=decisions' },
+  'meeting-decisions': { perm: 'meetings.read', label: 'print.reportMeetingDecisions', back: '/meetings' },
   // E2 : le dossier d'un camp (?variant=report : le rapport à la قيادة), et ses restes à payer
   event: { perm: 'events.read', label: 'print.reportEvent', back: '/events' },
   'event-unpaid': { perm: 'events.read.fees', label: 'print.reportEventUnpaid', back: '/events' },
@@ -2270,7 +2272,16 @@ function TreasuryReport({ onReady, kindLabel }) {
   const both = !section;
   const res = useFetch('/treasury');
   const flow = FLOWS.includes(sp.get('flow')) ? sp.get('flow') : '';
-  const { byKey, held, multi, sel, owed, rows, months, fig } = ledgerView(res.data, { box: sp.get('box') || '', flow });
+  // La période de la page (G2), ?from=&to= : ses seules lignes, ses soldes d'ouverture et de clôture
+  const { from, to } = periodOfQuery(sp);
+  const { byKey, held, multi, sel, owed, rows, months, fig, balanceOf } = ledgerView(res.data, {
+    box: sp.get('box') || '',
+    flow,
+    from,
+    to,
+    today: todayISO(),
+  });
+  const period = fig?.period;
   const names = {
     short: (key) => boxName(byKey[key], t, lng, { both, short: true }),
     inline: (key) => boxName(byKey[key], t, lng, { both, inline: true }),
@@ -2317,15 +2328,21 @@ function TreasuryReport({ onReady, kindLabel }) {
       <H1>{title}</H1>
       <Tags>
         {flowLabel && <Tag>{t('print.treasuryOnly', { what: flowLabel })}</Tag>}
-        {sel && startOf(sel) && <Tag tone="neutral">{startOf(sel)}</Tag>}
+        {period && <Tag>{boxPeriodLabel(period, t)}</Tag>}
+        {sel && startOf(sel) && (!period || period.started) && <Tag tone="neutral">{startOf(sel)}</Tag>}
         <Tag tone="neutral">{fmtDate(todayISO())}</Tag>
       </Tags>
 
       <div className="mt-5">
         <Stats
           items={[
+            period &&
+              !period.started && {
+                label: t('treasury.openingOn', { date: fmtDate(period.openingDate) }),
+                value: money(period.opening),
+              },
             {
-              label: t('treasury.balance'),
+              label: period ? t('treasury.balanceOn', { date: fmtDate(period.closingDate) }) : t('treasury.balance'),
               value: money(fig.balance),
               cls: fig.balance < 0 ? 'text-destructive' : undefined,
               hint: fig.balance < 0 ? t('treasury.deficit') : null,
@@ -2333,7 +2350,9 @@ function TreasuryReport({ onReady, kindLabel }) {
             showIn && { label: t('treasury.income'), value: fmtAmount(fig.income.total), cls: 'text-success' },
             showOut && { label: t('treasury.expenses'), value: fmtAmount(fig.expenses.total) },
             showOut &&
-              fig.owed > 0 && {
+              fig.owed > 0 &&
+              // Les dettes sont celles d'aujourd'hui : pas à côté du solde d'une période close
+              (!period || period.closingDate === todayISO()) && {
                 label: t('treasury.owedTitle'),
                 value: fmtAmount(fig.owed),
                 cls: 'text-warning',
@@ -2359,8 +2378,8 @@ function TreasuryReport({ onReady, kindLabel }) {
                 <td className={cn(td, 'font-medium')}>{names.short(b.key)}</td>
                 <td className={cn(td, 'text-muted-foreground')}>{startOf(b) || t('treasury.boxNotOpen')}</td>
                 <td className={cn(tdNum, 'text-end text-warning')}>{b.start && b.owed > 0 ? fmtAmount(b.owed) : ''}</td>
-                <td className={cn(tdNum, 'text-end font-semibold', b.balance < 0 && 'text-destructive')}>
-                  {b.start ? money(b.balance) : '—'}
+                <td className={cn(tdNum, 'text-end font-semibold', balanceOf(b) < 0 && 'text-destructive')}>
+                  {b.start && balanceOf(b) !== null ? money(balanceOf(b)) : '—'}
                 </td>
               </tr>
             ))}

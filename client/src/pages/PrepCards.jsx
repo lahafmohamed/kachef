@@ -1,5 +1,5 @@
-import { Fragment, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Fragment, useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
@@ -49,6 +49,31 @@ export default function PrepCards() {
   const [to, setTo] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [creating, setCreating] = useState(false);
+  // What a new card starts with: nothing from the header button, a نشاط's فرقة, date and
+  // title from a link (?new=1&branch=&date=&title=&session=), or a whole card duplicated
+  // (router state). Read once, then cleared, so a refresh doesn't reopen the dialog.
+  const [defaults, setDefaults] = useState(null);
+  const location = useLocation();
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const copy = location.state?.prepDefaults;
+    if (sp.get('new') !== '1' && !copy) return;
+    navigate(location.pathname, { replace: true, state: null });
+    if (!editable) return;
+    setDefaults(
+      copy || {
+        branch_id: sp.get('branch') || undefined,
+        date: sp.get('date') || undefined,
+        title: sp.get('title') || undefined,
+        session_id: sp.get('session') || undefined,
+      }
+    );
+    setCreating(true);
+  }, [location, navigate, editable]);
+  const openBlank = () => {
+    setDefaults(null);
+    setCreating(true);
+  };
 
   const dq = useDebounced(q, 250);
   const params = new URLSearchParams();
@@ -102,7 +127,7 @@ export default function PrepCards() {
           return <ExportPdfButton kind="prep-list" id={params.get('branch') || 0} query={q.toString()} compact />;
         })()}
         {editable && (
-          <Button variant="brand" onClick={() => setCreating(true)}>
+          <Button variant="brand" onClick={openBlank}>
             <IconPlus />
             {t('prep.newCard')}
           </Button>
@@ -194,7 +219,7 @@ export default function PrepCards() {
                 </Button>
               ) : editable ? (
                 // Outline: the header's «بطاقة تحضير جديدة» stays the one filled action on screen
-                <Button variant="outline" onClick={() => setCreating(true)}>
+                <Button variant="outline" onClick={openBlank}>
                   <IconPlus />
                   {t('prep.newCard')}
                 </Button>
@@ -303,6 +328,7 @@ export default function PrepCards() {
         ) : (
           <PrepCardForm
             initial={null}
+            defaults={defaults}
             branches={branchList}
             leaders={leaderList}
             onCancel={() => setCreating(false)}

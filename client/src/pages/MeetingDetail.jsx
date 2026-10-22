@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { usePerms } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { isFeminine, useSection } from '../section';
 import {
@@ -14,6 +14,8 @@ import {
   gendered,
   LEGACY_MEETING_KINDS,
   meetingScope,
+  meetingShareText,
+  shareText,
   timeRange,
   userText,
 } from '../lib/meetings';
@@ -50,6 +52,7 @@ import {
   IconPencil,
   IconPin,
   IconPlus,
+  IconWhatsApp,
   IconTrash,
   IconUserCheck,
   IconX,
@@ -526,7 +529,8 @@ function ItemDialog({ m, item, open, onClose, onSaved, t }) {
  * One decision of the minutes: its tick, what was decided, who carries it out and by
  * when. `number`: its place in this meeting's list; `from`: the earlier meeting it
  * comes from, on the follow-up card. Writers get the pencil, on this meeting's own; the
- * tick is the follow-up's (meetings.followup), which may be granted alone.
+ * tick is the follow-up's (meetings.followup), which may be granted alone — and the
+ * قائد's own on a تكليف handed to him. canFollow(d) says which.
  */
 function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle, onEdit }) {
   return (
@@ -536,7 +540,7 @@ function DecisionItem({ d, t, today, number, canEdit, canFollow, busy, onToggle,
       <DecisionCheck
         status={d.status}
         busy={busy}
-        onToggle={canFollow ? () => onToggle(d) : null}
+        onToggle={canFollow(d) ? () => onToggle(d) : null}
         label={t(d.status === 'done' ? 'meeting.markOpen' : 'meeting.markDone', { text: d.text })}
       />
       <div className="min-w-0 flex-1 pb-2 pt-3 sm:pt-2">
@@ -846,7 +850,10 @@ export default function MeetingDetail() {
   const confirm = useConfirm();
   const { has } = usePerms();
   const canEdit = has('meetings.manage');
-  const canFollow = has('meetings.followup');
+  const { user } = useAuth();
+  const followAll = has('meetings.followup');
+  // The follow-up ticks every تكليف; a قائد without it, those handed to him
+  const canFollow = (d) => followAll || (!!user?.leader_id && Number(d.leader_id) === Number(user.leader_id));
   const canDelete = has('meetings.delete');
   const { section } = useSection();
 
@@ -932,6 +939,23 @@ export default function MeetingDetail() {
     }
   }
 
+  async function share() {
+    const url = `${window.location.origin}/meetings/${m.id}`;
+    const r = await shareText(meetingShareText(m, t, lng, url));
+    if (r === 'copied') toast.success(t('meeting.shareCopied'));
+    else if (r === 'failed') toast.error(t('meeting.shareFailed'));
+  }
+
+  // «تحضير الاجتماع المقبل»: its agenda opens on the follow-up of what is still to do —
+  // this meeting's تكاليف and the earlier ones it followed up
+  const openDecisions = [...(m.followups || []), ...m.decisions].filter((d) => d.status === 'open');
+  const nextAgenda = openDecisions.length
+    ? [
+        t('meeting.suggestFollowup'),
+        ...openDecisions.map((d) => t('meeting.followupItem', { text: d.owner ? `${d.text} (${d.owner})` : d.text })),
+      ].join('\n')
+    : '';
+
   const people = [
     m.chair && [gendered(t, 'meeting.chair', m.section), m.chair],
     m.secretary && [gendered(t, 'meeting.secretary', m.section), m.secretary],
@@ -943,6 +967,19 @@ export default function MeetingDetail() {
       <div className="flex items-center justify-between gap-2">
         {backButton}
         <div className="flex items-center gap-2">
+          {/* Upcoming: the convocation; held: what was decided — for the WhatsApp group */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={share}
+            aria-label={t(m.date >= today && !m.decisions.length ? 'meeting.convene' : 'meeting.share')}
+            className="w-11 px-0 sm:w-auto sm:px-3"
+          >
+            <IconWhatsApp className="h-4 w-4" />
+            <span className="sr-only sm:not-sr-only">
+              {t(m.date >= today && !m.decisions.length ? 'meeting.convene' : 'meeting.share')}
+            </span>
+          </Button>
           <ExportPdfButton kind="meeting" id={m.id} compact />
           {canEdit && (
             <Button
@@ -1129,6 +1166,7 @@ export default function MeetingDetail() {
               section: m.section,
               chair: { id: m.chair_id, name: m.chair || '' },
               secretary: { id: m.secretary_id, name: m.secretary || '' },
+              agenda: nextAgenda,
             }}
             onClose={() => setPreparingNext(false)}
             onSaved={(payload) => {

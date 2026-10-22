@@ -5,7 +5,7 @@ import { api } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import ExportPdfButton from '../components/ExportPdfButton';
-import { branchName, fmtDate, fmtTime } from '../utils';
+import { branchName, fmtDate, fmtTime, todayISO } from '../utils';
 import PrepCardForm from '../components/PrepCardForm';
 import {
   Badge,
@@ -37,6 +37,24 @@ const stampDate = (v) => (v ? fmtDate(v.slice(0, 10)) : '');
 
 // «Label : value» — French puts a no-break space before the colon, Arabic none
 const colon = (lng) => (lng === 'fr' ? '\u00a0: ' : ': ');
+
+// «Dupliquer» — two stacked sheets, drawn as the shared icons are (24 grid, 2px stroke)
+const IconCopy = ({ className }) => (
+  <svg
+    className={cn('h-4 w-4 shrink-0', className)}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect x="8" y="8" width="14" height="14" rx="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </svg>
+);
 
 // On a phone, an invisible margin makes a text-sized link a 44px target; pointer
 // screens keep the text's own box
@@ -138,6 +156,23 @@ export default function PrepCardDetail() {
           </Button>
         )}
         <ExportPdfButton kind="prep" id={card.id} compact />
+        {/* A card that worked, written again for another day: same content, dated today,
+            by the account's own قائد and tied to no نشاط yet */}
+        {editable && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const { id: _id, session_id: _s, leader_id: _l, ...rest } = card;
+              navigate('/prep-cards', { state: { prepDefaults: { ...rest, date: todayISO() } } });
+            }}
+            aria-label={t('prep.duplicate')}
+            className="w-11 px-0 sm:w-auto sm:px-3"
+          >
+            <IconCopy />
+            <span className="sr-only sm:not-sr-only">{t('prep.duplicate')}</span>
+          </Button>
+        )}
         {editable && (
           <Button
             variant="outline"

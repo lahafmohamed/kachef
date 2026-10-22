@@ -146,6 +146,7 @@ const TYPE_ICONS = {
   event_readiness: IconTent,
   meeting_created: IconMessages,
   meeting_changed: IconMessages,
+  meeting_tomorrow: IconClock,
   decision_assigned: IconMessages,
   decision_due: IconClock,
   evaluation_pending: IconStar,

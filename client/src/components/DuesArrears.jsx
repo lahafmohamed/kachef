@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useFetch } from '../hooks';
 import { branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import { parentPhones } from '../lib/campFile';
-import { telHref } from './MemberParts';
+import { telHref, waHref } from './MemberParts';
 import { arrearsMonths, groupArrears } from '../lib/arrears';
 import ExportPdfButton from './ExportPdfButton';
 import {
@@ -23,7 +23,43 @@ import {
   IconCalendarCheck,
   IconChevronDown,
   IconPhone,
+  IconWhatsApp,
 } from './ui';
+
+/**
+ * The WhatsApp reminder to an عنصر's family: his first name, the months he owes and what
+ * they come to — the same message here and on his profile. `r`: { first_name, months,
+ * owed }. null without a number.
+ */
+export function duesReminderHref(t, lng, phone, r) {
+  if (!phone || !r.months.length) return null;
+  const text = t('arrears.waReminder', {
+    name: r.first_name || memberName(r),
+    months: arrearsMonths(r.months, lng),
+    count: r.months.length,
+    amount: fmtAmount(r.owed),
+  });
+  return `${waHref(phone)}?text=${encodeURIComponent(text)}`;
+}
+
+/** The family's WhatsApp, a 44px square like the call button beside it. */
+export function WhatsAppSquare({ href, label, className }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={label}
+      title={label}
+      className={cn(
+        'focus-ring inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[#25D366] transition-colors hover:bg-[#25D366]/10',
+        className
+      )}
+    >
+      <IconWhatsApp className="h-4 w-4" />
+    </a>
+  );
+}
 
 // A فرقة shows its five biggest debts first; the rest is a tap away
 const FOLD = 5;
@@ -57,10 +93,16 @@ function ArrearsRow({ r, t, lng }) {
           href={telHref(phone.number)}
           aria-label={t('arrears.callParent', { name: memberName(r), number: fmtPhone(phone.number) })}
           title={fmtPhone(phone.number)}
-          className="focus-ring inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-primary sm:h-9 sm:w-9"
+          className="focus-ring inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
         >
           <IconPhone className="h-4 w-4" />
         </a>
+      )}
+      {phone && (
+        <WhatsAppSquare
+          href={duesReminderHref(t, lng, phone.number, r)}
+          label={t('arrears.remindParent', { name: memberName(r), number: fmtPhone(phone.number) })}
+        />
       )}
       <div className="flex shrink-0 flex-col items-end gap-1">
         <span className="text-sm font-semibold tabular-nums text-destructive">{fmtAmount(r.owed)}</span>

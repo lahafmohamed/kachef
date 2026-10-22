@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth } from '../auth';
@@ -45,10 +45,24 @@ const fromCard = (c) => ({
   notes: c.notes || '',
 });
 
-export default function PrepCardForm({ initial, branches, leaders, onSaved, onCancel }) {
+// A new card that starts filled — from a نشاط that has none yet, or a card duplicated.
+// Only what is given is taken; the rest stays as for a blank card.
+const fromDefaults = (d) => ({
+  ...EMPTY,
+  ...Object.fromEntries(
+    Object.keys(EMPTY)
+      .filter((k) => d[k] !== undefined && d[k] !== null)
+      .map((k) => [k, Array.isArray(EMPTY[k]) ? [...d[k]] : String(d[k])])
+  ),
+});
+
+/**
+ * `initial` is a card being edited (PUT); `defaults` only prefills a new one (POST).
+ */
+export default function PrepCardForm({ initial, defaults, branches, leaders, onSaved, onCancel }) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
-  const [form, setForm] = useState(() => (initial ? fromCard(initial) : EMPTY));
+  const [form, setForm] = useState(() => (initial ? fromCard(initial) : defaults ? fromDefaults(defaults) : EMPTY));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -77,15 +91,23 @@ export default function PrepCardForm({ initial, branches, leaders, onSaved, onCa
     });
 
   // بطاقة جديدة: الفرقة الأولى مسبقًا، و القائد صاحب الحساب إن وُجد و إلا قائد الفرقة
+  // — or, prefilled with a فرقة but no author, the same choice of author for that فرقة
+  // — once: a later change of فرقة keeps its own rule (pickBranch)
+  const seeded = useRef(false);
   useEffect(() => {
-    if (initial || !branchList.length || form.branch_id) return;
-    const b = branchList[0];
+    if (initial || seeded.current || !branchList.length) return;
+    seeded.current = true;
+    const given = branchList.find((x) => String(x.id) === String(form.branch_id));
+    if (given && form.leader_id) return;
+    const b = given || branchList[0];
     setForm((f) => ({
       ...f,
       branch_id: String(b.id),
-      leader_id: String(user?.leader_id || b.leader_id || ''),
+      leader_id: (given && f.leader_id) || String(user?.leader_id || b.leader_id || ''),
+      // A فرقة out of this account's reach was asked for: its مطالب and نشاط go with it
+      ...(given ? {} : { matalib: [], session_id: '' }),
     }));
-  }, [initial, branchList, form.branch_id, user]);
+  }, [initial, branchList, form.branch_id, form.leader_id, user]);
 
   // تغيير الفرقة يُسقط المطالب و النشاط المربوط: كلاهما يخصّ فرقة بعينها. و فرقة
   // من القسم الآخر تُسقط القائد أيضًا: من يعدّ البطاقة من قسم فرقتها

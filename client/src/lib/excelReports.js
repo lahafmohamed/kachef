@@ -2,7 +2,17 @@ import { api } from '../api';
 import { phoneNumbers } from '../components/MemberParts';
 import { workbookBlob } from './excel';
 import { gendered, isOverdue, meetingScope, timeRange } from './meetings';
-import { FLOWS, INCOME_SOURCES, OUT_CATEGORIES, OUT_FIGURES, boxName, ledgerView, rowText } from './treasury';
+import {
+  FLOWS,
+  INCOME_SOURCES,
+  OUT_CATEGORIES,
+  OUT_FIGURES,
+  boxName,
+  ledgerView,
+  boxPeriodLabel,
+  periodOfQuery,
+  rowText,
+} from './treasury';
 import { isCountedSession } from './attendance';
 import {
   chiefLabel,
@@ -1122,7 +1132,18 @@ async function treasuryCard(ctx) {
   const x = tools(ctx);
   const data = await api.get('/treasury');
   const flow = FLOWS.includes(sp.get('flow')) ? sp.get('flow') : '';
-  const { byKey, held, multi, sel, owed, rows, fig } = ledgerView(data, { box: sp.get('box') || '', flow });
+  // La période de la page (G2), ?from=&to= : ses seules lignes, ses soldes d'ouverture et de clôture
+  const { from, to } = periodOfQuery(sp);
+  const { byKey, held, multi, sel, owed, rows, fig, balanceOf } = ledgerView(data, {
+    box: sp.get('box') || '',
+    flow,
+    from,
+    to,
+    today: todayISO(),
+  });
+  const period = fig?.period;
+  // Les dettes sont celles d'aujourd'hui : pas à côté du solde d'une période close
+  const owedNow = fig?.owed > 0 && (!period || period.closingDate === todayISO());
   const both = !section;
   const names = {
     short: (key) => boxName(byKey[key], t, lng, { both, short: true }),
@@ -1138,7 +1159,8 @@ async function treasuryCard(ctx) {
       : t('treasury.openedOn', { date: fmtDate(box.start.date), amount: fmtAmount(box.start.amount) }));
   const head = [
     flowLabel ? `${kindLabel} · ${t('print.treasuryOnly', { what: flowLabel })}` : kindLabel,
-    sel && startOf(sel),
+    period && boxPeriodLabel(period, t),
+    sel && (!period || period.started) && startOf(sel),
     stamp,
   ];
   const sheet = (sheetName, heading, blocks) => ({ name: sheetName, title: name, lines: [heading, stamp], blocks });
@@ -1162,12 +1184,18 @@ async function treasuryCard(ctx) {
       blocks: [
         {
           facts: [
-            [t('treasury.balance'), fig.balance, 'amount'],
+            period &&
+              !period.started && [t('treasury.openingOn', { date: fmtDate(period.openingDate) }), period.opening, 'amount'],
+            [
+              period ? t('treasury.balanceOn', { date: fmtDate(period.closingDate) }) : t('treasury.balance'),
+              fig.balance,
+              'amount',
+            ],
             [t('treasury.income'), showIn ? fig.income.total : null, 'amount'],
             [t('treasury.expenses'), showOut ? fig.expenses.total : null, 'amount'],
-            [t('treasury.owedTitle'), showOut && fig.owed > 0 ? fig.owed : null, 'amount'],
-            [t('excel.afterOwed'), showOut && fig.owed > 0 ? fig.balance - fig.owed : null, 'amount'],
-          ],
+            [t('treasury.owedTitle'), showOut && owedNow ? fig.owed : null, 'amount'],
+            [t('excel.afterOwed'), showOut && owedNow ? fig.balance - fig.owed : null, 'amount'],
+          ].filter(Boolean),
         },
         showIn && {
           heading: t('treasury.income'),
@@ -1198,7 +1226,7 @@ async function treasuryCard(ctx) {
               sum: true,
               value: (b) => (b.start && b.owed > 0 ? b.owed : null),
             },
-            { label: t('treasury.balance'), type: 'amount', sum: true, value: (b) => (b.start ? b.balance : null) },
+            { label: t('treasury.balance'), type: 'amount', sum: true, value: (b) => (b.start ? balanceOf(b) : null) },
           ],
           { total: t('print.total') }
         ),

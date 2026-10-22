@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api';
+import i18n from './i18n';
 
 /**
  * GET a path with real loading / error / reload states.
@@ -15,6 +16,9 @@ export function useFetch(path, { skip = false, section } = {}) {
   const [errorStatus, setErrorStatus] = useState(null);
   const [loading, setLoading] = useState(!skip);
   const alive = useRef(true);
+  // Each call takes a number: on 3G a slow answer for an old filter can land after the
+  // answer for the new one, and must not overwrite it. Only the latest call writes.
+  const seq = useRef(0);
 
   useEffect(() => {
     alive.current = true;
@@ -26,20 +30,22 @@ export function useFetch(path, { skip = false, section } = {}) {
   const reload = useCallback(
     async ({ quiet = false } = {}) => {
       if (skip || !path) return;
+      const n = ++seq.current;
+      const current = () => alive.current && n === seq.current;
       if (!quiet) setLoading(true);
       setError(null);
       setErrorStatus(null);
       try {
         // `section` overrides the قسم switcher for this one list ('' = both أقسام)
         const res = await api.get(path, { section });
-        if (alive.current) setData(res);
+        if (current()) setData(res);
       } catch (err) {
-        if (alive.current) {
-          setError(err.message || 'error');
+        if (current()) {
+          setError(err.network ? i18n.t('error.network') : err.message || 'error');
           setErrorStatus(err.status ?? null);
         }
       } finally {
-        if (alive.current) setLoading(false);
+        if (current()) setLoading(false);
       }
     },
     [path, skip, section]

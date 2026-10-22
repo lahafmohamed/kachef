@@ -29,6 +29,7 @@ import {
   cn,
   useConfirm,
   useToast,
+  IconAlert,
   IconArchive,
   IconArchiveRestore,
   IconArrow,
@@ -114,7 +115,11 @@ export default function Promotions() {
   // جوّالٌ بلغ سنّ الفرقة التالية و توقّف: يُؤرشَف بدل أن يُرفَّع، و يُعاد تفعيله من ملفّه
   const canArchive = has('members.delete');
   const canPick = editable || canArchive;
-  const pending = useFetch('/promotions/pending');
+  // ترفيع fin d'année : les âges au 31 août de l'année scoute en cours. Ceux qui ne
+  // seront éligibles que d'ici là s'affichent sans case — le serveur revalide à la date du jour.
+  const [asOf, setAsOf] = useState('today'); // 'today' | 'yearEnd'
+  const yearEnd = `${scoutYearOf(today()).slice(5)}-08-31`;
+  const pending = useFetch(`/promotions/pending${asOf === 'yearEnd' ? `?ref=${yearEnd}` : ''}`);
   const history = useFetch('/promotions/history');
   // Bug 20 : طلائع d'âge qui ne correspondent plus à l'âge de leurs عناصر
   const realign = useFetch('/promotions/group-realign');
@@ -123,6 +128,12 @@ export default function Promotions() {
   // '' = كل الفرق. الفلترة على الفرقة التي يخرج منها العنصر، كما يفعل الخادم حين
   // يحصر قائدًا في فرقه: الترفيع يخصّ الفرقة التي يغادرها صاحبه.
   const [branch, setBranch] = useState('');
+  // Les عناصر hors tranche d'âge de leur فرقة — un lien vers la liste, à corriger à la main
+  const canReadMembers = has('members.read');
+  const anomalies = useFetch(`/members?missing=age_range&status=active${branch ? `&branch=${branch}` : ''}`, {
+    skip: !canReadMembers,
+  });
+  const anomalyCount = anomalies.data?.length || 0;
   // العناصر المؤشَّرون للترفيع دفعةً واحدة
   const [picked, setPicked] = useState(() => new Set());
 
@@ -141,7 +152,9 @@ export default function Promotions() {
   const inBranch = (pending.data || []).filter((p) => sameBranch(p.current_branch.id));
   const readyCount = inBranch.filter((p) => p.ready).length;
   const pendingList = inBranch.filter((p) => !readiness || (readiness === 'ready') === !!p.ready);
-  const readyIds = pendingList.filter((p) => p.ready).map((p) => p.id);
+  // «Éligible le …» : affiché, jamais coché — la validation compte l'âge d'aujourd'hui
+  const pickable = pendingList.filter((p) => !p.upcoming);
+  const readyIds = pickable.filter((p) => p.ready).map((p) => p.id);
   // Bug 20 : la فرقة d'arrivée voit aussi ses ترفيعات entrants
   const branchHistory = (history.data || []).filter((h) => sameBranch(h.old_branch_id) || sameBranch(h.new_branch_id));
   const realignList = (realign.data?.branches || []).filter((r) => sameBranch(r.branch_id));
@@ -152,8 +165,8 @@ export default function Promotions() {
   const shownSeason = seasons.includes(season) ? season : '';
   const historyList = branchHistory.filter((h) => !shownSeason || scoutYearOf(h.promoted_at) === shownSeason);
   const branchList = branches.data || [];
-  const pickedIds = pendingList.filter((p) => picked.has(p.id)).map((p) => p.id);
-  const allPicked = pendingList.length > 0 && pickedIds.length === pendingList.length;
+  const pickedIds = pickable.filter((p) => picked.has(p.id)).map((p) => p.id);
+  const allPicked = pickable.length > 0 && pickedIds.length === pickable.length;
 
   // One heading per passage instead of the same two فرق repeated on every row,
   // in the فوج's order, then by name. The ids break ties so a passage never splits.
@@ -192,7 +205,7 @@ export default function Promotions() {
 
   // «تأشير الكل» يخصّ المعروض وحده، و هو هنا كل ما مرّ من فلتر الفرقة
   function toggleAll() {
-    setPicked(allPicked ? new Set() : new Set(pendingList.map((p) => p.id)));
+    setPicked(allPicked ? new Set() : new Set(pickable.map((p) => p.id)));
   }
   // الاسم يذهب إلى عنوان الصفحة و منه إلى اسم ملف الـ PDF
   const branchLabel = branchName(
@@ -388,14 +401,51 @@ export default function Promotions() {
         )}
       </div>
 
+      {/* Âge compté aujourd'hui, ou au 31 août : préparer les ترفيعات de la rentrée */}
+      <div className="space-y-1.5">
+        <SegmentedControl
+          label={t('promotion.asOf')}
+          className="flex w-full sm:w-auto"
+          value={asOf}
+          onChange={(v) => {
+            setAsOf(v);
+            setPicked(new Set());
+          }}
+          options={[
+            { value: 'today', label: t('promotion.asOfToday') },
+            { value: 'yearEnd', label: t('promotion.asOfYearEnd') },
+          ]}
+        />
+        {asOf === 'yearEnd' && (
+          <p className="text-xs text-muted-foreground">{t('promotion.asOfYearEndHint', { date: fmtDate(yearEnd) })}</p>
+        )}
+      </div>
+
+      {/* Les عناصر déjà hors de la tranche d'âge de leur فرقة : la liste, à corriger */}
+      {anomalyCount > 0 && (
+        <Card className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
+          <IconAlert className="h-5 w-5 shrink-0 text-warning" />
+          <div className="min-w-40 flex-1">
+            <p className="text-sm font-medium">{t('promotion.anomaliesTitle')}</p>
+            <p className="text-xs text-muted-foreground">{t('promotion.anomaliesHint', { count: anomalyCount })}</p>
+          </div>
+          <Link
+            to={`/members?missing=age_range${branch ? `&branch=${branch}` : ''}`}
+            className="focus-ring inline-flex h-11 items-center rounded-lg border border-border bg-card px-3 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground sm:h-8"
+          >
+            {t('promotion.anomaliesLink')}
+          </Link>
+        </Card>
+      )}
+
       <Card>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 sm:px-5">
-          {canPick && pendingList.length > 1 && (
+          {canPick && pickable.length > 1 && (
             <PickBox
               checked={allPicked}
               indeterminate={pickedIds.length > 0 && !allPicked}
               onChange={toggleAll}
-              label={t('promotion.selectAll', { count: pendingList.length })}
+              label={t('promotion.selectAll', { count: pickable.length })}
             />
           )}
           <h2 className="text-base font-semibold">{t('promotion.pending')}</h2>
@@ -486,13 +536,15 @@ export default function Promotions() {
                   {g.items.map((p) => {
                     const name = memberName(p);
                     const on = picked.has(p.id);
+                    // Éligible d'ici la fin d'année seulement : visible, pas sélectionnable
+                    const rowPick = canPick && !p.upcoming;
                     return (
                       <li
                         key={p.id}
                         // The whole row ticks the box; the name still opens the profile
                         // and the buttons keep their own action
                         onClick={
-                          canPick
+                          rowPick
                             ? (e) => {
                                 if (e.target.closest('a, button, label') || window.getSelection()?.toString())
                                   return;
@@ -502,17 +554,19 @@ export default function Promotions() {
                         }
                         className={cn(
                           'flex items-center gap-3 px-4 py-3 transition-colors sm:px-5',
-                          canPick && 'cursor-pointer',
-                          on ? 'bg-accent/60' : canPick && 'hover:bg-accent/40'
+                          rowPick && 'cursor-pointer',
+                          on && rowPick ? 'bg-accent/60' : rowPick && 'hover:bg-accent/40'
                         )}
                       >
-                        {canPick && (
+                        {rowPick && (
                           <PickBox
                             checked={on}
                             onChange={() => togglePick(p.id)}
                             label={t('promotion.selectOne', { name })}
                           />
                         )}
+                        {/* The box's room, kept empty: the names stay in one column */}
+                        {canPick && !rowPick && <span aria-hidden="true" className="-m-3 h-11 w-11 shrink-0" />}
                         <Avatar
                           photo={p.photo}
                           name={avatarName(p)}
@@ -532,11 +586,17 @@ export default function Promotions() {
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-muted-foreground">
                             {t('common.age', { count: p.age })}
                             {progressOf(p)}
+                            {p.upcoming && p.eligible_on && (
+                              <Badge variant="secondary">
+                                <IconCalendar className="h-3 w-3" />
+                                {t('promotion.eligibleOn', { date: fmtDate(p.eligible_on) })}
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         {/* Phones act through the selection bar: two buttons on every row
                             left the names a few letters wide */}
-                        {canPick && (
+                        {rowPick && (
                           <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
                             {canArchive && (
                               <Button

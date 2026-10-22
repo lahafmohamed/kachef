@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
@@ -85,8 +85,11 @@ const matchStatus = (m, f) =>
         : m.status === f);
 
 // رفض السيرفر لفرقة ليست للمستخدم يُقرأ كرسالة، لا كرمز خام
+// — a request that never reached the server says so, not the browser's raw text
 const attendanceError = (t, err) =>
-  err.message === 'forbidden_branch'
+  err.network
+    ? t('error.network', { defaultValue: err.message })
+    : err.message === 'forbidden_branch'
     ? t('session.forbiddenBranch')
     : err.message === 'forbidden_fees'
       ? t('session.forbiddenFees')
@@ -97,6 +100,24 @@ const attendanceError = (t, err) =>
 // «label : value» — French spaces its colon (kept on its word), Arabic writes it close,
 // as the locale strings do («آخر تعديل:»)
 const colon = (lng) => (lng === 'fr' ? '\u00a0: ' : ': ');
+
+// «Dupliquer» — two stacked sheets, drawn as the shared icons are (24 grid, 2px stroke)
+const IconCopy = ({ className }) => (
+  <svg
+    className={cn('h-4 w-4 shrink-0', className)}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect x="8" y="8" width="14" height="14" rx="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </svg>
+);
 
 // On a phone, an invisible margin makes a text-sized link or button a 44px target;
 // pointer screens keep the text's own box
@@ -494,6 +515,9 @@ export default function SessionDetail() {
   const [bulkBusy, setBulkBusy] = useState(false);
   // تعديل تفاصيل النشاط بعد إنشائه — لمن مُنح تعديل الأنشطة
   const canEditSession = has('sessions.edit');
+  const canCreate = has('sessions.create');
+  const canPrep = has('prep.manage');
+  const navigate = useNavigate();
   const [editingSession, setEditingSession] = useState(false);
   // فلترة عرض اللائحة (لا تمسّ الحضور المسجّل، عرضٌ فقط)
   const [filterBranch, setFilterBranch] = useState('');
@@ -628,9 +652,10 @@ export default function SessionDetail() {
       roster: s.roster.map((m) => (ids.has(m.id) ? { ...m, status: 'present' } : m)),
     }));
     try {
-      for (const m of unmarked) {
-        await api.post(`/sessions/${id}/attendance`, { member_id: m.id, status: 'present' });
-      }
+      // One request, one transaction on the server: all of them or none
+      await api.post(`/sessions/${id}/attendance`, {
+        records: unmarked.map((m) => ({ member_id: m.id, status: 'present' })),
+      });
       toast.success(t('session.markedCount', { count: unmarked.length }));
       reload({ quiet: true });
     } catch (err) {
@@ -663,9 +688,9 @@ export default function SessionDetail() {
       roster: s.roster.map((m) => (ids.has(m.id) ? { ...m, status: 'absent' } : m)),
     }));
     try {
-      for (const m of untouched) {
-        await api.post(`/sessions/${id}/attendance`, { member_id: m.id, status: 'absent' });
-      }
+      await api.post(`/sessions/${id}/attendance`, {
+        records: untouched.map((m) => ({ member_id: m.id, status: 'absent' })),
+      });
       toast.success(t('session.markedAbsentCount', { count: untouched.length }));
       reload({ quiet: true });
     } catch (err) {
@@ -1032,6 +1057,24 @@ export default function SessionDetail() {
               <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
             </Button>
           )}
+          {/* Next week's نشاط from this one: the create dialog opens filled with its
+              فرق, قادة, hour and place */}
+          {canCreate && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // What the copy takes, not the roster: history state stays small
+                const { roster, files, expenses, donations, ...copyOf } = session;
+                navigate('/sessions', { state: { copyOf } });
+              }}
+              aria-label={t('session.duplicate')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
+              <IconCopy />
+              <span className="sr-only sm:not-sr-only">{t('session.duplicate')}</span>
+            </Button>
+          )}
           <ExportPdfButton kind="sessions" id={session.id} compact />
           {canDelete && (
             <Button
@@ -1238,6 +1281,29 @@ export default function SessionDetail() {
           ))}
         </div>
       )}
+      {/* No fiche yet for a نشاط still ahead: one tap opens a new one already set to its
+          فرقة, day and title, and tied to it */}
+      {canPrep &&
+        session.prep_cards?.length === 0 &&
+        session.kind === 'activity' &&
+        session.date >= todayISO() &&
+        (session.branch_id || session.branch_ids?.[0]) && (
+          <div className="flex">
+            <Link
+              to={`/prep-cards?${new URLSearchParams({
+                new: '1',
+                branch: String(session.branch_id || session.branch_ids[0]),
+                date: session.date,
+                title: session.title,
+                session: String(session.id),
+              })}`}
+              className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border border-dashed border-primary/40 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/8 sm:min-h-10"
+            >
+              <IconPlus className="h-3.5 w-3.5" />
+              {t('prep.prepareCard')}
+            </Link>
+          </div>
+        )}
 
       {/* ---------- Présence | Finances ----------
           Not sticky: the roster's search bar sticks under the app bar, at the same

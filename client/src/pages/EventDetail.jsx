@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api, isFeminine } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
-import { avatarName, branchName, fmtAmount, fmtDate, fmtTime, memberName, todayISO } from '../utils';
+import { avatarName, branchName, fmtAmount, fmtDate, fmtPhone, fmtTime, memberName, todayISO } from '../utils';
 import { toDate } from '../lib/date';
 import {
   CORE_STAFF,
@@ -32,12 +32,12 @@ import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
 import TimePicker from '../components/TimePicker';
-import { UnderlineTabs } from '../components/MemberParts';
+import { UnderlineTabs, WhatsAppTile, telHref, waHref } from '../components/MemberParts';
 import AttachedFiles from '../components/AttachedFiles';
 import { EventEvaluation } from '../components/SessionEvaluation';
 import { EventSafetyTab, readinessFacts } from '../components/CampSafety';
 import ExportPdfButton from '../components/ExportPdfButton';
-import { familyCount, remainingOf, unpaidOf } from '../lib/campFile';
+import { familyCount, remainingOf, unpaidFamilies, unpaidOf } from '../lib/campFile';
 import { fmtScore, scoreTone } from '../lib/evaluations';
 import {
   Avatar,
@@ -68,6 +68,7 @@ import {
   IconCoins,
   IconHandHeart,
   IconPencil,
+  IconPhone,
   IconPin,
   IconPlus,
   IconSearch,
@@ -1253,7 +1254,7 @@ function PayChip({ p, ev, t, onOpen }) {
 
 const PAY_FILTERS = ['paid', 'partial', 'unpaid', 'exempt'];
 
-function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, onPay, onRemove, onRestore }) {
+function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, onPay, onRemove, onRestore, onRemind }) {
   const [query, setQuery] = useState('');
   const [payFilter, setPayFilter] = useState('');
   const people = ev.participants;
@@ -1319,7 +1320,13 @@ function ParticipantsTab({ ev, t, lng, canEdit, canPay, canFees, links, onAdd, o
           <p className="text-sm font-medium tabular-nums text-destructive">
             {t('campFile.unpaidLine', { amount: fmtAmount(unpaidTotal), count: familyCount(unpaid) })}
           </p>
-          <ExportPdfButton kind="event-unpaid" id={ev.id} />
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={onRemind}>
+              <IconPhone />
+              {t('campFile.remind')}
+            </Button>
+            <ExportPdfButton kind="event-unpaid" id={ev.id} />
+          </div>
         </div>
       )}
       {hidden > 0 && (
@@ -2524,6 +2531,182 @@ function DonationDialog({ ev, donation, open, onClose, onSaved, t }) {
 }
 
 /* ============================================================
+   Dupliquer, relancer
+   ============================================================ */
+
+// Day arithmetic on ISO dates, at noon so no clock change moves the day
+const isoAt = (iso) => Date.parse(`${iso}T12:00:00Z`);
+const isoShift = (iso, days) => new Date(isoAt(iso) + days * 86400000).toISOString().slice(0, 10);
+const isoDelta = (from, to) => Math.round((isoAt(to) - isoAt(from)) / 86400000);
+
+/**
+ * Le camp de l'an dernier refait : un titre et un premier jour, le reste suit côté serveur
+ * (فرق, طلائع, programme, هيئة قيادية, check-list), décalé d'autant de jours. Proposé un an
+ * plus tard, les années du titre avancées d'autant («مخيم 2025» → «مخيم 2026»).
+ */
+function DuplicateDialog({ ev, open, onClose, onDone, t }) {
+  const [form, setForm] = useState({ title: '', start_date: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    const y = Number(ev.start_date.slice(0, 4)) + 1;
+    // 29 February has no twin next year: the 28th then
+    const next = `${y}${ev.start_date.slice(4)}`;
+    setForm({
+      title: ev.title.replace(/\b(19|20)\d{2}\b/g, (m) => String(Number(m) + 1)),
+      start_date: next.endsWith('-02-29') ? `${y}-02-28` : next,
+    });
+  }, [open, ev]);
+
+  const end = form.start_date ? isoShift(ev.end_date, isoDelta(ev.start_date, form.start_date)) : null;
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      onDone(await api.post(`/events/${ev.id}/duplicate`, { title: form.title.trim(), start_date: form.start_date }));
+    } catch (err) {
+      setError(errorText(t, err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t('event.duplicateTitle')}
+      description={t('event.duplicateHint')}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" form="event-duplicate-form" loading={saving}>
+            {t('event.duplicate')}
+          </Button>
+        </div>
+      }
+    >
+      <form id="event-duplicate-form" onSubmit={save} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="dup_title">{t('event.name')}</Label>
+          <Input
+            id="dup_title"
+            required
+            maxLength={200}
+            autoComplete="off"
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="dup_start">{t('event.startDate')}</Label>
+          <DatePicker
+            id="dup_start"
+            required
+            clearable={false}
+            value={form.start_date}
+            onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+          />
+          {end && end !== form.start_date && (
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {t('event.duplicateEnd', { date: fmtDateRange(form.start_date, end) })}
+            </p>
+          )}
+        </div>
+        {error && (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/** «Ali», «Ali et Sara», «Ali, Sara et Hadi» — in the screen's language */
+function joinNames(names, lng) {
+  try {
+    return new Intl.ListFormat(lng, { type: 'conjunction' }).format(names);
+  } catch {
+    return names.join(', ');
+  }
+}
+
+/**
+ * Relancer les impayés : famille par famille (frères et sœurs = un seul message), le reste dû
+ * de tous ses enfants, un appel ou un WhatsApp déjà rédigé. Sans members.contact, aucun numéro
+ * n'arrive : la feuille PDF reste le moyen.
+ */
+function RemindDialog({ ev, open, onClose, canContact, t, lng }) {
+  const families = unpaidFamilies(ev);
+  const total = families.reduce((n, f) => n + f.amount, 0);
+  const message = (f) =>
+    t('campFile.remindMessage', {
+      name: joinNames(f.people.map(participantName), lng),
+      amount: fmtAmount(f.amount),
+      title: ev.title,
+    });
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t('campFile.remindTitle')}
+      description={t('campFile.unpaidLine', { amount: fmtAmount(total), count: families.length })}
+      autoFocus={false}
+    >
+      {!canContact ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">{t('campFile.remindNoContact')}</p>
+          <ExportPdfButton kind="event-unpaid" id={ev.id} />
+        </div>
+      ) : (
+        <ul className="-mx-1 divide-y divide-border">
+          {families.map((f) => (
+            <li key={f.key} className="space-y-2 px-1 py-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="min-w-0 text-sm font-medium [overflow-wrap:anywhere]">
+                  <bdi>{joinNames(f.people.map(participantName), lng)}</bdi>
+                </p>
+                <span className="shrink-0 text-sm font-semibold tabular-nums text-destructive">{fmtAmount(f.amount)}</span>
+              </div>
+              {f.phones.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t('campFile.remindNoPhone')}</p>
+              ) : (
+                f.phones.slice(0, 2).map((ph) => (
+                  <div key={ph.number} className="flex gap-2">
+                    <a
+                      href={telHref(ph.number)}
+                      className="focus-ring flex min-h-12 min-w-0 flex-1 items-center gap-2.5 rounded-xl border border-border bg-card px-3 text-sm font-medium shadow-xs transition-colors hover:bg-accent/60"
+                    >
+                      <IconPhone className="h-4 w-4 shrink-0 text-primary" />
+                      <span dir="ltr" className="truncate tabular-nums">
+                        {fmtPhone(ph.number)}
+                      </span>
+                      {ph.mother && <span className="text-xs text-muted-foreground">{t('member.motherShort')}</span>}
+                    </a>
+                    <WhatsAppTile
+                      href={`${waHref(ph.number)}?text=${encodeURIComponent(message(f))}`}
+                      label={t('campFile.remindWhatsApp', { number: fmtPhone(ph.number) })}
+                    />
+                  </div>
+                ))
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+}
+
+/* ============================================================
    الصفحة
    ============================================================ */
 
@@ -2583,6 +2766,8 @@ export default function EventDetail() {
   const [fundingDialog, setFundingDialog] = useState(null);
   // { staff, role } — null = closed; staff null = a new post, role = the slot it fills
   const [staffDialog, setStaffDialog] = useState(null);
+  const [duplicating, setDuplicating] = useState(false);
+  const [reminding, setReminding] = useState(false);
 
   if (loading) return <SkeletonPage rows={5} />;
   // A مخيم that is gone (deleted, or an old link) is no connection problem: a retry cannot
@@ -2769,6 +2954,18 @@ export default function EventDetail() {
               <span className="sr-only sm:not-sr-only">{t('common.edit')}</span>
             </Button>
           )}
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDuplicating(true)}
+              aria-label={t('event.duplicate')}
+              className="w-11 px-0 sm:w-auto sm:px-3"
+            >
+              <IconClipboard />
+              <span className="sr-only sm:not-sr-only">{t('event.duplicate')}</span>
+            </Button>
+          )}
           {canDelete && (
             <Button
               variant="destructive-ghost"
@@ -2918,10 +3115,17 @@ export default function EventDetail() {
             onPay={setPaying}
             onRemove={removeParticipant}
             onRestore={restoreParticipant}
+            onRemind={() => setReminding(true)}
           />
         )}
         {tab === 'safety' && (
-          <EventSafetyTab ev={ev} setEv={setEv} canEdit={canEdit} links={{ members: has('members.read') }} />
+          <EventSafetyTab
+            ev={ev}
+            setEv={setEv}
+            canEdit={canEdit}
+            canMark={canMark}
+            links={{ members: has('members.read') }}
+          />
         )}
         {tab === 'money' && canFees && (
           <div className="space-y-4">
@@ -2975,6 +3179,29 @@ export default function EventDetail() {
             setEv(payload);
             toast.success(t('event.updated'));
           }}
+        />
+      )}
+      {canEdit && (
+        <DuplicateDialog
+          ev={ev}
+          t={t}
+          open={duplicating}
+          onClose={() => setDuplicating(false)}
+          onDone={(copy) => {
+            setDuplicating(false);
+            toast.success(t('event.duplicated'));
+            navigate(`/events/${copy.id}`);
+          }}
+        />
+      )}
+      {canFees && (
+        <RemindDialog
+          ev={ev}
+          t={t}
+          lng={lng}
+          open={reminding}
+          onClose={() => setReminding(false)}
+          canContact={has('members.contact')}
         />
       )}
 

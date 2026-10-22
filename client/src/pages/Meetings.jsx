@@ -25,6 +25,7 @@ import {
   SegmentedControl,
   Skeleton,
   useToast,
+  IconCheckAll,
   IconFilter,
   IconMessages,
   IconPlus,
@@ -271,6 +272,18 @@ export default function Meetings() {
           filtering && meetings.data ? t('meeting.resultCount', { count: list.length }) : t('meeting.subtitle')
         }
       >
+        {/* Le suivi des تكاليف encore à faire, toutes réunions confondues: its sheet, with
+            the PDF / Excel download in its bar (kind meeting-decisions) */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('/print/meeting-decisions/0?status=open')}
+          aria-label={t('meeting.decisionsSheet')}
+          className="w-11 px-0 sm:w-auto sm:px-3"
+        >
+          <IconCheckAll />
+          <span className="sr-only sm:not-sr-only">{t('meeting.decisionsSheet')}</span>
+        </Button>
         <ExportPdfButton kind="meetings-list" id={0} query={params.toString()} compact />
         {editable && (
           <Button variant="brand" onClick={() => setCreating(true)}>

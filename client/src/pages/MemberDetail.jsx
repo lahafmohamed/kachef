@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { usePerms } from '../auth';
@@ -36,6 +36,7 @@ import {
   IconBack,
   IconCake,
   IconCalendar,
+  IconChevronDown,
   IconCoins,
   IconDroplet,
   IconHome,
@@ -178,6 +179,18 @@ export default function MemberDetail() {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const back = useBack('/members');
+  const navigate = useNavigate();
+  const location = useLocation();
+  // ‹ n/total ›: the عناصر the list last showed (Members.jsx writes them). The step
+  // replaces this entry, so «back» still lands on the list, not on the previous profile.
+  let navIds = [];
+  try {
+    navIds = (sessionStorage.getItem('members.nav') || '').split(',').filter(Boolean);
+  } catch {
+    /* private mode — no ‹ › */
+  }
+  const navAt = navIds.indexOf(String(id));
+  const navTo = (i) => navigate(`/members/${navIds[i]}${location.search}`, { replace: true });
   const toast = useToast();
   const confirm = useConfirm();
   const { has } = usePerms();
@@ -333,6 +346,38 @@ export default function MemberDetail() {
           {t('member.title')}
         </Button>
         <div className="flex items-center gap-2">
+          {navAt >= 0 && navIds.length > 1 && (
+            <nav aria-label={t('member.title')} className="flex items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={navAt === 0}
+                onClick={() => navTo(navAt - 1)}
+                aria-label={t('member.navPrev')}
+                title={t('member.navPrev')}
+                className="sm:h-11 sm:w-11"
+              >
+                <IconChevronDown className="rotate-90 rtl:-rotate-90" />
+              </Button>
+              <span className="min-w-9 text-center text-xs tabular-nums text-muted-foreground">
+                <span className="sr-only">{t('member.navPosition', { n: navAt + 1, total: navIds.length })}</span>
+                <span aria-hidden="true">
+                  {navAt + 1}/{navIds.length}
+                </span>
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={navAt === navIds.length - 1}
+                onClick={() => navTo(navAt + 1)}
+                aria-label={t('member.navNext')}
+                title={t('member.navNext')}
+                className="sm:h-11 sm:w-11"
+              >
+                <IconChevronDown className="-rotate-90 rtl:rotate-90" />
+              </Button>
+            </nav>
+          )}
           <ExportPdfButton kind="members" id={member.id} compact />
           {canArchive && active && (
             <Button

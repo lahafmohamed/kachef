@@ -2,8 +2,12 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useFetch } from '../hooks';
-import { fmtAmount, fmtDate, memberName } from '../utils';
+import { fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import { DuesBody, fmtDueMonth } from './LeaderDues';
+import { duesReminderHref, WhatsAppSquare } from './DuesArrears';
+import { waHref } from './MemberParts';
+import { arrearsMonths } from '../lib/arrears';
+import { parentPhones } from '../lib/campFile';
 import {
   Badge,
   Button,
@@ -18,6 +22,7 @@ import {
   IconCalendar,
   IconCalendarCheck,
   IconPencil,
+  IconWhatsApp,
 } from './ui';
 
 // «octobre» / «تشرين الأول», and «Octobre» where it opens a line
@@ -134,15 +139,199 @@ function DuesMonth({ data, month, session, busy, onCollect, onUndo }) {
   );
 }
 
+// What `amount` pays of the months owed, oldest first — as the server will split it
+function splitOwed(summary, amount) {
+  const out = [];
+  let rest = amount;
+  for (const month of summary.unpaid_months) {
+    if (rest <= 0) break;
+    const left = summary.unpaid_left?.[month] ?? 0;
+    const part = Math.min(left, rest);
+    if (part > 0) out.push({ month, amount: part, left: left - part });
+    rest -= part;
+  }
+  return out;
+}
+
+// «oct. 2026 · 2 000 F» — a line of the split, the month left in part saying so
+function SplitList({ split, lng, t }) {
+  return (
+    <ul className="divide-y divide-border/60 text-sm">
+      {split.map((s) => (
+        <li key={s.month} className="flex min-h-9 items-center justify-between gap-3 py-1">
+          <span>{arrearsMonths([s.month], lng)}</span>
+          <span className="text-end tabular-nums">
+            <span className="font-semibold">{fmtAmount(s.amount)}</span>
+            {s.left > 0 && (
+              <span className="block text-xs text-warning">{t('dues.settleLeft', { amount: fmtAmount(s.left) })}</span>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Régler plusieurs mois: one sum given, spread over the months owed, oldest first —
+ * the split read before it is taken. Once taken, the receipt is a tap away on WhatsApp
+ * when the family's number is known (`phone`).
+ */
+function SettleMonths({ data, memberId, session, phone, firstName, onDone }) {
+  const { t, i18n } = useTranslation();
+  const lng = i18n.language;
+  const toast = useToast();
+  const { summary } = data;
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const owed = summary.owed_total;
+  const amount = Number(value) || 0;
+  const error =
+    amount > owed
+      ? t('dues.settleTooMuch', { amount: fmtAmount(owed) })
+      : amount > 0 && amount % STEP !== 0 && amount !== owed
+        ? t('dues.settleStep', { step: fmtAmount(STEP) })
+        : '';
+  const split = amount > 0 && !error ? splitOwed(summary, amount) : [];
+
+  async function settle(e) {
+    e.preventDefault();
+    if (!split.length) return;
+    setBusy(true);
+    try {
+      const r = await api.post(`/members/${memberId}/dues/settle`, { amount, session_id: session?.id ?? null });
+      toast.success(t('dues.settled', { amount: fmtAmount(r.amount), count: r.months.length }));
+      setDone(r);
+      setOpen(false);
+      setValue('');
+      onDone(r);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The receipt: what was given, month by month, and what is still owed
+  const receiptHref = (r) => {
+    const months = r.months.map((s) => `${arrearsMonths([s.month], lng)} (${fmtAmount(s.amount)})`).join(lng === 'ar' ? '، ' : ', ');
+    const text = [
+      t('dues.waReceipt', { name: firstName, amount: fmtAmount(r.amount), months }),
+      r.summary.owed_total > 0 && t('dues.waReceiptLeft', { amount: fmtAmount(r.summary.owed_total) }),
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return `${waHref(phone)}?text=${encodeURIComponent(text)}`;
+  };
+
+  if (done)
+    return (
+      <div className="max-w-xl space-y-2 rounded-xl border border-success/30 bg-success/8 p-3">
+        <p className="flex items-center gap-2 font-medium text-success">
+          <IconCalendarCheck className="h-5 w-5 shrink-0" />
+          {t('dues.settled', { amount: fmtAmount(done.amount), count: done.months.length })}
+        </p>
+        <SplitList split={done.months} lng={lng} t={t} />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setDone(null)}>
+            {t('common.close')}
+          </Button>
+          {phone && (
+            <a
+              href={receiptHref(done)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="focus-ring inline-flex h-11 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10 sm:h-8"
+            >
+              <IconWhatsApp className="h-4 w-4 text-[#25D366]" />
+              {t('dues.sendReceipt')}
+            </a>
+          )}
+        </div>
+      </div>
+    );
+
+  // «Plusieurs»: one month owed is taken from its own card above
+  if (summary.unpaid_months.length < 2) return null;
+  if (!open)
+    return (
+      <Button variant="outline" className="w-full max-w-xl sm:w-auto" onClick={() => setOpen(true)}>
+        <IconCalendarCheck />
+        {t('dues.settleMany')}
+      </Button>
+    );
+
+  return (
+    <form onSubmit={settle} className="max-w-xl space-y-3 rounded-xl border border-border p-3">
+      <p className="text-sm font-medium">{t('dues.settleMany')}</p>
+      <p className="text-xs text-muted-foreground">
+        {t('dues.settleOwed', { count: summary.unpaid_months.length, amount: fmtAmount(owed) })}
+      </p>
+      <div className="flex items-end gap-2">
+        <Field label={t('dues.settleAmount')} className="min-w-0 flex-1">
+          {(a) => (
+            <Input
+              {...a}
+              aria-invalid={!!error}
+              type="number"
+              inputMode="numeric"
+              min={STEP}
+              max={owed}
+              step={STEP}
+              required
+              autoFocus
+              className="tabular-nums"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          )}
+        </Field>
+        <Button variant="secondary" onClick={() => setValue(String(owed))}>
+          {t('dues.settleAll')}
+        </Button>
+      </div>
+      {error && <p className="text-xs font-medium text-destructive">{error}</p>}
+      {split.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">{t('dues.settlePreview')}</p>
+          <SplitList split={split} lng={lng} t={t} />
+        </div>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={() => setOpen(false)}>
+          {t('common.cancel')}
+        </Button>
+        <Button type="submit" variant="brand" loading={busy} disabled={!split.length}>
+          {t('dues.settleConfirm', { amount: fmtAmount(amount) })}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 /**
  * An عنصر's monthly dues: the month picked — given in full or in part, each payment a tap
  * from being taken back — over his whole year, where a tap picks another month (one owed
  * from before, or paid ahead). In a نشاط (`session`) it opens on the نشاط's month, and
  * what is given is taken in it, on its day; elsewhere on this month, taken today. `bare`:
  * inside a dialog; otherwise a card titled `title`. `onSaved(month, paid)` follows every
- * change, `onCollected(month)` each payment taken.
+ * change, `onCollected(month)` each payment taken. `phone`: the family's first number when
+ * it is seen — the receipt of several months, and on the profile the reminder of what is
+ * owed, go to it on WhatsApp; `firstName` greets them.
  */
-export function MemberDuesPanel({ memberId, name, session = null, bare = false, title, onSaved, onCollected }) {
+export function MemberDuesPanel({
+  memberId,
+  name,
+  firstName,
+  phone = null,
+  session = null,
+  bare = false,
+  title,
+  onSaved,
+  onCollected,
+}) {
   const { t, i18n } = useTranslation();
   const lng = i18n.language;
   const toast = useToast();
@@ -199,8 +388,39 @@ export function MemberDuesPanel({ memberId, name, session = null, bare = false, 
     }
   }
 
+  // Several months at once: each month of the split, here and behind, then the year again
+  const settled = (r) => {
+    for (const s of r.months) onSaved?.(s.month, s.paid);
+    res.reload({ quiet: true });
+  };
+  const owing = data.summary.unpaid_months;
+  // The reminder of what is owed, on the profile: a نشاط is where it is paid, not asked
+  const remind = !session && phone && owing.length > 0 && (
+    <div className="flex max-w-xl items-center gap-2 rounded-xl border border-destructive/25 bg-destructive/5 ps-3">
+      <p className="min-w-0 flex-1 py-2 text-sm text-destructive">
+        {t('dues.owedLine', { count: owing.length, amount: fmtAmount(data.summary.owed_total) })}
+      </p>
+      <WhatsAppSquare
+        href={duesReminderHref(t, lng, phone, { first_name: firstName, months: owing, owed: data.summary.owed_total })}
+        label={t('arrears.remindParent', { name, number: fmtPhone(phone) })}
+      />
+    </div>
+  );
   const panel = (
-    <DuesMonth data={data} month={picked} session={session} busy={busy} onCollect={collect} onUndo={undo} />
+    <>
+      {remind}
+      {data.can_edit && (
+        <SettleMonths
+          data={data}
+          memberId={memberId}
+          session={session}
+          phone={phone}
+          firstName={firstName || name}
+          onDone={settled}
+        />
+      )}
+      <DuesMonth data={data} month={picked} session={session} busy={busy} onCollect={collect} onUndo={undo} />
+    </>
   );
   // Tarif personnel ou exonération (G1): on the profile only — a نشاط is not where it is decided
   const rateLine = !session && (data.personal_rate || data.can_exempt) && (
@@ -370,7 +590,15 @@ function PersonalRate({ data, memberId, onSaved }) {
 /** اشتراك العنصر الشهري, on his profile: what he paid, what he still owes, month by month. */
 export function MemberDuesCard({ member }) {
   const { t } = useTranslation();
-  return <MemberDuesPanel memberId={member.id} name={memberName(member)} title={t('dues.title')} />;
+  return (
+    <MemberDuesPanel
+      memberId={member.id}
+      name={memberName(member)}
+      firstName={member.first_name}
+      phone={parentPhones(member)[0]?.number ?? null}
+      title={t('dues.title')}
+    />
+  );
 }
 
 /**
@@ -465,6 +693,8 @@ export function MemberDuesDialog({ member, session, onClose, onSaved }) {
           bare
           memberId={member.id}
           name={memberName(member)}
+          firstName={member.first_name}
+          phone={parentPhones(member)[0]?.number ?? null}
           session={session}
           onSaved={(month, paid) => onSaved(member.id, month, paid)}
           onCollected={(month) => month === session.member_dues.month && onClose()}

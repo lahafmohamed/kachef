@@ -532,6 +532,43 @@ function AccountMenu({ children }) {
 // the 1152px column, where a line of text stays readable
 const WIDE_PAGES = ['/leaders'];
 
+/** navigator.onLine, kept live by the browser's online / offline events. */
+function useOnline() {
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false));
+  useEffect(() => {
+    const sync = () => setOnline(navigator.onLine !== false);
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+    sync();
+    return () => {
+      window.removeEventListener('online', sync);
+      window.removeEventListener('offline', sync);
+    };
+  }, []);
+  return online;
+}
+
+/**
+ * A thin strip under the app bar while the phone has no network: on weak 3G the
+ * leader otherwise taps «enregistrer» into the void. Sticky, so it stays in view
+ * while scrolling; it goes by itself when the connection is back.
+ */
+function OfflineBanner() {
+  const { t } = useTranslation();
+  if (useOnline()) return null;
+  return (
+    <div
+      role="status"
+      className="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-20 border-b border-warning/30 bg-background lg:top-0"
+    >
+      <p className="flex items-center justify-center gap-2 bg-warning/12 px-4 py-1.5 text-center text-xs font-medium text-warning">
+        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
+        {t('common.offline')}
+      </p>
+    </div>
+  );
+}
+
 export default function Layout({ children }) {
   const { t } = useTranslation();
   const { pathname } = useLocation();
@@ -601,6 +638,7 @@ export default function Layout({ children }) {
       </header>
 
       <div className="relative lg:ps-64">
+        <OfflineBanner />
         <main
           id="main"
           className={cn(

@@ -79,6 +79,75 @@ export function attendeesByStatus(attendees = []) {
   return out;
 }
 
+/**
+ * The meeting as a WhatsApp message, where the قادة coordinate. Still ahead: the
+ * convocation — subject, day, hour, place and the numbered agenda. Held: what was decided,
+ * who carries it out and by when (the agenda when nothing was decided). *…* is WhatsApp's
+ * bold. `url`: the minutes' link, last.
+ */
+export function meetingShareText(m, t, lang, url = null) {
+  const today = new Date().toISOString().slice(0, 10);
+  const held = m.date < today || (m.decisions || []).length > 0;
+  const time = timeRange(m);
+  const lines = [
+    `*${t(held ? 'meeting.shareMinutes' : 'meeting.shareInvite', { title: m.title })}*`,
+    meetingScope(m, lang, t),
+    [fmtLongDate(m.date, lang), time].filter(Boolean).join(' · '),
+    m.place ? t('meeting.sharePlace', { place: m.place }) : null,
+  ];
+  const numbered = (rows) => rows.map((r, i) => `${i + 1}. ${r}`);
+  const decisions = m.decisions || [];
+  if (held && decisions.length) {
+    lines.push('', `*${t('meeting.decisions')}*`);
+    lines.push(
+      ...numbered(
+        decisions.map((d) =>
+          [
+            d.text,
+            d.owner,
+            d.due_date && t('meeting.shareDue', { date: fmtLongDate(d.due_date, lang) }),
+            d.status !== 'open' && t(`meeting.status_${d.status}`),
+          ]
+            .filter(Boolean)
+            .join(' — ')
+        )
+      )
+    );
+  } else if ((m.items || []).length) {
+    lines.push('', `*${t('meeting.agenda')}*`, ...numbered(m.items.map((it) => it.title)));
+  }
+  if (url) lines.push('', url);
+  return lines.filter((l) => l !== false && l != null).join('\n');
+}
+
+/**
+ * Hands a text to the phone's share sheet; where there is none, to WhatsApp (wa.me), and
+ * when even that window is blocked, to the clipboard. Returns 'shared', 'whatsapp',
+ * 'copied', 'cancelled' or 'failed'.
+ */
+export async function shareText(text) {
+  if (navigator.share) {
+    try {
+      await navigator.share({ text });
+      return 'shared';
+    } catch (err) {
+      if (err?.name === 'AbortError') return 'cancelled';
+    }
+  }
+  // No 'noopener' feature: with it window.open returns null even when the tab opened
+  const win = window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  if (win) {
+    win.opener = null;
+    return 'whatsapp';
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    return 'copied';
+  } catch {
+    return 'failed';
+  }
+}
+
 /** Decision counts of a meeting: how many, how many still to do, how many late */
 export function decisionCounts(decisions = [], today) {
   return {

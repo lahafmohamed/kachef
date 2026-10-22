@@ -9,6 +9,7 @@ import ExportPdfButton from '../components/ExportPdfButton';
 import FilterChips from '../components/FilterChips';
 import FilterSelect from '../components/FilterSelect';
 import MemberFormDialog from '../components/MemberForm';
+import MemberBulkBar, { PickBox } from '../components/MemberBulkBar';
 import {
   AttendanceStrip,
   RateValue,
@@ -82,9 +83,14 @@ const MISSING_FIELDS = [
   { value: 'parent_phone', key: 'member.parentPhone', contact: true },
   { value: 'residence', key: 'member.residence', contact: true },
   { value: 'blood', key: 'member.bloodType' },
+  { value: 'photo', key: 'member.missingPhoto' },
+  // Not a blank field: an active عنصر younger or older than his فرقة's range
+  { value: 'age_range', key: 'member.missingAgeRange' },
 ];
 
 const SCROLL_KEY = 'members.scroll';
+// The visible عناصر (no قادة), in list order: the profile's ‹ n/total › walks them
+const NAV_KEY = 'members.nav';
 
 // The leaders endpoint has no age; the list sorts and shows one
 const yearsSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 31557600000) : null);
@@ -108,7 +114,7 @@ function Parts({ parts }) {
  * link (keyboard, screen readers, open-in-new-tab) and the phone and pencil keep
  * their own clicks. Columns appear with the card's width, not the viewport's.
  */
-function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold = 3, showContact = false }) {
+function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold = 3, showContact = false, picking = false, picked = false, onPick }) {
   const isChef = m.kind === 'leader';
   const inactive = m.status !== 'active';
   const href = isChef ? `/leaders/${m.id}` : `/members/${m.id}`;
@@ -128,11 +134,24 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold
   return (
     <tr
       onClick={(e) => {
-        if (e.target.closest('a, button') || window.getSelection()?.toString()) return;
+        if (e.target.closest('a, button, label') || window.getSelection()?.toString()) return;
+        // While picking, the row ticks its box (a قائد's row has none); the name still opens the profile
+        if (picking) {
+          if (!isChef) onPick(m.id);
+          return;
+        }
         onOpen(href);
       }}
-      className="group cursor-pointer transition-colors hover:bg-accent/40"
+      className={cn(
+        'group cursor-pointer transition-colors',
+        picked ? 'bg-accent/60' : 'hover:bg-accent/40'
+      )}
     >
+      {picking && (
+        <td className="w-11 ps-4 pe-0">
+          {!isChef && <PickBox checked={picked} onChange={() => onPick(m.id)} label={t('promotion.selectOne', { name })} />}
+        </td>
+      )}
       {/* w-full + max-w-0: the name column takes what the others leave, and a long
           line truncates inside it instead of widening the whole table */}
       <td className="w-full max-w-0 py-3 ps-4 pe-2 @2xl:py-2.5">
@@ -328,6 +347,11 @@ export default function Members() {
   const canContact = has('members.contact');
   // Les chefs s'affichent dans la liste comme une branche à part entière
   const canSeeLeaders = has('leaders.read');
+  // Bulk actions (bug 31): the «Sélectionner» toggle is for who may change عناصر
+  const canArchive = has('members.delete');
+  const canSelect = canModify || canArchive;
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
 
   const [sp, patch] = useUrlFilters();
   const param = (k) => sp.get(k) || '';
@@ -500,6 +524,40 @@ export default function Members() {
   const markedSum = kids.reduce((s, m) => s + (m.attendance?.total || 0), 0);
   const rosterRate = markedSum ? Math.round((100 * presentSum) / markedSum) : null;
   const followCount = kids.filter((m) => m.status === 'active' && m.attendance?.absences >= threshold).length;
+
+  // The profile walks the same عناصر, in the same order, as this list shows
+  const kidIds = kids.map((m) => m.id).join(',');
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      sessionStorage.setItem(NAV_KEY, kidIds);
+    } catch {
+      /* private mode — the profile simply has no ‹ › */
+    }
+  }, [loaded, kidIds]);
+
+  // A selection belongs to the list it was made in: another فرقة, طليعة, filter or
+  // search clears it, so nothing hidden is archived or moved from out of sight
+  const listKey = `${apiQuery}|${currentBranch}|${currentGroup}|${status}`;
+  useEffect(() => setPicked(new Set()), [listKey]);
+  const pickedMembers = selecting ? kids.filter((m) => picked.has(m.id)) : [];
+  const allPicked = kids.length > 0 && pickedMembers.length === kids.length;
+  function togglePick(id) {
+    setPicked((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function stopSelecting() {
+    setSelecting(false);
+    setPicked(new Set());
+  }
+  function afterBulk() {
+    setPicked(new Set());
+    members.reload({ quiet: true });
+  }
 
   const scopeTitle =
     currentBranch === 'leaders'
@@ -961,7 +1019,29 @@ export default function Members() {
           className="@container relative overflow-hidden"
         >
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-border px-4 py-3">
-            <h2 className="text-base font-semibold">{scopeTitle}</h2>
+            <div className="flex min-w-0 items-center gap-3 self-center">
+              {/* «tout»: every عنصر the list shows, never its قادة */}
+              {selecting && kids.length > 1 && (
+                <PickBox
+                  checked={allPicked}
+                  indeterminate={pickedMembers.length > 0 && !allPicked}
+                  onChange={() => setPicked(allPicked ? new Set() : new Set(kids.map((m) => m.id)))}
+                  label={t('promotion.selectAll', { count: kids.length })}
+                />
+              )}
+              <h2 className="text-base font-semibold">{scopeTitle}</h2>
+              {canSelect && loaded && kids.length > 0 && (
+                <Button
+                  variant={selecting ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={selecting}
+                  onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+                  className="-my-1.5 shrink-0"
+                >
+                  {selecting ? t('common.done') : t('member.bulkSelect')}
+                </Button>
+              )}
+            </div>
             {loaded && list.length > 0 && (
               <p className="text-sm text-muted-foreground">
                 <span className="font-medium text-foreground">
@@ -1035,6 +1115,11 @@ export default function Members() {
             <table className={cn('w-full text-sm transition-opacity', refreshing && 'opacity-60')}>
               <thead className="hidden border-b border-border bg-muted/40 @2xl:table-header-group">
                 <tr>
+                  {selecting && (
+                    <Th className="w-11 ps-4 pe-0">
+                      <span className="sr-only">{t('member.bulkSelect')}</span>
+                    </Th>
+                  )}
                   <Th className="ps-4">{t('member.name')}</Th>
                   <Th>{t('member.age')}</Th>
                   {whereMode !== 'none' && <Th>{t(whereMode === 'branch' ? 'member.branch' : 'member.group')}</Th>}
@@ -1064,6 +1149,9 @@ export default function Members() {
                     onOpen={navigate}
                     threshold={threshold}
                     showContact={!!f.follow}
+                    picking={selecting}
+                    picked={selecting && m.kind !== 'leader' && picked.has(m.id)}
+                    onPick={togglePick}
                   />
                 ))}
               </tbody>
@@ -1083,6 +1171,20 @@ export default function Members() {
             </div>
           )}
         </Card>
+      )}
+
+      {/* Outside the card: its overflow-hidden would hold a sticky bar in place */}
+      {selecting && pickedMembers.length > 0 && (
+        <MemberBulkBar
+          members={pickedMembers}
+          // One فرقة on screen, and the right to distribute it: its طلائع, or none
+          branchId={branchObj && has('branches.groups') ? branchObj.id : null}
+          groups={groups}
+          canArchive={canArchive}
+          canCopy={canContact}
+          onClear={() => setPicked(new Set())}
+          onDone={afterBulk}
+        />
       )}
 
       <MemberFormDialog

@@ -10,10 +10,13 @@ import {
   FLOWS,
   INCOME_SOURCES,
   OUT_FIGURES,
+  PERIODS,
   bookBalanceOn,
   boxName,
   fmtMonth,
   ledgerView,
+  boxPeriodLabel,
+  periodRange,
   resultTone,
   rowText,
   sessionMeta,
@@ -157,8 +160,13 @@ const lineButton =
  * The three numbers of one caisse, or of all of them together: what is in it now, what
  * came in and what went out since it was opened. Under one box's balance, when and
  * with how much it started. Beside it, the أمين المال balances it against a count.
+ * Over a period (fig.period, G2): what it held at its end, what it held when it began
+ * under it, and what came in and went out in between.
  */
 function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
+  const period = fig.period;
+  // The debts are today's: beside the balance of a period ended before, they would mislead
+  const showOwed = fig.owed > 0 && (!period || period.closingDate === todayISO());
   const income = INCOME_SOURCES.map((k) => ({ key: k, label: t(`treasury.in_${k}`), amount: fig.income[k] })).filter(
     (i) => i.amount > 0
   );
@@ -168,12 +176,18 @@ function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
   const start = box?.start;
   const startText =
     start &&
+    (!period || period.started) &&
     (start.inherited
       ? t('treasury.startedWithGroup', { date: fmtDate(start.date) })
       : t('treasury.openedOn', { date: fmtDate(start.date), amount: fmtAmount(start.amount) }));
   return (
     <Card className="grid grid-cols-1 gap-px overflow-hidden bg-border sm:grid-cols-2 lg:grid-cols-3">
-      <Figure label={name ? `${t('treasury.balance')} · ${name}` : t('treasury.balance')} className="sm:col-span-2 lg:col-span-1">
+      <Figure
+        label={[period ? t('treasury.balanceOn', { date: fmtDate(period.closingDate) }) : t('treasury.balance'), name]
+          .filter(Boolean)
+          .join(' · ')}
+        className="sm:col-span-2 lg:col-span-1"
+      >
         {/* A long balance pushes the button under it rather than past the card */}
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <p className={cn('min-w-0 text-3xl font-bold tracking-tight tabular-nums', fig.balance < 0 && 'text-destructive')}>
@@ -187,7 +201,7 @@ function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
           )}
         </div>
         {fig.balance < 0 && <p className="text-xs font-medium text-destructive">{t('treasury.deficit')}</p>}
-        {fig.owed > 0 && (
+        {showOwed && (
           <p className="text-xs font-medium text-warning">
             <bdi className="whitespace-nowrap">{t('treasury.owedSummary', { amount: fmtAmount(fig.owed) })}</bdi>
             {'\u00a0· '}
@@ -197,8 +211,17 @@ function Figures({ fig, box, name, canCount, onOpening, onCount, t }) {
             </bdi>
           </p>
         )}
+        {/* The period begun with the caisse already open: what it held the evening before */}
+        {period && !period.started && period.openingDate && (
+          <p className="py-1 text-xs text-muted-foreground">
+            {t('treasury.openingOn', { date: fmtDate(period.openingDate) })}{' '}
+            <span dir="ltr" className="font-medium tabular-nums text-foreground">
+              {money(period.opening)}
+            </span>
+          </p>
+        )}
         {startText &&
-          (canCount ? (
+          (canCount && !period ? (
             <button
               type="button"
               onClick={() => onOpening(box)}
@@ -1066,6 +1089,46 @@ function CountDialog({ open, count, box, boxes, rows, nameOf, onClose, onSaved, 
   );
 }
 
+/**
+ * The period the page reads (G2), kept in its address: everything since the opening, this
+ * month, the one before, the scout year, or two dates. Under it, the days it covers.
+ */
+function PeriodBar({ period, from, to, patch, t }) {
+  const pick = (v) => patch({ period: v, ...(v === 'dates' ? {} : { from: '', to: '' }) });
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <div className="w-full space-y-1.5 sm:w-56">
+        <Label htmlFor="tr_period">{t('treasury.period')}</Label>
+        <Select id="tr_period" value={period} onChange={(e) => pick(e.target.value)}>
+          <option value="">{t('treasury.periodAll')}</option>
+          <option value="month">{t('treasury.periodMonth')}</option>
+          <option value="prev">{t('treasury.periodPrev')}</option>
+          <option value="year">{t('treasury.periodYear')}</option>
+          <option value="dates">{t('treasury.periodDates')}</option>
+        </Select>
+      </div>
+      {period === 'dates' ? (
+        <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_from">{t('treasury.periodFrom')}</Label>
+            <DatePicker id="tr_from" value={from} onChange={(e) => patch({ from: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tr_to">{t('treasury.periodTo')}</Label>
+            <DatePicker id="tr_to" value={to} onChange={(e) => patch({ to: e.target.value })} />
+          </div>
+        </div>
+      ) : (
+        period && (
+          <p className="pb-2.5 text-sm text-muted-foreground">
+            {boxPeriodLabel({ from, to }, t)}
+          </p>
+        )
+      )}
+    </div>
+  );
+}
+
 function LoadingState() {
   return (
     <div className="space-y-4" aria-busy="true">
@@ -1116,6 +1179,9 @@ export default function Treasury() {
   const ledger = useFetch('/treasury');
   const [sp, patch] = useUrlFilters();
   const flow = FLOWS.includes(sp.get('flow')) ? sp.get('flow') : '';
+  // La période (G2) : '' tout depuis l'ouverture ; ?from=&to= ne servent qu'à «Dates»
+  const period = PERIODS.includes(sp.get('period')) ? sp.get('period') : '';
+  const { from, to } = periodRange(period, todayISO(), { from: sp.get('from') || '', to: sp.get('to') || '' });
   // { direction, entry } while a line is written or corrected
   const [entryDialog, setEntryDialog] = useState(null);
   // { box } while a caisse is opened or its opening corrected (box null: asked)
@@ -1135,9 +1201,12 @@ export default function Treasury() {
   const canManage = canEntries || canTransfers || canCounts;
   // The caisse on screen: one asked for in the address, else all of them together —
   // or the only one there is; its lines in the direction asked for
-  const { boxes, byKey, held, multi, sel, owed, rows, months, fig } = ledgerView(data, {
+  const { boxes, byKey, held, multi, sel, owed, rows, months, fig, balanceOf } = ledgerView(data, {
     box: sp.get('box') || '',
     flow,
+    from,
+    to,
+    today: todayISO(),
   });
   const nameOf = (key) => boxName(byKey[key], t, lng, { both });
   const shortOf = (b) => boxName(b, t, lng, { both, short: true });
@@ -1254,6 +1323,7 @@ export default function Treasury() {
         </Card>
       ) : (
         <>
+          <PeriodBar period={period} from={from} to={to} patch={patch} t={t} />
           {multi && (
             // Swiped sideways on a phone; a grid from tablet up. scroll-px: tiles snap (and a
             // caisse opened further along is brought into view) inside the page's gutter, not
@@ -1265,7 +1335,7 @@ export default function Treasury() {
             >
               <BoxTile
                 label={t('treasury.allBoxes')}
-                balance={data.summary.balance}
+                balance={from || to ? held.reduce((n, b) => n + (balanceOf(b) ?? 0), 0) : data.summary.balance}
                 owed={data.summary.owed}
                 opened
                 selected={!sel}
@@ -1276,9 +1346,9 @@ export default function Treasury() {
                 <BoxTile
                   key={b.key}
                   label={shortOf(b)}
-                  balance={b.balance}
+                  balance={balanceOf(b)}
                   owed={b.owed}
-                  opened={!!b.start}
+                  opened={!!b.start && balanceOf(b) !== null}
                   selected={sel?.key === b.key}
                   onSelect={() => patch({ box: b.key })}
                   t={t}
@@ -1356,7 +1426,9 @@ export default function Treasury() {
                   <ExportPdfButton
                     kind="treasury"
                     id={0}
-                    query={new URLSearchParams(Object.entries({ box: sel?.key || '', flow }).filter(([, v]) => v)).toString()}
+                    query={new URLSearchParams(
+                      Object.entries({ box: sel?.key || '', flow, from, to }).filter(([, v]) => v)
+                    ).toString()}
                     compact
                     className="shrink-0"
                   />
@@ -1370,10 +1442,12 @@ export default function Treasury() {
                           ? 'treasury.emptyFilterIn'
                           : flow === 'out'
                             ? 'treasury.emptyFilterOut'
-                            : 'treasury.emptyJournal'
+                            : from || to
+                              ? 'treasury.emptyPeriod'
+                              : 'treasury.emptyJournal'
                       )}
                     >
-                      {!flow && t('treasury.emptyJournalHint')}
+                      {!flow && !(from || to) && t('treasury.emptyJournalHint')}
                     </EmptyState>
                   ) : (
                     months.map((m) => (

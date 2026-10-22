@@ -1250,10 +1250,11 @@ export function ToastProvider({ children }) {
     () => ({
       toast: push,
       success: (m) => push(m, 'success'),
-      error: (m) => push(m, 'error', 5000),
+      // api.js throws 'network' when the request never got an answer (weak 3G, timeout)
+      error: (m) => push(m === 'network' ? t('error.network') : m, 'error', 5000),
       info: (m) => push(m, 'info'),
     }),
-    [push]
+    [push, t]
   );
 
   return (

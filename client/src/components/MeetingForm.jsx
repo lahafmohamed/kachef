@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { useSection } from '../section';
 import { branchName, memberName, todayISO } from '../utils';
@@ -9,7 +10,7 @@ import Combobox from './Combobox';
 import DatePicker from './DatePicker';
 import SectionField from './SectionField';
 import TimePicker from './TimePicker';
-import { Button, Dialog, ErrorState, IconCheck, IconSwap, Input, Label, SegmentedControl, Textarea, cn } from './ui';
+import { Button, Dialog, ErrorState, IconCheck, IconPlus, IconSwap, Input, Label, SegmentedControl, Textarea, cn } from './ui';
 
 const nobody = { id: null, name: '' };
 
@@ -101,6 +102,9 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
   const { section: onScreen } = useSection();
   const branches = useFetch('/branches', { skip: !open });
   const leaders = useFetch('/leader-options', { skip: !open });
+  // Points suggérés: the مخيمات of the next 30 days, for new minutes only
+  const { has } = usePerms();
+  const events = useFetch('/events', { skip: !open || !!initial || !has('events.read') });
   const [form, setForm] = useState(() => emptyMeeting(null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -123,6 +127,28 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
     (l) => l.section === formSection && (l.status === 'active' || keep.includes(l.id))
   );
   const loadFailed = branches.error || leaders.error;
+
+  // Lines a new agenda often opens or closes with: the follow-up of the تكاليف, each مخيم
+  // or دورة starting within 30 days (of the picked فرق, or the whole فوج's), and «Divers».
+  // A tap appends the line; one already there is not offered again.
+  const from = form.date || todayISO();
+  const in30 = new Date(Date.parse(`${from}T00:00:00Z`) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const soon = (events.data || []).filter((ev) => {
+    if (ev.start_date < from || ev.start_date > in30) return false;
+    if (ev.section && ev.section !== formSection) return false;
+    const ids = ev.branch_ids ? String(ev.branch_ids).split(',').map(Number) : [];
+    return !form.branch_ids.length || !ids.length || ids.some((b) => form.branch_ids.includes(b));
+  });
+  const agendaLines = form.agenda.split('\n').map((l) => l.trim());
+  const suggestions = [
+    t('meeting.suggestFollowup'),
+    ...soon
+      .sort((a, b) => a.start_date.localeCompare(b.start_date))
+      .map((ev) => t('meeting.suggestEvent', { title: ev.title })),
+    t('meeting.suggestMisc'),
+  ].filter((line) => !agendaLines.includes(line));
+  const addLine = (line) =>
+    setForm((f) => ({ ...f, agenda: f.agenda.trim() ? `${f.agenda.replace(/\s+$/, '')}\n${line}` : line }));
 
   // The last meeting's chair or secretary may have been archived since: not offered again
   useEffect(() => {
@@ -366,6 +392,24 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
                 onChange={set('agenda')}
               />
               <p className="text-xs text-muted-foreground">{t('meeting.agendaHint')}</p>
+              {suggestions.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <p className="text-xs font-medium text-muted-foreground">{t('meeting.suggested')}</p>
+                  <div className="flex flex-wrap gap-2" role="group" aria-label={t('meeting.suggested')}>
+                    {suggestions.map((line) => (
+                      <button
+                        key={line}
+                        type="button"
+                        onClick={() => addLine(line)}
+                        className="focus-ring inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border border-dashed border-input bg-card px-3 py-1.5 text-start text-sm text-muted-foreground transition-[color,background-color,border-color,scale] hover:border-primary/40 hover:bg-accent hover:text-accent-foreground active:scale-[0.96] sm:min-h-9"
+                      >
+                        <IconPlus className="h-3.5 w-3.5" />
+                        <bdi className="min-w-0 truncate">{line}</bdi>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </form>

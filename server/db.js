@@ -2011,6 +2011,9 @@ function migrateCampSafety() {
   ensureColumn('event_participants', 'consent_by', 'consent_by TEXT');
   ensureColumn('event_participants', 'consent_scan', 'consent_scan TEXT');
   ensureColumn('event_participants', 'consent_recorded_by', 'consent_recorded_by TEXT');
+  // L'appel du car : à bord au départ (out_*), au retour (back_*) — quand, et par quel قائد
+  for (const col of ['out_at', 'out_by', 'back_at', 'back_by'])
+    ensureColumn('event_participants', col, `${col} TEXT`);
   ensureColumn('events', 'safety_seeded', 'safety_seeded INTEGER NOT NULL DEFAULT 0');
   db.exec(`
     CREATE TABLE IF NOT EXISTS event_checklist (

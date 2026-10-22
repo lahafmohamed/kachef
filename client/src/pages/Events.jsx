@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { usePerms } from '../auth';
 import { useFetch, useUrlField, useUrlFilters } from '../hooks';
 import { isFeminine, useSection } from '../section';
-import { fmtAmount, todayISO } from '../utils';
+import { branchName, fmtAmount, todayISO } from '../utils';
 import {
   EVENT_KINDS,
   KIND_BADGE,
@@ -37,6 +37,40 @@ import {
 
 // Ongoing first, then what is coming (nearest first), then the archive (latest first)
 const PHASES = ['ongoing', 'upcoming', 'past'];
+
+// A scout year «2025-2026» runs September 1st to August 31st, as on the server
+function scoutYearOf(iso) {
+  const y = Number(iso.slice(0, 4));
+  const start = Number(iso.slice(5, 7)) >= 9 ? y : y - 1;
+  return `${start}-${start + 1}`;
+}
+
+// The year filter: next year (a camp gets planned ahead), this one, and five back
+function yearOptions(today) {
+  const start = Number(scoutYearOf(today).slice(0, 4)) + 1;
+  return Array.from({ length: 7 }, (_, i) => `${start - i}-${start - i + 1}`);
+}
+
+/** The filtered list in one line: how many, how many took part, and — for who sees it — the money */
+function Totals({ list, t, canFees }) {
+  const sum = (k) => list.reduce((n, e) => n + (e[k] || 0), 0);
+  const facts = [
+    t('event.totalEvents', { count: list.length }),
+    t('event.participantCount', { count: sum('participant_count') }),
+    canFees && t('event.totalCollected', { amount: fmtAmount(sum('collected')) }),
+    canFees && sum('outstanding') > 0 && t('event.totalOutstanding', { amount: fmtAmount(sum('outstanding')) }),
+  ].filter(Boolean);
+  return (
+    <p className="px-1 text-sm text-muted-foreground">
+      {facts.map((f, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          <span className={cn('whitespace-nowrap tabular-nums', i === 3 && 'font-medium text-destructive')}>{f}</span>
+        </Fragment>
+      ))}
+    </p>
+  );
+}
 
 /**
  * The money of one event at a glance: collected against expected, then what is left
@@ -213,19 +247,28 @@ export default function Events() {
   const [sp, patch] = useUrlFilters();
   const [q, setQ] = useUrlField(sp, patch, 'q');
   const kind = EVENT_KINDS.includes(sp.get('kind')) ? sp.get('kind') : '';
+  const years = yearOptions(todayISO());
+  const year = years.includes(sp.get('year')) ? sp.get('year') : '';
+  const branchId = /^\d+$/.test(sp.get('branch') || '') ? sp.get('branch') : '';
   // E2 : les camps où quelqu'un doit encore — pour qui voit les montants
   const unpaidOnly = canFees && sp.get('pay') === 'unpaid';
   const params = new URLSearchParams();
   if (sp.get('q')) params.set('q', sp.get('q'));
   if (kind) params.set('kind', kind);
+  if (year) params.set('year', year);
+  if (branchId) params.set('branch_id', branchId);
 
   const events = useFetch(`/events?${params}`);
   const branches = useFetch('/branches');
   const [creating, setCreating] = useState(false);
 
   const branchList = branches.data || [];
+  // The فرق of the قسم on screen; both قسمان for an admin who sees both
+  const branchOptions = branchList
+    .filter((b) => !section || !b.section || b.section === section)
+    .map((b) => ({ value: String(b.id), label: branchName(b, i18n.language) }));
   const list = (events.data || []).filter((e) => !unpaidOnly || e.unpaid_count > 0);
-  const filtering = !!(sp.get('q') || kind || unpaidOnly);
+  const filtering = !!(sp.get('q') || kind || year || branchId || unpaidOnly);
   const today = todayISO();
   const groups = PHASES.map((phase) => {
     const rows = list.filter((e) => eventPhase(e, today) === phase);
@@ -236,7 +279,7 @@ export default function Events() {
 
   const clear = () => {
     setQ('');
-    patch({ q: '', kind: '', pay: '' });
+    patch({ q: '', kind: '', year: '', branch: '', pay: '' });
   };
 
   return (
@@ -265,6 +308,24 @@ export default function Events() {
           className="w-full sm:w-auto sm:min-w-40"
           options={EVENT_KINDS.map((k) => ({ value: k, label: t(`event.kind_${k}`) }))}
         />
+        <FilterSelect
+          value={year}
+          onChange={(v) => patch({ year: v })}
+          allLabel={t('event.allYears')}
+          ariaLabel={t('event.scoutYear')}
+          className="w-[calc(50%-0.25rem)] sm:w-auto sm:min-w-36"
+          options={years.map((y) => ({ value: y, label: y }))}
+        />
+        {branchOptions.length > 1 && (
+          <FilterSelect
+            value={branchId}
+            onChange={(v) => patch({ branch: v })}
+            allLabel={t('event.allBranches')}
+            ariaLabel={t('event.branch')}
+            className="w-[calc(50%-0.25rem)] sm:w-auto sm:min-w-40"
+            options={branchOptions}
+          />
+        )}
         {canFees && (
           <FilterSelect
             value={unpaidOnly ? 'unpaid' : ''}
@@ -317,6 +378,7 @@ export default function Events() {
         </Card>
       ) : (
         <div className="space-y-6">
+          <Totals list={list} t={t} canFees={canFees} />
           {groups.map(({ phase, rows }) => (
             <section key={phase} aria-labelledby={`phase-${phase}`} className="space-y-2">
               <h2 id={`phase-${phase}`} className="px-1 text-base font-semibold">
