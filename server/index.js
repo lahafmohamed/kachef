@@ -4186,8 +4186,8 @@ app.delete('/api/leader-matalib/:id', requireAdmin, (req, res) => {
 // تحقيق أو إلغاء مطلب لقائد في سنة معيّنة
 // ---------- حساب دخول لقائد ----------
 // «من له حقّ الدخول؟» يُدار من صفحة القادة نفسها: زرّ واحد يولّد حسابًا مربوطًا
-// بالقائد، بكلمة سرّ تُعرض مرّة واحدة، و بصلاحيات من قالب جاهز — فليس كل قائد
-// يرى كل شيء. الضبط الدقيق بعد ذلك من صفحة الأدمن كما كان.
+// بالقائد، بكلمة سرّ تُعرض مرّة واحدة، و بصلاحيات تبدأ من قالب جاهز — فليس كل قائد
+// يرى كل شيء. القالب تُعرض صلاحياته كلها في الاستمارة و تُضبط فيها، ثم من صفحة الأدمن.
 const ACCOUNT_PRESETS = {
   // قائد فرقة: يدير عناصره و أنشطته و خطة فرقته و مجموعاتها، و يقرأ ما حوله.
   // بلا حذف عناصر، بلا تثبيت ترقيات، بلا أرقام مالية — هذه للأدمن.
@@ -4239,17 +4239,25 @@ app.post('/api/leaders/:id/account', requireAdmin, (req, res) => {
       });
   const nameErr = usernameError(username);
   if (nameErr) return res.status(400).json({ error: nameErr });
-  const preset = req.body?.preset;
-  if (!Object.prototype.hasOwnProperty.call(ACCOUNT_PRESETS, preset))
-    return res.status(400).json({ error: 'invalid preset' });
+  // The rights as ticked in the form, where every right of the chosen set is listed and
+  // adjustable (a list; null = every right). An older client sends only the set's name.
+  let permsJson;
+  if (req.body?.perms !== undefined) {
+    permsJson = parsePermList(req.body.perms);
+    if (permsJson === undefined) return res.status(400).json({ error: 'invalid perms' });
+  } else {
+    const preset = req.body?.preset;
+    if (!Object.prototype.hasOwnProperty.call(ACCOUNT_PRESETS, preset))
+      return res.status(400).json({ error: 'invalid preset' });
+    const perms = ACCOUNT_PRESETS[preset];
+    permsJson = perms ? JSON.stringify(perms) : null;
+  }
   const branches = parseBranchList(req.body?.branches);
   if (branches === undefined) return res.status(400).json({ error: 'invalid branches' });
   // حساب القائد في قسم القائد نفسه، دائمًا: قائدة لا يُولَّد لها حساب يرى الفتيان
   if (!branchesFitSection(branches, leader.section))
     return res.status(400).json({ error: 'branch_outside_section' });
   const password = generatePassword();
-  const perms = ACCOUNT_PRESETS[preset];
-  const permsJson = perms ? JSON.stringify(perms) : null;
   let id;
   try {
     if (existing) {

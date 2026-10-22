@@ -35,7 +35,9 @@ export default function Credentials({ username, password, onClose, notice }) {
           </span>
         </div>
       </div>
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      {/* Stacked at every width, as on a phone: the card lives in a narrow dialog, where
+          «Copier l'identifiant et le mot de passe» beside «Fermer» ran past its edge */}
+      <div className="flex flex-col-reverse gap-2">
         <Button variant="outline" onClick={copyAll}>
           {t('leader.accountCopy')}
         </Button>

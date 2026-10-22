@@ -23,6 +23,8 @@ import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
 import Credentials from '../components/Credentials';
+import PermsEditor, { PermPresets } from '../components/PermsEditor';
+import { presetPerms } from '../lib/perms';
 import { RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/shadcn/popover';
 import { USERNAME_PATTERN, USERNAME_RE } from '../lib/username';
@@ -552,12 +554,10 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
   );
 }
 
-/** مفاتيح القوالب — تطابق ACCOUNT_PRESETS في الخادم، و الشرح في ملفات الترجمة. */
-const ACCOUNT_PRESET_KEYS = ['branch', 'amana', 'readonly', 'full'];
-
 /**
- * إنشاء حساب دخول لقائد. مرحلتان: استمارة (اسم دخول، قالب صلاحيات، فرق مرئية)،
- * ثم شاشة كلمة السرّ — تُعرض مرّة واحدة، فالإغلاق بعدها لا رجعة فيه.
+ * إنشاء حساب دخول لقائد. مرحلتان: استمارة (اسم دخول، فرق مرئية، صلاحيات من قالب
+ * تُعرض كلها و تُضبط هنا قبل الحفظ)، ثم شاشة كلمة السرّ — تُعرض مرّة واحدة، فالإغلاق
+ * بعدها لا رجعة فيه.
  */
 function AccountDialog({ leader, branches, onClose, onCreated }) {
   const { t, i18n } = useTranslation();
@@ -569,7 +569,8 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
   const ownBranches = branches.filter((b) => b.section === leader.section);
   const [form, setForm] = useState(() => ({
     username: '',
-    preset: 'branch',
+    // The «قائد فرقة» set to start from, every right of it ticked in sight
+    perms: presetPerms('branch'),
     // فرق توصيفاته الحالية مؤشَّرة سلفًا؛ لا تأشير = كل الفرق
     branch_ids: [
       ...new Set(
@@ -580,6 +581,13 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
     ],
   }));
   const usernameInvalid = form.username !== '' && !USERNAME_RE.test(form.username);
+  // A level picked anew lays its rights out afresh: the list below remounts, the pages
+  // it reaches open
+  const [levelPicks, setLevelPicks] = useState(0);
+  function pickLevel(preset) {
+    setForm((f) => ({ ...f, perms: presetPerms(preset) }));
+    setLevelPicks((n) => n + 1);
+  }
 
   // اسم الدخول يقترحه الخادم: حروف لاتينية، بلا فراغ، غير مأخوذ
   useEffect(() => {
@@ -610,7 +618,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
     try {
       const r = await api.post(`/leaders/${leader.id}/account`, {
         username: form.username,
-        preset: form.preset,
+        perms: form.perms,
         branches: form.branch_ids.length ? form.branch_ids.map(Number) : null,
       });
       setResult(r);
@@ -634,12 +642,34 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
       onClose={onClose}
       title={t('leader.accountCreate')}
       description={memberName(leader)}
-      size="sm"
+      // Every right is listed: the form takes the accounts page's width, the one-time
+      // password card keeps its own
+      size={result ? 'sm' : 'lg'}
+      footer={
+        !result && (
+          <div className="space-y-2">
+            {error && (
+              <p role="alert" className="text-sm font-medium text-destructive">
+                {error}
+              </p>
+            )}
+            {/* Side by side even on a phone: a pinned footer twice as tall steals the form */}
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+              <Button variant="outline" onClick={onClose}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" form="account-form" loading={saving}>
+                {t('admin.createUser')}
+              </Button>
+            </div>
+          </div>
+        )
+      }
     >
       {result ? (
         <Credentials username={result.user.username} password={result.password} onClose={onClose} />
       ) : (
-        <form onSubmit={submit} className="space-y-4">
+        <form id="account-form" onSubmit={submit} className="space-y-5">
           <div className="space-y-1.5">
             <Label htmlFor="acc_username">{t('leader.accountUsername')}</Label>
             <Input
@@ -659,20 +689,15 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
               {t(usernameInvalid ? 'admin.usernameInvalid' : 'admin.usernameHint')}
             </p>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="acc_preset">{t('leader.accountPreset')}</Label>
-            <Select
-              id="acc_preset"
-              value={form.preset}
-              onChange={(e) => setForm((f) => ({ ...f, preset: e.target.value }))}
-            >
-              {ACCOUNT_PRESET_KEYS.map((k) => (
-                <option key={k} value={k}>
-                  {t(`leader.preset_${k}`)}
-                </option>
-              ))}
-            </Select>
-            <p className="text-xs text-muted-foreground">{t(`leader.presetHint_${form.preset}`)}</p>
+          <p className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <IconKey className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {t('admin.passwordGenerated')}
+          </p>
+          {/* The two choices first — what the account may do, and where — then every right
+              the level gives, laid out below */}
+          <div className="space-y-1.5 border-t border-border pt-5">
+            <Label>{t('leader.accountPreset')}</Label>
+            <PermPresets perms={form.perms} onPick={pickLevel} label={t('leader.accountPreset')} />
           </div>
           <div className="space-y-1.5">
             <Label>{t('leader.accountBranches')}</Label>
@@ -706,13 +731,15 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
             </div>
             <p className="text-xs text-muted-foreground">{t('leader.accountBranchesHint')}</p>
           </div>
+          {/* The level's rights, every one listed and adjustable here */}
+          <PermsEditor
+            key={levelPicks}
+            perms={form.perms}
+            onChange={(perms) => setForm((f) => ({ ...f, perms }))}
+            presets={false}
+            openGranted
+          />
           <p className="text-xs text-muted-foreground">{t('leader.accountHint')}</p>
-          {error && (
-            <p role="alert" className="text-sm font-medium text-destructive">
-              {error}
-            </p>
-          )}
-          <FormActions onCancel={onClose} saving={saving} />
         </form>
       )}
     </Dialog>
