@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { Button, IconCalendar, IconX, Select, Skeleton, cn, fieldBase } from './ui';
@@ -30,6 +30,7 @@ export default function DatePicker({
   const { t, i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
   const thisYear = new Date().getFullYear();
   const first = fromYear ?? thisYear - 90;
   const last = toYear ?? thisYear + 5;
@@ -42,7 +43,10 @@ export default function DatePicker({
     if (d) setMonth(d);
   }, [value]);
 
-  const emit = (iso) => onChange?.({ target: { value: iso, name, id } });
+  const emit = (iso) => {
+    triggerRef.current?.removeAttribute('aria-invalid');
+    onChange?.({ target: { value: iso, name, id } });
+  };
   const months = monthNames(isAr);
   const years = Array.from({ length: last - first + 1 }, (_, i) => last - i);
 
@@ -64,12 +68,14 @@ export default function DatePicker({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
+            ref={triggerRef}
             type="button"
             id={id}
             disabled={disabled}
             className={cn(
               fieldBase,
               'items-center justify-between gap-2 text-start',
+              clearable && value && !disabled && 'pe-14',
               !value && 'text-muted-foreground'
             )}
             {...props}
@@ -80,25 +86,10 @@ export default function DatePicker({
                 {value ? fmtDate(value) : t('common.pickDate')}
               </span>
             </span>
-            {clearable && value && !disabled && (
-              <span
-                role="button"
-                tabIndex={-1}
-                aria-label={t('common.clear')}
-                className="-me-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:h-8 sm:w-8"
-                onPointerDown={(e) => {
-                  // Stop the popover from opening — this click only clears
-                  e.preventDefault();
-                  e.stopPropagation();
-                  emit('');
-                }}
-              >
-                <IconX />
-              </span>
-            )}
           </button>
         </PopoverTrigger>
         <PopoverContent
+          aria-label={t('common.pickDate')}
           className="p-0"
           onPointerDownOutside={keepOpenForSelect}
           onFocusOutside={keepOpenForSelect}
@@ -163,13 +154,35 @@ export default function DatePicker({
           </div>
         </PopoverContent>
       </Popover>
+      {clearable && value && !disabled && (
+        <button
+          type="button"
+          aria-label={t('common.clear')}
+          className="focus-ring absolute end-0.5 top-0.5 flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:top-1 sm:h-8 sm:w-10"
+          onClick={() => {
+            emit('');
+            triggerRef.current?.focus();
+          }}
+        >
+          <IconX />
+        </button>
+      )}
 
       {/* Keeps native form validation working — the trigger is a button, not a field */}
       {required && (
         <input
           tabIndex={-1}
           required
+          disabled={disabled}
           aria-hidden="true"
+          onInvalid={(e) => {
+            e.preventDefault();
+            const firstInvalid = e.currentTarget.form?.querySelector('input:invalid, select:invalid, textarea:invalid');
+            if (firstInvalid && firstInvalid !== e.currentTarget) return;
+            triggerRef.current?.focus();
+            triggerRef.current?.setAttribute('aria-invalid', 'true');
+            setOpen(true);
+          }}
           value={value || ''}
           onChange={() => {}}
           className="pointer-events-none absolute bottom-0 start-3 h-0 w-0 opacity-0"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { useSection } from '../section';
@@ -203,7 +204,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
       const saved = initial ? await api.put(`/meetings/${initial.id}`, body) : await api.post('/meetings', body);
       onSaved(saved);
     } catch (err) {
-      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : err.message);
+      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : displayError(err));
     } finally {
       setSaving(false);
     }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { useSection } from '../section';
@@ -182,7 +183,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
       const saved = initial ? await api.put(`/events/${initial.id}`, body) : await api.post('/events', body);
       onSaved(saved);
     } catch (err) {
-      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : err.message);
+      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : displayError(err));
     } finally {
       setSaving(false);
     }

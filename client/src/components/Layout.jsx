@@ -583,6 +583,24 @@ export default function Layout({ children }) {
   // A screen too short for the whole nav still shows the page you are on: scroll
   // its link into the nav's view (only the nav — the aside is fixed, the page stays put)
   const navRef = useRef(null);
+  const mainRef = useRef(null);
+  const previousPath = useRef(pathname);
+  // Route changes should leave keyboard users at the new content, not in the
+  // sidebar. A later lazy heading also updates the browser's tab title.
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    if (previousPath.current !== pathname) main.focus({ preventScroll: true });
+    previousPath.current = pathname;
+    const updateTitle = () => {
+      const title = main.querySelector('h1')?.textContent?.trim();
+      document.title = title ? `${title} · ${t('app.name')}` : t('app.name');
+    };
+    updateTitle();
+    const observer = new MutationObserver(updateTitle);
+    observer.observe(main, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [pathname, t]);
   useEffect(() => {
     const nav = navRef.current;
     const link = nav?.querySelector('[aria-current="page"]');
@@ -640,7 +658,9 @@ export default function Layout({ children }) {
       <div className="relative lg:ps-64">
         <OfflineBanner />
         <main
+          ref={mainRef}
           id="main"
+          tabIndex={-1}
           className={cn(
             'relative mx-auto p-4 pb-[calc(var(--bottomnav-h)+1.5rem)] sm:p-6 lg:p-8 lg:pb-10',
             wide ? 'max-w-[100rem]' : 'max-w-6xl'

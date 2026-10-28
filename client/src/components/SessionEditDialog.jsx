@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { ACTIVITY_TYPES, branchName, memberName } from '../utils';
@@ -124,7 +125,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
       };
       onSaved(await api.put(`/sessions/${session.id}`, body));
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }

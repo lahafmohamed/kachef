@@ -48,7 +48,8 @@
 
   /* Lines & focus */
   --border: hsl(220 12% 89%);
-  --input: hsl(220 10% 82%);
+  /* Field boundaries stay distinct from cards and muted control surfaces. */
+  --input: hsl(220 10% 56%);
   --ring: hsl(193 82% 36%);
 
   /* Radii — softer than the old set; the emblem is all round forms */
@@ -132,7 +133,7 @@
   --info-foreground: hsl(280 30% 10%);
 
   --border: hsl(220 8% 20%);
-  --input: hsl(220 8% 26%);
+  --input: hsl(220 8% 47%);
   --ring: hsl(190 72% 52%);
 
   --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.35);
@@ -253,6 +254,9 @@ textarea,
 h1, h2, h3, h4 {
   letter-spacing: -0.018em;
   text-wrap: balance;
+  /* Names and activity titles are user supplied. A single long word must not
+     widen a detail page or squeeze its neighbouring actions off screen. */
+  overflow-wrap: anywhere;
 }
 h1 { letter-spacing: -0.028em; }
 
@@ -272,6 +276,11 @@ h1 { letter-spacing: -0.028em; }
    unlayered, so they win over @layer utilities without !important. */
 html[lang="ar"] :is(h1, h2, h3, h4, [class*="tracking-"]) {
   letter-spacing: 0;
+}
+/* The Latin leading-tight utility is too short for joined Arabic headings,
+   particularly a two-line title with diacritics in a sheet or detail page. */
+html[lang="ar"] :is(h1, h2, h3, h4) {
+  line-height: 1.4;
 }
 /* Arabic ascenders/diacritics need more vertical air than Latin; this only
    reaches text whose size utility doesn't set its own line-height. */
@@ -443,6 +452,18 @@ input[type="radio"] {
   outline: none;
   &:focus-visible {
     outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* Windows contrast themes suppress shadow-based rings and remap custom
+   colours. Use the user's system highlight for an equally visible keyboard
+   indicator, including file pickers whose native input is visually hidden. */
+@media (forced-colors: active) {
+  .focus-ring:focus-visible,
+  :is(button, a[href], input, select, textarea, [role="button"], [role="tab"]):focus-visible,
+  label:has(input[type="file"]):focus-within {
+    outline: 2px solid Highlight;
     outline-offset: 2px;
   }
 }

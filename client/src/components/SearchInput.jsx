@@ -33,7 +33,8 @@ export default function SearchInput({ value, onChange, placeholder, className, a
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        aria-label={placeholder}
+        aria-label={placeholder || t('common.search')}
+        aria-keyshortcuts={autoFocusHotkey ? 'Control+k Meta+k' : undefined}
         // Escape clears without leaving the keyboard
         onKeyDown={(e) => e.key === 'Escape' && value && (e.preventDefault(), onChange(''))}
         // Phones keep room at the end only for the clear button, which only a value

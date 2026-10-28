@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -5,7 +6,7 @@ import { api, isFeminine } from '../api';
 import { usePerms, useAuth } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
-import { gendered, userText } from '../lib/meetings';
+import { fmtLongDate, gendered, userText } from '../lib/meetings';
 import { DecisionMeta, MeetingKindBadge } from '../components/MeetingParts';
 import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
@@ -33,7 +34,7 @@ import {
   IconShield,
 } from '../components/ui';
 
-const TABS = ['activities', 'card', 'dues', 'events', 'meetings', 'profile', 'history'];
+const TABS = ['activities', 'card', 'dues', 'events', 'meetings', 'amana', 'profile', 'history'];
 
 // His state on a meeting's list, as the minutes show it
 const MEETING_STATUS = {
@@ -427,6 +428,70 @@ function LeaderMeetings({ data, section, t }) {
   );
 }
 
+/**
+ * The قائد in his أمانة: what its أمين marked for him on the days the team went along
+ * with the فرق — the figures of the chosen période, the absences without word in a
+ * row, and the last sheets.
+ */
+function LeaderAmanaPresence({ data, section, lang, t }) {
+  const a = data.attendance;
+  const marked = a.present + a.excused + a.absent;
+  const rate = marked ? Math.round((a.present / marked) * 100) : null;
+  return (
+    <>
+      <Card className="grid grid-cols-3 gap-px overflow-hidden bg-border">
+        {[
+          ['present', 'text-success'],
+          ['excused', 'text-warning'],
+          ['absent', 'text-destructive'],
+        ].map(([k, tone]) => (
+          <Stat key={k} label={t(MEETING_STATUS[k].key)}>
+            <p className={cn('text-2xl font-bold tabular-nums', a[k] > 0 ? tone : 'text-muted-foreground')}>{a[k]}</p>
+          </Stat>
+        ))}
+      </Card>
+      {/* Inline, not flex: each «·» holds on to the part before it, so a wrapped line
+          never opens on a lone one */}
+      <p className="-mt-2 text-xs text-muted-foreground">
+        {marked ? t('amanaRoll.periodDays', { count: marked }) : t('amanaRoll.periodNone')}
+        {rate !== null && (
+          <>
+            {' · '}
+            <RateValue rate={rate} className="text-xs" />
+          </>
+        )}
+        {data.absent_streak >= 2 && (
+          <>
+            {' · '}
+            <span className="font-medium text-destructive">
+              {gendered(t, 'amanaRoll.streak', section, { count: data.absent_streak })}
+            </span>
+          </>
+        )}
+      </p>
+
+      <Card className="overflow-hidden">
+        <h2 className="px-4 pb-3 pt-4 text-base font-semibold sm:px-5">{t('amanaRoll.recent')}</h2>
+        <ul className="divide-y divide-border border-t border-border">
+          {data.recent.map((r) => (
+            <li key={r.roll_id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{fmtLongDate(r.date, lang)}</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  <Parts parts={[r.title, r.reason && t(`followup.reason.${r.reason}`)]} />
+                </span>
+              </span>
+              <Badge variant={MEETING_STATUS[r.status].variant} className="shrink-0">
+                {t(MEETING_STATUS[r.status].key)}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    </>
+  );
+}
+
 export default function LeaderDetail() {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
@@ -486,7 +551,7 @@ export default function LeaderDetail() {
       setLeader((l) => ({ ...l, card }));
       toast.success(t('leader.cardUpdated'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -693,6 +758,8 @@ export default function LeaderDetail() {
             ...(leader.meetings
               ? [{ id: 'meetings', label: t('meeting.title') }]
               : []),
+            // حضور الأمانة: only for a قائد his أمين has already marked
+            ...(leader.amana_presence ? [{ id: 'amana', label: t('amanaRoll.tab') }] : []),
             { id: 'profile', label: t('member.profile') },
             { id: 'history', label: t('member.history') },
           ]}
@@ -814,6 +881,10 @@ export default function LeaderDetail() {
           {tab === 'events' && canEvents && <EventParticipations state={events} feminine={isFeminine(leader.section)} />}
 
           {tab === 'meetings' && leader.meetings && <LeaderMeetings data={leader.meetings} section={leader.section} t={t} />}
+
+          {tab === 'amana' && leader.amana_presence && (
+            <LeaderAmanaPresence data={leader.amana_presence} section={leader.section} lang={lang} t={t} />
+          )}
 
           {tab === 'history' && (
             <>

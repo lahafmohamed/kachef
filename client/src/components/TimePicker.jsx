@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { Button, IconClock, IconX, cn, fieldBase } from './ui';
@@ -26,6 +26,7 @@ export default function TimePicker({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
 
   const current = value ? String(value).slice(0, 5) : '';
   const [h, m] = current ? current.split(':') : ['', ''];
@@ -36,18 +37,28 @@ export default function TimePicker({
   if (m && !minutes.includes(m)) minutes.push(m);
   minutes.sort();
 
-  const emit = (v) => onChange?.({ target: { value: v, name, id } });
+  const emit = (v) => {
+    triggerRef.current?.removeAttribute('aria-invalid');
+    onChange?.({ target: { value: v, name, id } });
+  };
   const setHour = (nh) => emit(`${nh}:${m || '00'}`);
   const setMinute = (nm) => emit(`${h || '00'}:${nm}`);
 
   const column = (items, selectedValue, onPick, label) => (
-    <div className="flex max-h-56 flex-col gap-1 overflow-y-auto p-1" role="listbox" aria-label={label}>
-      {items.map((v) => (
+    <div className="flex max-h-56 flex-col gap-1 overflow-y-auto p-1" role="group" aria-label={label}>
+      {items.map((v, index) => (
         <button
           key={v}
           type="button"
-          role="option"
-          aria-selected={v === selectedValue}
+          aria-pressed={v === selectedValue}
+          tabIndex={v === (selectedValue || items[0]) ? 0 : -1}
+          onKeyDown={(e) => {
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+            e.preventDefault();
+            const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+            onPick(items[next]);
+            e.currentTarget.parentElement.children[next]?.focus();
+          }}
           onClick={() => onPick(v)}
           className={cn(
             'focus-ring flex h-9 w-14 shrink-0 items-center justify-center rounded-md text-sm tabular-nums transition-colors',
@@ -67,12 +78,14 @@ export default function TimePicker({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
+            ref={triggerRef}
             type="button"
             id={id}
             disabled={disabled}
             className={cn(
               fieldBase,
               'items-center justify-between gap-2 text-start',
+              current && !disabled && 'pe-14',
               !current && 'text-muted-foreground'
             )}
             {...props}
@@ -83,24 +96,9 @@ export default function TimePicker({
                 {current || t('common.pickTime')}
               </span>
             </span>
-            {current && !disabled && (
-              <span
-                role="button"
-                tabIndex={-1}
-                aria-label={t('common.clear')}
-                className="-me-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:h-8 sm:w-8"
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  emit('');
-                }}
-              >
-                <IconX />
-              </span>
-            )}
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-auto p-0">
+        <PopoverContent aria-label={t('common.pickTime')} className="w-auto p-0">
           <div className="flex divide-x divide-border rtl:divide-x-reverse">
             {column(hours, h, setHour, t('common.hour'))}
             {column(minutes, m, setMinute, t('common.minute'))}
@@ -112,12 +110,34 @@ export default function TimePicker({
           </div>
         </PopoverContent>
       </Popover>
+      {current && !disabled && (
+        <button
+          type="button"
+          aria-label={t('common.clear')}
+          className="focus-ring absolute end-0.5 top-0.5 flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:top-1 sm:h-8 sm:w-10"
+          onClick={() => {
+            emit('');
+            triggerRef.current?.focus();
+          }}
+        >
+          <IconX />
+        </button>
+      )}
 
       {required && (
         <input
           tabIndex={-1}
           required
+          disabled={disabled}
           aria-hidden="true"
+          onInvalid={(e) => {
+            e.preventDefault();
+            const firstInvalid = e.currentTarget.form?.querySelector('input:invalid, select:invalid, textarea:invalid');
+            if (firstInvalid && firstInvalid !== e.currentTarget) return;
+            triggerRef.current?.focus();
+            triggerRef.current?.setAttribute('aria-invalid', 'true');
+            setOpen(true);
+          }}
           value={current}
           onChange={() => {}}
           className="pointer-events-none absolute bottom-0 start-3 h-0 w-0 opacity-0"

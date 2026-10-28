@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useAuth } from '../auth';
 import { useFetch } from '../hooks';
 import { branchName, fmtDate, memberName, todayISO } from '../utils';
@@ -148,7 +149,7 @@ export default function PrepCardForm({ initial, defaults, branches, leaders, onS
         : await api.post('/prep-cards', body);
       onSaved(card);
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }

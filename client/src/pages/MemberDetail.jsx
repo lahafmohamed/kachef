@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -46,7 +47,6 @@ import {
   IconX,
 } from '../components/ui';
 import { RoleBadges, respLabel } from '../components/GroupResponsibilities';
-import { AdmissionBadge, MemberAdmission } from '../components/Admission';
 import { FollowupLog, useAbsenceThreshold } from '../components/Followup';
 import { MemberHealthCard } from '../components/CampSafety';
 
@@ -56,7 +56,7 @@ const STATUS_BADGE = {
   excused: ['warning', 'session.excused'],
 };
 
-const TABS = ['attendance', 'followup', 'matalib', 'admission', 'events', 'dues', 'health', 'profile', 'history'];
+const TABS = ['attendance', 'followup', 'matalib', 'events', 'dues', 'health', 'profile', 'history'];
 
 // ar-LB gives the Levantine month names (أيلول، تشرين...) the فوج uses — the same
 // headers as the activities journal. Latin digits, as everywhere else.
@@ -244,7 +244,7 @@ export default function MemberDetail() {
       }));
       toast.success(t('member.matalibUpdated'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -256,7 +256,7 @@ export default function MemberDetail() {
       setMember((m) => ({ ...m, status: updated.status, archived_at: null, archived_by: null }));
       toast.success(t('member.restored'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setRestoring(false);
     }
@@ -272,7 +272,7 @@ export default function MemberDetail() {
       await reload({ quiet: true });
       toast.success(t('member.archived'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setArchiving(false);
     }
@@ -455,7 +455,6 @@ export default function MemberDetail() {
                 </Badge>
               )}
               {!active && <Badge variant="secondary">{t('member.inactive')}</Badge>}
-              <AdmissionBadge member={member} />
               <RoleBadges items={member.responsibilities?.filter((r) => !r.end_date)} />
             </div>
           </div>
@@ -577,7 +576,6 @@ export default function MemberDetail() {
             { id: 'attendance', label: t('member.attendance') },
             { id: 'followup', label: t('followup.tab') },
             { id: 'matalib', label: t('member.matalib') },
-            { id: 'admission', label: t('admission.tab') },
             // A camp he was taken off the list of is in his file, but not among those he took part in
             ...(canEvents
               ? [{ id: 'events', label: t('nav.events'), count: events.data?.filter((e) => !e.withdrawn).length || null }]
@@ -831,13 +829,6 @@ export default function MemberDetail() {
                 <Fact label={t('member.school')}>{member.school}</Fact>
               </FactGroup>
             </Card>
-          )}
-
-          {tab === 'admission' && (
-            <MemberAdmission
-              memberId={member.id}
-              onStatus={(admission_status) => setMember((m) => ({ ...m, admission_status }))}
-            />
           )}
 
           {tab === 'events' && canEvents &&<EventParticipations state={events} feminine={member.sex === 'F'} />}

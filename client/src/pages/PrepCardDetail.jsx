@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -83,13 +84,13 @@ export default function PrepCardDetail() {
   const leaders = useFetch('/leaders', { skip: !editable });
 
   async function remove() {
-    if (!(await confirm({ title: t('prep.delete'), message: t('prep.deleteConfirm') }))) return;
+    if (!(await confirm({ confirmLabel: t('prep.delete'), title: t('prep.delete'), message: t('prep.deleteConfirm') }))) return;
     try {
       await api.del(`/prep-cards/${id}`);
       toast.success(t('prep.deleted'));
       navigate('/prep-cards', { replace: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 

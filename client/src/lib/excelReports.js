@@ -68,6 +68,7 @@ const LABELS = {
   'event-unpaid': 'print.reportEventUnpaid',
   'dues-arrears': 'print.reportDuesArrears',
   period: 'print.reportPeriod',
+  'amana-presence': 'print.reportAmanaPresence',
 };
 
 const SESSION_KIND_KEYS = {
@@ -1934,8 +1935,6 @@ async function periodCard(ctx) {
           { label: t('periodReport.colPromotedOut'), type: 'int', sum: true, value: (b) => b.members.promoted_out },
           { label: t('periodReport.colPromotedIn'), type: 'int', sum: true, value: (b) => b.members.promoted_in },
           { label: t('periodReport.colArchived'), type: 'int', sum: true, value: (b) => b.members.archived },
-          { label: t('periodReport.colTrial'), type: 'int', sum: true, value: (b) => b.members.trial },
-          { label: t('periodReport.colInvested'), type: 'int', sum: true, value: (b) => b.members.invested },
           { label: t('periodReport.toFollow'), type: 'int', sum: true, value: (b) => b.followup.count },
           { label: t('periodReport.colContacts'), type: 'int', sum: true, value: (b) => b.followup.contacts },
         ],
@@ -1958,12 +1957,6 @@ async function periodCard(ctx) {
           ],
           { empty: t('periodReport.followupNone') }
         ),
-        d.admissions?.ready.length > 0 &&
-          table(
-            d.admissions.ready,
-            [x.num, { label: t('member.name'), value: memberName }, { label: t('member.branch'), value: nameOf }],
-            { heading: t('periodReport.readyTitle') }
-          ),
       ])
     );
   if (d.events)
@@ -2028,7 +2021,80 @@ async function periodCard(ctx) {
   return { title, sheets };
 }
 
+/* ============================================================
+   حضور الأمانة
+   ============================================================ */
+
+/**
+ * The register of an أمانة, as on its PDF: one line per day, one column per قائد, each
+ * cell the status in words — then each قائد with his counts and rate, to sort.
+ */
+async function amanaPresenceCard(ctx) {
+  const { id, t, kindLabel, stamp } = ctx;
+  const { status } = tools(ctx);
+  const data = await api.get(`/amanat/${id}/rolls?entries=1`);
+  const { amana, members } = data;
+  // Oldest first, the way a register fills up
+  const rolls = [...data.rolls].reverse();
+  const cell = new Map(data.entries.map((e) => [`${e.roll_id}:${e.leader_id}`, e]));
+  const title = amana.title;
+  const reason = (e) => (e?.reason ? t(`followup.reason.${e.reason}`) : null);
+  return {
+    title,
+    sheets: [
+      {
+        name: t('amanaRoll.register'),
+        title,
+        lines: [`${kindLabel} · ${amana.year} · ${t('amanaRoll.days', { count: rolls.length })}`, stamp],
+        blocks: [
+          table(
+            rolls,
+            [
+              { label: t('common.date'), type: 'date', value: (r) => r.date },
+              // Not on that day's list (not yet in the team, or no longer): an empty cell
+              ...members.map((m) => ({
+                label: memberName(m),
+                value: (r) => {
+                  const e = cell.get(`${r.id}:${m.leader_id}`);
+                  if (!e) return null;
+                  const st = status(e.status === 'unmarked' ? null : e.status);
+                  return reason(e) ? `${st} (${reason(e)})` : st;
+                },
+              })),
+              { label: t('amanaRoll.validated'), value: (r) => r.finalized_by || null },
+            ],
+            { empty: t('amanaRoll.emptyTitle') }
+          ),
+        ],
+      },
+      {
+        name: t('amanaRoll.team'),
+        title,
+        lines: [`${kindLabel} · ${amana.year}`, stamp],
+        blocks: [
+          table(
+            members,
+            [
+              { label: t('member.name'), value: memberName },
+              { label: t('session.tallyPresent'), type: 'int', sum: true, value: (m) => m.present },
+              { label: t('session.tallyExcused'), type: 'int', sum: true, value: (m) => m.excused },
+              { label: t('session.tallyAbsent'), type: 'int', sum: true, value: (m) => m.absent },
+              {
+                label: t('leader.colPresence'),
+                type: 'percent',
+                value: (m) => rate(m.present, m.present + m.absent + m.excused),
+              },
+            ],
+            { total: t('print.total'), empty: t('amanaRoll.emptyTitle') }
+          ),
+        ],
+      },
+    ],
+  };
+}
+
 const BUILDERS = {
+  'amana-presence': amanaPresenceCard,
   period: periodCard,
   'dues-arrears': duesArrearsList,
   event: eventCard,

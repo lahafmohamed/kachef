@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -14,7 +15,7 @@ function serverProblem(err) {
   // fetch() rejects with no status when the network is down; 502–504 mean the
   // proxy answered but the app behind it did not
   if (!err.status || [502, 503, 504].includes(err.status)) return { key: 'auth.unreachable' };
-  return { text: err.message };
+  return { text: displayError(err) };
 }
 
 /**

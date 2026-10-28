@@ -19,7 +19,7 @@ export function PopoverContent({ className, align = 'start', sideOffset = 6, ...
         sideOffset={sideOffset}
         collisionPadding={12}
         className={cn(
-          'z-50 w-auto max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-lg outline-none',
+          'z-50 w-auto max-h-[var(--radix-popover-content-available-height)] max-w-[calc(100vw-1.5rem)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-lg outline-none',
           'data-[state=open]:animate-dialog-in',
           className
         )}

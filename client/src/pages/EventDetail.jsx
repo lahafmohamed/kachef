@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { Fragment, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -117,7 +118,7 @@ function errorText(t, err) {
     sessions_outside_dates: 'event.errSessionsOutside',
     staff_exists: 'event.errStaffExists',
   };
-  return known[err.message] ? t(known[err.message]) : err.message;
+  return known[err.message] ? t(known[err.message]) : displayError(err);
 }
 
 const timeRange = (s) =>
@@ -158,7 +159,7 @@ function ShareBar({ value, tone = 'primary' }) {
  * The event's numbers: who takes part, what came in against what is expected, what
  * was given, what went out, and what is left. Money only for who may see amounts.
  */
-function EventFigures({ ev, t }) {
+function EventFigures({ ev, t, onTransferGain }) {
   const s = ev.summary;
   if (!s)
     return (
@@ -271,6 +272,13 @@ function EventFigures({ ev, t }) {
               t(s.balance < 0 ? 'event.deficit' : 'event.surplus')
             )}
           </p>
+        )}
+        {/* A gain with nothing left to collect goes to a caisse — the فرقة's or the فوج's */}
+        {onTransferGain && s.balance > 0 && s.outstanding === 0 && (
+          <Button size="sm" variant="outline" onClick={onTransferGain} className="mt-1">
+            <IconWallet />
+            {t('event.fundingTransferGain')}
+          </Button>
         )}
       </Figure>
     </Card>
@@ -2215,7 +2223,9 @@ function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng 
     }
     // A camp of one فرقة is first paid for by that فرقة's caisse
     const own = boxes.find((b) => b.branch_id && ev.branch_ids?.length === 1 && b.branch_id === ev.branch_ids[0]);
-    setForm({ box: (own || boxes[0])?.key || '', amount: '', date: todayISO(), label: '' });
+    // Handing money to a caisse: the camp's gain, ready to be sent whole
+    const gain = dir === 'from_event' && ev.summary?.balance > 0 ? String(ev.summary.balance) : '';
+    setForm({ box: (own || boxes[0])?.key || '', amount: gain, date: todayISO(), label: '' });
   }, [open, funding]); // eslint-disable-line react-hooks/exhaustive-deps -- the caisses on opening
 
   async function save(e) {
@@ -2264,6 +2274,10 @@ function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng 
       ? funding.amount
       : 0;
   const after = dir === 'to_event' && box?.start && form.amount ? box.balance + back - Number(form.amount) : null;
+  // Handing back: what the camp has — this line's own amount counted in when editing it —
+  // and what it keeps after
+  const gain = (ev.summary?.balance ?? 0) + (funding && funding.direction === 'from_event' ? funding.amount : 0);
+  const leftInEvent = dir === 'from_event' && form.amount ? gain - Number(form.amount) : null;
 
   return (
     <Dialog
@@ -2328,7 +2342,7 @@ function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng 
             id="fd_label"
             maxLength={200}
             autoComplete="off"
-            placeholder={t('event.fundingNoteHint')}
+            placeholder={t(dir === 'from_event' ? 'event.fundingGainNoteHint' : 'event.fundingNoteHint')}
             value={form.label}
             onChange={set('label')}
           />
@@ -2336,6 +2350,19 @@ function FundingDialog({ ev, funding, direction, open, onClose, onSaved, t, lng 
         {after !== null && (
           <p className={cn('text-sm', after < 0 ? 'font-medium text-destructive' : 'text-muted-foreground')}>
             {after < 0 ? t('treasury.boxShort') : t('treasury.leftAfter', { amount: withSign(after) })}
+          </p>
+        )}
+        {dir === 'from_event' && (
+          <p className={cn('text-sm', leftInEvent < 0 ? 'font-medium text-warning' : 'text-muted-foreground')}>
+            {leftInEvent === null ? (
+              <>
+                {t('event.fundingGain')} <span dir="ltr" className="tabular-nums">{withSign(gain)}</span>
+              </>
+            ) : leftInEvent < 0 ? (
+              t('event.fundingOverGain')
+            ) : (
+              t('event.fundingLeftInEvent', { amount: withSign(leftInEvent) })
+            )}
           </p>
         )}
         {error && (
@@ -2871,7 +2898,7 @@ export default function EventDetail() {
       toast.success(t('event.deleted'));
       navigate('/events', { replace: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -3067,7 +3094,13 @@ export default function EventDetail() {
         </div>
       </div>
 
-      <EventFigures ev={ev} t={t} />
+      <EventFigures
+        ev={ev}
+        t={t}
+        onTransferGain={
+          ev.funding_boxes?.length > 0 ? () => setFundingDialog({ funding: null, direction: 'from_event' }) : null
+        }
+      />
 
       <UnderlineTabs
         items={tabs}

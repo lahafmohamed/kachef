@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -5,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
 import LeaderDues from '../components/LeaderDues';
+import { AmanaPresenceDialog, AmanaPresenceFooter } from '../components/AmanaPresence';
 import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
 import { SECTIONS, isFeminine, useSection } from '../section';
 import SectionField from '../components/SectionField';
@@ -120,7 +122,7 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
       else await api.post('/leaders', form);
       onSaved();
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
       setSaving(false);
     }
   }
@@ -375,7 +377,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
       else await api.post('/tachkila', body);
       onSaved();
     } catch (err) {
-      setError(err.message === 'leader_outside_section' ? t('section.leaderOutside') : err.message);
+      setError(err.message === 'leader_outside_section' ? t('section.leaderOutside') : displayError(err));
       setSaving(false);
     }
   }
@@ -522,7 +524,7 @@ function NewYearForm({ currentYear, onSaved, onCancel }) {
       await api.post('/tachkila/copy', { to_year: year, mode, from_year: currentYear });
       onSaved(year);
     } catch (err) {
-      setError(err.message === 'year_exists' ? t('leader.yearExists') : err.message);
+      setError(err.message === 'year_exists' ? t('leader.yearExists') : displayError(err));
       setSaving(false);
     }
   }
@@ -630,7 +632,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
         account_exists: t('leader.accountExists'),
         branch_outside_section: t('section.branchOutside'),
       };
-      setError(map[err.message] || err.message);
+      setError(map[err.message] || displayError(err));
     } finally {
       setSaving(false);
     }
@@ -962,8 +964,11 @@ function SlotLine({ a, page, lead = false, showTitle = true }) {
   );
 }
 
-/** A unit of the تشكيلة as a card: its name, who leads it, then the team under them. */
-function TeamCard({ title, lead, rest = [], groups = [], leadTitle = false, page }) {
+/**
+ * A unit of the تشكيلة as a card: its name, who leads it, then the team under them.
+ * `footer`: what closes the card (an أمانة's présence).
+ */
+function TeamCard({ title, lead, rest = [], groups = [], leadTitle = false, page, footer = null }) {
   const all = [lead, ...rest, ...groups.flatMap((g) => g.list)].filter(Boolean);
   const filled = all.filter((a) => a.leader_id).length;
   return (
@@ -1008,7 +1013,25 @@ function TeamCard({ title, lead, rest = [], groups = [], leadTitle = false, page
           </ul>
         </div>
       ))}
+      {footer}
     </Card>
+  );
+}
+
+/**
+ * حضور الأمانة at the foot of its card: for a team — two قادة in it at least — that this
+ * account may take, or for sheets already taken, readable whatever the team became.
+ */
+function presenceFooter(a, helpers, page) {
+  const summary = page.amanaRolls[a.id];
+  const team = [a, ...helpers].filter((x) => x.leader_id).length >= 2;
+  if (!summary?.rolls && !(team && page.canTakeRoll(a))) return null;
+  return (
+    <AmanaPresenceFooter
+      summary={summary}
+      mine={page.isMine(a) && page.canTakeRoll(a)}
+      onOpen={() => page.openPresence(a, [a, ...helpers])}
+    />
   );
 }
 
@@ -1050,7 +1073,14 @@ function TachkilaCards({ assignments, branches, page, headLabel }) {
         <Section title={t('leader.amanat')} count={secretariats.length}>
           <div className="columns-1 gap-4 sm:columns-2 xl:columns-3">
             {secretariats.map((a) => (
-              <TeamCard key={a.id} title={a.title} lead={a} rest={helpersOf(a.id)} page={page} />
+              <TeamCard
+                key={a.id}
+                title={a.title}
+                lead={a}
+                rest={helpersOf(a.id)}
+                page={page}
+                footer={presenceFooter(a, helpersOf(a.id), page)}
+              />
             ))}
             {orphans.map((a) => (
               <TeamCard key={a.id} title={a.title} lead={a} page={page} />
@@ -1511,6 +1541,11 @@ export default function Leaders() {
   const isAdmin = user?.role === 'admin';
   // اشتراك القادة: تبويب لمن يملك صلاحيته وحده
   const canDues = usePerms().has('leaders.dues');
+  // حضور فريق أيّ أمانة — الأمين يسجّل حضور فريقه بلا هذه الصلاحية
+  const canAnyAmanaRoll = usePerms().has('leaders.attendance');
+  // The أمانة whose présence dialog is open, with the مسؤولية of each قائد of its team.
+  // Kept while the dialog closes, so it leaves with its content.
+  const [presence, setPresence] = useState(null);
 
   const [year, setYear] = useState(null);
   // The القادة list's filters live in the URL (LEADER_FILTER_KEYS): «back» from a
@@ -1575,7 +1610,7 @@ export default function Leaders() {
         );
         return existing?.label || wanted;
       }
-      toast.error(err.message);
+      toast.error(displayError(err));
       return null;
     }
   }
@@ -1589,6 +1624,10 @@ export default function Leaders() {
   };
   // A سنة مقفلة is frozen: the server refuses every change, and only an admin can unlock it
   const locked = !!tachkila.locked;
+  // حضور الأمانات is taken on the تشكيلة in force — the latest year, never an older one
+  const currentYear = !tachkila.year || tachkila.year === tachkila.years[0];
+  const isMine = (a) => !!user?.leader_id && Number(user.leader_id) === Number(a.leader_id);
+  const canTakeRoll = (a) => currentYear && (canAnyAmanaRoll || isMine(a));
   // With leaders.read a قائد opens this page read-only — changing the التشكيلة stays admin-only
   const canEdit = isAdmin && !locked;
 
@@ -1598,7 +1637,7 @@ export default function Leaders() {
       ? t('leader.lockedError')
       : err.message === 'leader_outside_section'
         ? t('section.leaderOutside')
-        : err.message;
+        : displayError(err);
 
   function reloadAll() {
     leadersRes.reload({ quiet: true });
@@ -1608,7 +1647,7 @@ export default function Leaders() {
   // سحب الدخول: حذف الحساب المربوط. الجلسات المفتوحة تسقط مع الحساب.
   async function revokeAccount(l) {
     if (
-      !(await confirm({
+      !(await confirm({ confirmLabel: t('leader.accountRevoke'),
         title: t('leader.accountRevoke'),
         message: t('leader.accountRevokeConfirm', { username: l.account_username }),
       }))
@@ -1619,12 +1658,12 @@ export default function Leaders() {
       leadersRes.reload({ quiet: true });
       toast.success(t('leader.accountRevoked'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
   async function removeLeader(l) {
-    if (!(await confirm({ title: t('common.delete'), message: t('leader.confirmDelete') }))) return;
+    if (!(await confirm({ confirmLabel: t('common.delete'), title: t('common.delete'), message: t('leader.confirmDelete') }))) return;
     try {
       await api.del(`/leaders/${l.id}`);
       reloadAll();
@@ -1637,7 +1676,7 @@ export default function Leaders() {
   // Freeze / unfreeze the whole تشكيلة of the selected year. Admin only, server-enforced.
   async function toggleLock() {
     const next = !locked;
-    const ok = await confirm({
+    const ok = await confirm({ confirmLabel: t(next ? 'leader.lock' : 'leader.unlock'), destructive: false,
       title: t(next ? 'leader.lock' : 'leader.unlock'),
       message: t(next ? 'leader.confirmLock' : 'leader.confirmUnlock', { year: tachkila.year }),
     });
@@ -1652,7 +1691,7 @@ export default function Leaders() {
   }
 
   async function removeAssignment(a) {
-    if (!(await confirm({ title: t('common.delete'), message: t('leader.confirmDeleteAssignment') }))) return;
+    if (!(await confirm({ confirmLabel: t('common.delete'), title: t('common.delete'), message: t('leader.confirmDeleteAssignment') }))) return;
     try {
       await api.del(`/tachkila/${a.id}`);
       reloadAll();
@@ -1740,6 +1779,15 @@ export default function Leaders() {
     setAccountFor,
     setEditingLeader,
     removeLeader,
+    amanaRolls: tachkila.amana_rolls || {},
+    canTakeRoll,
+    isMine,
+    openPresence: (root, team) =>
+      setPresence({
+        root,
+        titles: new Map(team.filter((x) => x.leader_id).map((x) => [x.leader_id, x.title])),
+        open: true,
+      }),
   };
   const current = TABS.includes(tab) && (tab !== 'dues' || canDues) ? tab : 'tachkila';
   const filled = tachkila.assignments.filter((a) => a.leader_id).length;
@@ -2170,6 +2218,16 @@ export default function Leaders() {
           />
         )}
       </Dialog>
+
+      <AmanaPresenceDialog
+        root={presence?.root || null}
+        titles={presence?.titles}
+        canTake={!!presence && canTakeRoll(presence.root)}
+        open={!!presence?.open}
+        onClose={() => setPresence((p) => p && { ...p, open: false })}
+        // The card's figures follow each mark
+        onChanged={() => tachkilaRes.reload({ quiet: true })}
+      />
     </div>
   );
 }

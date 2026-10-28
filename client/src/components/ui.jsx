@@ -14,6 +14,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/utils';
+import { displayError } from '../lib/errors';
 import {
   Select as SelectRoot,
   SelectContent,
@@ -696,7 +697,7 @@ export function CardContent({ className, ...props }) {
 
 export const fieldBase =
   'flex h-11 w-full rounded-lg border border-input bg-card px-3.5 text-sm shadow-xs transition-colors sm:h-10 ' +
-  'hover:border-input/70 focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 ' +
+  'hover:border-primary focus-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 ' +
   'aria-invalid:border-destructive aria-invalid:focus-visible:border-destructive aria-invalid:focus-visible:outline-destructive';
 
 export function Input({ className, ...props }) {
@@ -758,6 +759,8 @@ function collectOptions(children, out = []) {
  * A disabled empty option is read as the placeholder, as it is in HTML.
  */
 export function Select({ className, children, value, onChange, id, name, required, disabled, placeholder, ...props }) {
+  const triggerRef = useRef(null);
+  const [open, setOpen] = useState(false);
   const options = collectOptions(children);
   const isPlaceholderOption = (o) => o.value === '' && o.disabled;
   const hasEmptyItem = options.some((o) => o.value === '' && !o.disabled);
@@ -766,16 +769,21 @@ export function Select({ className, children, value, onChange, id, name, require
 
   const root = (
     <SelectRoot
+      open={open}
+      onOpenChange={setOpen}
       value={current === '' && hasEmptyItem ? EMPTY_VALUE : current}
-      onValueChange={(v) =>
-        onChange?.({ target: { value: v === EMPTY_VALUE ? '' : v, name, id } })
-      }
+      onValueChange={(v) => {
+        triggerRef.current?.removeAttribute('aria-invalid');
+        onChange?.({ target: { value: v === EMPTY_VALUE ? '' : v, name, id } });
+      }}
       name={name}
       disabled={disabled}
     >
       <SelectTrigger
+        ref={triggerRef}
         id={id}
-        className={cn('rounded-lg px-3.5 hover:border-input/70 hover:bg-card', className)}
+        aria-required={required || undefined}
+        className={cn('rounded-lg px-3.5 hover:border-primary hover:bg-card', className)}
         {...props}
       >
         <SelectValue placeholder={placeholderText} />
@@ -804,7 +812,16 @@ export function Select({ className, children, value, onChange, id, name, require
       <input
         tabIndex={-1}
         required
+        disabled={disabled}
         aria-hidden="true"
+        onInvalid={(e) => {
+          e.preventDefault();
+          const firstInvalid = e.currentTarget.form?.querySelector('input:invalid, select:invalid, textarea:invalid');
+          if (firstInvalid && firstInvalid !== e.currentTarget) return;
+          triggerRef.current?.focus();
+          triggerRef.current?.setAttribute('aria-invalid', 'true');
+          setOpen(true);
+        }}
         value={current}
         onChange={() => {}}
         className="pointer-events-none absolute bottom-0 start-3 h-0 w-0 opacity-0"
@@ -829,7 +846,7 @@ export function Label({ className, ...props }) {
 /** Label + control + optional hint/error, wired up with the right aria attrs. */
 export function Field({ label, hint, error, children, className }) {
   const id = useId();
-  const describedBy = [hint && `${id}-hint`, error && `${id}-err`].filter(Boolean).join(' ');
+  const describedBy = [hint && !error && `${id}-hint`, error && `${id}-err`].filter(Boolean).join(' ');
   return (
     <div className={cn('space-y-1.5', className)}>
       {label && <Label htmlFor={id}>{label}</Label>}
@@ -842,7 +859,7 @@ export function Field({ label, hint, error, children, className }) {
         </p>
       )}
       {error && (
-        <p id={`${id}-err`} className="text-xs font-medium text-destructive">
+        <p id={`${id}-err`} role="alert" className="text-xs font-medium text-destructive">
           {error}
         </p>
       )}
@@ -968,6 +985,7 @@ const FOCUSABLE =
   'select:not([disabled]):not([tabindex="-1"]),textarea:not([disabled]):not([tabindex="-1"]),[tabindex]:not([tabindex="-1"])';
 
 let openOverlays = 0;
+const inertBackgrounds = new Map();
 
 /**
  * Accessible modal. Renders as a centered dialog on tablet+ and as a
@@ -983,6 +1001,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   const contentRef = useRef(null);
   const restoreRef = useRef(null);
   const titleId = useId();
+  const descriptionId = useId();
   // Callers pass inline arrows; a ref keeps the effect from re-running (and
   // re-focusing) on every parent render while Escape still sees the latest.
   const onCloseRef = useRef(onClose);
@@ -1014,17 +1033,29 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   const frame = (open ? null : lastFrame.current) || { title, description, children, footer };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !render) return;
     restoreRef.current = document.activeElement;
     openOverlays += 1;
     document.body.setAttribute('data-scroll-locked', '');
 
     const panel = panelRef.current;
+    const overlay = panel?.parentElement;
+    const background = [...document.body.children].filter((el) => el !== overlay && el instanceof HTMLElement && !el.hasAttribute('data-toast-viewport'));
+    background.forEach((el) => {
+      const state = inertBackgrounds.get(el) || { count: 0, original: el.inert };
+      state.count += 1;
+      inertBackgrounds.set(el, state);
+      el.inert = true;
+    });
     // Focus the first field, not the close button, so keyboards land on content.
-    const first = autoFocus ? contentRef.current?.querySelector(FOCUSABLE) : null;
+    const first = autoFocus
+      ? [...(contentRef.current?.querySelectorAll(FOCUSABLE) || [])].find((el) => el.offsetParent !== null && el.type !== 'file')
+      : null;
     (first || panel)?.focus({ preventScroll: true });
 
     function onKeyDown(e) {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== panel) return;
       if (e.key === 'Escape') {
         // A select/popover layer is open on top — that one owns the Escape,
         // otherwise closing a dropdown would throw the whole form away.
@@ -1035,10 +1066,14 @@ export function Dialog({ open, onClose, title, description, children, footer, si
       }
       if (e.key !== 'Tab' || !panel) return;
       const items = [...panel.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null);
-      if (items.length === 0) return;
+      if (items.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
       const firstEl = items[0];
       const lastEl = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === firstEl) {
+      if (e.shiftKey && (document.activeElement === firstEl || document.activeElement === panel)) {
         e.preventDefault();
         lastEl.focus();
       } else if (!e.shiftKey && document.activeElement === lastEl) {
@@ -1050,11 +1085,20 @@ export function Dialog({ open, onClose, title, description, children, footer, si
     document.addEventListener('keydown', onKeyDown, true);
     return () => {
       document.removeEventListener('keydown', onKeyDown, true);
+      background.forEach((el) => {
+        const state = inertBackgrounds.get(el);
+        if (!state) return;
+        state.count -= 1;
+        if (state.count === 0) {
+          el.inert = state.original;
+          inertBackgrounds.delete(el);
+        }
+      });
       openOverlays = Math.max(0, openOverlays - 1);
       if (openOverlays === 0) document.body.removeAttribute('data-scroll-locked');
       restoreRef.current?.focus?.({ preventScroll: true });
     };
-  }, [open]);
+  }, [open, render, autoFocus]);
 
   if (!render) return null;
 
@@ -1083,6 +1127,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={frame.description ? descriptionId : undefined}
         tabIndex={-1}
         className={cn(
           'relative flex max-h-[92dvh] w-full flex-col',
@@ -1100,7 +1145,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
               {frame.title}
             </h2>
             {frame.description && (
-              <p className="mt-0.5 text-sm text-muted-foreground">{frame.description}</p>
+              <p id={descriptionId} className="mt-0.5 text-sm text-muted-foreground">{frame.description}</p>
             )}
           </div>
           {/* shrink-0: a long title squeezed it under 30px wide. The negative margins
@@ -1122,7 +1167,7 @@ export function Dialog({ open, onClose, title, description, children, footer, si
           ref={contentRef}
           data-dialog-body={frame.footer ? undefined : ''}
           className={cn(
-            'flex-1 overflow-y-auto p-4 sm:p-5',
+            'flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5',
             !frame.footer &&
               'pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:pb-[max(1.25rem,env(safe-area-inset-bottom,0px))]'
           )}
@@ -1208,6 +1253,7 @@ const toastStyles = {
 export function ToastProvider({ children }) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState([]);
+  const [announcement, setAnnouncement] = useState(null);
   const seq = useRef(0);
   const timers = useRef(new Map());
 
@@ -1239,8 +1285,9 @@ export function ToastProvider({ children }) {
   const push = useCallback(
     (message, type = 'success', ms = 3200) => {
       const id = ++seq.current;
-      setToasts((ts) => [...ts.slice(-2), { id, message, type, ms }]);
-      arm(id, ms);
+      setToasts((ts) => [...ts.filter((x) => x.type === 'error'), ...ts.filter((x) => x.type !== 'error').slice(-2), { id, message, type, ms }]);
+      if (type !== 'error') setAnnouncement({ id, message });
+      if (type !== 'error' && ms > 0) arm(id, ms);
       return id;
     },
     [arm]
@@ -1251,7 +1298,7 @@ export function ToastProvider({ children }) {
       toast: push,
       success: (m) => push(m, 'success'),
       // api.js throws 'network' when the request never got an answer (weak 3G, timeout)
-      error: (m) => push(m === 'network' ? t('error.network') : m, 'error', 5000),
+      error: (m) => push(displayError(m), 'error', 0),
       info: (m) => push(m, 'info'),
     }),
     [push, t]
@@ -1262,29 +1309,32 @@ export function ToastProvider({ children }) {
       {children}
       {createPortal(
         <div
+          data-toast-viewport=""
           role="region"
           aria-label={t('notif.title')}
           // Top of the screen on phones — the bottom is owned by the tab bar and
           // sticky save bars, so toasts there covered the very buttons just tapped.
-          className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex flex-col items-center gap-2 px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
+          className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex max-h-[70dvh] flex-col items-center gap-2 overflow-y-auto px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
         >
+          <span role="status" aria-atomic="true" className="sr-only">
+            {announcement && <span key={announcement.id}>{announcement.message}</span>}
+          </span>
           {toasts.map(({ id, message, type, ms, leaving }) => {
             const { cls, Icon: I } = toastStyles[type] || toastStyles.info;
             // Hovering or focusing holds the toast; leaving restarts the full
             // timer. A toast already on its way out ignores both.
             const hold = () => !leaving && clearTimeout(timers.current.get(id));
-            const release = () => !leaving && arm(id, ms);
+            const release = () => !leaving && type !== 'error' && ms > 0 && arm(id, ms);
             return (
               <div
                 key={id}
-                role="status"
-                aria-live="polite"
+                role={type === 'error' ? 'alert' : undefined}
                 onMouseEnter={hold}
                 onMouseLeave={release}
                 onFocus={hold}
                 onBlur={release}
                 className={cn(
-                  'flex w-full max-w-sm items-start gap-2.5',
+                  'flex w-full max-w-sm shrink-0 items-start gap-2.5',
                   leaving ? 'animate-toast-out pointer-events-none' : 'animate-toast-in pointer-events-auto',
                   'glass rounded-xl border ps-4 pe-2 py-2.5 text-sm font-medium shadow-lg',
                   cls
@@ -1361,7 +1411,7 @@ export function ListRow({ className, children, ...props }) {
   );
 }
 
-export function EmptyState({ icon, title, children, action, className }) {
+export function EmptyState({ icon, title, children, action, className, headingAs: Heading = 'p' }) {
   return (
     <div
       className={cn(
@@ -1374,7 +1424,7 @@ export function EmptyState({ icon, title, children, action, className }) {
           {icon}
         </div>
       )}
-      {title && <p className="font-medium text-foreground">{title}</p>}
+      {title && <Heading className="font-medium text-foreground">{title}</Heading>}
       {children && <p className="max-w-sm text-sm text-muted-foreground">{children}</p>}
       {action}
     </div>
@@ -1382,12 +1432,12 @@ export function EmptyState({ icon, title, children, action, className }) {
 }
 
 /** Full-width error card with a retry affordance. */
-export function ErrorState({ message, onRetry, retryLabel }) {
+export function ErrorState({ message, onRetry, retryLabel, alert = true }) {
   return (
     <Card className="border-destructive/30 bg-destructive/5">
       <CardContent className="flex flex-wrap items-center gap-3 p-4 sm:p-5">
         <IconAlert className="h-5 w-5 text-destructive" />
-        <p className="min-w-40 flex-1 text-sm font-medium text-destructive">{message}</p>
+        <p role={alert ? 'alert' : undefined} className="min-w-40 flex-1 text-sm font-medium text-destructive">{displayError(message)}</p>
         {onRetry && (
           <Button variant="outline" size="sm" onClick={onRetry}>
             {retryLabel}

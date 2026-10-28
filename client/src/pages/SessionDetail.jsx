@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
@@ -88,14 +89,14 @@ const matchStatus = (m, f) =>
 // — a request that never reached the server says so, not the browser's raw text
 const attendanceError = (t, err) =>
   err.network
-    ? t('error.network', { defaultValue: err.message })
+    ? t('error.network', { defaultValue: displayError(err) })
     : err.message === 'forbidden_branch'
     ? t('session.forbiddenBranch')
     : err.message === 'forbidden_fees'
       ? t('session.forbiddenFees')
       : err.message === 'attendance_finalized'
         ? t('session.finalizedLocked')
-        : err.message;
+        : displayError(err);
 
 // «label : value» — French spaces its colon (kept on its word), Arabic writes it close,
 // as the locale strings do («آخر تعديل:»)
@@ -160,7 +161,7 @@ function GroupCountsCard({ session, editable, onSaved }) {
       toast.success(t('session.countsSaved'));
       onSaved();
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -257,19 +258,19 @@ function GuestsCard({ session, editable, onChange }) {
       onChange(r.guests);
       setName('');
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
   }
 
   async function remove(g) {
-    if (!(await confirm(t('session.confirmRemoveGuest', { name: g.name })))) return;
+    if (!(await confirm({ title: t('event.remove'), message: t('session.confirmRemoveGuest', { name: g.name }), confirmLabel: t('event.remove') }))) return;
     try {
       const r = await api.del(`/sessions/${session.id}/guests/${g.id}`);
       onChange(r.guests);
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -757,7 +758,7 @@ export default function SessionDetail() {
       await api.post(`/sessions/${id}/animators`, { leader_id: Number(leaderId), status: null });
       reload({ quiet: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -775,18 +776,18 @@ export default function SessionDetail() {
       toast.success(t('session.deleted'));
       back();
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
   async function removeHelper(a) {
-    if (!(await confirm(t('session.confirmRemoveHelper', { name: memberName(a) }))))
+    if (!(await confirm({ title: t('event.remove'), message: t('session.confirmRemoveHelper', { name: memberName(a) }), confirmLabel: t('event.remove') })))
       return;
     try {
       await api.post(`/sessions/${id}/animators`, { leader_id: a.leader_id, remove: true });
       reload({ quiet: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 

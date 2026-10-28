@@ -53,7 +53,7 @@ export function Calendar({ className, classNames, showOutsideDays = true, ...pro
           'focus-ring inline-flex h-10 w-9 items-center justify-center rounded-md font-normal tabular-nums sm:w-10 ' +
           'transition-colors hover:bg-accent hover:text-accent-foreground',
         today: 'font-bold text-primary',
-        outside: 'text-muted-foreground/50',
+        outside: 'font-normal text-muted-foreground',
         disabled: 'pointer-events-none opacity-40',
         hidden: 'invisible',
         // Range: the ends are solid, the middle is a tinted band

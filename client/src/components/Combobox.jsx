@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Popover, PopoverAnchor, PopoverContent } from './shadcn/popover';
 import { Input, cn } from './ui';
 
@@ -24,6 +25,10 @@ export default function Combobox({
   ...props
 }) {
   const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const listId = useId();
+  const listRef = useRef(null);
+  const { t } = useTranslation();
 
   const items = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
   const query = String(value ?? '').trim().toLowerCase();
@@ -38,6 +43,18 @@ export default function Combobox({
         );
 
   const emit = (v) => onChange?.({ target: { value: v, name, id } });
+  const expanded = open && matches.length > 0;
+  const activeIndex = active < matches.length ? active : -1;
+  useEffect(() => {
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
+  function pick(option) {
+    emit(option.value);
+    onPick?.(option);
+    setOpen(false);
+    setActive(-1);
+  }
 
   function keepOpenOnField(e) {
     const target = e.detail?.originalEvent?.target ?? e.target;
@@ -45,7 +62,7 @@ export default function Combobox({
   }
 
   return (
-    <Popover open={open && matches.length > 0} onOpenChange={setOpen}>
+    <Popover open={expanded} onOpenChange={setOpen}>
       <PopoverAnchor asChild>
         <Input
           id={id}
@@ -54,16 +71,28 @@ export default function Combobox({
           placeholder={placeholder}
           autoComplete="off"
           role="combobox"
-          aria-expanded={open}
+          aria-expanded={expanded}
+          aria-autocomplete="list"
+          aria-controls={expanded ? listId : undefined}
+          aria-activedescendant={expanded && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
           className={className}
           value={value ?? ''}
           onChange={(e) => {
             emit(e.target.value);
+            setActive(-1);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape' && open) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setOpen(true);
+              const step = e.key === 'ArrowDown' ? 1 : -1;
+              setActive((i) => !matches.length ? -1 : i < 0 ? (step > 0 ? 0 : matches.length - 1) : (i + step + matches.length) % matches.length);
+            } else if (e.key === 'Enter' && expanded && activeIndex >= 0) {
+              e.preventDefault();
+              pick(matches[activeIndex]);
+            } else if (e.key === 'Escape' && open) {
               e.stopPropagation();
               setOpen(false);
             }
@@ -72,7 +101,11 @@ export default function Combobox({
         />
       </PopoverAnchor>
       <PopoverContent
-        className="max-h-64 w-[var(--radix-popover-trigger-width)] overflow-y-auto p-1"
+        ref={listRef}
+        id={listId}
+        role="listbox"
+        aria-label={placeholder || t('common.search')}
+        className="max-h-[min(16rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] overflow-y-auto p-1"
         // Focus stays in the input so typing keeps filtering
         onOpenAutoFocus={(e) => e.preventDefault()}
         // Clicking the field opens the list on focus, and that same click then reads
@@ -86,15 +119,19 @@ export default function Combobox({
           <button
             key={o.key ?? `${o.value}-${i}`}
             type="button"
-            onClick={() => {
-              emit(o.value);
-              onPick?.(o);
-              setOpen(false);
-            }}
+            id={`${listId}-${i}`}
+            role="option"
+            tabIndex={-1}
+            aria-selected={o.value === value}
+            data-active={i === activeIndex}
+            onMouseEnter={() => setActive(i)}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => pick(o)}
             className={cn(
               'focus-ring flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 py-2 text-start text-sm sm:min-h-9',
               'hover:bg-accent hover:text-accent-foreground',
-              o.value === value && 'font-medium'
+              o.value === value && 'font-medium',
+              i === activeIndex && 'bg-accent text-accent-foreground'
             )}
           >
             <span className="min-w-0 flex-1 truncate">{o.label}</span>

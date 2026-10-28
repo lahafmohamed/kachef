@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "command": "npm audit --json --registry=https://registry.npmjs.org",
+  "workspace": "C:/Users/Mohamed/Desktop/kachefscout",
+  "revision": "1b9c4a3f97e46baa3de78fecc5af9fcf3d2208b3",
+  "clientDate": "2026-10-23",
+  "clientTimezone": "Africa/Abidjan",
+  "nodeVersion": "v24.14.0",
+  "npmVersion": "11.9.0",
+  "artifactModifiedAtUtc": "2026-10-23T11:48:40.8190785Z",
+  "lockfileSha256": "7898B55BF8D41F0F0A0185950D45A117199642A31F698005513B428F168DF119",
+  "auditSha256": "6D2635A8E4BD241033E7887B43669ED06BED294CA0B6E4188E3C963B6A85379A",
+  "exitCode": 1,
+  "wallTimeSeconds": 3.972065,
+  "scope": "Full workspace dependency audit including production and development dependencies; lockfile and installed tree at intake. No packages or persistent npm configuration changed.",
+  "captureMethod": "PowerShell captured npm stdout to dependency-audit.json as UTF-8 and stderr to dependency-audit.stderr.txt; shell explicitly returned the captured npm exit status. artifactModifiedAtUtc is the file capture completion timestamp, not the command start time.",
+  "reportPath": "docs/nexus-enterprise-feature/evidence/dependency-audit.json",
+  "stderrPath": "docs/nexus-enterprise-feature/evidence/dependency-audit.stderr.txt",
+  "stderrBytes": 0,
+  "packageEntryCounts": {
+    "critical": 3,
+    "high": 3,
+    "moderate": 3,
+    "total": 9
+  },
+  "uniqueAdvisoryCount": 11,
+  "independentLockfileClassification": {
+    "production": {
+      "critical": 1,
+      "moderate": 3,
+      "total": 4
+    },
+    "development": {
+      "critical": 2,
+      "high": 3,
+      "total": 5
+    }
+  },
+  "gate": "FAIL",
+  "limitations": [
+    "Package counts are not unique advisory counts.",
+    "Dependency classification does not establish deployed exposure or exploitation.",
+    "No application-security or compliance verification performed."
+  ]
+}

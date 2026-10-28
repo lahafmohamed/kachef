@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useFetch } from '../hooks';
 import { participantName, staffRoleLabel } from '../lib/events';
 import { contactPhones } from '../lib/campFile';
@@ -209,7 +210,7 @@ function HealthDialog({ open, onClose, member, health, onSaved }) {
       onSaved(saved);
       onClose();
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -456,7 +457,7 @@ function HeadcountDialog({ ev, setEv, people, canMark, open, onClose }) {
                       aria-hidden="true"
                       className={cn(
                         'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2',
-                        on ? 'border-success bg-success text-white' : 'border-input bg-background'
+                        on ? 'border-success bg-success text-success-foreground' : 'border-input bg-background'
                       )}
                     >
                       {on && <IconCheck className="h-4 w-4" />}
@@ -615,7 +616,7 @@ export function EventSafetyTab({ ev, setEv, canEdit, canMark, links }) {
                   aria-label={itemLabel(t, item)}
                   className={cn(
                     'focus-ring mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors',
-                    item.done_at ? 'border-success bg-success text-white' : 'border-input bg-background',
+                    item.done_at ? 'border-success bg-success text-success-foreground' : 'border-input bg-background',
                     canAct ? 'cursor-pointer' : 'cursor-default opacity-80'
                   )}
                 >
@@ -838,7 +839,7 @@ function ConsentDialog({ ev, participant: p, onClose, onSaved }) {
       onSaved(out);
       onClose();
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -979,7 +980,7 @@ function ChecklistItemDialog({ ev, state, onClose, onSaved }) {
       onSaved(out);
       onClose();
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }

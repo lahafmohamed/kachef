@@ -139,6 +139,7 @@ function NotFound() {
   const navigate = useNavigate();
   return (
     <EmptyState
+      headingAs="h1"
       icon={<IconInbox className="h-6 w-6" />}
       title={t('error.notFoundTitle')}
       action={
@@ -168,8 +169,8 @@ class ErrorBoundary extends Component {
   render() {
     if (!this.state.error) return this.props.children;
     const screen = (
-      <EmptyState icon={<IconAlert className="h-6 w-6 text-destructive" />} title={this.props.title}>
-        <span className="font-mono text-xs">{this.state.error.message}</span>
+      <EmptyState headingAs="h1" icon={<IconAlert className="h-6 w-6 text-destructive" />} title={this.props.title}>
+        {this.props.body}
         <span className="mt-4 block">
           <Button variant="outline" onClick={() => window.location.reload()}>
             {this.props.retryLabel}
@@ -218,7 +219,7 @@ function Shell() {
   // tab bar or header on the paper. Each sheet re-checks its page's permission.
   if (onPrintSheet)
     return (
-      <ErrorBoundary printError title={t('error.crashTitle')} retryLabel={t('error.reload')}>
+      <ErrorBoundary printError title={t('error.crashTitle')} body={t('error.crashBody')} retryLabel={t('error.reload')}>
         {/* The sheet draws its own toolbar and loading state */}
         <Routes>
           <Route path="/print/:kind/:id" element={<PrintSheet />} />
@@ -230,7 +231,7 @@ function Shell() {
   return (
     <Layout>
       <ScrollToTop />
-      <ErrorBoundary key={view || 'all'} title={t('error.crashTitle')} retryLabel={t('error.reload')}>
+      <ErrorBoundary key={view || 'all'} title={t('error.crashTitle')} body={t('error.crashBody')} retryLabel={t('error.reload')}>
         {/* A page's first visit: the shell stays put and the page area shows the
             skeleton until its chunk is in. Later visits switch straight over. */}
         <Suspense fallback={<SkeletonPage />}>

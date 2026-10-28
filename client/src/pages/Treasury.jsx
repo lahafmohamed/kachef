@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -555,7 +556,7 @@ function PayDialog({ entry, box, boxLabel, onClose, onSaved, t }) {
     try {
       onSaved(await api.post(`/treasury/entries/${entry.id}/pay`, { date }), 'treasury.expensePaid');
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -680,7 +681,7 @@ function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, o
         : await api.post('/treasury/transfers', body);
       onSaved(res, transfer ? 'treasury.transferUpdated' : 'treasury.transferAdded');
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -698,7 +699,7 @@ function TransferDialog({ open, transfer, boxes, defaultFrom, nameOf, onClose, o
     try {
       onSaved(await api.del(`/treasury/transfers/${transfer.id}`), 'treasury.transferDeleted');
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -829,7 +830,7 @@ function OpeningDialog({ open, box, boxes, nameOf, onClose, onSaved, t }) {
       });
       onSaved(res, current ? 'treasury.openingUpdated' : 'treasury.openingSaved');
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -938,7 +939,7 @@ function CountDialog({ open, count, box, boxes, rows, nameOf, onClose, onSaved, 
         : await api.post('/treasury/counts', body);
       onSaved(res, count ? 'treasury.countUpdated' : 'treasury.countSaved');
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -956,7 +957,7 @@ function CountDialog({ open, count, box, boxes, rows, nameOf, onClose, onSaved, 
     try {
       onSaved(await api.del(`/treasury/counts/${count.id}`), 'treasury.countDeleted');
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 

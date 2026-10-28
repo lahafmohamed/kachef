@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import ExportPdfButton from '../components/ExportPdfButton';
 import PeriodReportButton from '../components/PeriodReport';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
@@ -828,7 +829,7 @@ export default function Sessions() {
       toast.success(t('session.created'));
       navigate(`/sessions/${s.id}`);
     } catch (err) {
-      setError(err.message === 'mixed_sections' ? t('section.mixed') : err.message);
+      setError(err.message === 'mixed_sections' ? t('section.mixed') : displayError(err));
     } finally {
       setSaving(false);
     }

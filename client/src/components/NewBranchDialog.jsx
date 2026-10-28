@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useSection } from '../section';
 import SectionField from './SectionField';
 import { Button, Dialog, Input, Label, useToast } from './ui';
@@ -75,7 +76,7 @@ export default function NewBranchDialog({ open, onClose, onCreated }) {
       toast.success(t('settings.branchCreated'));
       onCreated(created);
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }

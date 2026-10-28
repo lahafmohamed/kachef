@@ -2,6 +2,7 @@ import { createContext, useContext, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useAuth } from '../auth';
 import { useFetch } from '../hooks';
 import { fmtDate } from '../utils';
@@ -67,7 +68,7 @@ const evalError = (tt, err) =>
     eval_not_open: tt('errorNotOpen'),
     not_a_participant: tt('errorNotParticipant'),
     no_eval_form: tt('noFormTitle'),
-  })[err.message] || err.message;
+  })[err.message] || displayError(err);
 
 /**
  * Tab «التقييم» of a نشاط. Each قائد who led it rates it on the form the admin chose

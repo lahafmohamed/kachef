@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -183,7 +184,7 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
       'password too short': t('admin.passwordTooShort'),
       branch_outside_section: t('section.branchOutside'),
     };
-    return map[err.message] || err.message;
+    return map[err.message] || displayError(err);
   }
 
   async function submit(e) {
@@ -567,7 +568,7 @@ export default function Admin() {
       cannot_edit_self: t('admin.cannotEditSelf'),
       last_admin: t('admin.lastAdmin'),
     };
-    return map[err.message] || err.message;
+    return map[err.message] || displayError(err);
   }
 
   async function deactivate(u) {

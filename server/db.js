@@ -1009,6 +1009,39 @@ CREATE TABLE IF NOT EXISTS notification_reminders (
   key TEXT PRIMARY KEY,
   sent_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- حضور الأمانة: الأمانة فريق قادة لا ينشّط أنشطة، يرافق الفرق أيام السبت (الإعلام يصوّر،
+-- التجهيزات تجهّز). أمينها يسجّل حضور فريقه بلا نشاط: ورقة لكل أمانة و يوم.
+-- assignment_id = توصيف الأمين (جذر الأمانة) في تشكيلة سنته. حذفه يُبقي الورقة (SET NULL)،
+-- و title و section و year نسخٌ تحفظ اسم الأمانة و قسمها و سنتها.
+CREATE TABLE IF NOT EXISTS amana_rolls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+  year TEXT NOT NULL,
+  title TEXT NOT NULL,
+  section TEXT NOT NULL DEFAULT 'M',
+  date TEXT NOT NULL,
+  -- «تثبيت الحضور»: بعده لا يُعدَّل إلا بعد إعادة الفتح
+  finalized_at TEXT,
+  finalized_by TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_amana_rolls_day ON amana_rolls(assignment_id, date);
+
+-- سطر لكل قائد من الفريق في الورقة. unmarked: لم يُسجَّل بعد، لا يُحتسب غيابًا.
+CREATE TABLE IF NOT EXISTS amana_roll_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  roll_id INTEGER NOT NULL REFERENCES amana_rolls(id) ON DELETE CASCADE,
+  leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
+  -- head = الأمين، helper = مساعد
+  role TEXT NOT NULL DEFAULT 'helper' CHECK (role IN ('head', 'helper')),
+  status TEXT NOT NULL DEFAULT 'unmarked' CHECK (status IN ('unmarked', 'present', 'absent', 'excused')),
+  reason TEXT,
+  UNIQUE(roll_id, leader_id)
+);
+CREATE INDEX IF NOT EXISTS idx_amana_roll_entries_leader ON amana_roll_entries(leader_id);
 `);
 
 // Default مطالب (requirements) totals per branch, from the scout program reference
@@ -1928,6 +1961,8 @@ function migrateAdmission() {
     UPDATE branches SET cries_required = CASE ${kind} WHEN 'rover' THEN 5 ELSE 3 END WHERE cries_required IS NULL;
     UPDATE branches SET internal_skip_trial = 1 WHERE internal_skip_trial IS NULL;
   `);
+  // وحدة القبول أُزيلت (2026-10-26): الأعمدة و الجدول يبقون بلا قراءة، و لا يبقى أحد «في التجربة»
+  db.exec("UPDATE members SET admission_status = 'invested' WHERE admission_status = 'trial'");
   // بند واحد من قائمة القبول، لعنصر في فرقة: من أنجزه و متى. value لعدد بنود القانون
   // و الصرخات المحفوظة. الفرقة جزء من المفتاح: عنصر رُفِّع و هو في التجربة يبدأ قائمة
   // فرقته الجديدة، و القديمة تبقى.

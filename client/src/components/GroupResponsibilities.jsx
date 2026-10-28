@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useFetch } from '../hooks';
 import { avatarName, fmtDate, memberName, todayISO } from '../utils';
 import DatePicker from './DatePicker';
@@ -116,7 +117,7 @@ export function LimitsDialog({ branchId, limits, open, onClose, onSaved }) {
       onSaved();
       onClose();
     } catch (err) {
-      setError(err.message === 'invalid limits' ? t('resp.limitsInvalid') : err.message);
+      setError(err.message === 'invalid limits' ? t('resp.limitsInvalid') : displayError(err));
     } finally {
       setSaving(false);
     }
@@ -204,7 +205,7 @@ export function ResponsibilitiesDialog({ branchId, group, members, canEdit, onCl
       setForm((f) => ({ ...f, member_id: '', label: '' }));
       changed();
     } catch (err) {
-      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : err.message);
+      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : displayError(err));
     } finally {
       setSaving(false);
     }

@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -7,7 +8,7 @@ import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
 import ExportPdfButton from '../components/ExportPdfButton';
 import FilterSelect from '../components/FilterSelect';
-import { AdmissionQueue, MissingBirthDates } from '../components/Admission';
+import { MissingBirthDates } from '../components/MissingBirthDates';
 import {
   Avatar,
   Badge,
@@ -246,7 +247,7 @@ export default function Promotions() {
       pending.reload({ quiet: true });
       toast.success(t('promotion.archived', { count: ids.length }));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setBusy(null);
     }
@@ -262,7 +263,7 @@ export default function Promotions() {
       promotion_below_threshold: t('matalib.reasonRequired'),
       promotion_date_in_future: t('promotion.dateInFuture'),
       promotion_date_before_last_move: t('promotion.dateBeforeLastMove'),
-    })[code] || code;
+    })[code] || displayError(code);
 
   async function send(ids, key, overrides, date) {
     setBusy(key);
@@ -309,7 +310,7 @@ export default function Promotions() {
       realign.reload({ quiet: true });
       toast.success(t('promotion.reversedToast'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setBusy(null);
     }
@@ -322,7 +323,7 @@ export default function Promotions() {
       realign.reload({ quiet: true });
       toast.success(t('promotion.realigned', { count: res.moved }));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setBusy(null);
     }
@@ -686,9 +687,6 @@ export default function Promotions() {
 
       {/* Bug 8 : ceux que la liste ci-dessus ne peut pas voir */}
       <MissingBirthDates branch={branch} />
-
-      {/* B1 : فترة التجربة et تكريس, filtrés par la même فرقة */}
-      {has('members.read') && <AdmissionQueue branch={branch} />}
 
       {/* Bug 20 : طليعة d'âge à réajuster quand l'élément a vieilli */}
       {realignList.length > 0 && (

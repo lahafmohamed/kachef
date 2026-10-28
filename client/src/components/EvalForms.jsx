@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useFetch } from '../hooks';
 import { EVAL_KIND_GROUPS, EVAL_KIND_KEYS, EVENT_EVAL_KINDS, evalText, groupByAxis } from '../lib/evaluations';
 import {
@@ -83,7 +84,7 @@ const errorText = (t, err) =>
     eval_item_type_locked: t('eval.errorTypeLocked'),
     'invalid name': t('eval.errorName'),
     'invalid item label': t('eval.errorLabel'),
-  })[err.message] || err.message;
+  })[err.message] || displayError(err);
 
 /**
  * Paramètres → «Grilles d'évaluation». The admin decides what the قادة rate a نشاط on:
@@ -430,8 +431,10 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
   async function save(e) {
     e.preventDefault();
     if (nameMissing || noScore || d.items.some(labelMissing)) {
+      const form = e.currentTarget;
       setShowErrors(true);
       toast.error(t(nameMissing ? 'eval.errorName' : noScore ? 'eval.errorNeedsScore' : 'eval.errorLabel'));
+      requestAnimationFrame(() => form.querySelector('[aria-invalid="true"], [data-needs-score="true"]')?.focus());
       return;
     }
     setSaving(true);
@@ -482,6 +485,7 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
                 maxLength={120}
                 onChange={(e) => patch({ name_ar: e.target.value })}
                 aria-invalid={showErrors && nameMissing}
+                aria-describedby={showErrors && nameMissing ? `${formId}-name-error` : undefined}
               />
             </div>
             <div className="space-y-1.5">
@@ -494,10 +498,11 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
                 maxLength={120}
                 onChange={(e) => patch({ name_fr: e.target.value })}
                 aria-invalid={showErrors && nameMissing}
+                aria-describedby={showErrors && nameMissing ? `${formId}-name-error` : undefined}
               />
             </div>
             {showErrors && nameMissing && (
-              <p className="text-xs text-destructive sm:col-span-2">{t('eval.errorName')}</p>
+              <p id={`${formId}-name-error`} className="text-xs text-destructive sm:col-span-2">{t('eval.errorName')}</p>
             )}
           </div>
 
@@ -557,10 +562,18 @@ function FormEditor({ draft, forms, onClose, onSaved }) {
                 />
               ))}
             </ol>
-            {showErrors && noScore && <p className="text-xs text-destructive">{t('eval.errorNeedsScore')}</p>}
+            {showErrors && noScore && <p id={`${formId}-score-error`} className="text-xs text-destructive">{t('eval.errorNeedsScore')}</p>}
             <div className="flex flex-wrap gap-2 pt-1">
               {ITEM_TYPES.map((type) => (
-                <Button key={type} type="button" variant="outline" size="sm" onClick={() => add(type)}>
+                <Button
+                  key={type}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-needs-score={type === 'score' && showErrors && noScore ? 'true' : undefined}
+                  aria-describedby={type === 'score' && showErrors && noScore ? `${formId}-score-error` : undefined}
+                  onClick={() => add(type)}
+                >
                   <IconPlus />
                   {t(`eval.add.${type}`)}
                 </Button>
@@ -639,6 +652,7 @@ function ItemRow({ it, index, last, invalid, onPatch, onMove, onRemove }) {
           placeholder={t('eval.labelAr')}
           aria-label={`${t(TYPE_KEYS[it.type])} ${index + 1} — ${t('eval.labelAr')}`}
           aria-invalid={invalid}
+          aria-describedby={invalid ? `${base}-error` : undefined}
           onChange={(e) => onPatch({ label_ar: e.target.value })}
           className={cn(it.type === 'axis' && 'font-semibold')}
         />
@@ -651,10 +665,12 @@ function ItemRow({ it, index, last, invalid, onPatch, onMove, onRemove }) {
           placeholder={t('eval.labelFr')}
           aria-label={`${t(TYPE_KEYS[it.type])} ${index + 1} — ${t('eval.labelFr')}`}
           aria-invalid={invalid}
+          aria-describedby={invalid ? `${base}-error` : undefined}
           onChange={(e) => onPatch({ label_fr: e.target.value })}
           className={cn(it.type === 'axis' && 'font-semibold')}
         />
       </div>
+      {invalid && <p id={`${base}-error`} className="text-xs text-destructive">{t('eval.errorLabel')}</p>}
       {locked && <p className="text-xs text-muted-foreground">{t('eval.itemAnswered', { count: it.answered })}</p>}
     </li>
   );

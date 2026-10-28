@@ -48,7 +48,6 @@ import {
   IconUsers,
 } from '../components/ui';
 import { RoleBadges } from '../components/GroupResponsibilities';
-import { AdmissionBadge } from '../components/Admission';
 import { LastContactLine, useAbsenceThreshold } from '../components/Followup';
 
 // Filters the server applies, named as the API names them: the page URL and the
@@ -193,7 +192,6 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold
                   {t('arrears.monthsChip', { count: m.dues_late.months })}
                 </Badge>
               )}
-              <AdmissionBadge member={m} />
               {!isChef && <RoleBadges items={m.responsibilities} />}
             </div>
             {/* Phones: age and طليعة fold in here; wider cards give them columns. Two

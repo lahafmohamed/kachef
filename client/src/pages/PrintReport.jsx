@@ -122,6 +122,8 @@ const KINDS = {
   'dues-arrears': { perm: 'members.dues.read', label: 'print.reportDuesArrears', back: '/treasury' },
   // I1 : le rapport périodique à la قيادة — le numéro est une فرقة (0 = le فوج), ?from=&to=&recipient=
   period: { perm: 'branches.read', label: 'print.reportPeriod', back: '/' },
+  // حضور الأمانة : le numéro est le توصيف de son أمين
+  'amana-presence': { perm: 'leaders.read', label: 'print.reportAmanaPresence', back: '/leaders' },
 };
 
 const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
@@ -3326,8 +3328,6 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
           { label: t('periodReport.colJoined'), className: 'w-14' },
           { label: t('periodReport.colPromoted'), className: 'w-16' },
           { label: t('periodReport.colArchived'), className: 'w-14' },
-          { label: t('periodReport.colTrial'), className: 'w-14' },
-          { label: t('periodReport.colInvested'), className: 'w-14' },
         ]}
       >
         {d.branches.map((b) => (
@@ -3337,8 +3337,6 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
             <td className={tdNum}>{dash(b.members.joined)}</td>
             <td className={tdNum}>{promo(b.members)}</td>
             <td className={tdNum}>{dash(b.members.archived)}</td>
-            <td className={tdNum}>{dash(b.members.trial)}</td>
-            <td className={tdNum}>{dash(b.members.invested)}</td>
           </tr>
         ))}
         {many && (
@@ -3348,8 +3346,6 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
             <td className={tdNum}>{dash(tot.joined)}</td>
             <td className={tdNum}>{promo(tot)}</td>
             <td className={tdNum}>{dash(tot.archived)}</td>
-            <td className={tdNum}>{dash(tot.trial)}</td>
-            <td className={tdNum}>{dash(tot.invested)}</td>
           </tr>
         )}
       </Table>
@@ -3386,13 +3382,6 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
               ))}
             </Table>
           )}
-        </>
-      )}
-
-      {d.admissions && d.admissions.ready.length > 0 && (
-        <>
-          <H2 aside={d.admissions.ready.length}>{t('periodReport.readyTitle')}</H2>
-          <p>{d.admissions.ready.map((m) => (many ? `${memberName(m)} (${nameOf(m)})` : memberName(m))).join(listSep(lng))}</p>
         </>
       )}
 
@@ -3539,7 +3528,109 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
   );
 }
 
+/* ============================================================
+   حضور الأمانة
+   ============================================================ */
+
+/**
+ * The register of an أمانة: one line per day, one column per قائد of its team, his rate
+ * under his column — the sheet its أمين used to keep on paper. A blank cell: he was not
+ * on that day's list (not yet in the team, or no longer).
+ */
+function AmanaPresenceReport({ id, onReady, kindLabel }) {
+  const { t } = useTranslation();
+  const res = useFetch(`/amanat/${id}/rolls?entries=1`);
+  const data = res.data;
+  useEffect(() => {
+    if (data) onReady(data.amana.title);
+  }, [data, onReady]);
+
+  if (res.loading) return <SkeletonPage rows={6} />;
+  if (res.error) return <LoadError onRetry={res.reload} />;
+
+  const { amana, members } = data;
+  // Oldest first, the way a register fills up
+  const rolls = [...data.rolls].reverse();
+  const cell = new Map(data.entries.map((e) => [`${e.roll_id}:${e.leader_id}`, e.status]));
+  const total = countStatuses(data.entries);
+  return (
+    <Sheet kindLabel={kindLabel}>
+      <H1>
+        <bdi>{amana.title}</bdi>
+      </H1>
+      <p className="mt-1 text-muted-foreground">
+        <span dir="ltr">{amana.year}</span> · {t('amanaRoll.days', { count: rolls.length })}
+      </p>
+      <div className="mt-4">
+        <Stats
+          items={[
+            { label: t('session.tallyPresent'), value: total.present, cls: 'text-success' },
+            { label: t('session.tallyExcused'), value: total.excused, cls: 'text-warning' },
+            { label: t('session.tallyAbsent'), value: total.absent, cls: 'text-destructive' },
+            { label: t('leader.colPresence'), value: total.rate },
+          ]}
+        />
+      </div>
+
+      <H2 aside={t('amanaRoll.days', { count: rolls.length })}>{t('amanaRoll.register')}</H2>
+      {rolls.length === 0 || members.length === 0 ? (
+        <p className="text-muted-foreground">{t('amanaRoll.emptyTitle')}</p>
+      ) : (
+        <Table
+          head={[
+            t('common.date'),
+            ...members.map((m) => ({ label: <bdi>{avatarName(m)}</bdi>, className: 'text-center normal-case tracking-normal' })),
+          ]}
+        >
+          {rolls.map((r) => (
+            <tr key={r.id} className="avoid-break">
+              <td className={cn(tdNum, 'whitespace-nowrap')}>{fmtDate(r.date)}</td>
+              {members.map((m) => {
+                const st = cell.get(`${r.id}:${m.leader_id}`);
+                const s = STATUS[st];
+                return (
+                  <td key={m.leader_id} className={cn(td, 'text-center')}>
+                    {s ? (
+                      <span className={s.cls} title={t(s.key)}>
+                        <Mark kind={s.mark} />
+                      </span>
+                    ) : st === 'unmarked' ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : null}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+          <tr className="border-t-2 border-muted-foreground font-semibold">
+            <td className={td}>{t('leader.colPresence')}</td>
+            {members.map((m) => (
+              <td key={m.leader_id} className={cn(tdNum, 'text-center')}>
+                {pct(m.present, m.present + m.absent + m.excused)}
+              </td>
+            ))}
+          </tr>
+        </Table>
+      )}
+      {/* The marks, spelled out once: the cells carry no words */}
+      <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+        {['present', 'excused', 'absent'].map((k) => (
+          <span key={k} className="inline-flex items-center gap-1">
+            <span className={STATUS[k].cls}>
+              <Mark kind={STATUS[k].mark} />
+            </span>
+            {t(STATUS[k].key)}
+          </span>
+        ))}
+        <span>— {t('session.unmarked')}</span>
+      </p>
+      <Signature label={gendered(t, 'amanaRoll.signature', amana.section)} />
+    </Sheet>
+  );
+}
+
 const REPORTS = {
+  'amana-presence': AmanaPresenceReport,
   period: PeriodReportSheet,
   'dues-arrears': DuesArrearsReport,
   event: EventReport,

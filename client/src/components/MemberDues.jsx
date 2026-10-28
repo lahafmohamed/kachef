@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useFetch } from '../hooks';
 import { fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import { DuesBody, fmtDueMonth } from './LeaderDues';
@@ -498,7 +499,7 @@ function PersonalRate({ data, memberId, onSaved }) {
       toast.success(t('arrears.rateSaved'));
       onSaved?.();
     } catch (err) {
-      setError(err.message === 'note_required' ? t('arrears.noteRequired') : err.message);
+      setError(err.message === 'note_required' ? t('arrears.noteRequired') : displayError(err));
     } finally {
       setSaving(false);
     }

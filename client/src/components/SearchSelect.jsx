@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { cn, IconCheck, IconChevronDown, IconPlus, IconSearch, Input, Spinner } from './ui';
 
@@ -42,6 +43,9 @@ export default function SearchSelect({
   const [active, setActive] = useState(0);
   const [creating, setCreating] = useState(false);
   const listRef = useRef(null);
+  const triggerRef = useRef(null);
+  const listId = useId();
+  const { t } = useTranslation();
 
   const current = value == null ? '' : String(value);
 
@@ -84,6 +88,7 @@ export default function SearchSelect({
     !normalized.some((o) => String(o.label).toLowerCase() === typed.toLowerCase());
 
   function select(v) {
+    triggerRef.current?.removeAttribute('aria-invalid');
     onChange?.({ target: { value: v, name, id } });
     setOpen(false);
   }
@@ -121,15 +126,15 @@ export default function SearchSelect({
 
   const trigger = (
     <PopoverTrigger
+      ref={triggerRef}
       id={id}
       type="button"
       disabled={disabled}
-      role="combobox"
       aria-expanded={open}
       aria-label={ariaLabel}
       className={cn(
         'focus-ring flex h-11 w-full items-center justify-between gap-2 rounded-lg border border-input bg-card px-3.5 text-sm shadow-xs',
-        'transition-colors hover:border-input/70 hover:bg-card disabled:cursor-not-allowed disabled:opacity-50 sm:h-10',
+        'transition-colors hover:border-primary hover:bg-card disabled:cursor-not-allowed disabled:opacity-50 sm:h-10',
         className
       )}
     >
@@ -163,6 +168,12 @@ export default function SearchSelect({
           <div className="relative">
             <IconSearch className="pointer-events-none absolute top-1/2 start-3 -translate-y-1/2 text-muted-foreground" />
             <Input
+              role="combobox"
+              aria-label={searchPlaceholder || placeholder || t('common.search')}
+              aria-expanded={open}
+              aria-autocomplete="list"
+              aria-controls={listId}
+              aria-activedescendant={rows[active] ? `${listId}-${active}` : undefined}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
@@ -171,7 +182,7 @@ export default function SearchSelect({
               className="h-10 ps-9"
             />
           </div>
-          <div ref={listRef} role="listbox" className="mt-1.5 max-h-60 overflow-y-auto">
+          <div ref={listRef} id={listId} role="listbox" aria-label={ariaLabel || placeholder || t('common.search')} className="mt-1.5 max-h-60 overflow-y-auto">
             {rows.length === 0 ? (
               !canCreate && (
                 <p className="px-2.5 py-6 text-center text-sm text-muted-foreground">{emptyLabel}</p>
@@ -181,13 +192,16 @@ export default function SearchSelect({
                 <button
                   key={r.value || '__clear__'}
                   type="button"
+                  id={`${listId}-${i}`}
+                  tabIndex={-1}
                   role="option"
                   aria-selected={r.value === current}
                   data-active={i === active}
                   onMouseEnter={() => setActive(i)}
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={() => select(r.value)}
                   className={cn(
-                    'flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-start text-sm sm:min-h-9',
+                    'focus-ring flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-start text-sm sm:min-h-9',
                     i === active && 'bg-accent text-accent-foreground',
                     !r.value && 'text-muted-foreground'
                   )}
@@ -225,7 +239,16 @@ export default function SearchSelect({
         <input
           tabIndex={-1}
           required
+          disabled={disabled}
           aria-hidden="true"
+          onInvalid={(e) => {
+            e.preventDefault();
+            const firstInvalid = e.currentTarget.form?.querySelector('input:invalid, select:invalid, textarea:invalid');
+            if (firstInvalid && firstInvalid !== e.currentTarget) return;
+            triggerRef.current?.focus();
+            triggerRef.current?.setAttribute('aria-invalid', 'true');
+            setOpen(true);
+          }}
           value={current}
           onChange={() => {}}
           className="pointer-events-none absolute bottom-0 start-3 h-0 w-0 opacity-0"

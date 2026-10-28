@@ -69,7 +69,7 @@ export default function DateRangePicker({ value, onChange, className, block = fa
             variant="outline"
             // block: fills its column at every width (a form grid), not only on phones
             className={cn('w-full justify-start gap-2 font-normal', !block && 'sm:w-auto', !hasRange && 'text-muted-foreground')}
-            aria-label={t('session.dateRange')}
+            aria-label={`${t('session.dateRange')}: ${label}`}
           >
             <IconCalendar />
             <span className="truncate" dir={hasRange ? 'ltr' : undefined}>
@@ -77,7 +77,7 @@ export default function DateRangePicker({ value, onChange, className, block = fa
             </span>
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="p-0">
+        <PopoverContent aria-label={t('session.dateRange')} className="p-0">
           <div className="flex flex-wrap gap-1.5 border-b border-border p-2">
             {presets.map((p) => (
               <Button key={p.key} variant="secondary" size="sm" onClick={() => preset(p.from, p.to)}>
@@ -134,6 +134,7 @@ export default function DateRangePicker({ value, onChange, className, block = fa
                     variant={active ? 'brand' : 'ghost'}
                     size="sm"
                     className="px-1"
+                    aria-pressed={active}
                     onClick={() => preset(monthStart(year, m), monthEnd(year, m))}
                   >
                     {monthNames[m]}

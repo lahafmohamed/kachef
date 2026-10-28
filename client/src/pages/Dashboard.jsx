@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { Fragment, useId, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -27,7 +28,6 @@ import {
   Th,
   IconAlert,
   IconArrow,
-  IconAward,
   IconCake,
   IconCalendar,
   IconCheck,
@@ -436,37 +436,6 @@ function buildTodos(d, t, f, lng, decided = {}) {
     });
   }
 
-  // B1 : prêts pour le تكريس (durée et مطالب القبول complètes), sinon combien sont en essai
-  if (d.admissions?.ready?.length)
-    todos.push({
-      key: 'admission-ready',
-      level: 'week',
-      Icon: IconAward,
-      title: t('admission.todoReady'),
-      count: d.admissions.ready.length,
-      items: d.admissions.ready.map((a) => ({
-        key: a.id,
-        label: memberName(a),
-        meta: [
-          bidi(branchName({ name_fr: a.branch_name_fr, name_ar: a.branch_name_ar }, lng)),
-          a.trial_days != null && t('admission.trialDay', { count: a.trial_days }),
-        ]
-          .filter(Boolean)
-          .join(' · '),
-        to: `/members/${a.id}?tab=admission`,
-      })),
-    });
-  else if (d.admissions?.trial_count)
-    todos.push({
-      key: 'admission-trial',
-      level: 'watch',
-      Icon: IconAward,
-      title: t('admission.todoTrial'),
-      count: d.admissions.trial_count,
-      meta: t('admission.todoTrialMeta'),
-      to: '/promotions#admissions',
-    });
-
   // Bug 8 : sans date de naissance, le ترفيع ne les voit jamais
   if (d.promotions?.missing_birth_date)
     todos.push({
@@ -541,8 +510,6 @@ const TODO_TYPES = [
   ['followup', 'dashboard.todo.followup'],
   ['late-decisions', 'dashboard.todo.lateDecisions'],
   ['promotions', 'dashboard.pendingPromotions'],
-  ['admission-ready', 'admission.todoReady'],
-  ['admission-trial', 'admission.todoTrial'],
   ['missing-birth-date', 'admission.todoMissingBirth'],
   ['idle', 'dashboard.todo.idle'],
   ['staffing', 'dashboard.todo.staffing'],
@@ -1403,7 +1370,7 @@ export default function Dashboard() {
       await api.put(`/meetings/${x.meeting_id}/decisions/${x.id}/status`, { status: next });
     } catch (err) {
       setDecided((s) => ({ ...s, [x.id]: x.status }));
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setDecisionBusy(null);
     }
@@ -1446,7 +1413,14 @@ export default function Dashboard() {
       key: 'members',
       label: t('dashboard.members'),
       value: d.members,
-      context: d.leaders != null && t('dashboard.leadersExtra', { count: d.leaders }),
+      // Les inscriptions du mois d'abord : c'est ce qu'on vient voir ici
+      context:
+        [
+          d.new_members != null && t('dashboard.newMembers', { count: d.new_members, month }),
+          d.leaders != null && t('dashboard.leadersExtra', { count: d.leaders }),
+        ]
+          .filter(Boolean)
+          .join(' · ') || null,
       to: '/members',
     },
     // Early in a month nothing is marked yet: lead with the month just closed

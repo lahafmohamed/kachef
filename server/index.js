@@ -59,8 +59,6 @@ const PERM_GROUPS = {
     'members.edit',
     // زيادة أو إلغاء مطلب لأي عنصر بشكل يدوي
     'members.matalib',
-    // القبول: بنود فترة التجربة، و التكريس (فردي أو جماعي)
-    'members.admission',
     'members.delete',
     // الاشتراك الشهري للعناصر (member_dues): رؤيته، ثم قبضه
     'members.dues.read',
@@ -111,7 +109,8 @@ const PERM_GROUPS = {
   promotions: ['promotions.read', 'promotions.apply'],
   // Reading التشكيلة, plus filling in بطاقة تقدم القائد. Creating, assigning and
   // deleting توصيفات stays admin-only.
-  leaders: ['leaders.read', 'leaders.contact', 'leaders.progress.self', 'leaders.progress.manage'],
+  // leaders.attendance: حضور فريق أيّ أمانة — أمين الأمانة يسجّل حضور فريقه بلا هذه الصلاحية
+  leaders: ['leaders.read', 'leaders.contact', 'leaders.progress.self', 'leaders.progress.manage', 'leaders.attendance'],
   // اشتراك القادة: يُمنح يدويًا لأشخاص بعينهم. مجموعة مستقلة كي لا يرثه من كانت
   // له صفحة القادة كاملة في صيغة الصلاحيات القديمة.
   dues: ['leaders.dues', 'leaders.dues.record'],
@@ -132,7 +131,6 @@ const PERM_DEPENDENCIES = {
   'members.followup': ['members.read'],
   'members.health': ['members.read'],
   'members.matalib': ['members.read'],
-  'members.admission': ['members.read'],
   'members.dues.read': ['members.read'],
   'members.dues.record': ['members.dues.read'],
   'members.dues.exempt': ['members.dues.read'],
@@ -161,6 +159,7 @@ const PERM_DEPENDENCIES = {
   'leaders.contact': ['leaders.read'],
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
+  'leaders.attendance': ['leaders.read'],
   'leaders.dues': ['leaders.read'],
   'leaders.dues.record': ['leaders.dues'],
   'treasury.entries': ['treasury.read'],
@@ -291,26 +290,24 @@ function migrateStoredPerms() {
 }
 migrateStoredPerms();
 
-// Once (user_version 5): members.admission is new (B1). An account that could already
-// tick مطالب by hand (members.matalib) is the قائد who follows عناصره: he gets it too.
-function grantAdmissionPerm() {
-  if (db.pragma('user_version', { simple: true }) >= 5) return;
+// user_version 5 granted members.admission (B1). The القبول module is gone: the step
+// stays so the chain of versions does not move, and the key leaves every stored list.
+function dropAdmissionPerm() {
+  if (db.pragma('user_version', { simple: true }) < 5) db.pragma('user_version = 5');
   const update = db.prepare('UPDATE users SET perms = ? WHERE id = ?');
   db.transaction(() => {
-    for (const u of db.prepare("SELECT id, perms FROM users WHERE role != 'admin' AND perms IS NOT NULL").all()) {
+    for (const u of db.prepare("SELECT id, perms FROM users WHERE perms LIKE '%members.admission%'").all()) {
       let list;
       try {
         list = JSON.parse(u.perms);
       } catch {
         continue;
       }
-      if (Array.isArray(list) && list.includes('members.matalib') && !list.includes('members.admission'))
-        update.run(JSON.stringify([...list, 'members.admission']), u.id);
+      if (Array.isArray(list)) update.run(JSON.stringify(list.filter((k) => k !== 'members.admission')), u.id);
     }
-    db.pragma('user_version = 5');
   })();
 }
-grantAdmissionPerm();
+dropAdmissionPerm();
 
 // Once (user_version 6): members.followup is new (A2). Whoever could read the parents'
 // phones (members.contact) is the قائد who calls them: he may write the call down too.
@@ -2311,11 +2308,6 @@ function validateBranchBody(body, { requireNames }) {
   const th = body.promotion_threshold;
   if (th !== undefined && th !== null && (!Number.isInteger(th) || th < 0 || th > 100))
     return 'invalid promotion_threshold';
-  // مطالب القبول (B1): أعداد صغيرة، غائبة = بلا تغيير
-  for (const [k, max] of [['trial_months', 12], ['law_items_required', 10], ['consecutive_meetings_required', 20], ['cries_required', 20]]) {
-    const v = body[k];
-    if (v !== undefined && v !== null && (!Number.isInteger(v) || v < 0 || v > max)) return `invalid ${k}`;
-  }
   if (requireNames || name_fr !== undefined) {
     if (typeof name_fr !== 'string' || !name_fr.trim()) return 'invalid name_fr';
   }
@@ -2725,11 +2717,6 @@ app.post('/api/branches', requireAdmin, (req, res) => {
       section,
       Number.isInteger(req.body.promotion_threshold) ? req.body.promotion_threshold : defaultThreshold(name_ar)
     );
-  // مطالب القبول: ما أُرسل، و إلا قيم montadamahdi حسب الاسم
-  const rules = { ...admissionDefaults(name_ar), ...admissionRulesFrom(req.body) };
-  db.prepare(
-    `UPDATE branches SET ${ADMISSION_RULE_KEYS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`
-  ).run(...ADMISSION_RULE_KEYS.map((k) => rules[k]), info.lastInsertRowid);
   res.status(201).json(db.prepare('SELECT * FROM branches WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -2774,12 +2761,6 @@ app.put('/api/branches/:id', requireAdmin, (req, res) => {
       Number.isInteger(req.body.promotion_threshold) ? req.body.promotion_threshold : existing.promotion_threshold,
       req.params.id
     );
-    const rules = admissionRulesFrom(req.body);
-    if (Object.keys(rules).length)
-      db.prepare(`UPDATE branches SET ${Object.keys(rules).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
-        ...Object.values(rules),
-        existing.id
-      );
     // Labels of numbers that no longer exist go with them (nothing was ticked above usedMax)
     db.prepare('DELETE FROM branch_matalib WHERE branch_id = ? AND number > ?').run(existing.id, total_requirements);
     // توصيفات الفرقة (و هي فارغة هنا) تتبعها إلى قسمها الجديد
@@ -3257,27 +3238,18 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
   const groupId = resolveGroupId(b.group_id, b.branch_id);
   if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
-  // B1 : un nouvel عنصر commence en فترة التجربة, à sa date d'adhésion. Le قائد peut
-  // l'inscrire déjà مكرَّس (date facultative).
-  const invested = b.admission_status === 'invested';
-  if (invested && b.invested_at && (!validISODate(b.invested_at) || b.invested_at > todayISO()))
-    return res.status(400).json({ error: 'invalid date' });
-  const admission = invested
-    ? { status: 'invested', invested_at: b.invested_at || null, trial_started_at: null }
-    : { status: 'trial', invested_at: null, trial_started_at: b.join_date && b.join_date <= todayISO() ? b.join_date : todayISO() };
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
         address_abidjan, address_lebanon, school, blood_type, sex, branch_id, group_id, member_phone,
-        father_phone, mother_phone, join_date, photo, status, admission_status, invested_at, trial_started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        father_phone, mother_phone, join_date, photo, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       String(b.first_name).trim(), String(b.last_name).trim(), b.father_name?.trim() || null, b.mother_name?.trim() || null,
       b.birth_date || null, b.birth_place || null, b.address_abidjan || null, b.address_lebanon || null,
       b.school || null, b.blood_type || null, b.sex, b.branch_id, groupId, b.member_phone || null,
-      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null, b.status || 'active',
-      admission.status, admission.invested_at, admission.trial_started_at
+      b.father_phone || null, b.mother_phone || null, b.join_date || null, b.photo || null, b.status || 'active'
     );
   const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'member', created.id, null, created);
@@ -3646,261 +3618,6 @@ app.post('/api/branches/:id/matalib/copy', requireAdmin, (req, res) => {
   res.json({ total: b.total_requirements, items: branchMatalibList(b.id), skipped: source.length - fits.length });
 });
 
-// ---------- القبول (B1): فترة التجربة، مطالب القبول، التكريس ----------
-// members.admission_status: 'trial' (في فترة التجربة) أو 'invested' (مكرَّس). من كان في
-// القاعدة قبل هذه الميزة مكرَّس بتاريخ مجهول (invested_at NULL). قائمة القبول ستة بنود
-// لكل عنصر في فرقته (member_admission)، و «الاجتماعات المتتالية» تُحسب من الحضور المعتمد
-// (countedSessionSQL، قاعدة A1) و يمكن للقائد أن يثبتها يدويًا.
-const ADMISSION_ITEMS = ['request', 'salute', 'promise', 'law', 'meetings', 'cries'];
-const ADMISSION_COUNTED = ['law', 'cries'];
-const ADMISSION_RULE_KEYS = [
-  'trial_months',
-  'law_items_required',
-  'consecutive_meetings_required',
-  'cries_required',
-  'internal_skip_trial',
-];
-// قيم montadamahdi، لفرقة لم تُضبط بعد (أُنشئت قبل الهجرة أو بلا قيم). مرآة migrateAdmission.
-function admissionDefaults(nameAr) {
-  const n = nameAr || '';
-  if (/أشبال|براعم/.test(n))
-    return { trial_months: 1, law_items_required: 4, consecutive_meetings_required: 2, cries_required: 3, internal_skip_trial: 1 };
-  if (/جوال|علياء/.test(n))
-    return { trial_months: 2, law_items_required: 7, consecutive_meetings_required: 4, cries_required: 5, internal_skip_trial: 1 };
-  return { trial_months: 1, law_items_required: 5, consecutive_meetings_required: 4, cries_required: 3, internal_skip_trial: 1 };
-}
-// Les règles d'admission d'un corps de requête déjà validé (validateBranchBody) : seules les clés présentes
-function admissionRulesFrom(body) {
-  const out = {};
-  for (const k of ADMISSION_RULE_KEYS) {
-    if (k === 'internal_skip_trial') {
-      if (body[k] !== undefined && body[k] !== null) out[k] = body[k] ? 1 : 0;
-    } else if (Number.isInteger(body[k])) out[k] = body[k];
-  }
-  return out;
-}
-function admissionRules(b) {
-  const d = admissionDefaults(b.name_ar);
-  return Object.fromEntries(ADMISSION_RULE_KEYS.map((k) => [k, b[k] ?? d[k]]));
-}
-
-function addMonthsISO(iso, n) {
-  const d = new Date(`${iso}T12:00:00Z`);
-  const day = d.getUTCDate();
-  d.setUTCMonth(d.getUTCMonth() + n);
-  // 31 janvier + 1 mois = fin février, pas 3 mars
-  if (d.getUTCDate() !== day) d.setUTCDate(0);
-  return d.toISOString().slice(0, 10);
-}
-const daysBetweenISO = (a, b) =>
-  Math.round((new Date(`${b}T12:00:00Z`) - new Date(`${a}T12:00:00Z`)) / 86400000);
-
-// أطول سلسلة اجتماعات حضرها متتالية منذ بدء التجربة، في الأنشطة المعتمدة وحدها.
-// الغياب يقطعها، و الغياب بعذر لا يقطعها و لا يزيدها.
-function consecutiveMeetings(memberId, from) {
-  const rows = attendanceStats(memberId, null, { from }).history;
-  let best = 0;
-  let cur = 0;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i].status === 'present') best = Math.max(best, ++cur);
-    else if (rows[i].status === 'absent') cur = 0;
-  }
-  return best;
-}
-
-const admissionRowsStmt = db.prepare(
-  'SELECT item, value, done_at, done_by FROM member_admission WHERE member_id = ? AND branch_id = ?'
-);
-const internalPromotionStmt = db.prepare(
-  'SELECT 1 FROM promotions WHERE member_id = ? AND new_branch_id = ? AND reversed_at IS NULL LIMIT 1'
-);
-
-// حالة القبول لعنصر في فرقته: البنود، المدّة، و هل هو جاهز للتكريس
-function admissionState(m, b) {
-  const rules = admissionRules(b);
-  const byItem = Object.fromEntries(admissionRowsStmt.all(m.id, b.id).map((r) => [r.item, r]));
-  // رُفِّع إليها من فرقة أدنى: لا مدّة تجربة و لا طلب انتساب
-  const internal = !!rules.internal_skip_trial && !!internalPromotionStmt.get(m.id, b.id);
-  const start = m.trial_started_at || m.join_date || null;
-  const trial = m.admission_status === 'trial';
-  const meetings = trial ? consecutiveMeetings(m.id, start) : null;
-  const required = {
-    law: rules.law_items_required,
-    meetings: rules.consecutive_meetings_required,
-    cries: rules.cries_required,
-  };
-  const items = ADMISSION_ITEMS.map((item) => {
-    const r = byItem[item];
-    const trace = { done_at: r?.done_at ?? null, done_by: r?.done_by ?? null };
-    if (item === 'request' && internal) return { item, done: true, waived: true, ...trace };
-    if (ADMISSION_COUNTED.includes(item)) {
-      const value = r?.value ?? 0;
-      return { item, value, required: required[item], done: !required[item] || value >= required[item], ...trace };
-    }
-    if (item === 'meetings') {
-      const auto = !required.meetings || (meetings ?? 0) >= required.meetings;
-      return { item, value: meetings, required: required.meetings, auto, done: auto || !!r?.done_at, ...trace };
-    }
-    return { item, done: !!r?.done_at, ...trace };
-  });
-  const today = todayISO();
-  const trialEnd = start && !internal && rules.trial_months ? addMonthsISO(start, rules.trial_months) : null;
-  // بلا تاريخ بداية لا تُحسب المدّة: لا تمنع التكريس
-  const durationOk = internal || !rules.trial_months || !start || today >= trialEnd;
-  const doneCount = items.filter((i) => i.done).length;
-  return {
-    status: m.admission_status,
-    invested_at: m.invested_at ?? null,
-    trial_started_at: start,
-    trial_days: trial && start ? Math.max(0, daysBetweenISO(start, today)) : null,
-    trial_end: trialEnd,
-    duration_ok: durationOk,
-    internal,
-    rules,
-    items,
-    done_count: doneCount,
-    total: items.length,
-    ready: trial && durationOk && doneCount === items.length,
-  };
-}
-
-const memberWithBranch = (id) => {
-  const m = db.prepare('SELECT * FROM members WHERE id = ?').get(id);
-  if (!m) return null;
-  return { m, b: db.prepare('SELECT * FROM branches WHERE id = ?').get(m.branch_id) };
-};
-
-app.get('/api/members/:id/admission', requirePerm('members.read'), (req, res) => {
-  const found = memberWithBranch(req.params.id);
-  if (!found) return res.status(404).json({ error: 'member not found' });
-  const { m, b } = found;
-  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
-  // مطالب «قبول» من كتالوج الفرقة (B2): للإعلام، تُكسب بالحضور أو يدويًا كسائر المطالب
-  const earned = new Set(earnedNumbersInBranch(m.id, b.id));
-  const catalog = branchMatalibList(b.id)
-    .filter((k) => k.kind === 'admission' && (!b.total_requirements || k.number <= b.total_requirements))
-    .map((k) => ({ ...k, earned: earned.has(k.number) }));
-  res.json({ ...admissionState(m, b), catalog });
-});
-
-// بند واحد { item, done } أو { item, value }، أو الحالة { status, invested_at, trial_started_at }
-app.post('/api/members/:id/admission', requirePerm('members.admission'), (req, res) => {
-  const found = memberWithBranch(req.params.id);
-  if (!found) return res.status(404).json({ error: 'member not found' });
-  const { m, b } = found;
-  if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden' });
-  const body = req.body || {};
-  const who = req.user.display_name || req.user.username;
-  const before = admissionState(m, b);
-  if (body.item !== undefined) {
-    if (!ADMISSION_ITEMS.includes(body.item)) return res.status(400).json({ error: 'invalid item' });
-    let value = null;
-    let done;
-    if (ADMISSION_COUNTED.includes(body.item)) {
-      value = Number(body.value);
-      if (!Number.isInteger(value) || value < 0 || value > 50) return res.status(400).json({ error: 'invalid value' });
-      done = true;
-    } else {
-      if (typeof body.done !== 'boolean') return res.status(400).json({ error: 'invalid done' });
-      done = body.done;
-    }
-    db.prepare(
-      `INSERT INTO member_admission (member_id, branch_id, item, value, done_at, done_by)
-       VALUES (?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END, CASE WHEN ? THEN ? END)
-       ON CONFLICT(member_id, branch_id, item) DO UPDATE SET
-         value = excluded.value, done_at = excluded.done_at, done_by = excluded.done_by`
-    ).run(m.id, b.id, body.item, value, done ? 1 : 0, done ? 1 : 0, who);
-  } else if (body.status !== undefined) {
-    if (!['trial', 'invested'].includes(body.status)) return res.status(400).json({ error: 'invalid status' });
-    const date = body.status === 'invested' ? body.invested_at : body.trial_started_at;
-    if (date !== undefined && date !== null && date !== '' && (!validISODate(date) || date > todayISO()))
-      return res.status(400).json({ error: 'invalid date' });
-    if (body.status === 'invested')
-      db.prepare("UPDATE members SET admission_status = 'invested', invested_at = ? WHERE id = ?").run(
-        date || (m.admission_status === 'invested' ? null : todayISO()),
-        m.id
-      );
-    else
-      db.prepare(
-        "UPDATE members SET admission_status = 'trial', invested_at = NULL, trial_started_at = ? WHERE id = ?"
-      ).run(date || m.trial_started_at || todayISO(), m.id);
-  } else return res.status(400).json({ error: 'item or status required' });
-  const after = admissionState(db.prepare('SELECT * FROM members WHERE id = ?').get(m.id), b);
-  const snap = (s) => ({
-    status: s.status,
-    invested_at: s.invested_at,
-    trial_started_at: s.trial_started_at,
-    items: Object.fromEntries(s.items.map((i) => [i.item, i.value ?? i.done])),
-  });
-  auditEvent(req, 'admission', 'member', m.id, snap(before), snap(after));
-  res.json(after);
-});
-
-// التكريس الجماعي: تاريخ واحد لعدّة عناصر (حفل القبول). يصلح أيضًا لتأريخ تكريس
-// عناصر قدامى كان تاريخه مجهولًا.
-app.post('/api/members/investiture', requirePerm('members.admission'), (req, res) => {
-  const rawIds = req.body?.member_ids;
-  if (!Array.isArray(rawIds) || rawIds.length === 0) return res.status(400).json({ error: 'member_ids required' });
-  const date = req.body?.date || todayISO();
-  if (!validISODate(date) || date > todayISO()) return res.status(400).json({ error: 'invalid date' });
-  const ids = [...new Set(rawIds.map(Number))];
-  const find = db.prepare('SELECT * FROM members WHERE id = ?');
-  const rows = ids.map((id) => find.get(id));
-  if (rows.some((m) => !m)) return res.status(404).json({ error: 'member not found' });
-  if (rows.some((m) => !branchOk(req, m.branch_id))) return res.status(403).json({ error: 'forbidden' });
-  const update = db.prepare("UPDATE members SET admission_status = 'invested', invested_at = ? WHERE id = ?");
-  db.transaction(() => {
-    for (const m of rows) {
-      update.run(date, m.id);
-      auditEvent(
-        req,
-        'investiture',
-        'member',
-        m.id,
-        { admission_status: m.admission_status, invested_at: m.invested_at },
-        { admission_status: 'invested', invested_at: date }
-      );
-    }
-  })();
-  res.json({ invested: rows.length });
-});
-
-// من في فترة التجربة (النشطون، في فرق الحساب)، الجاهزون للتكريس أولًا
-function pendingAdmissions(req) {
-  const rows = db
-    .prepare(
-      `SELECT m.* FROM members m JOIN branches b ON b.id = m.branch_id
-        WHERE m.status = 'active' AND m.admission_status = 'trial'${branchFilterSQL(req, 'm.branch_id')}`
-    )
-    .all();
-  const branches = Object.fromEntries(getBranches().map((b) => [b.id, b]));
-  const out = rows.map((m) => {
-    const b = branches[m.branch_id];
-    const s = admissionState(m, b);
-    return {
-      id: m.id,
-      first_name: m.first_name,
-      father_name: m.father_name,
-      last_name: m.last_name,
-      photo: m.photo,
-      branch_id: b.id,
-      branch_name_fr: b.name_fr,
-      branch_name_ar: b.name_ar,
-      trial_started_at: s.trial_started_at,
-      trial_days: s.trial_days,
-      trial_end: s.trial_end,
-      duration_ok: s.duration_ok,
-      done_count: s.done_count,
-      total: s.total,
-      missing: s.items.filter((i) => !i.done).map((i) => i.item),
-      ready: s.ready,
-    };
-  });
-  out.sort((a, b) => b.ready - a.ready || (b.trial_days ?? 0) - (a.trial_days ?? 0));
-  return out;
-}
-app.get('/api/admissions/pending', requirePerm('members.read'), (req, res) => res.json(pendingAdmissions(req)));
-
 // Bug 8 : the same فرق as pendingPromotions, the عناصر it has to skip
 const missingBirthDateSQL = (req) => `FROM members m JOIN branches b ON b.id = m.branch_id
         WHERE m.status = 'active' AND m.birth_date IS NULL AND b.all_ages = 0 AND b.max_age IS NOT NULL
@@ -4255,7 +3972,7 @@ const ACCOUNT_PRESETS = {
   // قائد فرقة: يدير عناصره و أنشطته و خطة فرقته و مجموعاتها، و يقرأ ما حوله.
   // بلا حذف عناصر، بلا تثبيت ترقيات، بلا أرقام مالية — هذه للأدمن.
   branch: [
-    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib', 'members.admission',
+    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib',
     'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
     'prep.read', 'prep.manage',
     'events.read', 'events.manage', 'events.attendance',
@@ -4539,6 +4256,8 @@ app.get('/api/leaders/:id', requirePerm('leaders.read'), (req, res) => {
     card: progressCard(l.id, selectedYear),
     // الاجتماعات: for whoever reads the minutes
     ...(hasPerm(req, 'meetings.read') ? { meetings: leaderMeetings(req, l.id) } : {}),
+    // حضوره مع فريق أمانته أيام السبت — null لقائد لم يُسجَّل له حضور أمانة قط
+    amana_presence: leaderAmanaPresence(req, l.id, period),
   });
 });
 
@@ -5579,6 +5298,8 @@ app.get('/api/tachkila', requirePerm('leaders.read'), (req, res) => {
     locked_by: lock?.locked_by || null,
     locked_years: db.prepare('SELECT year FROM tachkila_locks').all().map((r) => r.year),
     assignments: assignmentsForYear(year, section),
+    // حضور كل أمانة من السنة، لبطاقتها: عدد الأوراق، نسبة فريقها، ورقة اليوم إن وُجدت
+    amana_rolls: amanaRollSummary(year, section),
     // Standard titles, plus how many of them this year is still missing (offer to fill them in)
     template: template.map((r) => r.title),
     missing_count: year ? template.filter((r) => !titles.has(r.title)).length : template.length,
@@ -5799,6 +5520,359 @@ app.post('/api/tachkila/fill', requireAdmin, followTachkila, rejectLocked((req) 
   run();
   migrateAmanaHelpers();
   res.status(201).json({ year, added: missing.length });
+});
+
+// ---------- حضور الأمانات ----------
+// الأمانة فريق قادة — الأمين و مساعدوه، بلا عناصر — لا ينشّط أنشطة: يرافق الفرق أيام السبت
+// (الإعلام يصوّر، التجهيزات تجهّز). أمينها يسجّل حضور فريقه بلا نشاط: ورقة لكل أمانة و يوم
+// (amana_rolls)، و سطر لكل قائد (amana_roll_entries). لا تمسّ الأنشطة و لا إحصاءاتها و لا
+// حضور العناصر: تُقرأ على بطاقة الأمانة في التشكيلة، و في ملف القائد.
+
+const AMANA_ROLL_STATUSES = ['unmarked', 'present', 'absent', 'excused'];
+// سبب غياب القائد: أسباب العناصر نفسها بلا «انقطاع»، و معها العمل
+const AMANA_ROLL_REASONS = ['work', 'illness', 'travel', 'study', 'family', 'other'];
+
+const assignmentById = (id) => db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+
+// جذر أمانة: توصيف أمانة لا أمين فوقه. أمانة قسمٍ آخر لا يراها الحساب المحصور في قسمه.
+function amanaRootOr404(req, res, id) {
+  const root = assignmentById(intOr(id));
+  if (!root || root.role_type !== 'amana' || root.parent_id !== null) {
+    res.status(404).json({ error: 'amana not found' });
+    return null;
+  }
+  const section = activeSection(req);
+  if (section && root.section !== section) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return root;
+}
+
+// يسجّل حضور الفريق أمينه (الحساب المربوط بملفّه)، و من مُنح leaders.attendance، و الأدمن
+const canTakeAmanaRoll = (req, root) =>
+  hasPerm(req, 'leaders.attendance') ||
+  (!!req.user.leader_id && !!root?.leader_id && Number(req.user.leader_id) === Number(root.leader_id));
+
+// فريق الأمانة: الأمين ثم مساعدوه بترتيب التشكيلة، الفعّالون وحدهم، كلٌّ مرّة واحدة
+const amanaTeamStmt = db.prepare(
+  `SELECT a.leader_id, a.id = @root AS head
+   FROM assignments a JOIN leaders l ON l.id = a.leader_id
+   WHERE (a.id = @root OR a.parent_id = @root) AND l.status = 'active'
+   ORDER BY head DESC, a.sort_order, a.id`
+);
+function amanaTeam(rootId) {
+  const seen = new Set();
+  const out = [];
+  for (const r of amanaTeamStmt.all({ root: rootId })) {
+    if (seen.has(r.leader_id)) continue;
+    seen.add(r.leader_id);
+    out.push({ leader_id: r.leader_id, role: r.head ? 'head' : 'helper' });
+  }
+  return out;
+}
+
+// لائحة الورقة تتبع الفريق ما دامت لم تُثبَّت: من انضمّ إلى الأمانة يُضاف، و من خرج منها و لم
+// يُسجَّل حضوره يُحذف. الورقة المثبَّتة تبقى كما ثُبّتت.
+const insertRollEntry = db.prepare('INSERT OR IGNORE INTO amana_roll_entries (roll_id, leader_id, role) VALUES (?, ?, ?)');
+const setRollEntryRole = db.prepare('UPDATE amana_roll_entries SET role = ? WHERE roll_id = ? AND leader_id = ?');
+function syncAmanaRoll(roll) {
+  if (roll.finalized_at || !roll.assignment_id) return;
+  const team = amanaTeam(roll.assignment_id);
+  const ids = new Set(team.map((m) => m.leader_id));
+  db.transaction(() => {
+    for (const m of team) {
+      insertRollEntry.run(roll.id, m.leader_id, m.role);
+      setRollEntryRole.run(m.role, roll.id, m.leader_id);
+    }
+    const unmarked = db.prepare("SELECT leader_id FROM amana_roll_entries WHERE roll_id = ? AND status = 'unmarked'").all(roll.id);
+    for (const e of unmarked)
+      if (!ids.has(e.leader_id))
+        db.prepare('DELETE FROM amana_roll_entries WHERE roll_id = ? AND leader_id = ?').run(roll.id, e.leader_id);
+  })();
+}
+
+const amanaRollEntriesStmt = db.prepare(
+  `SELECT e.leader_id, e.role, e.status, e.reason, l.first_name, l.father_name, l.last_name, l.photo
+   FROM amana_roll_entries e JOIN leaders l ON l.id = e.leader_id
+   WHERE e.roll_id = ?
+   ORDER BY e.role = 'helper', l.first_name, l.last_name`
+);
+function amanaRollPayload(req, roll) {
+  const root = roll.assignment_id ? assignmentById(roll.assignment_id) : null;
+  // In the team's order, as its card and its list show it; who left it, after
+  const order = new Map((root ? amanaTeam(root.id) : []).map((m, i) => [m.leader_id, i]));
+  const entries = amanaRollEntriesStmt
+    .all(roll.id)
+    .map((e, i) => ({ e, at: order.get(e.leader_id) ?? order.size + i }))
+    .sort((x, y) => x.at - y.at)
+    .map((x) => x.e);
+  return {
+    ...roll,
+    today: todayISO(),
+    can_take: canTakeAmanaRoll(req, root),
+    entries,
+  };
+}
+
+function amanaRollOr404(req, res) {
+  const roll = db.prepare('SELECT * FROM amana_rolls WHERE id = ?').get(intOr(req.params.id));
+  if (!roll) {
+    res.status(404).json({ error: 'roll not found' });
+    return null;
+  }
+  const section = activeSection(req);
+  if (section && roll.section !== section) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return roll;
+}
+
+// Écrire dans une feuille : la voir, en avoir le droit, et — sauf pour la rouvrir — qu'elle
+// ne soit pas validée
+function amanaRollForWrite(req, res, { open = true } = {}) {
+  const roll = amanaRollOr404(req, res);
+  if (!roll) return null;
+  if (!canTakeAmanaRoll(req, roll.assignment_id ? assignmentById(roll.assignment_id) : null)) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  if (open && roll.finalized_at) {
+    res.status(409).json({ error: 'roll_finalized' });
+    return null;
+  }
+  return roll;
+}
+
+const amanaRollState = (r) => ({ finalized_at: r.finalized_at ?? null, finalized_by: r.finalized_by ?? null });
+const amanaRollById = (id) => db.prepare('SELECT * FROM amana_rolls WHERE id = ?').get(id);
+
+// Par أمانة de l'année : ses feuilles, la présence de son équipe, la dernière date, et la
+// feuille du jour s'il y en a une — ce que montre sa carte dans la التشكيلة
+function amanaRollSummary(year, section) {
+  if (!year) return {};
+  const rows = db
+    .prepare(
+      `SELECT r.assignment_id AS id, COUNT(DISTINCT r.id) AS rolls, MAX(r.date) AS last_date,
+         MAX(CASE WHEN r.date = @today THEN r.id END) AS today_id,
+         COALESCE(SUM(e.status = 'present'), 0) AS present,
+         COALESCE(SUM(e.status IN ('present', 'absent', 'excused')), 0) AS marked
+       FROM amana_rolls r LEFT JOIN amana_roll_entries e ON e.roll_id = r.id
+       WHERE r.year = @year AND r.assignment_id IS NOT NULL${section ? ' AND r.section = @section' : ''}
+       GROUP BY r.assignment_id`
+    )
+    .all({ year, today: todayISO(), ...(section ? { section } : {}) });
+  return Object.fromEntries(rows.map((r) => [r.id, r]));
+}
+
+// Un قائد dans sa أمانة : ce que son أمين a pointé pour lui — les chiffres sur la période
+// choisie, les absences sans excuse d'affilée, les dernières feuilles. null : aucune ne le cite.
+function leaderAmanaPresence(req, leaderId, period) {
+  const section = activeSection(req);
+  const rows = db
+    .prepare(
+      `SELECT r.id AS roll_id, r.date, r.title, r.assignment_id, r.finalized_at, e.role, e.status, e.reason
+       FROM amana_roll_entries e JOIN amana_rolls r ON r.id = e.roll_id
+       WHERE e.leader_id = ? AND e.status != 'unmarked'${section ? ' AND r.section = ?' : ''}
+       ORDER BY r.date DESC, r.id DESC`
+    )
+    .all(...(section ? [leaderId, section] : [leaderId]));
+  if (rows.length === 0) return null;
+  const counts = { present: 0, absent: 0, excused: 0 };
+  for (const r of rows) if (!period.from || (r.date >= period.from && r.date <= period.to)) counts[r.status]++;
+  // Un présent ou un excusé arrête la série
+  let streak = 0;
+  for (const r of rows) {
+    if (r.status !== 'absent') break;
+    streak++;
+  }
+  return { attendance: counts, absent_streak: streak, recent: rows.slice(0, 20) };
+}
+
+// Les feuilles d'une أمانة, les plus récentes d'abord, chacune avec son décompte ; et chaque
+// قائد — l'équipe d'aujourd'hui, puis qui a été pointé ici et n'en est plus — avec le sien
+app.get('/api/amanat/:id/rolls', requirePerm('leaders.read'), (req, res) => {
+  const root = amanaRootOr404(req, res, req.params.id);
+  if (!root) return;
+  const rolls = db
+    .prepare(
+      `SELECT r.id, r.date, r.finalized_at, r.finalized_by, r.created_by,
+         COALESCE(SUM(e.status = 'present'), 0) AS present,
+         COALESCE(SUM(e.status = 'absent'), 0) AS absent,
+         COALESCE(SUM(e.status = 'excused'), 0) AS excused,
+         COALESCE(SUM(e.status = 'unmarked'), 0) AS unmarked
+       FROM amana_rolls r LEFT JOIN amana_roll_entries e ON e.roll_id = r.id
+       WHERE r.assignment_id = ?
+       GROUP BY r.id ORDER BY r.date DESC, r.id DESC`
+    )
+    .all(root.id);
+  const counts = new Map(
+    db
+      .prepare(
+        `SELECT e.leader_id,
+           COALESCE(SUM(e.status = 'present'), 0) AS present,
+           COALESCE(SUM(e.status = 'absent'), 0) AS absent,
+           COALESCE(SUM(e.status = 'excused'), 0) AS excused
+         FROM amana_roll_entries e JOIN amana_rolls r ON r.id = e.roll_id
+         WHERE r.assignment_id = ? GROUP BY e.leader_id`
+      )
+      .all(root.id)
+      .map((r) => [r.leader_id, r])
+  );
+  const team = amanaTeam(root.id);
+  const role = new Map(team.map((m) => [m.leader_id, m.role]));
+  // Des entiers lus en base : les inliner dans la requête est sûr
+  const ids = [...new Set([...team.map((m) => m.leader_id), ...counts.keys()])];
+  const people = new Map(
+    (ids.length
+      ? db.prepare(`SELECT id, first_name, father_name, last_name, photo FROM leaders WHERE id IN (${ids.join(',')})`).all()
+      : []
+    ).map((l) => [l.id, l])
+  );
+  const members = ids
+    .filter((id) => people.has(id))
+    .map((id) => {
+      const { first_name, father_name, last_name, photo } = people.get(id);
+      const c = counts.get(id);
+      return {
+        leader_id: id,
+        first_name,
+        father_name,
+        last_name,
+        photo,
+        // null : pointé ici autrefois, plus dans l'équipe
+        role: role.get(id) || null,
+        present: c?.present || 0,
+        absent: c?.absent || 0,
+        excused: c?.excused || 0,
+      };
+    });
+  res.json({
+    amana: { id: root.id, title: root.title, year: root.year, section: root.section, leader_id: root.leader_id },
+    today: todayISO(),
+    can_take: canTakeAmanaRoll(req, root),
+    rolls,
+    members,
+    // ?entries=1 — le registre (PDF, Excel) : chaque case, qui et quel jour
+    ...(req.query.entries
+      ? {
+          entries: db
+            .prepare(
+              `SELECT e.roll_id, e.leader_id, e.status, e.reason
+               FROM amana_roll_entries e JOIN amana_rolls r ON r.id = e.roll_id
+               WHERE r.assignment_id = ?`
+            )
+            .all(root.id),
+        }
+      : {}),
+  });
+});
+
+// La feuille d'un jour — aujourd'hui par défaut, ou un jour passé — créée avec l'équipe la
+// première fois, rendue telle quelle ensuite : une seule par أمانة et par jour
+app.post('/api/amanat/:id/rolls', requirePerm('leaders.read'), (req, res) => {
+  const root = amanaRootOr404(req, res, req.params.id);
+  if (!root) return;
+  if (!canTakeAmanaRoll(req, root)) return res.status(403).json({ error: 'forbidden' });
+  const raw = req.body?.date;
+  const date = raw === undefined || raw === null || raw === '' ? todayISO() : String(raw);
+  if (!validISODate(date)) return res.status(400).json({ error: 'invalid_date' });
+  // Le jour même ou après coup, jamais d'avance
+  if (date > todayISO()) return res.status(400).json({ error: 'future_date' });
+  const existing = db.prepare('SELECT * FROM amana_rolls WHERE assignment_id = ? AND date = ?').get(root.id, date);
+  if (existing) {
+    syncAmanaRoll(existing);
+    return res.json(amanaRollPayload(req, existing));
+  }
+  if (amanaTeam(root.id).length === 0) return res.status(400).json({ error: 'empty_team' });
+  const id = db
+    .prepare('INSERT INTO amana_rolls (assignment_id, year, title, section, date, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(root.id, root.year, root.title, root.section, date, actorName(req)).lastInsertRowid;
+  const roll = amanaRollById(id);
+  syncAmanaRoll(roll);
+  auditEvent(req, 'create', 'amana_roll', id, null, roll);
+  res.status(201).json(amanaRollPayload(req, roll));
+});
+
+app.get('/api/amana-rolls/:id', requirePerm('leaders.read'), (req, res) => {
+  const roll = amanaRollOr404(req, res);
+  if (!roll) return;
+  // Seul qui peut pointer remet la liste à jour : une lecture n'écrit rien
+  if (canTakeAmanaRoll(req, roll.assignment_id ? assignmentById(roll.assignment_id) : null)) syncAmanaRoll(roll);
+  res.json(amanaRollPayload(req, roll));
+});
+
+// { entries: [{ leader_id, status, reason }] } — seuls les قادة de la feuille. Un présent
+// (ou un non pointé) n'a pas de motif.
+app.put('/api/amana-rolls/:id', requirePerm('leaders.read'), (req, res) => {
+  const roll = amanaRollForWrite(req, res);
+  if (!roll) return;
+  const rows = req.body?.entries;
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'invalid entries' });
+  const current = new Map(
+    db.prepare('SELECT leader_id, status, reason FROM amana_roll_entries WHERE roll_id = ?').all(roll.id).map((e) => [e.leader_id, e])
+  );
+  for (const r of rows) {
+    if (!current.has(Number(r?.leader_id))) return res.status(400).json({ error: 'not_in_roll' });
+    if (r.status !== undefined && !AMANA_ROLL_STATUSES.includes(r.status)) return res.status(400).json({ error: 'invalid status' });
+    if (r.reason !== undefined && r.reason !== null && !AMANA_ROLL_REASONS.includes(r.reason))
+      return res.status(400).json({ error: 'invalid reason' });
+  }
+  const was = [];
+  const now = [];
+  const update = db.prepare('UPDATE amana_roll_entries SET status = ?, reason = ? WHERE roll_id = ? AND leader_id = ?');
+  db.transaction(() => {
+    for (const r of rows) {
+      const e = current.get(Number(r.leader_id));
+      const status = r.status ?? e.status;
+      const reason = status === 'absent' || status === 'excused' ? (r.reason !== undefined ? r.reason : e.reason) : null;
+      if (status === e.status && reason === e.reason) continue;
+      was.push({ leader_id: e.leader_id, status: e.status, reason: e.reason });
+      now.push({ leader_id: e.leader_id, status, reason });
+      update.run(status, reason, roll.id, e.leader_id);
+      // Deux lignes pour le même قائد dans une requête : la seconde part de la première
+      current.set(e.leader_id, { ...e, status, reason });
+    }
+    if (now.length) db.prepare("UPDATE amana_rolls SET updated_at = datetime('now') WHERE id = ?").run(roll.id);
+  })();
+  if (now.length) auditEvent(req, 'attendance', 'amana_roll', roll.id, { entries: was }, { entries: now });
+  res.json(amanaRollPayload(req, amanaRollById(roll.id)));
+});
+
+// «تثبيت الحضور» : chaque قائد pointé d'abord — une feuille validée ne laisse personne
+// «non pointé». Rouvrir la rend modifiable de nouveau ; les deux sont tracés.
+app.post('/api/amana-rolls/:id/finalize', requirePerm('leaders.read'), (req, res) => {
+  const roll = amanaRollForWrite(req, res);
+  if (!roll) return;
+  const left = db.prepare("SELECT COUNT(*) AS n FROM amana_roll_entries WHERE roll_id = ? AND status = 'unmarked'").get(roll.id).n;
+  if (left > 0) return res.status(409).json({ error: 'unmarked_left', count: left });
+  db.prepare("UPDATE amana_rolls SET finalized_at = datetime('now'), finalized_by = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(actorName(req), roll.id);
+  const after = amanaRollById(roll.id);
+  auditEvent(req, 'finalize', 'amana_roll', roll.id, amanaRollState(roll), amanaRollState(after));
+  res.json(amanaRollPayload(req, after));
+});
+
+app.post('/api/amana-rolls/:id/reopen', requirePerm('leaders.read'), (req, res) => {
+  const roll = amanaRollForWrite(req, res, { open: false });
+  if (!roll) return;
+  if (!roll.finalized_at) return res.status(409).json({ error: 'not_finalized' });
+  db.prepare("UPDATE amana_rolls SET finalized_at = NULL, finalized_by = NULL, updated_at = datetime('now') WHERE id = ?").run(roll.id);
+  const after = amanaRollById(roll.id);
+  auditEvent(req, 'reopen', 'amana_roll', roll.id, amanaRollState(roll), amanaRollState(after));
+  syncAmanaRoll(after);
+  res.json(amanaRollPayload(req, after));
+});
+
+// Une feuille prise par erreur (mauvais jour) : supprimée tant qu'elle n'est pas validée
+app.delete('/api/amana-rolls/:id', requirePerm('leaders.read'), (req, res) => {
+  const roll = amanaRollForWrite(req, res);
+  if (!roll) return;
+  const entries = db.prepare('SELECT leader_id, status, reason FROM amana_roll_entries WHERE roll_id = ?').all(roll.id);
+  db.prepare('DELETE FROM amana_rolls WHERE id = ?').run(roll.id);
+  auditEvent(req, 'delete', 'amana_roll', roll.id, { ...roll, entries }, null);
+  res.status(204).end();
 });
 
 // ---------- إشعارات الأدمن ----------
@@ -11490,24 +11564,6 @@ app.get('/api/dashboard', (req, res) => {
       missing_birth_date: db.prepare(`SELECT COUNT(*) AS n ${missingBirthDateSQL(req)}`).get().n,
     };
   }
-  // B1 : فترة التجربة — combien, et qui est prêt pour le تكريس
-  let admissions = null;
-  if (hasPerm(req, 'members.read')) {
-    const list = pendingAdmissions(req);
-    admissions = {
-      trial_count: list.length,
-      ready: list.filter((a) => a.ready).map((a) => ({
-        id: a.id,
-        first_name: a.first_name,
-        father_name: a.father_name,
-        last_name: a.last_name,
-        branch_name_fr: a.branch_name_fr,
-        branch_name_ar: a.branch_name_ar,
-        trial_days: a.trial_days,
-      })),
-    };
-  }
-
   res.json({
     today,
     next_day: nextSaturday(today),
@@ -11516,6 +11572,13 @@ app.get('/api/dashboard', (req, res) => {
       ? db
           .prepare(`SELECT COUNT(*) AS n FROM members m WHERE m.status = 'active'${branchFilterSQL(req, 'm.branch_id')}`)
           .get().n
+      : null,
+    // Inscrits ce mois : la date d'adhésion du dossier (le formulaire la met à aujourd'hui),
+    // archivés compris — on a bien eu ces inscriptions
+    new_members: canMembers
+      ? db
+          .prepare(`SELECT COUNT(*) AS n FROM members m WHERE substr(m.join_date, 1, 7) = ?${branchFilterSQL(req, 'm.branch_id')}`)
+          .get(ym).n
       : null,
     leaders: hasPerm(req, 'leaders.read')
       ? db.prepare(`SELECT COUNT(*) AS n FROM leaders l WHERE status = 'active'${leaderScopeSQL(req)}`).get().n
@@ -11536,7 +11599,6 @@ app.get('/api/dashboard', (req, res) => {
     late_decisions_total: lateDecisionsTotal,
     recent,
     promotions,
-    admissions,
     // G1 : cotisations en retard, par فرقة — actifs seulement (les archivés sont en
     // trésorerie), et seulement qui doit un mois passé : le mois en cours non encore payé,
     // c'est tout le monde au début du mois
@@ -11584,7 +11646,7 @@ app.get('/api/dashboard', (req, res) => {
 // ---------- Rapport périodique à la قيادة (I1) ----------
 // Un seul rapport pour rendre compte d'un mois ou d'un trimestre : une فرقة (id) ou tout
 // le فوج visible (0). Il agrège ce que les autres modules calculent déjà — présence
-// validée (A1), suivi et contacts (A2), admissions (B1), arriérés (G1), camps, caisses —
+// validée (A1), suivi et contacts (A2), arriérés (G1), camps, caisses —
 // chaque partie seulement pour un compte qui a le droit de la voir.
 const REPORT_MAX_DAYS = 400;
 const shiftISO = (iso, days) => {
@@ -11700,9 +11762,7 @@ function periodReport(req, branchId, p) {
            (SELECT COUNT(*) FROM promotions WHERE old_branch_id = @b AND reversed_at IS NULL
               AND substr(promoted_at, 1, 10) BETWEEN @f AND @t) AS promoted_out,
            (SELECT COUNT(*) FROM promotions WHERE new_branch_id = @b AND reversed_at IS NULL
-              AND substr(promoted_at, 1, 10) BETWEEN @f AND @t) AS promoted_in,
-           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND status = 'active' AND admission_status = 'trial') AS trial,
-           (SELECT COUNT(*) FROM members WHERE branch_id = @b AND invested_at BETWEEN @f AND @t) AS invested`
+              AND substr(promoted_at, 1, 10) BETWEEN @f AND @t) AS promoted_in`
       )
       .get({ b: b.id, f: p.from, t: p.to });
     // À suivre : la série d'absences en cours atteint le seuil (A2)
@@ -11789,35 +11849,16 @@ function periodReport(req, branchId, p) {
       archived: sumRows((r) => r.members.archived),
       promoted_out: sumRows((r) => r.members.promoted_out),
       promoted_in: sumRows((r) => r.members.promoted_in),
-      trial: sumRows((r) => r.members.trial),
-      invested: sumRows((r) => r.members.invested),
       followup: sumRows((r) => r.followup.count),
       followup_contacted: sumRows((r) => r.followup.contacted),
       contacts: sumRows((r) => r.followup.contacts),
     },
     followup: canMembers ? followup : null,
-    admissions: null,
     dues: null,
     events: null,
     treasury: null,
     overdue: null,
   };
-
-  // Admissions : prêts pour le تكريس (B1)
-  if (canMembers) {
-    const ready = pendingAdmissions(req).filter((a) => ids.includes(a.branch_id) && a.ready);
-    out.admissions = {
-      ready: ready.map((a) => ({
-        id: a.id,
-        first_name: a.first_name,
-        father_name: a.father_name,
-        last_name: a.last_name,
-        branch_name_fr: a.branch_name_fr,
-        branch_name_ar: a.branch_name_ar,
-        trial_days: a.trial_days,
-      })),
-    };
-  }
 
   // Cotisations : encaissé sur la période, arriérés à ce jour (G1)
   if (canSeeMemberDues(req)) {
@@ -11983,6 +12024,8 @@ const PDF_KINDS = {
   'dues-arrears': 'members.dues.read',
   // I1 : le rapport périodique à la قيادة — le numéro est une فرقة (0 = le فوج), ?from=&to=&recipient=
   period: 'branches.read',
+  // حضور الأمانة : le numéro est le توصيف de son أمين — le registre, un jour par ligne
+  'amana-presence': 'leaders.read',
 };
 // Filters the list sheets read from the query string — nothing else reaches Chromium's URL
 const printQuery = (q) => {

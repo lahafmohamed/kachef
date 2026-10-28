@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { sectionGender, useSection } from '../section';
@@ -65,7 +66,7 @@ function describeError(t, err) {
   if (code === 'invalid birth_date') return { text: t('member.errBirthDate') };
   if (code === 'invalid photo') return { text: t('member.errPhoto') };
   if (code === 'invalid name' || code.startsWith('missing field')) return { text: t('common.fillRequired') };
-  return { text: code };
+  return { text: displayError(err) };
 }
 
 function Field({ id, label, className, children }) {
@@ -196,8 +197,6 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   // تغيير فرقة عنصر مسجَّل يُحفظ في سجلّه، و الخادم يريد سببه: نقلٌ حقيقي (بتاريخه،
   // فحضوره السابق يبقى لفرقته القديمة) أو تصحيحُ فرقةٍ سُجّلت خطأً.
   const [branchChange, setBranchChange] = useState({ reason: '', date: todayISO() });
-  // B1: a new عنصر starts in فترة التجربة, unless the قائد registers one already مكرَّس
-  const [admissionStart, setAdmissionStart] = useState('trial');
   const branchChanged = editing && String(form.branch_id) !== String(member.branch_id);
 
   // فرقة مقسَّمة بالسنّ: الطليعة تتبع سنة الميلاد ما لم تُختر باليد — للتسجيل الجديد، و
@@ -247,7 +246,6 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
       ...form,
       branch_id: Number(form.branch_id),
       group_id: form.group_id === '' ? null : Number(form.group_id),
-      ...(!editing && { admission_status: admissionStart }),
       ...(branchChanged && {
         branch_change_reason: branchChange.reason,
         // Without a date the server dates the move today
@@ -288,7 +286,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
       <Section title={t('member.sectionIdentity')}>
         <div className="flex items-center gap-4">
           {/* The whole circle is the picker; the input inside it takes the focus */}
-          <label className="relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-input bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
+          <label className="relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-input bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-card">
             {form.photo ? (
               <img src={form.photo} alt="" className="img-outline h-full w-full object-cover" />
             ) : (
@@ -436,21 +434,6 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
           <Field id="join_date" label={t('member.joinDate')}>
             <DatePicker id="join_date" fromYear={2000} value={form.join_date} onChange={set('join_date')} />
           </Field>
-          {!editing && (
-            <div className="space-y-1.5">
-              <Label>{t('admission.startStatus')}</Label>
-              <SegmentedControl
-                label={t('admission.startStatus')}
-                value={admissionStart}
-                onChange={setAdmissionStart}
-                className="flex w-full sm:min-h-10"
-                options={[
-                  { value: 'trial', label: t('admission.startTrial') },
-                  { value: 'invested', label: t('admission.alreadyInvested') },
-                ]}
-              />
-            </div>
-          )}
         </div>
       </Section>
 

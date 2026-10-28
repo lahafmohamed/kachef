@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { saveFile } from '../lib/download';
 import { fmtDate } from '../utils';
 import {
@@ -229,7 +230,7 @@ export default function AttachedFiles({ base, files = [], editable, onChange }) 
         ? t('files.fileUnsupported')
         : err.status === 409
           ? t('files.tooManyFiles')
-          : err.message;
+          : displayError(err);
 
   async function add(list) {
     const picked = [...list];

@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
@@ -126,20 +127,20 @@ function LeaderMatalibCard() {
       reload({ quiet: true });
       toast.success(t('settings.matlabCreated'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
   }
 
   async function remove(m) {
-    if (!(await confirm({ title: t('common.delete'), message: t('settings.confirmDeleteMatlab') }))) return;
+    if (!(await confirm({ confirmLabel: t('common.delete'), title: t('common.delete'), message: t('settings.confirmDeleteMatlab') }))) return;
     try {
       await api.del(`/leader-matalib/${m.id}`);
       reload({ quiet: true });
       toast.success(t('settings.matlabDeleted'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -244,7 +245,7 @@ function LookupListsCard() {
       reload({ quiet: true });
       toast.success(t('settings.lookupCreated'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -258,7 +259,7 @@ function LookupListsCard() {
       reload({ quiet: true });
       toast.success(t('settings.lookupRenamed'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -266,13 +267,13 @@ function LookupListsCard() {
     const message = v.usage_count
       ? t('settings.confirmDeleteLookupInUse', { count: v.usage_count })
       : t('settings.confirmDeleteLookup');
-    if (!(await confirm({ title: t('common.delete'), message }))) return;
+    if (!(await confirm({ confirmLabel: t('common.delete'), title: t('common.delete'), message }))) return;
     try {
       await api.del(`/lookups/${v.id}`);
       reload({ quiet: true });
       toast.success(t('settings.lookupDeleted'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -417,7 +418,7 @@ function AbsenceFollowupCard() {
       if (user) updateUser({ ...user, absence_threshold: res.absence_threshold });
       toast.success(t('followup.settingsSaved'));
     } catch (err) {
-      toast.error(err.message === 'invalid_threshold' ? t('followup.settingsInvalid') : err.message);
+      toast.error(err.message === 'invalid_threshold' ? t('followup.settingsInvalid') : displayError(err));
     } finally {
       setSaving(false);
     }
@@ -487,7 +488,7 @@ function DuesRatesCard() {
       setMonth('');
       toast.success(t('arrears.rateAdded'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -503,7 +504,7 @@ function DuesRatesCard() {
     try {
       setData(await api.del(`/due-rates/${r.id}`));
     } catch (err) {
-      toast.error(err.message === 'last_rate' ? t('arrears.lastRate') : err.message);
+      toast.error(err.message === 'last_rate' ? t('arrears.lastRate') : displayError(err));
     }
   }
 
@@ -641,25 +642,13 @@ export default function Settings() {
           ...(b.promotion_threshold === '' || b.promotion_threshold === null || b.promotion_threshold === undefined
             ? {}
             : { promotion_threshold: Math.min(100, Math.max(0, Math.round(Number(b.promotion_threshold)) || 0)) }),
-          // مطالب القبول: a field left empty is not sent, the stored value stays
-          ...Object.fromEntries(
-            [
-              ['trial_months', 12],
-              ['law_items_required', 10],
-              ['consecutive_meetings_required', 20],
-              ['cries_required', 20],
-            ]
-              .filter(([k]) => b[k] !== '' && b[k] !== null && b[k] !== undefined)
-              .map(([k, max]) => [k, Math.min(max, Math.max(0, Math.round(Number(b[k])) || 0))])
-          ),
-          internal_skip_trial: b.internal_skip_trial !== 0,
         });
       }
       setDirty(false);
       reload({ quiet: true });
       toast.success(t('common.saved'));
     } catch (err) {
-      toast.error(err.message === 'branch_section_in_use' ? t('section.branchInUse') : err.message);
+      toast.error(err.message === 'branch_section_in_use' ? t('section.branchInUse') : displayError(err));
     } finally {
       setSaving(false);
     }
@@ -674,7 +663,7 @@ export default function Settings() {
   async function removeBranch(b) {
     const name = i18n.language === 'ar' ? b.name_ar : b.name_fr;
     if (
-      !(await confirm({
+      !(await confirm({ confirmLabel: t('common.delete'),
         title: t('common.delete'),
         message: `${t('settings.confirmDeleteBranch')} (${name})`,
       }))
@@ -685,7 +674,7 @@ export default function Settings() {
       reload({ quiet: true });
       toast.success(t('settings.branchDeleted'));
     } catch (err) {
-      toast.error(err.message === 'branch_in_use' ? t('settings.branchInUse') : err.message);
+      toast.error(err.message === 'branch_in_use' ? t('settings.branchInUse') : displayError(err));
     }
   }
 
@@ -778,7 +767,6 @@ export default function Settings() {
             <p>{t('section.branchHint')}</p>
             <p>{t('settings.allAgesHint')}</p>
             <p>{t('matalib.thresholdHint')}</p>
-            <p>{t('admission.settingsHint')}</p>
           </div>
           {error ? (
             <ErrorState message={t('error.loadFailed')} onRetry={reload} retryLabel={t('error.retry')} />
@@ -897,42 +885,6 @@ export default function Settings() {
                     </div>
                   )}
                 </div>
-                {/* مطالب القبول (B1): فترة التجربة قبل التكريس */}
-                <fieldset className="space-y-2 border-t border-border pt-3">
-                  <legend className="sr-only">{t('admission.settingsTitle')}</legend>
-                  <p aria-hidden="true" className="text-sm font-medium">
-                    {t('admission.settingsTitle')}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
-                    {[
-                      ['trial_months', 'admission.trialMonths', 12],
-                      ['law_items_required', 'admission.lawItems', 10],
-                      ['consecutive_meetings_required', 'admission.meetings', 20],
-                      ['cries_required', 'admission.cries', 20],
-                    ].map(([key, label, max]) => (
-                      <div key={key} className="space-y-1.5">
-                        <Label htmlFor={`${key}-${b.id}`}>{t(label)}</Label>
-                        <Input
-                          id={`${key}-${b.id}`}
-                          type="number"
-                          inputMode="numeric"
-                          min="0"
-                          max={max}
-                          value={b[key] ?? ''}
-                          onChange={(e) => setField(b.id, key, e.target.value)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm sm:min-h-0">
-                    <input
-                      type="checkbox"
-                      checked={b.internal_skip_trial !== 0}
-                      onChange={(e) => setField(b.id, 'internal_skip_trial', e.target.checked ? 1 : 0)}
-                    />
-                    {t('admission.skipInternal')}
-                  </label>
-                </fieldset>
                 {Number(b.total_requirements) > 0 && (
                   <Button variant="outline" size="sm" onClick={() => setCatalogOf(b)} disabled={dirty}>
                     <IconClipboard />

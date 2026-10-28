@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -493,7 +494,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
       toast.success(t('common.saved'));
       onClose();
     } catch (err) {
-      toast.error(LINK_ERRORS[err.message] ? t(LINK_ERRORS[err.message]) : err.message);
+      toast.error(LINK_ERRORS[err.message] ? t(LINK_ERRORS[err.message]) : displayError(err));
       setBusy(null);
     }
   }
@@ -659,7 +660,7 @@ function AnnualPlan({ branchId, onChange, onDirtyChange }) {
       toast.success(t('common.saved'));
       return true;
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
       return false;
     } finally {
       setSaving(false);
@@ -693,7 +694,7 @@ function AnnualPlan({ branchId, onChange, onDirtyChange }) {
       setPlan(await api.post(`/branches/${branchId}/plan/restore`, { baseline_id: baselineId }));
       toast.success(t('common.saved'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -701,7 +702,7 @@ function AnnualPlan({ branchId, onChange, onDirtyChange }) {
   async function validate() {
     if (
       plan.validation &&
-      !(await confirm({ title: t('branch.planRevalidate'), message: t('branch.planRevalidateConfirm') }))
+      !(await confirm({ confirmLabel: t('branch.planRevalidate'), title: t('branch.planRevalidate'), message: t('branch.planRevalidateConfirm') }))
     )
       return;
     if (dirty && !(await save())) return;
@@ -710,21 +711,21 @@ function AnnualPlan({ branchId, onChange, onDirtyChange }) {
       setPlan(await api.post(`/branches/${branchId}/plan/validate`, { year: plan.year }));
       toast.success(t('common.saved'));
     } catch (err) {
-      toast.error(err.message === 'plan_empty' ? t('branch.planEmptyError') : err.message);
+      toast.error(err.message === 'plan_empty' ? t('branch.planEmptyError') : displayError(err));
     } finally {
       setValidating(false);
     }
   }
 
   async function unvalidate() {
-    if (!(await confirm({ title: t('branch.planUnvalidate'), message: t('branch.planUnvalidateConfirm') })))
+    if (!(await confirm({ confirmLabel: t('branch.planUnvalidate'), title: t('branch.planUnvalidate'), message: t('branch.planUnvalidateConfirm') })))
       return;
     setValidating(true);
     try {
       setPlan(await api.del(`/branches/${branchId}/plan/validate?year=${encodeURIComponent(plan.year)}`));
       toast.success(t('common.saved'));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setValidating(false);
     }
@@ -1364,7 +1365,7 @@ function BranchGroups({ branchId }) {
             ? t('branch.groupAgeOverlap', { name: err.body?.name })
             : code === 'invalid_age_range'
               ? t('branch.groupAgeInvalid')
-              : code
+              : displayError(err)
       );
     } finally {
       setSaving(false);
@@ -1394,7 +1395,7 @@ function BranchGroups({ branchId }) {
       setByAge(null);
       toast.success(t('branch.groupMoved', { count: out.moved }));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setApplying(false);
       res.reload({ quiet: true });
@@ -1402,7 +1403,7 @@ function BranchGroups({ branchId }) {
   }
 
   async function removeGroup(g) {
-    if (!(await confirm({ title: t('branch.groupDelete'), message: t('branch.groupDeleteConfirm', { name: g.name }) })))
+    if (!(await confirm({ confirmLabel: t('branch.groupDelete'), title: t('branch.groupDelete'), message: t('branch.groupDeleteConfirm', { name: g.name }) })))
       return;
     try {
       await api.del(`/branches/${branchId}/groups/${g.id}`);
@@ -1411,7 +1412,7 @@ function BranchGroups({ branchId }) {
       toast.success(t('branch.groupDeleted'));
       res.reload({ quiet: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -1454,7 +1455,7 @@ function BranchGroups({ branchId }) {
       toast.success(t('branch.groupMoved', { count: ids.length }));
       res.reload({ quiet: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
       res.reload({ quiet: true });
     } finally {
       setMoving(false);

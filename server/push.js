@@ -73,7 +73,8 @@ const TYPES = {
   evaluation_received: { group: 'evaluations', perm: 'evaluations.read', leader: true, on: () => false },
   // ----- العناصر و القادة -----
   birthday: { group: 'people', perm: ['members.read', 'leaders.read'], on: (u) => ownBranches(u) !== null },
-  member_created: { group: 'people', perm: 'members.read', on: () => false },
+  // On for everyone it reaches: the admin and the قادة of the فرقة learn of each inscription
+  member_created: { group: 'people', perm: 'members.read', on: () => true },
   // A2 : un عنصر atteint la série d'absences, après validation de la présence. Les قادة de
   // sa فرقة au premier palier ; au second (deux fois le seuil), l'admin aussi.
   absence_streak: { group: 'people', perm: 'members.read', on: () => true },

@@ -14,7 +14,6 @@ export const PERM_GROUPS = [
       'members.create',
       'members.edit',
       'members.matalib',
-      'members.admission',
       'members.delete',
       'members.dues.read',
       'members.dues.record',
@@ -51,7 +50,10 @@ export const PERM_GROUPS = [
   { id: 'evaluations', keys: ['evaluations.read', 'evaluations.details'] },
   { id: 'branches', keys: ['branches.read', 'branches.plan', 'branches.groups'] },
   { id: 'promotions', keys: ['promotions.read', 'promotions.apply'] },
-  { id: 'leaders', keys: ['leaders.read', 'leaders.contact', 'leaders.progress.self', 'leaders.progress.manage'] },
+  {
+    id: 'leaders',
+    keys: ['leaders.read', 'leaders.contact', 'leaders.progress.self', 'leaders.progress.manage', 'leaders.attendance'],
+  },
   { id: 'dues', keys: ['leaders.dues', 'leaders.dues.record'] },
   { id: 'treasury', keys: ['treasury.read', 'treasury.entries', 'treasury.transfers', 'treasury.counts'] },
 ];
@@ -68,7 +70,6 @@ export const PERM_DEPENDENCIES = {
   'members.followup': ['members.read'],
   'members.health': ['members.read'],
   'members.matalib': ['members.read'],
-  'members.admission': ['members.read'],
   'members.dues.read': ['members.read'],
   'members.dues.record': ['members.dues.read'],
   'members.dues.exempt': ['members.dues.read'],
@@ -97,6 +98,7 @@ export const PERM_DEPENDENCIES = {
   'leaders.contact': ['leaders.read'],
   'leaders.progress.self': ['leaders.read'],
   'leaders.progress.manage': ['leaders.read'],
+  'leaders.attendance': ['leaders.read'],
   'leaders.dues': ['leaders.read'],
   'leaders.dues.record': ['leaders.dues'],
   'treasury.entries': ['treasury.read'],
@@ -108,7 +110,7 @@ export const PERM_DEPENDENCIES = {
 // null = every right.
 export const PERM_PRESETS = {
   branch: [
-    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib', 'members.admission',
+    'members.read', 'members.create', 'members.edit', 'members.contact', 'members.followup', 'members.health', 'members.matalib',
     'sessions.read', 'sessions.create', 'sessions.edit', 'sessions.attendance', 'sessions.files',
     'prep.read', 'prep.manage',
     'events.read', 'events.manage', 'events.attendance',
@@ -138,8 +140,9 @@ export const PERM_PRESETS = {
 export const PERM_PRESET_KEYS = Object.keys(PERM_PRESETS);
 
 // What a new account starts with: everything but the money handed out by hand (the
-// caisses, the dues) and what deletes or names — those are ticked one by one
-const NOT_BY_DEFAULT = /^(treasury\.|leaders\.dues)|\.delete$|^evaluations\.details$/;
+// caisses, the dues), what deletes or names, and the présence of every أمانة (its
+// أمين takes his own team's without it) — those are ticked one by one
+const NOT_BY_DEFAULT = /^(treasury\.|leaders\.dues|leaders\.attendance)|\.delete$|^evaluations\.details$/;
 export const DEFAULT_PERMS = ALL_PERM_KEYS.filter((k) => !NOT_BY_DEFAULT.test(k));
 
 export const permLabelKey = (key) => `admin.perm.${key.replace(/\./g, '_')}`;

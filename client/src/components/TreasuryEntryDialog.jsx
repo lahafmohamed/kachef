@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { fmtAmount, fmtDate, todayISO } from '../utils';
 import { IN_CATEGORIES, OUT_CATEGORIES, boxName } from '../lib/treasury';
 import AmountInput from './AmountInput';
@@ -123,7 +124,7 @@ export default function TreasuryEntryDialog({
       const res = entry ? await api.put(`${endpoint}/${entry.id}`, body) : await api.post(endpoint, body);
       onSaved(res, `treasury.${noun}${entry ? 'Updated' : 'Added'}`);
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }

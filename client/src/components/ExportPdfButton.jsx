@@ -31,6 +31,7 @@ const EXCEL_KINDS = new Set([
   'event-unpaid',
   'dues-arrears',
   'period',
+  'amana-presence',
 ]);
 
 // Up/Down step through the choices the way a menu does; Tab keeps working too

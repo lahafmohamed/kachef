@@ -1,3 +1,4 @@
+import { displayError } from '../lib/errors';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -209,7 +210,7 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
       };
       onSaved(await api.put(`/meetings/${m.id}/attendance`, body));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -431,7 +432,7 @@ function ItemDialog({ m, item, open, onClose, onSaved, t }) {
         : await api.post(`/meetings/${m.id}/items`, body);
       onSaved(res, item ? 'meeting.itemSaved' : 'meeting.itemAdded');
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
@@ -449,7 +450,7 @@ function ItemDialog({ m, item, open, onClose, onSaved, t }) {
     try {
       onSaved(await api.del(`/meetings/${m.id}/items/${item.id}`), 'meeting.itemRemoved');
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -719,7 +720,7 @@ function DecisionDialog({ m, decision, open, onClose, onSaved, leaders, t }) {
         : await api.post(`/meetings/${m.id}/decisions`, body);
       onSaved(res, decision ? 'meeting.decisionSaved' : 'meeting.decisionAdded');
     } catch (err) {
-      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : err.message);
+      setError(ERRORS[err.message] ? t(ERRORS[err.message]) : displayError(err));
     } finally {
       setSaving(false);
     }
@@ -737,7 +738,7 @@ function DecisionDialog({ m, decision, open, onClose, onSaved, leaders, t }) {
     try {
       onSaved(await api.del(`/meetings/${m.id}/decisions/${decision.id}`), 'meeting.decisionRemoved');
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -911,7 +912,7 @@ export default function MeetingDetail() {
       toast.success(t('meeting.deleted'));
       navigate('/meetings', { replace: true });
     } catch (err) {
-      toast.error(err.message);
+      toast.error(displayError(err));
     }
   }
 
@@ -933,7 +934,7 @@ export default function MeetingDetail() {
       setM((x) => ({ ...x, [key]: x[key].map((y) => (y.id === d.id ? { ...y, ...r.decision } : y)) }));
     } catch (err) {
       setM((x) => ({ ...x, [key]: prev }));
-      toast.error(err.message);
+      toast.error(displayError(err));
     } finally {
       setBusy(null);
     }

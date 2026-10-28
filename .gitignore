@@ -15,6 +15,7 @@ server/scout.db-*
 # local agent tooling
 .agents/
 .claude/
+.codex/
 skills-lock.json
 # the same skills linked for other agents
 .continue/

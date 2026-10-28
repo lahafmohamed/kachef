@@ -123,7 +123,15 @@ async function failure(res, path) {
       new CustomEvent('auth:expired', { detail: { reason: body.error || 'unauthorized' } })
     );
   }
-  const err = new Error(body.error || res.statusText);
+  const code = body.error || res.statusText;
+  // Keep domain codes intact: forms use them to identify a field or a conflict.
+  // Generic transport/access errors need useful copy wherever err.message is shown.
+  const genericKey = res.status >= 500 ? 'error.requestFailed'
+    : ['forbidden', 'admin_only', 'insufficient_permissions'].includes(code) ? 'error.forbidden'
+    : ['not_found', 'not found'].includes(code) ? 'error.missing'
+    : null;
+  const err = new Error(genericKey ? i18n.t(genericKey) : code);
+  err.code = code;
   err.status = res.status;
   // The rest of the payload rides along: a 409 names the record it collided with
   err.body = body;

@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { displayError } from '../lib/errors';
 import { useAuth, usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
@@ -157,7 +158,7 @@ export function ContactDialog({ open, member, contact, defaultChannel, onClose, 
         }
       }
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err));
     } finally {
       setSaving(false);
     }
