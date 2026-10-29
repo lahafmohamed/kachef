@@ -471,6 +471,13 @@ export const IconCamera = (p) => (
     <circle cx="12" cy="13" r="3" />
   </Icon>
 );
+export const IconImage = (p) => (
+  <Icon {...p}>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <circle cx="9" cy="9" r="2" />
+    <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+  </Icon>
+);
 
 /* ============================================================
    Theme

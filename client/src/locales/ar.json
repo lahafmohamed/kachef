@@ -127,6 +127,8 @@
     "joinDate": "تاريخ الانتساب",
     "photo": "الصورة (اختيارية)",
     "removePhoto": "إزالة الصورة",
+    "takePhoto": "التقاط صورة",
+    "uploadPhoto": "اختيار صورة",
     "status": "الحالة",
     "active": "فعّال",
     "inactive": "غير فعّال",

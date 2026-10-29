@@ -14,7 +14,6 @@ import {
   LEADER_FILTER_KEYS,
   avatarName,
   branchName,
-  fileToDataUrl,
   filterLeaders,
   fmtPhone,
   memberName,
@@ -24,6 +23,7 @@ import DatePicker from '../components/DatePicker';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
 import SearchSelect from '../components/SearchSelect';
+import PhotoPicker from '../components/PhotoPicker';
 import Credentials from '../components/Credentials';
 import PermsEditor, { PermPresets } from '../components/PermsEditor';
 import { presetPerms } from '../lib/perms';
@@ -295,30 +295,11 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
           onChange={set('education')}
         />
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="l_photo">{t('member.photo')}</Label>
-        <div className="flex flex-wrap items-center gap-3">
-          {form.photo && <Avatar photo={form.photo} name={form.first_name} className="h-14 w-14" />}
-          <Input
-            id="l_photo"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="flex-1 py-2 file:me-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              const photo = await fileToDataUrl(file);
-              setForm((f) => ({ ...f, photo }));
-            }}
-          />
-          {form.photo && (
-            <Button variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, photo: null }))}>
-              {t('member.removePhoto')}
-            </Button>
-          )}
-        </div>
-      </div>
+      <PhotoPicker
+        value={form.photo}
+        label={t('member.photo')}
+        onChange={(photo) => setForm((f) => ({ ...f, photo }))}
+      />
       <div className="space-y-1.5">
         <Label htmlFor="l_status">{t('member.status')}</Label>
         <Select id="l_status" value={form.status} onChange={set('status')}>

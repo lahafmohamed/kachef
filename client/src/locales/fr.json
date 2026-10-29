@@ -123,6 +123,8 @@
     "joinDate": "Date d'inscription",
     "photo": "Photo (optionnelle)",
     "removePhoto": "Retirer la photo",
+    "takePhoto": "Prendre une photo",
+    "uploadPhoto": "Importer une photo",
     "status": "Statut",
     "active": "Actif",
     "inactive": "Inactif",

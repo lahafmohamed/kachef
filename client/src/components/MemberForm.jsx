@@ -6,9 +6,10 @@ import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
 import { sectionGender, useSection } from '../section';
-import { branchName, fileToDataUrl, memberName, todayISO } from '../utils';
+import { branchName, memberName, todayISO } from '../utils';
 import { ageGroupFor } from '../lib/ageGroups';
 import DatePicker from './DatePicker';
+import PhotoPicker from './PhotoPicker';
 import SearchSelect from './SearchSelect';
 import {
   Button,
@@ -20,7 +21,6 @@ import {
   cn,
   useToast,
   IconAlert,
-  IconCamera,
 } from './ui';
 
 // Kept in step with BLOOD_TYPES on the server, which rejects anything else
@@ -231,13 +231,6 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
     }
   }
 
-  async function handlePhoto(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const photo = await fileToDataUrl(file);
-    setForm((f) => ({ ...f, photo }));
-  }
-
   async function submit(e) {
     e.preventDefault();
     setSaving(true);
@@ -284,38 +277,11 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
   return (
     <form id={formId} onSubmit={submit} className="space-y-6 [&>section+section]:border-t [&>section+section]:border-border [&>section+section]:pt-5">
       <Section title={t('member.sectionIdentity')}>
-        <div className="flex items-center gap-4">
-          {/* The whole circle is the picker; the input inside it takes the focus */}
-          <label className="relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-input bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-card">
-            {form.photo ? (
-              <img src={form.photo} alt="" className="img-outline h-full w-full object-cover" />
-            ) : (
-              <IconCamera className="h-6 w-6" />
-            )}
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              aria-label={t(form.photo ? 'member.changePhoto' : 'member.addPhoto')}
-              onChange={handlePhoto}
-              className="sr-only"
-            />
-          </label>
-          <div className="min-w-0 text-sm">
-            <p className="font-medium">{t('member.photo')}</p>
-            {form.photo ? (
-              <button
-                type="button"
-                onClick={() => setForm((f) => ({ ...f, photo: null }))}
-                className="focus-ring -mx-1 min-h-11 rounded px-1 text-xs font-medium text-destructive hover:underline sm:min-h-0"
-              >
-                {t('member.removePhoto')}
-              </button>
-            ) : (
-              <p className="text-xs text-muted-foreground">{t('member.addPhoto')}</p>
-            )}
-          </div>
-        </div>
+        <PhotoPicker
+          value={form.photo}
+          label={t('member.photo')}
+          onChange={(photo) => setForm((f) => ({ ...f, photo }))}
+        />
 
         {/* Order of the الاسم الثلاثي, as it reads everywhere else. grid-cols-1 on phones:
             an implicit column grows to a long picked value and widens the sheet */}
