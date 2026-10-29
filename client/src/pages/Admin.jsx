@@ -1,6 +1,7 @@
 import { displayError } from '../lib/errors';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { useDebounced, useFetch } from '../hooks';
@@ -36,6 +37,7 @@ import {
   IconShield,
   IconSwap,
   IconTrash,
+  IconTrendingUp,
   IconUserCheck,
   IconUsers,
 } from '../components/ui';
@@ -524,6 +526,7 @@ export default function Admin() {
   const confirm = useConfirm();
   const { user: me } = useAuth();
   const { view } = useSection();
+  const navigate = useNavigate();
   const users = useFetch('/users');
   // Every فرقة of both أقسام, whatever the switcher says: an account of the other قسم
   // must still be editable from here
@@ -668,6 +671,10 @@ export default function Admin() {
       {/* The header stays while the list loads or fails; a form opened before the
           فرق arrive would offer none, so the button waits for them */}
       <PageHeader title={t('admin.title')} description={t('admin.subtitle')}>
+        <Button variant="outline" onClick={() => navigate('/admin/activity')}>
+          <IconTrendingUp />
+          {t('activity.title')}
+        </Button>
         <Button
           variant="brand"
           disabled={loading || !!failed}

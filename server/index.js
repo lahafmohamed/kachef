@@ -630,6 +630,30 @@ const dropExpiredTokens = db.prepare(
 const purgeExpired = () =>
   dropExpiredTokens.run(`-${IDLE_MS / 1000} seconds`, `-${MAX_SESSION_MS / 1000} seconds`);
 
+// ---------- statistiques d'activité ----------
+// One line per successful request of a signed-in account (server/activity.js says
+// which requests count and what to call them). Written after the answer has gone
+// out, so a slow disk never delays a page. Lines older than a year go at startup.
+const { classifyActivity, unusedPerms, AREAS: ACTIVITY_AREAS } = require('./activity');
+const activityInsert = db.prepare(
+  'INSERT INTO activity_log (user_id, kind, area, action, entity_id) VALUES (?, ?, ?, ?, ?)'
+);
+const ACTIVITY_KEEP_DAYS = 400;
+db.prepare("DELETE FROM activity_log WHERE created_at < datetime('now', ?)").run(`-${ACTIVITY_KEEP_DAYS} days`);
+
+function recordActivity(req, res) {
+  if (res.statusCode >= 400 || !req.user) return;
+  const hit = classifyActivity(req.method, req.route?.path);
+  if (!hit) return;
+  const id = req.params?.id ?? req.params?.kind;
+  try {
+    activityInsert.run(req.user.id, hit.kind, hit.area, hit.action, id === undefined ? null : String(id).slice(0, 40));
+  } catch (err) {
+    console.error('activity_log', err.message);
+  }
+}
+const recordLogin = (userId) => activityInsert.run(userId, 'login', 'app', 'app.login', null);
+
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
   const attemptKey = loginAttemptKey(req, username);
@@ -650,6 +674,7 @@ app.post('/api/auth/login', (req, res) => {
   db.prepare(
     "INSERT INTO auth_tokens (token, user_id, last_seen_at) VALUES (?, ?, datetime('now'))"
   ).run(token, u.id);
+  recordLogin(u.id);
   res.json({ token, user: { ...publicUser(u), absence_threshold: absenceThreshold() }, idleTimeoutMs: IDLE_MS });
 });
 
@@ -680,6 +705,7 @@ app.use('/api', (req, res, next) => {
 
   req.user = publicUser(row);
   req.token = token;
+  res.on('finish', () => recordActivity(req, res));
   next();
 });
 
@@ -1191,6 +1217,186 @@ app.post('/api/users/sync-branches', requireAdmin, (req, res) => {
     }
   })();
   res.json({ updated: updated.length, ids: updated, year });
+});
+
+// ---------- statistiques d'activité : lecture ----------
+// Admin only, every قسم at once: who used the app over the period, how much, for what,
+// and the rights each account holds without ever using them — what to tell its holder.
+const ACTIVITY_PERIODS = [7, 30, 90, 365];
+const activityDays = (req) =>
+  ACTIVITY_PERIODS.includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+const sinceArg = (days) => `-${days} days`;
+const heldBy = (u) => (key) => u.role === 'admin' || !u.perms || u.perms.includes(key);
+
+const activityTotalsSQL = (where) => `
+  SELECT ${where.includes('user_id = ?') ? '' : 'user_id,'}
+         COUNT(DISTINCT CASE WHEN kind != 'login' THEN date(created_at) END) AS active_days,
+         SUM(kind = 'login') AS logins, SUM(kind = 'read') AS reads, SUM(kind = 'write') AS writes,
+         MIN(created_at) AS first_at, MAX(created_at) AS last_at
+    FROM activity_log WHERE ${where}${where.includes('user_id = ?') ? '' : ' GROUP BY user_id'}`;
+
+// The last sign of life of each account, from before the journal too: the token it
+// last touched, the last line it wrote in the audit journal
+const lastSeenEverSQL = `
+  SELECT user_id, MAX(at) AS at FROM (
+    SELECT user_id, MAX(created_at) AS at FROM activity_log GROUP BY user_id
+    UNION ALL SELECT user_id, MAX(COALESCE(last_seen_at, created_at)) FROM auth_tokens GROUP BY user_id
+    UNION ALL SELECT actor_user_id, MAX(created_at) FROM audit_events WHERE actor_user_id IS NOT NULL GROUP BY actor_user_id
+  ) GROUP BY user_id`;
+
+const activityUser = (u) => ({
+  id: u.id,
+  username: u.username,
+  display_name: u.display_name,
+  role: u.role,
+  active: u.active,
+  section: u.section,
+  branches: u.branches,
+  leader_id: u.leader_id,
+  leader_name: u.leader_name,
+  custom_perms: u.perms !== null,
+});
+
+app.get('/api/activity', requireAdmin, (req, res) => {
+  const days = activityDays(req);
+  const since = sinceArg(days);
+  const period = "created_at >= datetime('now', ?)";
+  const totals = new Map(db.prepare(activityTotalsSQL(period)).all(since).map((r) => [r.user_id, r]));
+  const areaRows = db
+    .prepare(
+      `SELECT user_id, area, SUM(kind = 'read') AS reads, SUM(kind = 'write') AS writes
+         FROM activity_log WHERE ${period} AND kind != 'login' GROUP BY user_id, area`
+    )
+    .all(since);
+  const actionRows = db.prepare(`SELECT DISTINCT user_id, action FROM activity_log WHERE ${period}`).all(since);
+  const lastSeen = new Map(db.prepare(lastSeenEverSQL).all().map((r) => [r.user_id, r.at]));
+  const areasOf = new Map();
+  for (const r of areaRows) {
+    if (!areasOf.has(r.user_id)) areasOf.set(r.user_id, []);
+    areasOf.get(r.user_id).push({ area: r.area, reads: r.reads, writes: r.writes });
+  }
+  const actionsOf = new Map();
+  for (const r of actionRows) {
+    if (!actionsOf.has(r.user_id)) actionsOf.set(r.user_id, new Set());
+    actionsOf.get(r.user_id).add(r.action);
+  }
+
+  const users = db
+    .prepare(USER_LIST_SQL)
+    .all()
+    .map(publicUser)
+    .map((u) => {
+      const t = totals.get(u.id);
+      const areas = (areasOf.get(u.id) || []).sort((a, b) => b.reads + b.writes - (a.reads + a.writes));
+      return {
+        ...activityUser(u),
+        active_days: t?.active_days || 0,
+        logins: t?.logins || 0,
+        reads: t?.reads || 0,
+        writes: t?.writes || 0,
+        first_at: t?.first_at || null,
+        last_at: t?.last_at || null,
+        last_seen_ever: lastSeen.get(u.id) || null,
+        areas,
+        // Only meaningful once the account did something: for the others the whole
+        // list would be «unused», which the empty counts already say
+        unused: t ? unusedPerms(heldBy(u), new Set(areas.map((a) => a.area)), actionsOf.get(u.id) || new Set()) : [],
+      };
+    });
+
+  const areas = db
+    .prepare(
+      `SELECT area, SUM(kind = 'read') AS reads, SUM(kind = 'write') AS writes, COUNT(DISTINCT user_id) AS users
+         FROM activity_log WHERE ${period} AND kind != 'login' GROUP BY area`
+    )
+    .all(since)
+    .filter((a) => ACTIVITY_AREAS.includes(a.area));
+  const daily = db
+    .prepare(
+      `SELECT date(created_at) AS day, COUNT(*) AS hits, SUM(kind = 'write') AS writes, COUNT(DISTINCT user_id) AS users
+         FROM activity_log WHERE ${period} AND kind != 'login' GROUP BY day ORDER BY day`
+    )
+    .all(since);
+  const trackingSince = db.prepare('SELECT MIN(created_at) AS at FROM activity_log').get().at;
+  res.json({ days, tracking_since: trackingSince, users, areas, daily });
+});
+
+// Names for the ids of the trail, so a line reads «a pointé la présence — Sortie du
+// 12/10» rather than «#45»
+const TRAIL_LOOKUPS = {
+  sessions: (ids) => db.prepare(`SELECT id, title AS label, date FROM sessions WHERE id IN (${ids})`).all(),
+  members: (ids) =>
+    db.prepare(`SELECT id, first_name || ' ' || last_name AS label, NULL AS date FROM members WHERE id IN (${ids})`).all(),
+  leaders: (ids) => db.prepare(`SELECT id, ${fullNameSQL('l')} AS label, NULL AS date FROM leaders l WHERE id IN (${ids})`).all(),
+  events: (ids) => db.prepare(`SELECT id, title AS label, start_date AS date FROM events WHERE id IN (${ids})`).all(),
+  meetings: (ids) => db.prepare(`SELECT id, title AS label, date FROM meetings WHERE id IN (${ids})`).all(),
+  prep: (ids) => db.prepare(`SELECT id, title AS label, date FROM prep_cards WHERE id IN (${ids})`).all(),
+  branches: (ids) => db.prepare(`SELECT id, name_fr AS label, name_ar, NULL AS date FROM branches WHERE id IN (${ids})`).all(),
+};
+
+function nameTrail(rows) {
+  const wanted = {};
+  for (const r of rows) {
+    const id = Number(r.entity_id);
+    if (!TRAIL_LOOKUPS[r.area] || !Number.isInteger(id)) continue;
+    (wanted[r.area] ??= new Set()).add(id);
+  }
+  const names = {};
+  for (const [area, ids] of Object.entries(wanted)) {
+    names[area] = new Map(TRAIL_LOOKUPS[area]([...ids].join(',')).map((e) => [e.id, e]));
+  }
+  return rows.map((r) => {
+    const e = names[r.area]?.get(Number(r.entity_id));
+    return e ? { ...r, entity: { label: e.label, label_ar: e.name_ar ?? null, date: e.date } } : r;
+  });
+}
+
+app.get('/api/activity/users/:id', requireAdmin, (req, res) => {
+  const row = userById(intOr(req.params.id));
+  if (!row) return res.status(404).json({ error: 'user not found' });
+  const u = publicUser(row);
+  const days = activityDays(req);
+  const since = sinceArg(days);
+  const period = "user_id = ? AND created_at >= datetime('now', ?)";
+  const summary = db.prepare(activityTotalsSQL(period)).get(u.id, since);
+  const areas = db
+    .prepare(
+      `SELECT area, SUM(kind = 'read') AS reads, SUM(kind = 'write') AS writes, MAX(created_at) AS last_at
+         FROM activity_log WHERE ${period} AND kind != 'login' GROUP BY area ORDER BY reads + writes DESC`
+    )
+    .all(u.id, since);
+  const actions = db
+    .prepare(
+      `SELECT action, area, kind, COUNT(*) AS n, MAX(created_at) AS last_at
+         FROM activity_log WHERE ${period} AND kind != 'login' GROUP BY action ORDER BY n DESC, last_at DESC`
+    )
+    .all(u.id, since);
+  const daily = db
+    .prepare(
+      `SELECT date(created_at) AS day, SUM(kind = 'read') AS reads, SUM(kind = 'write') AS writes,
+              SUM(kind = 'login') AS logins, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+         FROM activity_log WHERE ${period} GROUP BY day ORDER BY day`
+    )
+    .all(u.id, since);
+  const trail = nameTrail(
+    db
+      .prepare(
+        `SELECT id, created_at, kind, area, action, entity_id FROM activity_log
+          WHERE ${period} ORDER BY id DESC LIMIT 400`
+      )
+      .all(u.id, since)
+  );
+  const lastSeen = db.prepare(lastSeenEverSQL).all().find((r) => r.user_id === u.id)?.at || null;
+  res.json({
+    user: activityUser(u),
+    days,
+    summary: { ...summary, active_days: summary.active_days || 0, last_seen_ever: lastSeen },
+    areas,
+    actions,
+    daily,
+    trail,
+    unused: unusedPerms(heldBy(u), new Set(areas.map((a) => a.area)), new Set(actions.map((a) => a.action))),
+  });
 });
 
 // What the form fills in while the admin types a display name. `except` = the

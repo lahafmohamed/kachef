@@ -44,6 +44,7 @@ const PAGES = {
   promotions: [() => import('./pages/Promotions'), 'promotions.read'],
   settings: [() => import('./pages/Settings'), 'admin'],
   admin: [() => import('./pages/Admin'), 'admin'],
+  activity: [() => import('./pages/Activity'), 'admin'],
 };
 
 const Branches = lazy(PAGES.branches[0]);
@@ -63,6 +64,7 @@ const Leaders = lazy(PAGES.leaders[0]);
 const LeaderDetail = lazy(PAGES.leaderDetail[0]);
 const Settings = lazy(PAGES.settings[0]);
 const Admin = lazy(PAGES.admin[0]);
+const Activity = lazy(PAGES.activity[0]);
 // Not prefetched: the sheet behind the PDF export, opened on screen only when the
 // server has no Chromium. Chromium itself waits for `.print-sheet`, chunk included.
 // Not React.lazy either: a Suspense boundary holds resolved content back 300 ms after
@@ -258,6 +260,14 @@ function Shell() {
               element={
                 <AdminRoute>
                   <Admin />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/admin/activity"
+              element={
+                <AdminRoute>
+                  <Activity />
                 </AdminRoute>
               }
             />

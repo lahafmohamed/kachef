@@ -433,6 +433,20 @@ CREATE TABLE IF NOT EXISTS audit_events (
   session_id INTEGER
 );
 
+-- إحصاءات الاستعمال: سطر لكل طلب ناجح من حساب (قراءة أو كتابة أو دخول)، بمجاله
+-- (sessions، members…) و فعله المسمّى (sessions.attendance…). يُصنَّف من نمط المسار لا من
+-- الرابط (server/activity.js). الأسطر الأقدم من سنة تُحذف عند الإقلاع.
+CREATE TABLE IF NOT EXISTS activity_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  kind TEXT NOT NULL CHECK (kind IN ('login', 'read', 'write')),
+  area TEXT NOT NULL,
+  action TEXT NOT NULL,
+  -- المعرّف في المسار (:id) إن وُجد، لعرض «أيّ نشاط» في التفصيل
+  entity_id TEXT
+);
+
 -- إشعارات للأدمن: قائد أضاف نشاطًا أو عدّل حضوره/منشّطيه/أعداده. Rows are written only
 -- for non-admin actors. session_title is a snapshot so the line still reads after the
 -- نشاط itself changes; the FK only nulls the link.
@@ -1792,6 +1806,8 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_assignments_leader_year ON assignments(leader_id, year);
     CREATE INDEX IF NOT EXISTS idx_prep_cards_branch_date ON prep_cards(branch_id, date);
     CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_at ON activity_log(created_at);
     CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_date);
     CREATE INDEX IF NOT EXISTS idx_event_participants_event ON event_participants(event_id);
     CREATE INDEX IF NOT EXISTS idx_event_sessions_event_date ON event_sessions(event_id, date);
