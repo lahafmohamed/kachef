@@ -30,6 +30,7 @@ import {
   useConfirm,
   useToast,
   IconCheckAll,
+  IconChevronDown,
   IconAlert,
   IconInbox,
   IconLink,
@@ -1162,6 +1163,7 @@ function SignupReviewCard({ sk, f, via, scopes, onDone }) {
         </div>
         <Button size="sm" variant={open ? 'ghost' : 'outline'} aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
           {t(open ? 'memberForms.fold' : 'memberForms.review')}
+          <IconChevronDown className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} />
         </Button>
       </div>
 

@@ -3308,7 +3308,7 @@
     },
     "send": "Envoyer",
     "resend": "Relancer",
-    "review": "Valider",
+    "review": "Examiner",
     "noneMissingTitle": "Toutes les fiches sont complètes",
     "noneMissingBody": "Aucun membre actif n’a d’information manquante dans ces branches.",
     "noMatch": "Aucun membre dans ce filtre.",
