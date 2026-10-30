@@ -122,6 +122,7 @@ function FormsPanel({ kind, who }) {
   const overview = useFetch(kind.api);
   const pending = useFetch(`${kind.api}/pending`);
   const signups = useFetch('/member-signups', { skip: !canSignup });
+  const sharedLinks = useFetch('/signup-links', { skip: !canSignup });
   const signupsPending = useFetch('/member-signups/pending', { skip: !canSignup });
 
   const reloadAll = () => {
@@ -129,6 +130,7 @@ function FormsPanel({ kind, who }) {
     pending.reload({ quiet: true });
     if (canSignup) {
       signups.reload({ quiet: true });
+      sharedLinks.reload({ quiet: true });
       signupsPending.reload({ quiet: true });
     }
   };
@@ -153,7 +155,7 @@ function FormsPanel({ kind, who }) {
           {tab === 'send' ? (
             <SendList kind={kind} who={who} overview={overview} onChanged={reloadAll} onReview={() => patch({ tab: 'review' })} />
           ) : tab === 'signups' ? (
-            <Signups list={signups} pending={signupsPending} onChanged={reloadAll} />
+            <Signups list={signups} pending={signupsPending} shared={sharedLinks} onChanged={reloadAll} />
           ) : (
             <ReviewList kind={kind} pending={pending} onChanged={reloadAll} />
           )}
@@ -739,31 +741,69 @@ function signupMessage(T, f, branch, lang) {
   });
 }
 
-function Signups({ list, pending, onChanged }) {
+function Signups({ list, pending, shared, onChanged }) {
   const { t, i18n } = useTranslation();
   const branches = useFetch('/branches');
   const [dialog, setDialog] = useState(null);
+  const [sharedDialog, setSharedDialog] = useState(null);
   const branchById = useMemo(() => new Map((branches.data || []).map((b) => [b.id, b])), [branches.data]);
 
   if (list.error || pending.error)
     return <ErrorState message={list.error || pending.error} onRetry={() => (list.reload(), pending.reload())} retryLabel={t('error.retry')} />;
   if (!list.data || !pending.data) return <Skeleton className="h-64 w-full" />;
-  const links = list.data.filter((f) => f.status !== 'submitted');
+  const links = list.data.filter((f) => f.status !== 'submitted' && !f.link_id);
+  const sharedById = new Map((shared.data || []).map((l) => [l.id, l]));
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="min-w-0 flex-1 text-sm text-muted-foreground">{t('memberForms.signupsIntro')}</p>
-        <Button variant="brand" onClick={() => setDialog({ form: null })}>
-          <IconPlus />
-          {t('memberForms.newSignup')}
-        </Button>
+        <p className="min-w-0 flex-1 basis-64 text-sm text-muted-foreground">{t('memberForms.signupsIntro')}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setSharedDialog({ link: null })}>
+            <IconLink />
+            {t('memberForms.newShared')}
+          </Button>
+          <Button variant="brand" onClick={() => setDialog({ form: null })}>
+            <IconPlus />
+            {t('memberForms.newSignup')}
+          </Button>
+        </div>
       </div>
 
-      {pending.data.map((f) => (
-        <SignupReviewCard key={f.id} f={f} branches={branches.data || []} onDone={onChanged} />
-      ))}
+      {shared.data?.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold">{t('memberForms.sharedTitle')}</h2>
+          <Card className="divide-y divide-border overflow-hidden">
+            {shared.data.map((l) => (
+              <SharedLinkRow
+                key={l.id}
+                l={l}
+                branch={branchById.get(l.branch_id)}
+                onShare={() => setSharedDialog({ link: l })}
+                onChanged={onChanged}
+              />
+            ))}
+          </Card>
+        </section>
+      )}
 
+      {/* One row per demande, opened to check it: a permanent link can bring fifty */}
+      {pending.data.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold">
+            {t('memberForms.pendingTitle')} <span className="tabular-nums text-muted-foreground">({pending.data.length})</span>
+          </h2>
+          <Card className="divide-y divide-border overflow-hidden">
+            {pending.data.map((f) => (
+              <SignupReviewCard key={f.id} f={f} via={f.link_id ? sharedById.get(f.link_id) : null} branches={branches.data || []} onDone={onChanged} />
+            ))}
+          </Card>
+        </section>
+      )}
+
+      {links.length > 0 && (shared.data?.length > 0 || pending.data.length > 0) && (
+        <h2 className="text-sm font-semibold">{t('memberForms.personalTitle')}</h2>
+      )}
       {links.length > 0 ? (
         <Card className="divide-y divide-border overflow-hidden">
           {links.map((f) => {
@@ -799,12 +839,20 @@ function Signups({ list, pending, onChanged }) {
           })}
         </Card>
       ) : (
-        !pending.data.length && (
+        !pending.data.length && !shared.data?.length && (
           <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('memberForms.noSignupsTitle')}>
             {t('memberForms.noSignupsBody')}
           </EmptyState>
         )
       )}
+
+      <SharedLinkDialog
+        open={!!sharedDialog}
+        initial={sharedDialog?.link || null}
+        branches={branches.data || []}
+        onClose={() => setSharedDialog(null)}
+        onChanged={onChanged}
+      />
 
       <SignupDialog
         open={!!dialog}
@@ -1004,7 +1052,7 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
 }
 
 /** A family's demande: every answer editable, the فرقة to pick, then «Inscrire». */
-function SignupReviewCard({ f, branches, onDone }) {
+function SignupReviewCard({ f, via, branches, onDone }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
@@ -1013,7 +1061,10 @@ function SignupReviewCard({ f, branches, onDone }) {
   const [branchId, setBranchId] = useState(String(f.branch_id));
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
+  // Folded to one row until opened to check it
+  const [open, setOpen] = useState(false);
   const name = [values.first_name, values.father_name, values.last_name].filter(Boolean).join(' ');
+  const bodyId = `sg${f.id}-body`;
 
   async function apply() {
     setBusy('apply');
@@ -1051,20 +1102,41 @@ function SignupReviewCard({ f, branches, onDone }) {
   }
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+    <div className={cn(open && 'bg-card')}>
+      <div className={cn('flex items-center gap-3 px-3 py-3 sm:px-4', open && 'border-b border-border')}>
         <Avatar name={`${values.first_name || ''} ${values.last_name || ''}`} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-medium">{name}</span>
-            <Badge variant="info">{t('memberForms.signupBadge')}</Badge>
+            {f.duplicates.length > 0 && (
+              <Badge variant="warning">
+                <IconAlert className="h-3 w-3" />
+                {t('memberForms.possibleDuplicate')}
+              </Badge>
+            )}
+            {f.link_id && (
+              <Badge variant="outline">
+                <IconLink className="h-3 w-3" />
+                {via?.label || t('memberForms.viaShared')}
+              </Badge>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
-            {t('memberForms.filledBy', { who: t(`memberForms.who.${f.respondent}`), date: fmtDate(f.submitted_at.slice(0, 10)) })}
+            {[
+              answers.birth_date && fmtDate(answers.birth_date),
+              t('memberForms.filledBy', { who: t(`memberForms.who.${f.respondent}`), date: fmtDate(f.submitted_at.slice(0, 10)) }),
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </p>
         </div>
+        <Button size="sm" variant={open ? 'ghost' : 'outline'} aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
+          {t(open ? 'memberForms.fold' : 'memberForms.review')}
+        </Button>
       </div>
 
+      {open && (
+      <div id={bodyId}>
       {f.duplicates.length > 0 && (
         <div className="flex gap-2.5 border-b border-border bg-warning/10 px-4 py-3 text-sm">
           <IconAlert className="mt-0.5 shrink-0 text-warning" />
@@ -1128,6 +1200,230 @@ function SignupReviewCard({ f, branches, onDone }) {
           {t('memberForms.register')}
         </Button>
       </div>
-    </Card>
+      </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Liens permanents ----------
+// One link for a whole فرقة, posted in the parents' WhatsApp group: every send makes its
+// own demande. Switched off and on at will (server: signup_links).
+
+const sharedUrl = (l) => `${window.location.origin}/fiche/${l.token}`;
+
+function sharedMessage(T, l, branch, lang) {
+  return T('memberForms.waShared', { org: T('memberForms.org'), branch: branch ? branchName(branch, lang) : '', url: sharedUrl(l) });
+}
+
+function SharedLinkRow({ l, branch, onShare, onChanged }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    if (l.active && !(await confirm({ title: t('memberForms.disableShared'), message: t('memberForms.disableSharedConfirm'), confirmLabel: t('memberForms.disableShared') })))
+      return;
+    setBusy(true);
+    try {
+      await api.put(`/signup-links/${l.id}`, { active: !l.active });
+      toast.success(t(l.active ? 'memberForms.sharedDisabled' : 'memberForms.sharedEnabled'));
+      onChanged();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={cn('flex flex-wrap items-center gap-3 px-3 py-3 sm:px-4', !l.active && 'bg-muted/30')}>
+      <div className="min-w-0 flex-1 basis-56">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="truncate font-medium">{l.label || (branch ? branchName(branch, i18n.language) : t('memberForms.sharedTitle'))}</span>
+          <Badge variant={l.active ? 'success' : 'secondary'}>{t(l.active ? 'memberForms.sharedActive' : 'memberForms.sharedInactive')}</Badge>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {[
+            branch && branchName(branch, i18n.language),
+            t('memberForms.sharedCounts', { count: l.requests, registered: l.registered }),
+            l.pending ? t('memberForms.sharedPending', { count: l.pending }) : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </p>
+      </div>
+      <div className="flex gap-2">
+        {l.active && (
+          <Button size="sm" variant="outline" onClick={onShare}>
+            <IconWhatsApp className="h-4 w-4 text-[#1a7f45]" />
+            {t('memberForms.share')}
+          </Button>
+        )}
+        <Button size="sm" variant={l.active ? 'destructive-ghost' : 'outline'} onClick={toggle} loading={busy}>
+          {t(l.active ? 'memberForms.disableShared' : 'memberForms.enableShared')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** New permanent link (فرقة, a name for it), then the message to post in the group. */
+function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const [link, setLink] = useState(null);
+  const [draft, setDraft] = useState({ branch_id: '', label: '' });
+  const [lang, setLang] = useState(i18n.language === 'fr' ? 'fr' : 'ar');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setLink(initial);
+    setError(null);
+    setBusy(false);
+    setDraft({ branch_id: branches.length === 1 ? String(branches[0].id) : '', label: '' });
+    if (initial) setLang(initial.lang);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- reset on each opening
+
+  async function create(e) {
+    e.preventDefault();
+    if (!draft.branch_id) {
+      setError(t('memberForms.pickBranch'));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setLink(await api.post('/signup-links', { ...draft, branch_id: Number(draft.branch_id), lang }));
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const branch = link && branches.find((b) => b.id === link.branch_id);
+  const T = i18n.getFixedT(lang);
+  const message = link ? sharedMessage(T, link, branch, lang) : '';
+  // The form opens in the language of the message
+  const saveLang = () => link && link.lang !== lang && api.put(`/signup-links/${link.id}`, { lang }).catch(() => {});
+
+  async function copy() {
+    try {
+      await copyText(message);
+      toast.success(t('memberForms.copied'));
+      saveLang();
+    } catch {
+      toast.error(t('memberForms.copyFailed'));
+    }
+  }
+
+  const langPicker = (
+    <div className="space-y-1.5">
+      <Label>{t('memberForms.language')}</Label>
+      <SegmentedControl
+        label={t('memberForms.language')}
+        size="sm"
+        options={[
+          { value: 'ar', label: 'العربية' },
+          { value: 'fr', label: 'Français' },
+        ]}
+        value={lang}
+        onChange={setLang}
+      />
+    </div>
+  );
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t('memberForms.newShared')}
+      description={t('memberForms.newSharedHint')}
+      footer={
+        link ? (
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={copy} className="max-sm:flex-1">
+              <IconLink />
+              {t('memberForms.copyLink')}
+            </Button>
+            <a
+              // No number: WhatsApp asks which chat — the parents' group
+              href={`https://wa.me/?text=${encodeURIComponent(message)}`}
+              target="_blank"
+              rel="noreferrer"
+              onClick={saveLang}
+              className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.96] max-sm:flex-1 max-sm:px-3 sm:h-10"
+            >
+              <IconWhatsApp className="h-4 w-4" />
+              {t('memberForms.openWhatsApp')}
+            </a>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose} className="max-sm:flex-1">
+              {t('common.cancel')}
+            </Button>
+            <Button variant="brand" type="submit" form="shared-form" loading={busy} className="max-sm:flex-1">
+              {t('memberForms.createLink')}
+            </Button>
+          </div>
+        )
+      }
+    >
+      {!link ? (
+        <form id="shared-form" onSubmit={create} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="sl-branch">{t('member.branch')}</Label>
+            <Select id="sl-branch" value={draft.branch_id} onChange={(e) => setDraft((d) => ({ ...d, branch_id: e.target.value }))}>
+              <option value="" disabled>
+                {t('memberForms.pickBranch')}
+              </option>
+              {branches.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {branchName(b, i18n.language)}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sl-label">{t('memberForms.sharedLabel')}</Label>
+            <Input
+              id="sl-label"
+              autoComplete="off"
+              maxLength={80}
+              placeholder={t('memberForms.sharedLabelHint')}
+              value={draft.label}
+              onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
+            />
+          </div>
+          {langPicker}
+          {error && (
+            <p role="alert" className="rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive">
+              {error}
+            </p>
+          )}
+        </form>
+      ) : (
+        <div className="space-y-5">
+          {langPicker}
+          <div className="space-y-1.5">
+            <Label>{t('memberForms.preview')}</Label>
+            <p
+              dir={lang === 'ar' ? 'rtl' : 'ltr'}
+              lang={lang}
+              className="whitespace-pre-line break-words rounded-lg border border-border bg-muted/40 px-3.5 py-3 text-sm"
+            >
+              {message}
+            </p>
+            <p className="text-xs text-muted-foreground">{t('memberForms.sharedNote')}</p>
+          </div>
+        </div>
+      )}
+    </Dialog>
   );
 }

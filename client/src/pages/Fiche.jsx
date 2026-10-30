@@ -58,6 +58,8 @@ export default function Fiche() {
   const { token } = useParams();
   const { t, i18n } = useTranslation();
   const [state, setState] = useState({ loading: true });
+  // Permanent link: each «Inscrire un autre enfant» starts a new, empty form
+  const [round, setRound] = useState(0);
   const langSet = useRef(false);
 
   async function load() {
@@ -110,6 +112,12 @@ export default function Fiche() {
       );
   else if (['submitted', 'applied', 'confirmed', 'rejected'].includes(data.status))
     body = <Notice tone="success" title={t('fiche.submittedTitle')}>{t('fiche.submittedBody', { name })}</Notice>;
+  else if (data.status === 'disabled')
+    body = (
+      <Notice tone="muted" title={t('fiche.disabledTitle')}>
+        {t('fiche.disabledBody')}
+      </Notice>
+    );
   else if (data.status !== 'open')
     body = (
       <Notice tone="muted" title={t('fiche.closedTitle')}>
@@ -118,7 +126,7 @@ export default function Fiche() {
     );
   else if (!data.fields.length)
     body = <Notice tone="success" title={t('fiche.completeTitle')}>{t('fiche.completeBody')}</Notice>;
-  else body = <FicheForm token={token} data={data} />;
+  else body = <FicheForm key={round} token={token} data={data} onAnother={data.shared ? () => setRound((n) => n + 1) : null} />;
 
   return (
     <AuthLayout>
@@ -163,7 +171,7 @@ function Notice({ tone, title, children, action }) {
 const sameAs = (current, v) =>
   current !== null && current !== undefined && (typeof v === 'boolean' ? current === v : String(current).trim() === String(v).trim());
 
-function FicheForm({ token, data }) {
+function FicheForm({ token, data, onAnother }) {
   const { t, i18n } = useTranslation();
   const asked = new Set(data.fields);
   const missing = new Set(data.missing || data.fields);
@@ -290,14 +298,25 @@ function FicheForm({ token, data }) {
         setErrors(err.body.fields);
         const first = data.fields.find((k) => err.body.fields[k]);
         formRef.current?.querySelector(`[data-field="${first}"] :is(input,textarea,button)`)?.focus();
-      } else if (err.code === 'closed') setFormError('fiche.closedTitle');
+      } else if (err.code === 'closed') setFormError(err.body?.status === 'disabled' ? 'fiche.disabledTitle' : 'fiche.closedTitle');
+      else if (err.status === 429) setFormError('fiche.errTooMany');
       else setFormError(err.network ? 'error.network' : 'error.requestFailed');
     }
   }
 
   if (done)
     return (
-      <Notice tone="success" title={t('fiche.doneTitle')}>
+      <Notice
+        tone="success"
+        title={t('fiche.doneTitle')}
+        action={
+          onAnother && (
+            <Button variant="outline" className="w-full sm:w-auto" onClick={onAnother}>
+              {t('fiche.another')}
+            </Button>
+          )
+        }
+      >
         {t(done === 'confirmed' ? 'fiche.confirmedBody' : leader ? 'fiche.doneBodyLeader' : signup ? 'fiche.doneBodySignup' : 'fiche.doneBody')}
       </Notice>
     );
@@ -530,7 +549,9 @@ function FicheForm({ token, data }) {
         <p className="flex gap-2.5 text-sm text-muted-foreground">
           <IconLock className="mt-0.5 shrink-0" />
           <span>
-            {t(leader ? 'fiche.privacyLeader' : 'fiche.privacy')} {t('fiche.validUntil', { date: fmtDate(data.expires_at.slice(0, 10)) })}
+            {t(leader ? 'fiche.privacyLeader' : 'fiche.privacy')}
+            {/* A permanent link has no end date */}
+            {data.expires_at && ` ${t('fiche.validUntil', { date: fmtDate(data.expires_at.slice(0, 10)) })}`}
           </span>
         </p>
         {formError && (

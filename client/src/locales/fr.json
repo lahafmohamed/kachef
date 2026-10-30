@@ -3100,6 +3100,10 @@
     "allTime": "Depuis toujours"
   },
   "fiche": {
+    "errTooMany": "Trop d’envois depuis cet appareil. Réessayez dans une heure.",
+    "another": "Inscrire un autre enfant",
+    "disabledBody": "Ce lien d’inscription est désactivé. Renseignez-vous auprès du chef de la branche.",
+    "disabledTitle": "Inscriptions fermées pour le moment",
     "errRequiredForm": "Remplissez les champs obligatoires marqués *.",
     "errRequired": "Champ obligatoire",
     "doneBodySignup": "La demande d’inscription a été envoyée au chef de la branche. Il la vérifiera et vous recontactera si besoin. Vous pouvez fermer cette page.",
@@ -3186,6 +3190,29 @@
     "closedBodyLeader": "Il a expiré ou a été remplacé. Demandez un nouveau lien à la direction du groupe."
   },
   "memberForms": {
+    "pendingTitle": "Demandes à valider",
+    "possibleDuplicate": "Doublon possible",
+    "fold": "Replier",
+    "waShared": "Bonjour, ici {{org}}. Pour inscrire votre enfant aux scouts ({{branch}}), remplissez ce formulaire — une fois par enfant : {{url}}",
+    "sharedNote": "Le même lien sert à tous : chaque envoi crée une demande séparée à valider. Vous pouvez le désactiver et le réactiver à tout moment.",
+    "sharedLabelHint": "Ex. : Groupe des parents Baraem",
+    "sharedLabel": "Nom du lien (facultatif)",
+    "sharedEnabled": "Lien réactivé",
+    "sharedDisabled": "Lien désactivé",
+    "disableSharedConfirm": "Désactiver ce lien ? Les familles ne pourront plus envoyer de demande, jusqu’à ce que vous le réactiviez. Les demandes déjà reçues restent.",
+    "enableShared": "Réactiver",
+    "disableShared": "Désactiver",
+    "share": "Partager",
+    "sharedPending": "{{count}} à valider",
+    "sharedCounts_other": "{{count}} demandes · {{registered}} inscrit(s)",
+    "sharedCounts_one": "{{count}} demande · {{registered}} inscrit(s)",
+    "sharedInactive": "Désactivé",
+    "sharedActive": "Actif",
+    "viaShared": "Lien permanent",
+    "personalTitle": "Liens personnels",
+    "sharedTitle": "Liens permanents",
+    "newSharedHint": "Un seul lien pour toute la branche, à poster dans le groupe WhatsApp des parents : chaque envoi crée une demande à valider.",
+    "newShared": "Lien permanent",
     "signupStatus": {
       "rejected": "Demande rejetée",
       "applied": "Inscrit le {{date}}"

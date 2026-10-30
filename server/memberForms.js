@@ -148,7 +148,28 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       member_id INTEGER REFERENCES members(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_member_signups_branch ON member_signups(branch_id, created_at);
+    -- Lien d'inscription permanent : un seul lien pour toute une فرقة (posté dans le groupe
+    -- WhatsApp des parents) ; chaque envoi y crée sa propre demande dans member_signups.
+    -- Désactivable et réactivable à volonté.
+    CREATE TABLE IF NOT EXISTS signup_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      label TEXT,
+      fields TEXT NOT NULL,
+      lang TEXT NOT NULL DEFAULT 'ar',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      created_by_id INTEGER,
+      toggled_at TEXT,
+      toggled_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_signup_links_branch ON signup_links(branch_id);
   `);
+  // La demande venue d'un lien permanent garde la trace de ce lien
+  if (!db.prepare('PRAGMA table_info(member_signups)').all().some((c) => c.name === 'link_id'))
+    db.exec('ALTER TABLE member_signups ADD COLUMN link_id INTEGER REFERENCES signup_links(id) ON DELETE SET NULL');
 
   const by = (req) => req.user.display_name || req.user.username;
   const nowSQL = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -315,6 +336,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
   };
   const KINDS = [memberKind, leaderKind];
   const signupKind = { name: 'signup', table: 'member_signups' };
+  const sharedKind = { name: 'shared', table: 'signup_links' };
 
   // ---------- Page publique ----------
 
@@ -346,7 +368,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
   // { kind, f } pour un jeton, cherché dans les deux tables
   function byToken(token) {
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
-    for (const kind of [...KINDS, signupKind]) {
+    for (const kind of [...KINDS, signupKind, sharedKind]) {
       const f = db.prepare(`SELECT * FROM ${kind.table} WHERE token = ?`).get(token);
       if (f) return { kind, f };
     }
@@ -363,6 +385,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     const hit = byToken(req.params.token);
     if (!hit) return res.status(404).json({ error: 'not_found' });
     if (hit.kind === signupKind) return signupPage(res, hit.f);
+    if (hit.kind === sharedKind) return sharedPage(res, hit.f);
     const { kind, f } = hit;
     const p = kind.get(f[kind.fk]);
     if (!p) return res.status(404).json({ error: 'not_found' });
@@ -393,6 +416,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     const hit = byToken(req.params.token);
     if (!hit) return res.status(404).json({ error: 'not_found' });
     if (hit.kind === signupKind) return signupAnswer(req, res, hit.f);
+    if (hit.kind === sharedKind) return sharedAnswer(req, res, hit.f);
     const { kind, f } = hit;
     if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
     const body = req.body || {};
@@ -611,14 +635,11 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     });
   }
 
-  function signupAnswer(req, res, f) {
-    if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
-    const body = req.body || {};
-    if (!RESPONDENTS.includes(body.respondent)) return res.status(400).json({ error: 'invalid_respondent' });
-    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+  // Les réponses d'une demande, nettoyées : { answers } ou { errors }
+  function signupAnswers(fields, raw) {
     const answers = {};
     const errors = {};
-    for (const key of JSON.parse(f.fields)) {
+    for (const key of fields) {
       const def = SIGNUP_FIELDS[key];
       if (!def) continue;
       const v = cleanValue(def, raw[key]);
@@ -626,7 +647,16 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       else if (v !== undefined) answers[key] = v;
       else if (def.required) errors[key] = 'required';
     }
-    if (Object.keys(errors).length) return res.status(400).json({ error: 'invalid_answers', fields: errors });
+    return Object.keys(errors).length ? { errors } : { answers };
+  }
+
+  function signupAnswer(req, res, f) {
+    if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
+    const body = req.body || {};
+    if (!RESPONDENTS.includes(body.respondent)) return res.status(400).json({ error: 'invalid_respondent' });
+    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+    const { answers, errors } = signupAnswers(JSON.parse(f.fields), raw);
+    if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
     const done = db
       .prepare(
         `UPDATE member_signups SET answers = ?, respondent = ?, submitted_at = datetime('now')
@@ -641,11 +671,151 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     res.json({ status: 'submitted' });
   }
 
+  // ---------- Lien d'inscription permanent ----------
+
+  function sharedPage(res, l) {
+    const b = branchRow(l.branch_id);
+    const base = {
+      kind: 'signup',
+      shared: true,
+      lang: l.lang,
+      person: { first_name: '', last_name: '', sex: sectionDef(b?.section)?.gender ?? null, branch_ar: b?.name_ar, branch_fr: b?.name_fr },
+    };
+    if (!l.active) return res.json({ ...base, status: 'disabled' });
+    const fields = JSON.parse(l.fields).filter((k) => SIGNUP_FIELDS[k]);
+    res.json({
+      ...base,
+      status: 'open',
+      fields,
+      missing: fields,
+      values: {},
+      required: fields.filter((k) => SIGNUP_FIELDS[k].required),
+      blood_types: BLOOD_TYPES,
+    });
+  }
+
+  // Un lien posté dans un groupe peut circuler : au plus SHARED_MAX demandes par adresse et
+  // par heure, en plus de la limite générale de la page
+  const SHARED_WINDOW_MS = 60 * 60 * 1000;
+  const SHARED_MAX = 10;
+  const sharedHits = new Map();
+  function sharedThrottled(req, linkId) {
+    const key = `${linkId}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+    const now = Date.now();
+    const row = sharedHits.get(key);
+    if (!row || now - row.startedAt > SHARED_WINDOW_MS) {
+      sharedHits.set(key, { count: 1, startedAt: now });
+      if (sharedHits.size > 5000) for (const [k, v] of sharedHits) if (now - v.startedAt > SHARED_WINDOW_MS) sharedHits.delete(k);
+      return false;
+    }
+    row.count += 1;
+    return row.count > SHARED_MAX;
+  }
+
+  // Chaque envoi devient une demande à part, comme si un lien personnel y avait conduit
+  function sharedAnswer(req, res, l) {
+    if (!l.active) return res.status(409).json({ error: 'closed', status: 'disabled' });
+    const body = req.body || {};
+    if (!RESPONDENTS.includes(body.respondent)) return res.status(400).json({ error: 'invalid_respondent' });
+    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+    const { answers, errors } = signupAnswers(JSON.parse(l.fields), raw);
+    if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
+    if (sharedThrottled(req, l.id)) {
+      res.setHeader('Retry-After', String(SHARED_WINDOW_MS / 1000));
+      return res.status(429).json({ error: 'too_many_requests' });
+    }
+    const label = [answers.first_name, answers.last_name].filter(Boolean).join(' ').slice(0, 80);
+    const phone = answers.father_phone || answers.mother_phone || answers.member_phone || null;
+    const id = db
+      .prepare(
+        `INSERT INTO member_signups (branch_id, link_id, token, fields, lang, label, phone, created_by, created_by_id,
+           expires_at, answers, respondent, submitted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, datetime('now'))`
+      )
+      .run(l.branch_id, l.id, crypto.randomBytes(24).toString('base64url'), l.fields, l.lang, label, phone, l.created_by,
+        l.created_by_id, JSON.stringify(answers), body.respondent).lastInsertRowid;
+    notifications.memberFormSubmitted(
+      { kind: 'signup', first_name: answers.first_name, father_name: answers.father_name, last_name: answers.last_name, branch_id: l.branch_id },
+      { formId: id, count: Object.keys(answers).length }
+    );
+    res.json({ status: 'submitted' });
+  }
+
   const signupGuard = [requirePerm('members.create'), requirePerm('members.contact')];
+  const linkById = db.prepare('SELECT * FROM signup_links WHERE id = ?');
+  const linkView = (l) => {
+    const n = db
+      .prepare(
+        `SELECT COUNT(*) AS total, SUM(outcome IS NULL) AS pending, SUM(outcome = 'applied') AS registered
+           FROM member_signups WHERE link_id = ?`
+      )
+      .get(l.id);
+    return {
+      id: l.id,
+      branch_id: l.branch_id,
+      token: l.token,
+      label: l.label,
+      lang: l.lang,
+      active: !!l.active,
+      created_at: l.created_at,
+      created_by: l.created_by,
+      toggled_at: l.toggled_at,
+      toggled_by: l.toggled_by,
+      requests: n.total || 0,
+      pending: n.pending || 0,
+      registered: n.registered || 0,
+    };
+  };
+
+  app.get('/api/signup-links', ...signupGuard, (req, res) => {
+    const rows = db
+      .prepare(`SELECT * FROM signup_links WHERE 1=1 ${branchFilterSQL(req, 'branch_id')} ORDER BY active DESC, created_at DESC`)
+      .all();
+    res.json(rows.map(linkView));
+  });
+
+  app.post('/api/signup-links', ...signupGuard, (req, res) => {
+    const b = req.body || {};
+    const branch = branchRow(intOr(b.branch_id));
+    if (!branch) return res.status(400).json({ error: 'invalid branch_id' });
+    if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
+    const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
+    const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : ['FR', 'FRF'].includes(branch.section) ? 'fr' : 'ar';
+    const id = db
+      .prepare(
+        `INSERT INTO signup_links (branch_id, token, label, fields, lang, created_by, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(branch.id, crypto.randomBytes(24).toString('base64url'), label, JSON.stringify(signupKeysFor(req)), lang, by(req), req.user.id)
+      .lastInsertRowid;
+    auditEvent(req, 'create', 'signup_link', id, null, { branch_id: branch.id, label });
+    res.status(201).json(linkView(linkById.get(id)));
+  });
+
+  // Activer / désactiver, renommer, changer la langue
+  app.put('/api/signup-links/:id', ...signupGuard, (req, res) => {
+    const l = linkById.get(intOr(req.params.id));
+    if (!l) return res.status(404).json({ error: 'not found' });
+    if (!branchOk(req, l.branch_id)) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    if (b.active !== undefined && typeof b.active !== 'boolean') return res.status(400).json({ error: 'invalid active' });
+    const active = b.active === undefined ? l.active : b.active ? 1 : 0;
+    const label = b.label === undefined ? l.label : typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
+    const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : l.lang;
+    const toggled = active !== l.active;
+    db.prepare(
+      `UPDATE signup_links SET active = ?, label = ?, lang = ?,
+         toggled_at = CASE WHEN ? THEN datetime('now') ELSE toggled_at END,
+         toggled_by = CASE WHEN ? THEN ? ELSE toggled_by END
+       WHERE id = ?`
+    ).run(active, label, lang, toggled ? 1 : 0, toggled ? 1 : 0, by(req), l.id);
+    if (toggled) auditEvent(req, active ? 'enable' : 'disable', 'signup_link', l.id, null, { branch_id: l.branch_id });
+    res.json(linkView(linkById.get(l.id)));
+  });
   const signupKeysFor = (req) =>
     Object.keys(SIGNUP_FIELDS).filter((k) => !SIGNUP_FIELDS[k].health || hasPerm(req, 'members.health'));
   const signupView = (f, opts) => ({
     ...formView(f, opts),
+    link_id: f.link_id ?? null,
     branch_id: f.branch_id,
     label: f.label,
     phone: f.phone,
