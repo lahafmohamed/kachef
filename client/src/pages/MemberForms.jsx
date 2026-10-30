@@ -70,12 +70,13 @@ const KINDS = {
 };
 const LIVE = ['draft', 'sent', 'opened'];
 
-const statusTone = { draft: 'outline', sent: 'info', opened: 'info', submitted: 'warning', expired: 'secondary', revoked: 'secondary', applied: 'success', rejected: 'secondary' };
+const statusTone = { draft: 'outline', sent: 'info', opened: 'info', submitted: 'warning', expired: 'secondary', revoked: 'secondary', applied: 'success', confirmed: 'success', rejected: 'secondary' };
 
 function StatusBadge({ form }) {
   const { t } = useTranslation();
   if (!form) return null;
-  const date = fmtDate((form.status === 'opened' ? form.opened_at : form.status === 'applied' ? form.reviewed_at : form.sent_at)?.slice(0, 10));
+  const when = { opened: form.opened_at, applied: form.reviewed_at, confirmed: form.reviewed_at }[form.status] ?? form.sent_at;
+  const date = fmtDate(when?.slice(0, 10));
   return <Badge variant={statusTone[form.status]}>{t(`memberForms.status.${form.status}`, { date })}</Badge>;
 }
 
@@ -160,13 +161,13 @@ function SendList({ kind, who, overview, onChanged, onReview }) {
   const show = ['todo', 'waiting', 'all'].includes(sp.get('show')) ? sp.get('show') : 'todo';
 
   const rows = useMemo(() => {
-    const list = (overview.data?.people || []).filter((m) => m.missing.length || m.form?.status === 'submitted');
     const needle = q.trim().toLowerCase();
-    return list.filter((m) => {
+    // «Tous» takes in complete files too: a family can still check and correct them
+    return (overview.data?.people || []).filter((m) => {
       if (branch && String(m.branch_id) !== branch) return false;
       if (needle && !memberName(m).toLowerCase().includes(needle)) return false;
       const live = m.form && LIVE.includes(m.form.status) && m.form.status !== 'draft';
-      if (show === 'todo') return !live && m.form?.status !== 'submitted';
+      if (show === 'todo') return m.missing.length > 0 && !live && m.form?.status !== 'submitted';
       if (show === 'waiting') return live || m.form?.status === 'submitted';
       return true;
     });
@@ -211,7 +212,7 @@ function SendList({ kind, who, overview, onChanged, onReview }) {
         />
       </div>
 
-      {!anyMissing ? (
+      {!anyMissing && show === 'todo' ? (
         <EmptyState icon={<IconCheckAll className="h-6 w-6" />} title={t('memberForms.noneMissingTitle')}>
           {t(who === 'leaders' ? 'memberForms.noneMissingBodyLeaders' : 'memberForms.noneMissingBody')}
         </EmptyState>
@@ -258,7 +259,7 @@ function MemberRow({ kind, m, branch, onSend, onReview }) {
           <StatusBadge form={m.form} />
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {[branch && branchName(branch, i18n.language), m.missing.length ? t('memberForms.missingCount', { count: m.missing.length }) : null]
+          {[branch && branchName(branch, i18n.language), m.missing.length ? t('memberForms.missingCount', { count: m.missing.length }) : t('memberForms.complete')]
             .filter(Boolean)
             .join(' · ')}
           {labels.length > 0 && <span className="max-sm:hidden"> — {labels.join(i18n.language === 'ar' ? '، ' : ', ')}</span>}
@@ -269,12 +270,10 @@ function MemberRow({ kind, m, branch, onSend, onReview }) {
           {t('memberForms.review')}
         </Button>
       ) : (
-        m.missing.length > 0 && (
-          <Button size="sm" variant="outline" onClick={onSend}>
-            <IconWhatsApp className={cn('h-4 w-4', !live && 'text-[#1a7f45]')} />
-            {t(live ? 'memberForms.resend' : 'memberForms.send')}
-          </Button>
-        )
+        <Button size="sm" variant="outline" onClick={onSend}>
+          <IconWhatsApp className={cn('h-4 w-4', !live && 'text-[#1a7f45]')} />
+          {t(live ? 'memberForms.resend' : 'memberForms.send')}
+        </Button>
       )}
     </div>
   );
@@ -373,7 +372,8 @@ function SendDialog({ kind, member, onClose, onChanged }) {
       description={
         // bdi: an Arabic name inside a French line keeps the count where it belongs
         <>
-          <bdi>{memberName(member)}</bdi> · {t('memberForms.missingCount', { count: member.missing.length })}
+          <bdi>{memberName(member)}</bdi> ·{' '}
+          {member.missing.length ? t('memberForms.missingCount', { count: member.missing.length }) : t('memberForms.complete')}
         </>
       }
       footer={
@@ -456,9 +456,11 @@ function SendDialog({ kind, member, onClose, onChanged }) {
             >
               {message}
             </p>
-            <p className="text-xs text-muted-foreground">
-              {t('memberForms.asked')} : {form.fields.map((k) => t(`fiche.fields.${k}`)).join(i18n.language === 'ar' ? '، ' : ', ')}
-            </p>
+            {member.missing.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {t('memberForms.asked')} : {member.missing.map((k) => t(`fiche.fields.${k}`)).join(i18n.language === 'ar' ? '، ' : ', ')}
+              </p>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
@@ -500,8 +502,9 @@ function ReviewCard({ kind, f, onDone }) {
   const { t } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
-  // A field the file already holds starts unticked: the قائد chooses to replace it
-  const [picked, setPicked] = useState(() => new Set(f.answers.filter((a) => blank(a.current)).map((a) => a.key)));
+  // Everything starts ticked — a correction was asked for on purpose; its current value
+  // stands beside it, and unticking keeps the file as it is
+  const [picked, setPicked] = useState(() => new Set(f.answers.map((a) => a.key)));
   const [values, setValues] = useState(() => Object.fromEntries(f.answers.map((a) => [a.key, a.value])));
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
@@ -584,12 +587,16 @@ function ReviewCard({ kind, f, onDone }) {
                 className="mt-2.5 size-4.5 shrink-0 cursor-pointer accent-[var(--primary)]"
               />
               <div className="min-w-0 max-w-xl flex-1 space-y-1.5">
-                <label htmlFor={`${id}-pick`} className="block cursor-pointer text-sm font-medium">
+                <label htmlFor={`${id}-pick`} className="flex cursor-pointer flex-wrap items-center gap-2 text-sm font-medium">
                   {t(`fiche.fields.${a.key}`)}
+                  {!blank(a.current) && <Badge variant="warning">{t('memberForms.correction')}</Badge>}
                 </label>
                 <ValueEditor id={id} k={a.key} value={values[a.key]} onChange={(v) => setValue(a.key, v)} disabled={!on} />
                 {!blank(a.current) && (
-                  <p className="text-xs text-warning">{t('memberForms.current', { value: show(a.key, a.current) })}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t('memberForms.current', { value: '' })}
+                    <span className="line-through decoration-destructive/60">{show(a.key, a.current)}</span>
+                  </p>
                 )}
               </div>
             </li>

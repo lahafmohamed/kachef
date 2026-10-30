@@ -1,15 +1,17 @@
 // ---------- Fiche à compléter ----------
-// Les fiches incomplètes (lieu de naissance, groupe sanguin, téléphones…) se remplissent
-// par la personne elle-même : un lien personnel, envoyé par WhatsApp, ouvre sans compte
-// un formulaire propre à une fiche. Deux sortes de fiches : celle d'un عنصر (la famille
+// Les fiches incomplètes (lieu de naissance, groupe sanguin, téléphones…) se remplissent,
+// et les fiches fausses se corrigent, par la personne elle-même : un lien personnel, envoyé
+// par WhatsApp, ouvre sans compte la fiche en question. Deux sortes de fiches : celle d'un عنصر (la famille
 // répond, un قائد de sa فرقة relit) et celle d'un قائد (il répond lui-même, l'admin relit
 // — le dossier des قادة est à lui seul). Le lien est la seule clé — long, aléatoire,
 // limité dans le temps, révocable, valable pour une seule réponse.
 //
-// Rien de ce qui est écrit ne touche la fiche directement : la réponse attend qu'on la
-// relise et qu'on choisisse champ par champ ce qu'on reporte. La page publique ne montre
-// jamais ce que la fiche contient déjà — un lien qui circule ne fait rien lire, il ne
-// peut que proposer.
+// La page montre ce que la fiche contient déjà (choix de la قيادة, 2026-10-30 : une
+// information mal saisie se voit et se corrige) — le lien donne donc à lire la fiche, et
+// c'est pourquoi il est personnel, fermé dès la réponse, limité dans le temps et révocable.
+// Rien de ce qui est écrit ne touche la fiche directement : chaque ajout ou correction
+// attend qu'on le relise et qu'on choisisse champ par champ ce qu'on reporte. Une réponse
+// qui ne change rien est une confirmation : elle se clôt seule, sans relecture.
 
 const crypto = require('crypto');
 
@@ -65,16 +67,21 @@ function ageOf(birthDate, ref = new Date()) {
   return age;
 }
 
-// Vide sur la fiche d'un عنصر. Allergies et traitement vides sont une réponse («rien») dès
-// que la fiche santé a été remplie une fois : on ne les redemande pas.
-function memberMissing(m, key, ref = new Date()) {
-  if (key === 'can_swim') return m.can_swim === null || m.can_swim === undefined;
-  if ((key === 'allergies' || key === 'treatment') && m.health_updated_at) return false;
-  // Le téléphone personnel d'un enfant de moins de 14 ans n'a pas de sens
+// Un champ qui a un sens pour cette fiche : le téléphone personnel d'un enfant de moins de
+// 14 ans n'en a pas
+function memberApplicable(m, key, ref = new Date()) {
   if (key === 'member_phone' && m.birth_date) {
     const age = ageOf(m.birth_date, ref);
     if (age !== null && age < 14) return false;
   }
+  return true;
+}
+// Vide sur la fiche d'un عنصر. Allergies et traitement vides sont une réponse («rien») dès
+// que la fiche santé a été remplie une fois : on ne les redemande pas.
+function memberMissing(m, key, ref = new Date()) {
+  if (!memberApplicable(m, key, ref)) return false;
+  if (key === 'can_swim') return m.can_swim === null || m.can_swim === undefined;
+  if ((key === 'allergies' || key === 'treatment') && m.health_updated_at) return false;
   return blank(m[key]);
 }
 const leaderMissing = (l, key) => blank(l[key]);
@@ -122,6 +129,8 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
   const nowSQL = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   function statusOf(f, now = nowSQL()) {
+    // Rien changé : la personne a confirmé sa fiche telle quelle
+    if (f.outcome === 'applied' && f.applied === '[]') return 'confirmed';
     if (f.outcome) return f.outcome;
     if (f.submitted_at) return 'submitted';
     if (f.revoked_at) return 'revoked';
@@ -190,6 +199,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       Object.keys(MEMBER_FIELDS).filter(
         (k) => (!MEMBER_FIELDS[k].contact || hasPerm(req, 'members.contact')) && (!MEMBER_FIELDS[k].health || hasPerm(req, 'members.health'))
       ),
+    applicable: memberApplicable,
     isMissing: memberMissing,
     recipients: { member: 'member_phone', father: 'father_phone', mother: 'mother_phone' },
     get: (id) =>
@@ -242,6 +252,7 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     // Le dossier des قادة est à l'admin seul (PUT /api/leaders/:id)
     guard: [requireAdmin],
     keysFor: () => Object.keys(LEADER_FIELDS),
+    applicable: () => true,
     isMissing: leaderMissing,
     recipients: { self: 'phone' },
     get: (id) => db.prepare('SELECT * FROM leaders WHERE id = ?').get(id),
@@ -316,8 +327,11 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     return null;
   }
 
-  // Les champs encore à demander : ceux du lien, moins ce qu'on a rempli entre-temps
-  const stillAsked = (kind, f, p) => JSON.parse(f.fields).filter((k) => kind.FIELDS[k] && kind.isMissing(p, k));
+  // Les champs du lien qui ont encore un sens pour la fiche
+  const shownFields = (kind, f, p) => JSON.parse(f.fields).filter((k) => kind.FIELDS[k] && kind.applicable(p, k));
+  // Même valeur que la fiche : pas une correction
+  const sameAs = (current, v) =>
+    current !== null && current !== undefined && (typeof v === 'boolean' ? current === v : String(current).trim() === String(v));
 
   publicApi.get('/fiche/:token', (req, res) => {
     const hit = byToken(req.params.token);
@@ -340,7 +354,12 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     };
     if (!isLive(f)) return res.json(base);
     if (!f.opened_at) db.prepare(`UPDATE ${kind.table} SET opened_at = datetime('now') WHERE id = ?`).run(f.id);
-    res.json({ ...base, status: 'open', expires_at: f.expires_at, fields: stillAsked(kind, f, p), blood_types: BLOOD_TYPES });
+    const fields = shownFields(kind, f, p);
+    const missing = fields.filter((k) => kind.isMissing(p, k));
+    // Ce que la fiche contient déjà, pour qu'on le vérifie ; un champ rempli sans valeur
+    // (allergies «rien») part à null
+    const values = Object.fromEntries(fields.filter((k) => !missing.includes(k)).map((k) => [k, kind.current(p, k)]));
+    res.json({ ...base, status: 'open', expires_at: f.expires_at, fields, missing, values, blood_types: BLOOD_TYPES });
   });
 
   publicApi.post('/fiche/:token', (req, res) => {
@@ -353,27 +372,30 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     const respondent = kind.name === 'leader' ? 'self' : body.respondent;
     if (!RESPONDENTS.includes(respondent)) return res.status(400).json({ error: 'invalid_respondent' });
     const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+    const p = kind.get(f[kind.fk]);
+    if (!p) return res.status(404).json({ error: 'not_found' });
     const answers = {};
     const errors = {};
-    for (const key of JSON.parse(f.fields)) {
-      if (!kind.FIELDS[key]) continue;
+    for (const key of shownFields(kind, f, p)) {
       const v = cleanValue(kind.FIELDS[key], raw[key]);
       if (v instanceof Error) errors[key] = v.message;
-      else if (v !== undefined) answers[key] = v;
+      // Ce qui reprend la fiche telle quelle n'est ni un ajout ni une correction
+      else if (v !== undefined && !sameAs(kind.current(p, key), v)) answers[key] = v;
     }
     if (Object.keys(errors).length) return res.status(400).json({ error: 'invalid_answers', fields: errors });
-    if (!Object.keys(answers).length) return res.status(400).json({ error: 'empty' });
-    // Une seule réponse par lien, même si deux envois se croisent
+    const confirmed = !Object.keys(answers).length;
+    // Une seule réponse par lien, même si deux envois se croisent. Rien changé : la fiche est
+    // confirmée telle quelle, il n'y a rien à relire.
     const done = db
       .prepare(
         `UPDATE ${kind.table} SET answers = ?, respondent = ?, submitted_at = datetime('now')
+           ${confirmed ? ", outcome = 'applied', applied = '[]', reviewed_at = datetime('now')" : ''}
           WHERE id = ? AND submitted_at IS NULL AND revoked_at IS NULL`
       )
       .run(JSON.stringify(answers), respondent, f.id);
     if (!done.changes) return res.status(409).json({ error: 'closed' });
-    const p = kind.get(f[kind.fk]);
-    if (p) kind.notify(p, { formId: f.id, count: Object.keys(answers).length });
-    res.json({ status: 'submitted' });
+    if (!confirmed) kind.notify(p, { formId: f.id, count: Object.keys(answers).length });
+    res.json({ status: confirmed ? 'confirmed' : 'submitted' });
   });
 
   // ---------- Côté قيادة ----------
@@ -416,8 +438,8 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       if (prev && isLive(prev)) return res.json(formView(prev, { withToken: true }));
       // Une réponse pas encore relue : on la traite avant d'en demander une autre
       if (prev && statusOf(prev) === 'submitted') return res.status(409).json({ error: 'pending_review' });
-      const fields = kind.keysFor(req).filter((k) => kind.isMissing(p, k));
-      if (!fields.length) return res.status(400).json({ error: 'nothing_missing' });
+      // Toute la fiche : ce qui manque à remplir, le reste à vérifier
+      const fields = kind.keysFor(req).filter((k) => kind.applicable(p, k));
 
       const token = crypto.randomBytes(24).toString('base64url');
       const id = db

@@ -12,16 +12,19 @@ import {
   SegmentedControl,
   Spinner,
   Textarea,
+  cn,
   IconAlert,
   IconCheck,
   IconLock,
+  IconPencil,
 } from '../components/ui';
 
 /*
- * Fiche à compléter — the one page opened without an account. A family reaches it from
- * the WhatsApp link a قائد sent; the link is its key (server/memberForms.js). It asks
- * only what the عنصر's file lacks and never shows what the file already holds, then
- * sends the answers to the قائد, who reviews them before they land.
+ * Fiche à compléter — the one page opened without an account. A family (or a قائد, for
+ * his own file) reaches it from the WhatsApp link that was sent; the link is its key
+ * (server/memberForms.js). Empty fields are there to fill; filled ones show their value,
+ * with «Corriger» for one that is wrong. Additions and corrections go to the قيادة, who
+ * review them before they land; sending with nothing changed confirms the file as it is.
  */
 
 // The form's order and grouping, per kind of file. A section with nothing to ask is left out.
@@ -99,7 +102,7 @@ export default function Fiche() {
           {error.network ? t('error.network') : null}
         </Notice>
       );
-  else if (data.status === 'submitted' || data.status === 'applied' || data.status === 'rejected')
+  else if (['submitted', 'applied', 'confirmed', 'rejected'].includes(data.status))
     body = <Notice tone="success" title={t('fiche.submittedTitle')}>{t('fiche.submittedBody', { name })}</Notice>;
   else if (data.status !== 'open')
     body = (
@@ -150,21 +153,71 @@ function Notice({ tone, title, children, action }) {
   );
 }
 
+// Same value as the file: not a correction (the server drops these too)
+const sameAs = (current, v) =>
+  current !== null && current !== undefined && (typeof v === 'boolean' ? current === v : String(current).trim() === String(v).trim());
+
 function FicheForm({ token, data }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const asked = new Set(data.fields);
+  const missing = new Set(data.missing || data.fields);
+  const current = data.values || {};
   const leader = data.kind === 'leader';
   const female = data.person.sex === 'F';
   const [respondent, setRespondent] = useState('');
   const [values, setValues] = useState({});
+  // Filled fields opened for a correction
+  const [editing, setEditing] = useState(() => new Set());
   // Allergies and treatment: «non» first, the detail only after «oui»
   const [hasAllergy, setHasAllergy] = useState(null);
   const [hasTreatment, setHasTreatment] = useState(null);
   const [errors, setErrors] = useState({});
   const [formError, setFormError] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(null);
   const formRef = useRef(null);
+  const open = (key) => missing.has(key) || editing.has(key);
+  const noneWord = (key) => t(key === 'allergies' ? 'fiche.noneAllergy' : 'fiche.noneTreatment');
+
+  function startEdit(key) {
+    const v = current[key];
+    if (key === 'allergies' || key === 'treatment') {
+      // An empty health line on a file already filled reads «none»
+      const none = v === null || v === undefined || v === noneWord(key);
+      (key === 'allergies' ? setHasAllergy : setHasTreatment)(!none);
+      if (!none) setValues((s) => ({ ...s, [key]: String(v) }));
+    } else if (v !== null && v !== undefined) setValues((s) => ({ ...s, [key]: typeof v === 'boolean' ? v : String(v) }));
+    setEditing((s) => new Set(s).add(key));
+    // Focus the field once it is rendered
+    setTimeout(() => formRef.current?.querySelector(`[data-field="${key}"] :is(input,textarea,button[aria-pressed])`)?.focus(), 0);
+  }
+
+  function cancelEdit(key) {
+    setEditing((s) => {
+      const next = new Set(s);
+      next.delete(key);
+      return next;
+    });
+    setValues((s) => {
+      const next = { ...s };
+      delete next[key];
+      return next;
+    });
+    if (key === 'allergies') setHasAllergy(null);
+    if (key === 'treatment') setHasTreatment(null);
+    setErrors((e) => ({ ...e, [key]: undefined }));
+  }
+
+  // How a value already on the file reads
+  function display(key, v) {
+    if ((key === 'allergies' || key === 'treatment') && (v === null || v === undefined)) return noneWord(key);
+    if (key === 'can_swim') return t(v ? 'fiche.yes' : 'fiche.no');
+    if (key === 'marital_status') return t(`leader.${v}`);
+    if (key === 'birth_date') return fmtDate(v);
+    if (PHONES.includes(key) || key === 'blood_type' || key === 'join_year')
+      return <span dir="ltr" className="tabular-nums">{v}</span>;
+    return String(v);
+  }
 
   const set = (key) => (e) => setValues((v) => ({ ...v, [key]: e.target.value }));
   const label = (key) =>
@@ -172,7 +225,7 @@ function FicheForm({ token, data }) {
 
   function answers() {
     const out = {};
-    for (const key of data.fields) {
+    for (const key of data.fields.filter(open)) {
       if (key === 'allergies') {
         if (hasAllergy === false) out.allergies = t('fiche.noneAllergy');
         else if (hasAllergy && values.allergies?.trim()) out.allergies = values.allergies;
@@ -183,8 +236,11 @@ function FicheForm({ token, data }) {
         if (typeof values.can_swim === 'boolean') out.can_swim = values.can_swim;
       } else if (typeof values[key] === 'string' && values[key].trim()) out[key] = values[key];
     }
+    // Only what changes the file
+    for (const key of Object.keys(out)) if (sameAs(current[key], out[key])) delete out[key];
     return out;
   }
+  const changes = Object.keys(answers()).length;
 
   async function submit(e) {
     e.preventDefault();
@@ -196,24 +252,21 @@ function FicheForm({ token, data }) {
     }
     // «Oui» without saying which: ask for the detail rather than drop the answer
     const vague = {};
-    if (asked.has('allergies') && hasAllergy && !values.allergies?.trim()) vague.allergies = 'detail';
-    if (asked.has('treatment') && hasTreatment && !values.treatment?.trim()) vague.treatment = 'detail';
+    if (asked.has('allergies') && open('allergies') && hasAllergy && !values.allergies?.trim()) vague.allergies = 'detail';
+    if (asked.has('treatment') && open('treatment') && hasTreatment && !values.treatment?.trim()) vague.treatment = 'detail';
     if (Object.keys(vague).length) {
       setErrors(vague);
       setFormError(null);
       formRef.current?.querySelector(`[data-field="${Object.keys(vague)[0]}"] textarea`)?.focus();
       return;
     }
+    // Nothing changed: the file is confirmed as it is
     const payload = answers();
-    if (!Object.keys(payload).length) {
-      setFormError('fiche.errEmpty');
-      return;
-    }
     setFormError(null);
     setBusy(true);
     try {
-      await api.post(`/public/fiche/${encodeURIComponent(token)}`, { respondent: leader ? 'self' : respondent, answers: payload });
-      setDone(true);
+      const r = await api.post(`/public/fiche/${encodeURIComponent(token)}`, { respondent: leader ? 'self' : respondent, answers: payload });
+      setDone(r?.status === 'confirmed' ? 'confirmed' : 'submitted');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setBusy(false);
@@ -229,7 +282,7 @@ function FicheForm({ token, data }) {
   if (done)
     return (
       <Notice tone="success" title={t('fiche.doneTitle')}>
-        {t(leader ? 'fiche.doneBodyLeader' : 'fiche.doneBody')}
+        {t(done === 'confirmed' ? 'fiche.confirmedBody' : leader ? 'fiche.doneBodyLeader' : 'fiche.doneBody')}
       </Notice>
     );
 
@@ -394,17 +447,45 @@ function FicheForm({ token, data }) {
         return (
           <section key={title} className="space-y-4">
             <h2 className="border-b border-border pb-2 text-base font-semibold">{t(`fiche.${title}`)}</h2>
-            {shown.map((key) => (
-              <div key={key} data-field={key}>
-                <Field
-                  label={label(key)}
-                  hint={key === 'blood_type' ? t('fiche.bloodHint') : null}
-                  error={errorText(key)}
-                >
-                  {(f) => control(key, f)}
-                </Field>
-              </div>
-            ))}
+            {shown.map((key) =>
+              open(key) ? (
+                <div key={key} data-field={key} className={cn(editing.has(key) && 'rounded-xl border border-primary/25 bg-primary/5 p-3')}>
+                  <Field
+                    label={label(key)}
+                    hint={
+                      editing.has(key)
+                        ? null
+                        : key === 'blood_type' ? t('fiche.bloodHint') : null
+                    }
+                    error={errorText(key)}
+                  >
+                    {(f) => control(key, f)}
+                  </Field>
+                  {editing.has(key) && (
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                      <span>{t('fiche.currentValue')} {display(key, current[key])}</span>
+                      <Button variant="ghost" size="sm" onClick={() => cancelEdit(key)}>
+                        {t('fiche.cancelCorrection')}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // Already on the file: read it, and open it only to correct it
+                <div key={key} data-field={key} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 pt-0.5">
+                    <p className="text-sm font-medium">{label(key)}</p>
+                    <p className="mt-0.5 break-words text-[0.9375rem] text-muted-foreground" lang={i18n.language}>
+                      {display(key, current[key])}
+                    </p>
+                  </div>
+                  <Button variant="ghost" size="sm" className="shrink-0 text-primary" onClick={() => startEdit(key)}>
+                    <IconPencil className="h-3.5 w-3.5" />
+                    {t('fiche.correct')}
+                  </Button>
+                </div>
+              )
+            )}
           </section>
         );
       })}
@@ -426,7 +507,7 @@ function FicheForm({ token, data }) {
           </div>
         )}
         <Button type="submit" variant="brand" className="w-full sm:h-11" loading={busy}>
-          {t('fiche.submit')}
+          {changes ? t('fiche.submit') : t('fiche.confirm')}
         </Button>
       </div>
     </form>

@@ -3100,9 +3100,14 @@
     "allTime": "Depuis toujours"
   },
   "fiche": {
+    "confirmedBody": "Vous avez confirmé que la fiche est juste. Vous pouvez fermer cette page.",
+    "confirm": "Tout est correct",
+    "currentValue": "Actuellement :",
+    "cancelCorrection": "Annuler",
+    "correct": "Corriger",
     "docTitle": "Fiche à compléter",
     "title": "Fiche de {{name}}",
-    "intro": "Quelques informations manquent dans cette fiche scoute. Remplissez ce que vous savez et laissez vide le reste.",
+    "intro": "Vérifiez cette fiche scoute : complétez ce qui manque et corrigez ce qui est faux. Chaque modification est vérifiée par le chef avant d’être enregistrée.",
     "who": "Qui remplit ce formulaire ?",
     "whoSelf": "Le jeune lui-même",
     "whoSelfF": "La jeune elle-même",
@@ -3164,7 +3169,7 @@
     "completeTitle": "Fiche déjà complète",
     "completeBody": "Il ne manque plus rien. Merci !",
     "loadError": "La page n’a pas pu être chargée.",
-    "introLeader": "Quelques informations manquent dans votre fiche de chef. Remplissez ce que vous savez et laissez vide le reste.",
+    "introLeader": "Vérifiez votre fiche de chef : complétez ce qui manque et corrigez ce qui est faux. Chaque modification est vérifiée avant d’être enregistrée.",
     "leaderLine": "Fiche de chef",
     "sectionPath": "Parcours",
     "privacyLeader": "Seule la direction du groupe verra ces réponses. Elles sont vérifiées avant d’être ajoutées à votre fiche.",
@@ -3172,6 +3177,8 @@
     "closedBodyLeader": "Il a expiré ou a été remplacé. Demandez un nouveau lien à la direction du groupe."
   },
   "memberForms": {
+    "correction": "Correction",
+    "complete": "Fiche complète",
     "title": "Fiches à compléter",
     "description": "Envoyez à chaque famille un lien personnel pour compléter la fiche, puis validez ses réponses.",
     "tabSend": "À compléter",
@@ -3183,6 +3190,7 @@
     "missingCount_one": "{{count}} information manquante",
     "missingCount_other": "{{count}} informations manquantes",
     "status": {
+      "confirmed": "Confirmée le {{date}}",
       "draft": "Lien créé, pas envoyé",
       "sent": "Envoyé le {{date}}",
       "opened": "Ouvert le {{date}}",
@@ -3207,7 +3215,7 @@
     "noPhone": "Aucun numéro enregistré : copiez le lien et envoyez-le autrement.",
     "language": "Langue du message et du formulaire",
     "preview": "Message",
-    "asked": "Informations demandées",
+    "asked": "À compléter",
     "openWhatsApp": "Ouvrir WhatsApp",
     "copyLink": "Copier le lien",
     "copied": "Lien copié",
@@ -3218,7 +3226,7 @@
     "validUntil": "Valable jusqu’au {{date}}",
     "pendingReview": "Une réponse de cette famille attend d’être validée.",
     "nothingMissing": "Cette fiche est déjà complète.",
-    "waMessage": "Bonjour, ici {{org}}. Pour compléter la fiche scoute de {{name}}, merci de remplir ce court formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}.",
+    "waMessage": "Bonjour, ici {{org}}. Merci de vérifier et compléter la fiche scoute de {{name}} sur ce court formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}.",
     "org": "Scout Alghadir – Abidjan",
     "noPendingTitle": "Aucune réponse à valider",
     "noPendingBody": "Les réponses des familles apparaîtront ici dès qu’elles seront envoyées.",
@@ -3230,7 +3238,7 @@
       "other": "une autre personne",
       "leader": "le chef lui-même"
     },
-    "current": "Actuellement : {{value}}",
+    "current": "Valeur actuelle : {{value}}",
     "hidden_one": "{{count}} réponse santé ne vous est pas visible.",
     "hidden_other": "{{count}} réponses santé ne vous sont pas visibles.",
     "apply_one": "Enregistrer {{count}} information",
@@ -3247,7 +3255,7 @@
     "whoLeaders": "Chefs",
     "noneMissingBodyLeaders": "Aucun chef actif n’a d’information manquante.",
     "recipientSelf": "Le chef",
-    "waMessageLeader": "Bonjour {{name}}, ici {{org}}. Pour compléter ta fiche de chef, merci de remplir ce court formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}."
+    "waMessageLeader": "Bonjour {{name}}, ici {{org}}. Merci de vérifier et compléter ta fiche de chef sur ce court formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}."
   },
   "activity": {
     "title": "Statistiques d'activité",
