@@ -153,6 +153,7 @@ const TYPE_ICONS = {
   evaluation_received: IconStar,
   birthday: IconCake,
   member_created: IconUsers,
+  member_form: IconClipboard,
   absence_streak: IconAlert,
   period_report: IconFileText,
   treasury_entry: IconWallet,

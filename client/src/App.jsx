@@ -45,6 +45,7 @@ const PAGES = {
   settings: [() => import('./pages/Settings'), 'admin'],
   admin: [() => import('./pages/Admin'), 'admin'],
   activity: [() => import('./pages/Activity'), 'admin'],
+  memberForms: [() => import('./pages/MemberForms'), 'members.contact'],
 };
 
 const Branches = lazy(PAGES.branches[0]);
@@ -65,6 +66,10 @@ const LeaderDetail = lazy(PAGES.leaderDetail[0]);
 const Settings = lazy(PAGES.settings[0]);
 const Admin = lazy(PAGES.admin[0]);
 const Activity = lazy(PAGES.activity[0]);
+const MemberForms = lazy(PAGES.memberForms[0]);
+// The fiche à compléter a family opens from WhatsApp, without an account: its own
+// chunk, never prefetched — no signed-in screen links to it
+const Fiche = lazy(() => import('./pages/Fiche'));
 // Not prefetched: the sheet behind the PDF export, opened on screen only when the
 // server has no Chromium. Chromium itself waits for `.print-sheet`, chunk included.
 // Not React.lazy either: a Suspense boundary holds resolved content back 300 ms after
@@ -205,9 +210,24 @@ function Shell() {
   // Switching قسم remounts the pages, so every list and figure is fetched again for it
   const { view } = useSection();
   const onPrintSheet = location.pathname.startsWith('/print/');
+  const onFiche = location.pathname.startsWith('/fiche/');
   // Never on a print sheet: there the server's Chromium waits for the network to go
   // quiet before printing, and every PDF would wait for the whole app to download
-  usePrefetchPages(!!user && !user.must_change_password && !onPrintSheet);
+  usePrefetchPages(!!user && !user.must_change_password && !onPrintSheet && !onFiche);
+
+  // A family's link opens the same page whoever is signed in on this phone — a قائد
+  // trying the link he sends sees what the family will see
+  if (onFiche)
+    return (
+      <ErrorBoundary title={t('error.crashTitle')} body={t('error.crashBody')} retryLabel={t('error.reload')}>
+        <Suspense fallback={null}>
+          <Routes>
+            <Route path="/fiche/:token" element={<Fiche />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
+      </ErrorBoundary>
+    );
 
   // No session → nothing but the login screen, whatever the URL says
   if (!user) return <Login />;
@@ -242,6 +262,9 @@ function Shell() {
             {can('branches.read') && <Route path="/branches" element={<Branches />} />}
             {can('members.read') && <Route path="/members" element={<Members />} />}
             {can('members.read') && <Route path="/members/:id" element={<MemberDetail />} />}
+            {can('members.edit') && can('members.contact') && (
+              <Route path="/members/forms" element={<MemberForms />} />
+            )}
             {can('sessions.read') && <Route path="/sessions" element={<Sessions />} />}
             {can('sessions.read') && <Route path="/sessions/:id" element={<SessionDetail />} />}
             {can('prep.read') && <Route path="/prep-cards" element={<PrepCards />} />}

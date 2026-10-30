@@ -39,6 +39,7 @@ import {
   IconCake,
   IconCoins,
   IconFilter,
+  IconListChecks,
   IconPencil,
   IconPhone,
   IconPin,
@@ -341,6 +342,8 @@ export default function Members() {
   // View-only accounts get the list without any add/edit affordance
   const { has } = usePerms();
   const canCreate = has('members.create');
+  // Fiches à compléter: the family fills what the file lacks, through a link sent by WhatsApp
+  const canForms = has('members.edit') && has('members.contact');
   const canModify = has('members.edit');
   const canContact = has('members.contact');
   // Les chefs s'affichent dans la liste comme une branche à part entière
@@ -710,6 +713,12 @@ export default function Members() {
             query={exportQuery.toString()}
             compact
           />
+        )}
+        {canForms && (
+          <Button variant="outline" onClick={() => navigate('/members/forms')}>
+            <IconListChecks />
+            {t('memberForms.title')}
+          </Button>
         )}
         {canCreate && (
           <Button variant="brand" onClick={() => setFormFor('new')}>

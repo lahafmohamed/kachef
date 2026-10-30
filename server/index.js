@@ -678,6 +678,12 @@ app.post('/api/auth/login', (req, res) => {
   res.json({ token, user: { ...publicUser(u), absence_threshold: absenceThreshold() }, idleTimeoutMs: IDLE_MS });
 });
 
+// The one page reached without an account: the fiche à compléter (memberForms.js), whose
+// link is its own key. Mounted here, ahead of the token check; its routes are added
+// further down, once the helpers they use exist.
+const publicApi = express.Router();
+app.use('/api/public', publicApi);
+
 // Every other /api route requires a valid, still-fresh token
 app.use('/api', (req, res, next) => {
   const token = (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -6152,6 +6158,13 @@ const notifications = require('./push')(app, {
   },
   // The next نشاط of a فرقة's annual plan from `today`, for the reminder of its بطاقة
   nextPlanned: (branchId, today) => planFor(branchId, currentScoutYear()).items.find((i) => i.date >= today) || null,
+});
+
+// Fiche à compléter: a personal link, sent by WhatsApp, where the family fills in what
+// the عنصر's file lacks; a قائد reviews each answer before it lands (server/memberForms.js)
+require('./memberForms')(app, publicApi, {
+  db, hasPerm, requirePerm, branchOk, branchFilterSQL, auditEvent, notifications,
+  validISODate, validPhone, BLOOD_TYPES, todayISO, intOr,
 });
 
 // ---------- Sessions & attendance ----------

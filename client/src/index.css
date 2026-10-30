@@ -484,10 +484,6 @@ input[type="radio"] {
   from { transform: translateY(100%); }
   to { transform: none; }
 }
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
-  to { opacity: 1; transform: none; }
-}
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
@@ -524,18 +520,13 @@ input[type="radio"] {
 @keyframes sheet-out {
   to { opacity: 0; transform: translateY(12px); }
 }
-@keyframes toast-out {
-  to { opacity: 0; transform: scale(0.97); }
-}
 
 .animate-overlay-in { animation: overlay-in var(--dur-base) ease-out; }
 .animate-dialog-in { animation: dialog-in var(--dur-base) var(--ease-out-soft); }
 .animate-sheet-in { animation: sheet-in var(--dur-slow) var(--ease-out-soft); }
-.animate-toast-in { animation: toast-in var(--dur-base) var(--ease-spring); }
 .animate-overlay-out { animation: overlay-out var(--dur-fast) ease-out both; }
 .animate-dialog-out { animation: dialog-out var(--dur-fast) ease-out both; }
 .animate-sheet-out { animation: sheet-out var(--dur-base) ease-out both; }
-.animate-toast-out { animation: toast-out var(--dur-fast) ease-out both; }
 .animate-fade-up { animation: fade-up var(--dur-slow) var(--ease-out-soft) both; }
 .animate-pop { animation: pop var(--dur-base) var(--ease-spring); }
 .animate-sun-rise { animation: sun-rise 1400ms var(--ease-out-soft) both; }
@@ -589,6 +580,81 @@ input[type="radio"] {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* ============================================================
+   Toasts — notch-toast, tuned to our tokens. Scoped under the viewport
+   wrapper so these rules beat the library's own <style>, which is injected
+   after this sheet. The island is an inverse surface (ink on the page, page
+   on ink), so its status dots borrow the opposite theme's semantic colours.
+   ============================================================ */
+
+[data-toast-viewport] {
+  --nt-success: hsl(150 58% 48%);
+  --nt-on-success: hsl(150 40% 8%);
+  --nt-error: hsl(0 75% 64%);
+  --nt-on-error: hsl(0 50% 10%);
+  --nt-warning: hsl(38 90% 60%);
+  --nt-info: hsl(280 32% 70%);
+}
+.dark [data-toast-viewport] {
+  --nt-success: var(--success);
+  --nt-on-success: var(--success-foreground);
+  --nt-error: var(--destructive);
+  --nt-on-error: var(--destructive-foreground);
+  --nt-warning: var(--warning);
+  --nt-info: var(--info);
+}
+[data-toast-viewport] .nt-shell {
+  --nt-notch-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+/* Clear the status bar / camera cut-out when installed as an app */
+[data-toast-viewport] .nt-attached.nt-top-center .nt-content {
+  padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+}
+/* Our messages are full sentences (French, Arabic): wrap instead of running
+   off a 384px phone, and give Arabic marks room above and below. */
+[data-toast-viewport] .nt-content {
+  /* The island sizes itself from this box, so the box must not take the
+     island's previous size — neither shrink to its width nor stretch to its
+     height — or wrapped text is measured against the last toast. */
+  flex-shrink: 0;
+  align-self: flex-start;
+  max-width: min(30rem, calc(100vw - 2rem));
+  padding-inline: 1.125rem;
+}
+[data-toast-viewport] .nt-label {
+  height: auto;
+  line-height: 1.45;
+  white-space: normal;
+  font-weight: 500;
+}
+[data-toast-viewport] .nt-label-slide {
+  white-space: normal;
+}
+[data-toast-viewport] .nt-icon-success {
+  background: var(--nt-success);
+  color: var(--nt-on-success);
+}
+[data-toast-viewport] .nt-icon-error {
+  background: var(--nt-error);
+  color: var(--nt-on-error);
+}
+[data-toast-viewport] .nt-icon-warning { color: var(--nt-warning); }
+[data-toast-viewport] .nt-icon-info { color: var(--nt-info); }
+[data-toast-viewport] .nt-dismiss {
+  position: relative;
+  width: 2rem;
+  height: 2rem;
+  margin-inline-end: -0.5rem;
+  border-radius: var(--radius-sm);
+}
+/* 44px hit area on phones without growing the island */
+[data-toast-viewport] .nt-dismiss::before {
+  content: "";
+  position: absolute;
+  inset: -0.375rem;
 }
 
 /* ============================================================

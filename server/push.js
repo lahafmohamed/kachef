@@ -75,6 +75,8 @@ const TYPES = {
   birthday: { group: 'people', perm: ['members.read', 'leaders.read'], on: (u) => ownBranches(u) !== null },
   // On for everyone it reaches: the admin and the قادة of the فرقة learn of each inscription
   member_created: { group: 'people', perm: 'members.read', on: () => true },
+  // Une famille a rempli la fiche à compléter : la réponse attend un قائد qui la relise
+  member_form: { group: 'people', perm: 'members.edit', on: () => true },
   // A2 : un عنصر atteint la série d'absences, après validation de la présence. Les قادة de
   // sa فرقة au premier palier ; au second (deux fois le seuil), l'admin aussi.
   absence_streak: { group: 'people', perm: 'members.read', on: () => true },
@@ -734,6 +736,25 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
       text: (lang) => ({
         title: titleWith(lang === 'ar' ? 'عنصر جديد' : 'Nouveau membre', branchNames([m.branch_id], lang)),
         body: `${name}\n${lang === 'ar' ? `${fem ? 'سجّلته' : 'سجّله'} ${actor}` : `Inscrit par ${actor}`}`,
+      }),
+    });
+  }
+
+  /** A family answered the fiche à compléter: for the قادة of the فرقة who may report it. */
+  function memberFormSubmitted(m, { formId, count }) {
+    const section = db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
+    if (!section) return;
+    const users = audience({ section, branchIds: [m.branch_id], type: 'member_form' }).filter(
+      (u) => canUser(u, 'members.contact')
+    );
+    const name = [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ');
+    deliver(users, {
+      type: 'member_form',
+      url: '/members/forms?tab=review',
+      tag: `mf${formId}`,
+      text: (lang) => ({
+        title: titleWith(lang === 'ar' ? 'بطاقة مُكمَّلة' : 'Fiche complétée', branchNames([m.branch_id], lang)),
+        body: `${name}\n${lang === 'ar' ? `${count === 1 ? 'معلومة واحدة' : `${count} معلومات`} بانتظار المراجعة` : `${count} information${count > 1 ? 's' : ''} à valider`}`,
       }),
     });
   }
@@ -1555,6 +1576,7 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
     decisionAssigned,
     evaluationReceived,
     memberCreated,
+    memberFormSubmitted,
     treasuryEntry,
     absenceStreak,
     // The reminders, callable with a given time (tests)

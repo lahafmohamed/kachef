@@ -37,7 +37,7 @@ export function PickBox({ checked, indeterminate = false, onChange, label, class
 }
 
 // Copy, with the old textarea trick where the Clipboard API is missing (plain http, old WebView)
-async function copyText(text) {
+export async function copyText(text) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
     return;

@@ -18,6 +18,8 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "i18next": "^24.2.0",
+    "motion": "14.2.0",
+    "notch-toast": "0.2.0",
     "react": "^19.1.0",
     "react-day-picker": "^10.0.1",
     "react-dom": "^19.1.0",

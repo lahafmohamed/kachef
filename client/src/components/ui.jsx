@@ -2,7 +2,9 @@ import {
   Children,
   Fragment,
   createContext,
+  Suspense,
   isValidElement,
+  lazy,
   useCallback,
   useContext,
   useEffect,
@@ -1251,124 +1253,36 @@ export const useConfirm = () => useContext(ConfirmContext);
 
 const ToastContext = createContext(null);
 
-const toastStyles = {
-  success: { cls: 'border-success/30 bg-success/12 text-success', Icon: IconCheck },
-  error: { cls: 'border-destructive/30 bg-destructive/12 text-destructive', Icon: IconAlert },
-  info: { cls: 'border-info/30 bg-info/12 text-info', Icon: IconSparkles },
+// notch-toast (notch.devsethi.me): one island attached to the top edge that
+// morphs between messages — latest toast wins. Errors stay until closed.
+// Colours, radius and wrapping are tuned to our tokens in index.css (.nt-*).
+// Loaded as its own chunk: it brings Motion (~50 KB gzip), and toasts only
+// follow a user action, by which time the toaster has mounted.
+const loadNotch = () => import('notch-toast');
+const NotchToaster = lazy(() => loadNotch().then((m) => ({ default: m.NotchToaster })));
+const notch = (type, message, opts) => {
+  loadNotch().then(({ toast }) => (toast[type] || toast)(message, opts));
+};
+
+const toastApi = {
+  toast: (message, type = 'success', ms) => notch(type, message, ms === undefined ? undefined : { duration: ms }),
+  success: (m) => notch('success', m),
+  // api.js throws 'network' when the request never got an answer (weak 3G, timeout)
+  error: (m) => notch('error', displayError(m)),
+  info: (m) => notch('info', m),
 };
 
 export function ToastProvider({ children }) {
-  const { t } = useTranslation();
-  const [toasts, setToasts] = useState([]);
-  const [announcement, setAnnouncement] = useState(null);
-  const seq = useRef(0);
-  const timers = useRef(new Map());
-
-  // Two-phase: mark the toast leaving so it can fade, then drop it from the
-  // stack once the exit has played. Same reasoning as the sheet — an element
-  // that animated its way in should not leave on a single frame.
-  const dismiss = useCallback((id) => {
-    clearTimeout(timers.current.get(id));
-    timers.current.delete(id);
-    setToasts((ts) => ts.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
-    clearTimeout(timers.current.get(`${id}:out`));
-    timers.current.set(
-      `${id}:out`,
-      setTimeout(() => {
-        timers.current.delete(`${id}:out`);
-        setToasts((ts) => ts.filter((x) => x.id !== id));
-      }, 120) // --dur-fast
-    );
-  }, []);
-
-  const arm = useCallback(
-    (id, ms) => {
-      clearTimeout(timers.current.get(id));
-      timers.current.set(id, setTimeout(() => dismiss(id), ms));
-    },
-    [dismiss]
-  );
-
-  const push = useCallback(
-    (message, type = 'success', ms = 3200) => {
-      const id = ++seq.current;
-      setToasts((ts) => [...ts.filter((x) => x.type === 'error'), ...ts.filter((x) => x.type !== 'error').slice(-2), { id, message, type, ms }]);
-      if (type !== 'error') setAnnouncement({ id, message });
-      if (type !== 'error' && ms > 0) arm(id, ms);
-      return id;
-    },
-    [arm]
-  );
-
-  const value = useMemo(
-    () => ({
-      toast: push,
-      success: (m) => push(m, 'success'),
-      // api.js throws 'network' when the request never got an answer (weak 3G, timeout)
-      error: (m) => push(displayError(m), 'error', 0),
-      info: (m) => push(m, 'info'),
-    }),
-    [push, t]
-  );
-
   return (
-    <ToastContext.Provider value={value}>
+    <ToastContext.Provider value={toastApi}>
       {children}
+      {/* Direct child of <body> carrying data-toast-viewport, so an open
+          dialog does not make the island inert (its close button must work). */}
       {createPortal(
-        <div
-          data-toast-viewport=""
-          role="region"
-          aria-label={t('notif.title')}
-          // Top of the screen on phones — the bottom is owned by the tab bar and
-          // sticky save bars, so toasts there covered the very buttons just tapped.
-          className="pointer-events-none fixed inset-x-0 top-[calc(var(--header-h)+env(safe-area-inset-top,0px)+0.75rem)] z-[60] flex max-h-[70dvh] flex-col items-center gap-2 overflow-y-auto px-4 lg:top-auto lg:bottom-5 lg:items-end lg:px-5"
-        >
-          <span role="status" aria-atomic="true" className="sr-only">
-            {announcement && <span key={announcement.id}>{announcement.message}</span>}
-          </span>
-          {toasts.map(({ id, message, type, ms, leaving }) => {
-            const { cls, Icon: I } = toastStyles[type] || toastStyles.info;
-            // Hovering or focusing holds the toast; leaving restarts the full
-            // timer. A toast already on its way out ignores both.
-            const hold = () => !leaving && clearTimeout(timers.current.get(id));
-            const release = () => !leaving && type !== 'error' && ms > 0 && arm(id, ms);
-            return (
-              <div
-                key={id}
-                role={type === 'error' ? 'alert' : undefined}
-                onMouseEnter={hold}
-                onMouseLeave={release}
-                onFocus={hold}
-                onBlur={release}
-                className={cn(
-                  'flex w-full max-w-sm shrink-0 items-start gap-2.5',
-                  leaving ? 'animate-toast-out pointer-events-none' : 'animate-toast-in pointer-events-auto',
-                  'glass rounded-xl border ps-4 pe-2 py-2.5 text-sm font-medium shadow-lg',
-                  cls
-                )}
-              >
-                <I className="mt-1" />
-                <span className="flex-1 py-0.5">{message}</span>
-                {/* The visible square stays 32px so it sits inside the toast,
-                    but the pseudo-element takes the real hit area to 44px —
-                    this control is thumb-sized on phones, where the toast
-                    renders at the top of the screen. */}
-                <button
-                  type="button"
-                  onClick={() => dismiss(id)}
-                  aria-label={t('common.close')}
-                  className={cn(
-                    'focus-ring relative -me-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md',
-                    'opacity-70 transition-opacity hover:opacity-100',
-                    'before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-11',
-                    'before:-translate-x-1/2 before:-translate-y-1/2 before:content-[""]'
-                  )}
-                >
-                  <IconX className="h-4 w-4" />
-                </button>
-              </div>
-            );
-          })}
+        <div data-toast-viewport="">
+          <Suspense fallback={null}>
+            <NotchToaster position="top-center" mode="attached" animation="fluid" />
+          </Suspense>
         </div>,
         document.body
       )}
