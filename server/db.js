@@ -1723,6 +1723,9 @@ function migrate() {
     ['years_total', 'years_total INTEGER'],
     ['education', 'education TEXT'],
     ['training_level', "training_level TEXT NOT NULL DEFAULT '[]'"],
+    // Fiche à compléter (2026-10-30) : comme pour un عنصر, un camp a besoin de les lire
+    ['birth_place', 'birth_place TEXT'],
+    ['blood_type', 'blood_type TEXT'],
   ])
     ensureColumn('leaders', col, ddl);
   ensureColumn('leaders', 'archived_at', 'archived_at TEXT');

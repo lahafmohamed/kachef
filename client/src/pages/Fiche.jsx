@@ -24,14 +24,26 @@ import {
  * sends the answers to the قائد, who reviews them before they land.
  */
 
-// The form's order and grouping. A section with nothing to ask is left out.
-const SECTIONS = [
-  ['sectionIdentity', ['birth_date', 'birth_place', 'father_name', 'mother_name', 'school']],
-  ['sectionContact', ['address_abidjan', 'member_phone', 'father_phone', 'mother_phone']],
-  ['sectionHealth', ['blood_type', 'allergies', 'treatment', 'can_swim', 'emergency_name', 'emergency_phone']],
-];
-const PHONES = ['member_phone', 'father_phone', 'mother_phone', 'emergency_phone'];
-const MAX = { birth_place: 120, father_name: 80, mother_name: 120, school: 120, address_abidjan: 200, emergency_name: 120 };
+// The form's order and grouping, per kind of file. A section with nothing to ask is left out.
+const SECTIONS = {
+  member: [
+    ['sectionIdentity', ['birth_date', 'birth_place', 'father_name', 'mother_name', 'school']],
+    ['sectionContact', ['address_abidjan', 'member_phone', 'father_phone', 'mother_phone']],
+    ['sectionHealth', ['blood_type', 'allergies', 'treatment', 'can_swim', 'emergency_name', 'emergency_phone']],
+  ],
+  // A قائد's own file: he answers for himself
+  leader: [
+    ['sectionIdentity', ['birth_date', 'birth_place', 'father_name', 'marital_status']],
+    ['sectionContact', ['phone', 'address_abidjan', 'address_lebanon']],
+    ['sectionPath', ['join_year', 'years_ghadir', 'years_total', 'education']],
+    ['sectionHealth', ['blood_type']],
+  ],
+};
+const PHONES = ['member_phone', 'father_phone', 'mother_phone', 'emergency_phone', 'phone'];
+const MAX = {
+  birth_place: 120, father_name: 80, mother_name: 120, school: 120, address_abidjan: 200,
+  address_lebanon: 200, emergency_name: 120, education: 300,
+};
 
 export default function Fiche() {
   const { token } = useParams();
@@ -65,8 +77,12 @@ export default function Fiche() {
   }, [t]);
 
   const { data, error, loading } = state;
-  const name = data ? `${data.member.first_name} ${data.member.last_name}`.trim() : '';
-  const branch = data ? (i18n.language === 'ar' ? data.member.branch_ar : data.member.branch_fr) : '';
+  const name = data ? `${data.person.first_name} ${data.person.last_name}`.trim() : '';
+  const branch = !data
+    ? ''
+    : data.kind === 'leader'
+      ? t('fiche.leaderLine')
+      : i18n.language === 'ar' ? data.person.branch_ar : data.person.branch_fr;
 
   let body;
   if (loading) body = <div className="flex justify-center py-16 text-muted-foreground"><Spinner className="size-6" /></div>;
@@ -86,7 +102,11 @@ export default function Fiche() {
   else if (data.status === 'submitted' || data.status === 'applied' || data.status === 'rejected')
     body = <Notice tone="success" title={t('fiche.submittedTitle')}>{t('fiche.submittedBody', { name })}</Notice>;
   else if (data.status !== 'open')
-    body = <Notice tone="muted" title={t('fiche.closedTitle')}>{t('fiche.closedBody')}</Notice>;
+    body = (
+      <Notice tone="muted" title={t('fiche.closedTitle')}>
+        {t(data.kind === 'leader' ? 'fiche.closedBodyLeader' : 'fiche.closedBody')}
+      </Notice>
+    );
   else if (!data.fields.length)
     body = <Notice tone="success" title={t('fiche.completeTitle')}>{t('fiche.completeBody')}</Notice>;
   else body = <FicheForm token={token} data={data} />;
@@ -133,7 +153,8 @@ function Notice({ tone, title, children, action }) {
 function FicheForm({ token, data }) {
   const { t } = useTranslation();
   const asked = new Set(data.fields);
-  const female = data.member.sex === 'F';
+  const leader = data.kind === 'leader';
+  const female = data.person.sex === 'F';
   const [respondent, setRespondent] = useState('');
   const [values, setValues] = useState({});
   // Allergies and treatment: «non» first, the detail only after «oui»
@@ -146,7 +167,8 @@ function FicheForm({ token, data }) {
   const formRef = useRef(null);
 
   const set = (key) => (e) => setValues((v) => ({ ...v, [key]: e.target.value }));
-  const label = (key) => t(`fiche.fields.${key === 'can_swim' && female ? 'can_swimF' : key}`);
+  const label = (key) =>
+    t(`fiche.fields.${key === 'can_swim' && female ? 'can_swimF' : key === 'phone' && leader ? 'leader_phone' : key}`);
 
   function answers() {
     const out = {};
@@ -159,7 +181,7 @@ function FicheForm({ token, data }) {
         else if (hasTreatment && values.treatment?.trim()) out.treatment = values.treatment;
       } else if (key === 'can_swim') {
         if (typeof values.can_swim === 'boolean') out.can_swim = values.can_swim;
-      } else if (values[key]?.trim()) out[key] = values[key];
+      } else if (typeof values[key] === 'string' && values[key].trim()) out[key] = values[key];
     }
     return out;
   }
@@ -167,7 +189,7 @@ function FicheForm({ token, data }) {
   async function submit(e) {
     e.preventDefault();
     setErrors({});
-    if (!respondent) {
+    if (!leader && !respondent) {
       setFormError('fiche.whoMissing');
       formRef.current?.querySelector('[data-who] button')?.focus();
       return;
@@ -190,7 +212,7 @@ function FicheForm({ token, data }) {
     setFormError(null);
     setBusy(true);
     try {
-      await api.post(`/public/fiche/${encodeURIComponent(token)}`, { respondent, answers: payload });
+      await api.post(`/public/fiche/${encodeURIComponent(token)}`, { respondent: leader ? 'self' : respondent, answers: payload });
       setDone(true);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
@@ -204,7 +226,12 @@ function FicheForm({ token, data }) {
     }
   }
 
-  if (done) return <Notice tone="success" title={t('fiche.doneTitle')}>{t('fiche.doneBody')}</Notice>;
+  if (done)
+    return (
+      <Notice tone="success" title={t('fiche.doneTitle')}>
+        {t(leader ? 'fiche.doneBodyLeader' : 'fiche.doneBody')}
+      </Notice>
+    );
 
   const errorText = (key) =>
     errors[key] === 'too_long'
@@ -256,6 +283,34 @@ function FicheForm({ token, data }) {
           className="w-full"
         />
       );
+    if (key === 'marital_status')
+      return (
+        <SegmentedControl
+          label={label(key)}
+          options={[
+            { value: 'single', label: t('leader.single') },
+            { value: 'married', label: t('leader.married') },
+          ]}
+          value={values.marital_status || ''}
+          onChange={(v) => setValues((s) => ({ ...s, marital_status: s.marital_status === v ? '' : v }))}
+          className="flex w-full"
+        />
+      );
+    if (key === 'join_year' || key === 'years_ghadir' || key === 'years_total')
+      return (
+        <Input
+          {...f}
+          inputMode="numeric"
+          dir="ltr"
+          maxLength={key === 'join_year' ? 4 : 2}
+          placeholder={key === 'join_year' ? '2015' : '0'}
+          value={values[key] || ''}
+          onChange={(e) => setValues((s) => ({ ...s, [key]: e.target.value.replace(/\D/g, '') }))}
+          className="max-w-32 sm:h-11"
+        />
+      );
+    if (key === 'education')
+      return <Textarea {...f} rows={2} value={values.education || ''} onChange={set('education')} maxLength={300} />;
     if (key === 'can_swim')
       return (
         <SegmentedControl
@@ -307,8 +362,9 @@ function FicheForm({ token, data }) {
 
   return (
     <form ref={formRef} onSubmit={submit} noValidate className="space-y-8">
-      <p className="text-[0.9375rem] text-muted-foreground">{t('fiche.intro')}</p>
+      <p className="text-[0.9375rem] text-muted-foreground">{t(leader ? 'fiche.introLeader' : 'fiche.intro')}</p>
 
+      {!leader && (
       <fieldset className="space-y-2">
         <legend className="mb-2 text-sm font-medium">{t('fiche.who')}</legend>
         <div data-who>
@@ -330,8 +386,9 @@ function FicheForm({ token, data }) {
           />
         </div>
       </fieldset>
+      )}
 
-      {SECTIONS.map(([title, keys]) => {
+      {SECTIONS[leader ? 'leader' : 'member'].map(([title, keys]) => {
         const shown = keys.filter((k) => asked.has(k));
         if (!shown.length) return null;
         return (
@@ -356,7 +413,7 @@ function FicheForm({ token, data }) {
         <p className="flex gap-2.5 text-sm text-muted-foreground">
           <IconLock className="mt-0.5 shrink-0" />
           <span>
-            {t('fiche.privacy')} {t('fiche.validUntil', { date: fmtDate(data.expires_at.slice(0, 10)) })}
+            {t(leader ? 'fiche.privacyLeader' : 'fiche.privacy')} {t('fiche.validUntil', { date: fmtDate(data.expires_at.slice(0, 10)) })}
           </span>
         </p>
         {formError && (

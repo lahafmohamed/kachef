@@ -2429,7 +2429,7 @@
       "evaluation_received": "Ma séance ou mon camp reçoit une évaluation",
       "birthday": "C’est l’anniversaire d’un membre ou d’un chef",
       "member_created": "Un membre est inscrit dans mes branches",
-      "member_form": "Une famille a complété la fiche d’un membre de mes branches",
+      "member_form": "Une fiche à compléter est remplie (membre de mes branches, ou chef pour l’admin)",
       "treasury_entry": "Une dépense ou une entrée est saisie dans une caisse",
       "leader_dues": "Ma cotisation du mois n’est pas enregistrée",
       "absence_streak": "Un élément de mes branches enchaîne les absences",
@@ -3129,7 +3129,15 @@
       "can_swim": "Sait nager ?",
       "can_swimF": "Sait nager ?",
       "emergency_name": "Personne à prévenir en cas d’urgence",
-      "emergency_phone": "Téléphone de cette personne"
+      "emergency_phone": "Téléphone de cette personne",
+      "phone": "Téléphone",
+      "leader_phone": "Votre téléphone",
+      "marital_status": "Situation familiale",
+      "address_lebanon": "Adresse au Liban",
+      "join_year": "Année d’adhésion à Kachef Alghadir",
+      "years_ghadir": "Années de service comme chef à Alghadir",
+      "years_total": "Années de service comme chef, au total",
+      "education": "Niveau d’études et spécialité"
     },
     "bloodHint": "Laissez vide si vous ne le connaissez pas.",
     "allergiesDetail": "Lesquelles ?",
@@ -3155,7 +3163,13 @@
     "notFoundBody": "Vérifiez que le lien est complet, ou demandez-en un nouveau au chef de la branche.",
     "completeTitle": "Fiche déjà complète",
     "completeBody": "Il ne manque plus rien. Merci !",
-    "loadError": "La page n’a pas pu être chargée."
+    "loadError": "La page n’a pas pu être chargée.",
+    "introLeader": "Quelques informations manquent dans votre fiche de chef. Remplissez ce que vous savez et laissez vide le reste.",
+    "leaderLine": "Fiche de chef",
+    "sectionPath": "Parcours",
+    "privacyLeader": "Seule la direction du groupe verra ces réponses. Elles sont vérifiées avant d’être ajoutées à votre fiche.",
+    "doneBodyLeader": "Vos réponses ont été envoyées à la direction du groupe. Vous pouvez fermer cette page.",
+    "closedBodyLeader": "Il a expiré ou a été remplacé. Demandez un nouveau lien à la direction du groupe."
   },
   "memberForms": {
     "title": "Fiches à compléter",
@@ -3185,6 +3199,7 @@
     "noneMissingBody": "Aucun membre actif n’a d’information manquante dans ces branches.",
     "noMatch": "Aucun membre dans ce filtre.",
     "sendTitle": "Envoyer le lien à la famille",
+    "sendTitleLeader": "Envoyer le lien au chef",
     "recipient": "Destinataire",
     "recipientMember": "Le membre",
     "recipientFather": "Le père",
@@ -3212,7 +3227,8 @@
       "self": "le membre",
       "father": "le père",
       "mother": "la mère",
-      "other": "une autre personne"
+      "other": "une autre personne",
+      "leader": "le chef lui-même"
     },
     "current": "Actuellement : {{value}}",
     "hidden_one": "{{count}} réponse santé ne vous est pas visible.",
@@ -3224,7 +3240,14 @@
     "applied": "Fiche mise à jour",
     "rejected": "Réponse rejetée",
     "pickOne": "Cochez au moins une information.",
-    "openProfile": "Voir la fiche"
+    "openProfile": "Voir la fiche",
+    "descriptionLeaders": "Envoyez à chaque chef un lien personnel pour compléter sa fiche, puis validez ses réponses.",
+    "whoLabel": "Fiches de",
+    "whoMembers": "Membres",
+    "whoLeaders": "Chefs",
+    "noneMissingBodyLeaders": "Aucun chef actif n’a d’information manquante.",
+    "recipientSelf": "Le chef",
+    "waMessageLeader": "Bonjour {{name}}, ici {{org}}. Pour compléter ta fiche de chef, merci de remplir ce court formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}."
   },
   "activity": {
     "title": "Statistiques d'activité",
@@ -3414,6 +3437,9 @@
         "reverse": "Promotion annulée"
       },
       "leaders": {
+        "forms_read": "Fiches de chefs à compléter consultées",
+        "forms_send": "Lien de fiche de chef envoyé",
+        "forms_review": "Réponse de chef validée",
         "open": "Fiche chef ouverte",
         "create": "Chef ajouté",
         "edit": "Fiche chef modifiée",

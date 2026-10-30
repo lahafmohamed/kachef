@@ -853,9 +853,11 @@ export default function LeaderDetail() {
                     </span>
                   )}
                 </Fact>
+                <Fact label={t('member.birthPlace')}>{leader.birth_place}</Fact>
                 <Fact label={t('leader.maritalStatus')}>
                   {leader.marital_status && t(leader.marital_status === 'married' ? 'leader.married' : 'leader.single')}
                 </Fact>
+                <Fact label={t('member.bloodType')}>{leader.blood_type && <span dir="ltr">{leader.blood_type}</span>}</Fact>
                 <Fact label={t('member.addressAbidjan')}>{leader.address_abidjan}</Fact>
                 <Fact label={t('member.addressLebanon')}>{leader.address_lebanon}</Fact>
               </FactGroup>

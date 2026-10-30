@@ -4528,6 +4528,8 @@ const MARITAL_STATUSES = ['single', 'married'];
 const LEADER_TEXT_FIELDS = [
   'father_name',
   'birth_date',
+  'birth_place',
+  'blood_type',
   'phone',
   'address_abidjan',
   'address_lebanon',
@@ -4582,6 +4584,7 @@ function validateLeader(body) {
   if (body.birth_date && (!validISODate(body.birth_date) || body.birth_date > todayISO()))
     return 'invalid birth_date';
   if (!validPhone(body.phone)) return 'invalid phone';
+  if (body.blood_type && !BLOOD_TYPES.includes(body.blood_type)) return 'invalid blood_type';
   if (!validPhoto(body.photo)) return 'invalid photo';
   if (parseTrainingCourses(body.training_level) === undefined) return 'invalid training_level';
   return null;
@@ -6161,10 +6164,11 @@ const notifications = require('./push')(app, {
 });
 
 // Fiche à compléter: a personal link, sent by WhatsApp, where the family fills in what
-// the عنصر's file lacks; a قائد reviews each answer before it lands (server/memberForms.js)
+// the عنصر's file lacks (or the قائد his own); a قائد — the admin for a قائد's file —
+// reviews each answer before it lands (server/memberForms.js)
 require('./memberForms')(app, publicApi, {
-  db, hasPerm, requirePerm, branchOk, branchFilterSQL, auditEvent, notifications,
-  validISODate, validPhone, BLOOD_TYPES, todayISO, intOr,
+  db, hasPerm, requirePerm, requireAdmin, branchOk, branchFilterSQL, leaderScopeSQL, leaderOk, auditEvent,
+  notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr,
 });
 
 // ---------- Sessions & attendance ----------

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { useAuth } from '../auth';
 import { useFetch, useUrlFilters } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DatePicker from '../components/DatePicker';
@@ -34,19 +35,39 @@ import {
 } from '../components/ui';
 
 /*
- * Fiches à compléter (server/memberForms.js). «À compléter»: each active عنصر whose file
- * lacks something, with what his family last received; one tap prepares the personal
- * link and hands it to WhatsApp. «Réponses à valider»: what the families sent, field by
- * field, for a قائد to correct, keep or leave out before it lands on the file.
+ * Fiches à compléter (server/memberForms.js). «À compléter»: each active عنصر (or, for the
+ * admin, each قائد) whose file lacks something, with what was last sent; one tap prepares
+ * the personal link and hands it to WhatsApp. «Réponses à valider»: what came back, field
+ * by field, to correct, keep or leave out before it lands on the file.
  */
 
 const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-const PHONE_KEYS = ['member_phone', 'father_phone', 'mother_phone', 'emergency_phone'];
-const RECIPIENTS = [
-  ['father', 'recipientFather'],
-  ['mother', 'recipientMother'],
-  ['member', 'recipientMember'],
-];
+const PHONE_KEYS = ['member_phone', 'father_phone', 'mother_phone', 'emergency_phone', 'phone'];
+const NUMBER_KEYS = ['join_year', 'years_ghadir', 'years_total'];
+// The two kinds of file: an عنصر's (his family answers) and a قائد's (he answers himself,
+// the admin reviews — the قادة's files are the admin's alone)
+const KINDS = {
+  members: {
+    api: '/member-forms',
+    fk: 'member_id',
+    profile: (id) => `/members/${id}`,
+    recipients: [
+      ['father', 'recipientFather'],
+      ['mother', 'recipientMother'],
+      ['member', 'recipientMember'],
+    ],
+    message: 'memberForms.waMessage',
+    sendTitle: 'memberForms.sendTitle',
+  },
+  leaders: {
+    api: '/leader-forms',
+    fk: 'leader_id',
+    profile: (id) => `/leaders/${id}`,
+    recipients: [['self', 'recipientSelf']],
+    message: 'memberForms.waMessageLeader',
+    sendTitle: 'memberForms.sendTitleLeader',
+  },
+};
 const LIVE = ['draft', 'sent', 'opened'];
 
 const statusTone = { draft: 'outline', sent: 'info', opened: 'info', submitted: 'warning', expired: 'secondary', revoked: 'secondary', applied: 'success', rejected: 'secondary' };
@@ -60,10 +81,40 @@ function StatusBadge({ form }) {
 
 export default function MemberForms() {
   const { t } = useTranslation();
+  const { user } = useAuth();
+  const [sp, patch] = useUrlFilters();
+  const isAdmin = user?.role === 'admin';
+  const who = isAdmin && sp.get('who') === 'leaders' ? 'leaders' : 'members';
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title={t('memberForms.title')}
+        description={t(who === 'leaders' ? 'memberForms.descriptionLeaders' : 'memberForms.description')}
+      >
+        {isAdmin && (
+          <SegmentedControl
+            label={t('memberForms.whoLabel')}
+            options={[
+              { value: 'members', label: t('memberForms.whoMembers') },
+              { value: 'leaders', label: t('memberForms.whoLeaders') },
+            ]}
+            value={who}
+            onChange={(v) => patch({ who: v === 'leaders' ? 'leaders' : '', tab: '', branch: '', show: '' })}
+          />
+        )}
+      </PageHeader>
+      {/* Keyed: each kind fetches its own lists */}
+      <FormsPanel key={who} kind={KINDS[who]} who={who} />
+    </div>
+  );
+}
+
+function FormsPanel({ kind, who }) {
+  const { t } = useTranslation();
   const [sp, patch] = useUrlFilters();
   const tab = sp.get('tab') === 'review' ? 'review' : 'send';
-  const overview = useFetch('/member-forms');
-  const pending = useFetch('/member-forms/pending');
+  const overview = useFetch(kind.api);
+  const pending = useFetch(`${kind.api}/pending`);
 
   const reloadAll = () => {
     overview.reload({ quiet: true });
@@ -71,14 +122,12 @@ export default function MemberForms() {
   };
 
   const tabs = [
-    { id: 'send', label: t('memberForms.tabSend'), count: overview.data?.members.filter((m) => m.missing.length).length },
+    { id: 'send', label: t('memberForms.tabSend'), count: overview.data?.people.filter((m) => m.missing.length).length },
     { id: 'review', label: t('memberForms.tabReview'), count: pending.data?.length ?? overview.data?.pending },
   ];
 
   return (
     <div className="space-y-4">
-      <PageHeader title={t('memberForms.title')} description={t('memberForms.description')} />
-      <div className="space-y-4">
         <UnderlineTabs
           items={tabs}
           value={tab}
@@ -89,29 +138,29 @@ export default function MemberForms() {
         />
         <div id="mf-panel" role="tabpanel" aria-labelledby={`mf-tab-${tab}`}>
           {tab === 'send' ? (
-            <SendList overview={overview} onChanged={reloadAll} onReview={() => patch({ tab: 'review' })} />
+            <SendList kind={kind} who={who} overview={overview} onChanged={reloadAll} onReview={() => patch({ tab: 'review' })} />
           ) : (
-            <ReviewList pending={pending} onChanged={reloadAll} />
+            <ReviewList kind={kind} pending={pending} onChanged={reloadAll} />
           )}
         </div>
-      </div>
     </div>
   );
 }
 
 // ---------- À compléter ----------
 
-function SendList({ overview, onChanged, onReview }) {
+function SendList({ kind, who, overview, onChanged, onReview }) {
   const { t, i18n } = useTranslation();
   const [sp, patch] = useUrlFilters();
-  const branches = useFetch('/branches');
+  // قادة have no فرقة: the filter is for عناصر only
+  const branches = useFetch('/branches', { skip: who === 'leaders' });
   const [q, setQ] = useState('');
   const [sending, setSending] = useState(null);
   const branch = sp.get('branch') || '';
   const show = ['todo', 'waiting', 'all'].includes(sp.get('show')) ? sp.get('show') : 'todo';
 
   const rows = useMemo(() => {
-    const list = (overview.data?.members || []).filter((m) => m.missing.length || m.form?.status === 'submitted');
+    const list = (overview.data?.people || []).filter((m) => m.missing.length || m.form?.status === 'submitted');
     const needle = q.trim().toLowerCase();
     return list.filter((m) => {
       if (branch && String(m.branch_id) !== branch) return false;
@@ -133,13 +182,13 @@ function SendList({ overview, onChanged, onReview }) {
       </div>
     );
 
-  const anyMissing = overview.data.members.some((m) => m.missing.length);
+  const anyMissing = overview.data.people.some((m) => m.missing.length);
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput value={q} onChange={setQ} placeholder={t('member.name')} className="min-w-48 flex-1" autoFocusHotkey={false} />
-        {(branches.data?.length || 0) > 1 && (
+        {who === 'members' && (branches.data?.length || 0) > 1 && (
           <FilterSelect
             value={branch}
             onChange={(v) => patch({ branch: v })}
@@ -164,7 +213,7 @@ function SendList({ overview, onChanged, onReview }) {
 
       {!anyMissing ? (
         <EmptyState icon={<IconCheckAll className="h-6 w-6" />} title={t('memberForms.noneMissingTitle')}>
-          {t('memberForms.noneMissingBody')}
+          {t(who === 'leaders' ? 'memberForms.noneMissingBodyLeaders' : 'memberForms.noneMissingBody')}
         </EmptyState>
       ) : !rows.length ? (
         <p className="py-10 text-center text-sm text-muted-foreground">{t('memberForms.noMatch')}</p>
@@ -173,6 +222,7 @@ function SendList({ overview, onChanged, onReview }) {
           {rows.map((m) => (
             <MemberRow
               key={m.id}
+              kind={kind}
               m={m}
               branch={branchById.get(m.branch_id)}
               onSend={() => setSending(m)}
@@ -183,6 +233,7 @@ function SendList({ overview, onChanged, onReview }) {
       )}
 
       <SendDialog
+        kind={kind}
         member={sending}
         onClose={() => setSending(null)}
         onChanged={onChanged}
@@ -191,7 +242,7 @@ function SendList({ overview, onChanged, onReview }) {
   );
 }
 
-function MemberRow({ m, branch, onSend, onReview }) {
+function MemberRow({ kind, m, branch, onSend, onReview }) {
   const { t, i18n } = useTranslation();
   const labels = m.missing.map((k) => t(`fiche.fields.${k}`));
   const submitted = m.form?.status === 'submitted';
@@ -201,7 +252,7 @@ function MemberRow({ m, branch, onSend, onReview }) {
       <Avatar photo={m.photo} name={avatarName(m)} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Link to={`/members/${m.id}`} className="focus-ring truncate rounded font-medium hover:underline">
+          <Link to={kind.profile(m.id)} className="focus-ring truncate rounded font-medium hover:underline">
             {memberName(m)}
           </Link>
           <StatusBadge form={m.form} />
@@ -232,12 +283,13 @@ function MemberRow({ m, branch, onSend, onReview }) {
 /** The recipient the link goes to first: a parent for a child, the عنصر himself from 16. */
 function defaultRecipient(m) {
   const has = (k) => phoneNumbers(m.phones[k] || '').length > 0;
+  if ('self' in m.phones) return has('self') ? 'self' : null;
   const age = m.birth_date ? (Date.now() - new Date(`${m.birth_date}T00:00:00`)) / 3.15576e10 : null;
   if (age !== null && age >= 16 && has('member')) return 'member';
   return ['father', 'mother', 'member'].find(has) || null;
 }
 
-function SendDialog({ member, onClose, onChanged }) {
+function SendDialog({ kind, member, onClose, onChanged }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
@@ -257,20 +309,20 @@ function SendDialog({ member, onClose, onChanged }) {
     setLang(member.form?.lang || (['FR', 'FRF'].includes(member.section) ? 'fr' : 'ar'));
     let alive = true;
     api
-      .post('/member-forms', { member_id: member.id })
+      .post(kind.api, { [kind.fk]: member.id })
       .then((f) => alive && setForm(f))
       .catch((err) => alive && setError(err));
     return () => {
       alive = false;
     };
-  }, [member]);
+  }, [member]); // eslint-disable-line react-hooks/exhaustive-deps -- one kind per panel
 
   if (!member) return <Dialog open={false} onClose={onClose} title="" />;
 
   const url = form?.token ? `${window.location.origin}/fiche/${form.token}` : '';
   const T = i18n.getFixedT(lang);
   const message = form
-    ? T('memberForms.waMessage', {
+    ? T(kind.message, {
         org: T('memberForms.org'),
         name: member.first_name,
         url,
@@ -278,11 +330,11 @@ function SendDialog({ member, onClose, onChanged }) {
       })
     : '';
   const phone = recipient ? phoneNumbers(member.phones[recipient] || '')[0] : null;
-  const recipients = RECIPIENTS.filter(([k]) => phoneNumbers(member.phones[k] || '').length);
+  const recipients = kind.recipients.filter(([k]) => phoneNumbers(member.phones[k] || '').length);
 
   const markSent = (via) =>
     api
-      .post(`/member-forms/${form.id}/sent`, { recipient: via === 'whatsapp' ? recipient : null, lang })
+      .post(`${kind.api}/${form.id}/sent`, { recipient: via === 'whatsapp' ? recipient : null, lang })
       .then(() => onChanged())
       .catch(() => {});
 
@@ -299,7 +351,7 @@ function SendDialog({ member, onClose, onChanged }) {
   async function revoke() {
     if (!(await confirm({ title: t('memberForms.revoke'), message: t('memberForms.revokeConfirm'), confirmLabel: t('memberForms.revoke') }))) return;
     try {
-      await api.post(`/member-forms/${form.id}/revoke`);
+      await api.post(`${kind.api}/${form.id}/revoke`);
       toast.success(t('memberForms.revoked'));
       onChanged();
       onClose();
@@ -317,7 +369,7 @@ function SendDialog({ member, onClose, onChanged }) {
     <Dialog
       open={open}
       onClose={onClose}
-      title={t('memberForms.sendTitle')}
+      title={t(kind.sendTitle)}
       description={
         // bdi: an Arabic name inside a French line keeps the count where it belongs
         <>
@@ -423,7 +475,7 @@ function SendDialog({ member, onClose, onChanged }) {
 
 // ---------- Réponses à valider ----------
 
-function ReviewList({ pending, onChanged }) {
+function ReviewList({ kind, pending, onChanged }) {
   const { t } = useTranslation();
   if (pending.error) return <ErrorState message={pending.error} onRetry={() => pending.reload()} retryLabel={t('error.retry')} />;
   if (!pending.data) return <Skeleton className="h-64 w-full" />;
@@ -436,7 +488,7 @@ function ReviewList({ pending, onChanged }) {
   return (
     <div className="space-y-4">
       {pending.data.map((f) => (
-        <ReviewCard key={f.id} f={f} onDone={onChanged} />
+        <ReviewCard key={f.id} kind={kind} f={f} onDone={onChanged} />
       ))}
     </div>
   );
@@ -444,7 +496,7 @@ function ReviewList({ pending, onChanged }) {
 
 const blank = (v) => v === null || v === undefined || v === '';
 
-function ReviewCard({ f, onDone }) {
+function ReviewCard({ kind, f, onDone }) {
   const { t } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
@@ -472,7 +524,7 @@ function ReviewCard({ f, onDone }) {
     setError(null);
     try {
       const fields = [...picked];
-      await api.post(`/member-forms/${f.id}/apply`, { fields, values: Object.fromEntries(fields.map((k) => [k, values[k]])) });
+      await api.post(`${kind.api}/${f.id}/apply`,{ fields, values: Object.fromEntries(fields.map((k) => [k, values[k]])) });
       toast.success(t('memberForms.applied'));
       onDone();
     } catch (err) {
@@ -485,7 +537,7 @@ function ReviewCard({ f, onDone }) {
     if (!(await confirm({ title: t('memberForms.reject'), message: t('memberForms.rejectConfirm'), confirmLabel: t('memberForms.reject') }))) return;
     setBusy('reject');
     try {
-      await api.post(`/member-forms/${f.id}/reject`);
+      await api.post(`${kind.api}/${f.id}/reject`);
       toast.success(t('memberForms.rejected'));
       onDone();
     } catch (err) {
@@ -494,19 +546,24 @@ function ReviewCard({ f, onDone }) {
     }
   }
 
-  const show = (key, v) => (key === 'can_swim' ? t(v ? 'fiche.yes' : 'fiche.no') : PHONE_KEYS.includes(key) ? fmtPhone(v) : key === 'birth_date' ? fmtDate(v) : v);
+  const show = (key, v) =>
+    key === 'can_swim' ? t(v ? 'fiche.yes' : 'fiche.no')
+      : key === 'marital_status' ? t(`leader.${v}`)
+        : PHONE_KEYS.includes(key) ? fmtPhone(v)
+          : key === 'birth_date' ? fmtDate(v)
+            : v;
 
   return (
     <Card className="overflow-hidden">
       <div className="flex items-center gap-3 border-b border-border px-4 py-3">
-        <Avatar photo={f.member.photo} name={avatarName(f.member)} />
+        <Avatar photo={f.person.photo} name={avatarName(f.person)} />
         <div className="min-w-0 flex-1">
-          <Link to={`/members/${f.member.id}`} className="focus-ring block truncate rounded font-medium hover:underline">
-            {memberName(f.member)}
+          <Link to={kind.profile(f.person.id)} className="focus-ring block truncate rounded font-medium hover:underline">
+            {memberName(f.person)}
           </Link>
           <p className="text-xs text-muted-foreground">
             {t('memberForms.filledBy', {
-              who: t(`memberForms.who.${f.respondent}`),
+              who: t(kind.fk === 'leader_id' ? 'memberForms.who.leader' : `memberForms.who.${f.respondent}`),
               date: fmtDate(f.submitted_at.slice(0, 10)),
             })}
           </p>
@@ -588,8 +645,35 @@ function ValueEditor({ id, k, value, onChange, disabled }) {
     );
   if (k === 'birth_date')
     return <DatePicker id={id} toYear={new Date().getFullYear()} value={value || ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} />;
-  if (k === 'allergies' || k === 'treatment')
+  if (k === 'allergies' || k === 'treatment' || k === 'education')
     return <Textarea id={id} rows={1} value={value || ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} maxLength={1000} />;
+  if (k === 'marital_status')
+    return (
+      <SegmentedControl
+        label={t('fiche.fields.marital_status')}
+        size="sm"
+        options={[
+          { value: 'single', label: t('leader.single') },
+          { value: 'married', label: t('leader.married') },
+        ]}
+        value={value || ''}
+        onChange={(v) => !disabled && onChange(v)}
+        className={cn(disabled && 'pointer-events-none opacity-60')}
+      />
+    );
+  if (NUMBER_KEYS.includes(k))
+    return (
+      <Input
+        id={id}
+        inputMode="numeric"
+        dir="ltr"
+        maxLength={k === 'join_year' ? 4 : 2}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
+        disabled={disabled}
+        className="max-w-32"
+      />
+    );
   return (
     <Input
       id={id}

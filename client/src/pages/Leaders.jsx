@@ -55,6 +55,7 @@ import {
   IconPencil,
   IconPhone,
   IconPlus,
+  IconListChecks,
   IconShield,
   IconSwap,
   IconTrash,
@@ -66,6 +67,8 @@ const EMPTY_LEADER = {
   father_name: '',
   last_name: '',
   birth_date: '',
+  birth_place: '',
+  blood_type: '',
   phone: '',
   address_abidjan: '',
   address_lebanon: '',
@@ -93,6 +96,9 @@ function FormActions({ onCancel, saving }) {
     </div>
   );
 }
+
+// فصيلة الدم — مطابقة لـ BLOOD_TYPES في الخادم
+const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
 // الدورات التدريبية، بترتيب تدرّجها — مطابقة لـ TRAINING_COURSES في الخادم
 const TRAINING_COURSES = ['qaid', 'chara', 'mudarrib', 'qaid_tadrib', 'moed_haqiba'];
@@ -161,6 +167,21 @@ function LeaderForm({ initial, lookups, onCreateLookup, onSaved, onCancel }) {
             <option value="">{t('member.noValue')}</option>
             <option value="single">{t('leader.single')}</option>
             <option value="married">{t('leader.married')}</option>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_birth_place">{t('member.birthPlace')}</Label>
+          <Input id="l_birth_place" autoComplete="off" value={form.birth_place || ''} onChange={set('birth_place')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="l_blood">{t('member.bloodType')}</Label>
+          <Select id="l_blood" value={form.blood_type || ''} onChange={set('blood_type')}>
+            <option value="">{t('member.noValue')}</option>
+            {BLOOD_TYPES.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
           </Select>
         </div>
       </div>
@@ -1800,6 +1821,13 @@ export default function Leaders() {
     <div className="space-y-6">
       <PageHeader title={t('leader.title')} description={t('leader.subtitle')}>
         <ExportPdfButton kind="leaders-list" id={0} query={current === 'leaders' ? exportQuery : ''} compact />
+        {isAdmin && (
+          // Fiche à compléter: each قائد fills what his file lacks, from a WhatsApp link
+          <Button variant="outline" onClick={() => navigate('/members/forms?who=leaders')}>
+            <IconListChecks />
+            {t('memberForms.title')}
+          </Button>
+        )}
         {isAdmin && (
           <Button variant="brand" onClick={() => setEditingLeader(EMPTY_LEADER)}>
             <IconPlus />

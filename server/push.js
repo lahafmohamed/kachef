@@ -740,20 +740,26 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
     });
   }
 
-  /** A family answered the fiche à compléter: for the قادة of the فرقة who may report it. */
+  /**
+   * A fiche à compléter answered: an عنصر's for the قادة of his فرقة who may report it,
+   * a قائد's for the admins (his file is theirs alone).
+   */
   function memberFormSubmitted(m, { formId, count }) {
-    const section = db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
+    const leader = m.kind === 'leader';
+    const section = leader ? m.section : db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
     if (!section) return;
-    const users = audience({ section, branchIds: [m.branch_id], type: 'member_form' }).filter(
-      (u) => canUser(u, 'members.contact')
-    );
+    const users = leader
+      ? audience({ section, type: 'member_form' }).filter((u) => u.role === 'admin')
+      : audience({ section, branchIds: [m.branch_id], type: 'member_form' }).filter((u) => canUser(u, 'members.contact'));
     const name = [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ');
     deliver(users, {
       type: 'member_form',
-      url: '/members/forms?tab=review',
-      tag: `mf${formId}`,
+      url: leader ? '/members/forms?who=leaders&tab=review' : '/members/forms?tab=review',
+      tag: `${leader ? 'lf' : 'mf'}${formId}`,
       text: (lang) => ({
-        title: titleWith(lang === 'ar' ? 'بطاقة مُكمَّلة' : 'Fiche complétée', branchNames([m.branch_id], lang)),
+        title: leader
+          ? lang === 'ar' ? 'بطاقة قائد مُكمَّلة' : 'Fiche de chef complétée'
+          : titleWith(lang === 'ar' ? 'بطاقة مُكمَّلة' : 'Fiche complétée', branchNames([m.branch_id], lang)),
         body: `${name}\n${lang === 'ar' ? `${count === 1 ? 'معلومة واحدة' : `${count} معلومات`} بانتظار المراجعة` : `${count} information${count > 1 ? 's' : ''} à valider`}`,
       }),
     });
