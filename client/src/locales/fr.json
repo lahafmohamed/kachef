@@ -3100,6 +3100,12 @@
     "allTime": "Depuis toujours"
   },
   "fiche": {
+    "errRequiredForm": "Remplissez les champs obligatoires marqués *.",
+    "errRequired": "Champ obligatoire",
+    "doneBodySignup": "La demande d’inscription a été envoyée au chef de la branche. Il la vérifiera et vous recontactera si besoin. Vous pouvez fermer cette page.",
+    "submitSignup": "Envoyer la demande d’inscription",
+    "introSignup": "Remplissez la fiche du jeune à inscrire. Les champs marqués * sont obligatoires ; laissez vide ce que vous ne savez pas. Le chef de la branche vérifiera la demande avant l’inscription.",
+    "signupTitle": "Inscription aux scouts",
     "confirmedBody": "Vous avez confirmé que la fiche est juste. Vous pouvez fermer cette page.",
     "confirm": "Tout est correct",
     "currentValue": "Actuellement :",
@@ -3119,6 +3125,9 @@
     "sectionContact": "Coordonnées",
     "sectionHealth": "Santé",
     "fields": {
+      "sex": "Sexe",
+      "last_name": "Nom de famille",
+      "first_name": "Prénom",
       "birth_date": "Date de naissance",
       "birth_place": "Lieu de naissance",
       "father_name": "Prénom du père",
@@ -3177,6 +3186,32 @@
     "closedBodyLeader": "Il a expiré ou a été remplacé. Demandez un nouveau lien à la direction du groupe."
   },
   "memberForms": {
+    "signupStatus": {
+      "rejected": "Demande rejetée",
+      "applied": "Inscrit le {{date}}"
+    },
+    "registered": "Membre inscrit",
+    "register": "Inscrire",
+    "rejectSignupConfirm": "Rejeter cette demande ? Le jeune ne sera pas inscrit.",
+    "sexOutside": "Cette branche n’accueille pas ce sexe : choisissez une autre branche.",
+    "duplicateRefused": "Ce membre est déjà inscrit (même nom et même date de naissance).",
+    "duplicateTitle": "Un membre du même nom existe déjà :",
+    "signupBadge": "Nouvelle inscription",
+    "noSignupsBody": "Créez un lien pour qu’une famille inscrive un nouveau membre.",
+    "noSignupsTitle": "Aucun lien d’inscription",
+    "createdOn": "créé le {{date}}",
+    "signupNoName": "Nouveau membre",
+    "waSignupNoName": "Bonjour, ici {{org}}. Pour inscrire votre enfant aux scouts ({{branch}}), merci de remplir ce formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}.",
+    "waSignup": "Bonjour, ici {{org}}. Pour inscrire {{name}} aux scouts ({{branch}}), merci de remplir ce formulaire : {{url}}\nCe lien est personnel et valable jusqu’au {{date}}.",
+    "createLink": "Créer le lien",
+    "pickBranch": "Choisissez la branche",
+    "signupPhoneHint": "Facultatif : sans numéro, copiez le lien pour l’envoyer autrement.",
+    "signupPhone": "Numéro WhatsApp du parent",
+    "signupLabel": "Prénom du jeune (facultatif)",
+    "newSignupHint": "La famille remplit la fiche du nouveau membre ; vous la validez avant l’inscription.",
+    "newSignup": "Lien d’inscription",
+    "signupsIntro": "Un jeune pas encore inscrit ? Envoyez à sa famille un lien d’inscription : elle remplit la fiche, vous la vérifiez puis l’inscrivez.",
+    "tabSignups": "Inscriptions",
     "correction": "Correction",
     "complete": "Fiche complète",
     "title": "Fiches à compléter",
@@ -3355,6 +3390,9 @@
         "history": "Historique consulté"
       },
       "members": {
+        "signups_review": "Demande d’inscription traitée",
+        "signups_send": "Lien d’inscription envoyé",
+        "signups_read": "Inscriptions par lien consultées",
         "list": "Liste des membres",
         "open": "Fiche membre ouverte",
         "create": "Membre inscrit",

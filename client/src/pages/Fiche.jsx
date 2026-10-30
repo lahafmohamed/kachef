@@ -34,6 +34,12 @@ const SECTIONS = {
     ['sectionContact', ['address_abidjan', 'member_phone', 'father_phone', 'mother_phone']],
     ['sectionHealth', ['blood_type', 'allergies', 'treatment', 'can_swim', 'emergency_name', 'emergency_phone']],
   ],
+  // A new عنصر: the whole file, names first
+  signup: [
+    ['sectionIdentity', ['first_name', 'last_name', 'sex', 'birth_date', 'birth_place', 'father_name', 'mother_name', 'school']],
+    ['sectionContact', ['address_abidjan', 'member_phone', 'father_phone', 'mother_phone']],
+    ['sectionHealth', ['blood_type', 'allergies', 'treatment', 'can_swim', 'emergency_name', 'emergency_phone']],
+  ],
   // A قائد's own file: he answers for himself
   leader: [
     ['sectionIdentity', ['birth_date', 'birth_place', 'father_name', 'marital_status']],
@@ -44,7 +50,7 @@ const SECTIONS = {
 };
 const PHONES = ['member_phone', 'father_phone', 'mother_phone', 'emergency_phone', 'phone'];
 const MAX = {
-  birth_place: 120, father_name: 80, mother_name: 120, school: 120, address_abidjan: 200,
+  first_name: 80, last_name: 80, birth_place: 120, father_name: 80, mother_name: 120, school: 120, address_abidjan: 200,
   address_lebanon: 200, emergency_name: 120, education: 300,
 };
 
@@ -117,7 +123,7 @@ export default function Fiche() {
   return (
     <AuthLayout>
       <div className="space-y-7">
-        <AuthHeader title={data ? t('fiche.title', { name }) : t('fiche.docTitle')}>
+        <AuthHeader title={!data ? t('fiche.docTitle') : data.kind === 'signup' ? t('fiche.signupTitle') : t('fiche.title', { name })}>
           {data ? branch : null}
         </AuthHeader>
         {body}
@@ -163,9 +169,11 @@ function FicheForm({ token, data }) {
   const missing = new Set(data.missing || data.fields);
   const current = data.values || {};
   const leader = data.kind === 'leader';
-  const female = data.person.sex === 'F';
+  const signup = data.kind === 'signup';
+  const required = new Set(data.required || []);
   const [respondent, setRespondent] = useState('');
   const [values, setValues] = useState({});
+  const female = (signup ? values.sex : data.person.sex) === 'F';
   // Filled fields opened for a correction
   const [editing, setEditing] = useState(() => new Set());
   // Allergies and treatment: «non» first, the detail only after «oui»
@@ -221,7 +229,7 @@ function FicheForm({ token, data }) {
 
   const set = (key) => (e) => setValues((v) => ({ ...v, [key]: e.target.value }));
   const label = (key) =>
-    t(`fiche.fields.${key === 'can_swim' && female ? 'can_swimF' : key === 'phone' && leader ? 'leader_phone' : key}`);
+    `${t(`fiche.fields.${key === 'can_swim' && female ? 'can_swimF' : key === 'phone' && leader ? 'leader_phone' : key}`)}${required.has(key) ? ' *' : ''}`;
 
   function answers() {
     const out = {};
@@ -262,6 +270,14 @@ function FicheForm({ token, data }) {
     }
     // Nothing changed: the file is confirmed as it is
     const payload = answers();
+    // A new عنصر needs his names, sex and birth date
+    const lacking = [...required].filter((k) => !(k in payload));
+    if (lacking.length) {
+      setErrors(Object.fromEntries(lacking.map((k) => [k, 'required'])));
+      setFormError('fiche.errRequiredForm');
+      formRef.current?.querySelector(`[data-field="${lacking[0]}"] :is(input,button)`)?.focus();
+      return;
+    }
     setFormError(null);
     setBusy(true);
     try {
@@ -282,12 +298,14 @@ function FicheForm({ token, data }) {
   if (done)
     return (
       <Notice tone="success" title={t('fiche.doneTitle')}>
-        {t(done === 'confirmed' ? 'fiche.confirmedBody' : leader ? 'fiche.doneBodyLeader' : 'fiche.doneBody')}
+        {t(done === 'confirmed' ? 'fiche.confirmedBody' : leader ? 'fiche.doneBodyLeader' : signup ? 'fiche.doneBodySignup' : 'fiche.doneBody')}
       </Notice>
     );
 
   const errorText = (key) =>
-    errors[key] === 'too_long'
+    errors[key] === 'required'
+      ? t('fiche.errRequired')
+      : errors[key] === 'too_long'
       ? t('fiche.errTooLong')
       : errors[key] === 'detail'
         ? t(key === 'allergies' ? 'fiche.allergiesDetail' : 'fiche.treatmentDetail')
@@ -334,6 +352,22 @@ function FicheForm({ token, data }) {
           value={values.blood_type || ''}
           onChange={(v) => setValues((s) => ({ ...s, blood_type: s.blood_type === v ? '' : v }))}
           className="w-full"
+        />
+      );
+    if (key === 'sex')
+      return (
+        <SegmentedControl
+          label={label(key)}
+          options={[
+            { value: 'M', label: t('member.male') },
+            { value: 'F', label: t('member.female') },
+          ]}
+          value={values.sex || ''}
+          onChange={(v) => {
+            setValues((s) => ({ ...s, sex: v }));
+            setErrors((e) => ({ ...e, sex: undefined }));
+          }}
+          className="flex w-full"
         />
       );
     if (key === 'marital_status')
@@ -415,7 +449,9 @@ function FicheForm({ token, data }) {
 
   return (
     <form ref={formRef} onSubmit={submit} noValidate className="space-y-8">
-      <p className="text-[0.9375rem] text-muted-foreground">{t(leader ? 'fiche.introLeader' : 'fiche.intro')}</p>
+      <p className="text-[0.9375rem] text-muted-foreground">
+        {t(leader ? 'fiche.introLeader' : signup ? 'fiche.introSignup' : 'fiche.intro')}
+      </p>
 
       {!leader && (
       <fieldset className="space-y-2">
@@ -441,7 +477,7 @@ function FicheForm({ token, data }) {
       </fieldset>
       )}
 
-      {SECTIONS[leader ? 'leader' : 'member'].map(([title, keys]) => {
+      {SECTIONS[data.kind in SECTIONS ? data.kind : 'member'].map(([title, keys]) => {
         const shown = keys.filter((k) => asked.has(k));
         if (!shown.length) return null;
         return (
@@ -507,7 +543,7 @@ function FicheForm({ token, data }) {
           </div>
         )}
         <Button type="submit" variant="brand" className="w-full sm:h-11" loading={busy}>
-          {changes ? t('fiche.submit') : t('fiche.confirm')}
+          {signup ? t('fiche.submitSignup') : changes ? t('fiche.submit') : t('fiche.confirm')}
         </Button>
       </div>
     </form>

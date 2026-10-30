@@ -746,21 +746,30 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
    */
   function memberFormSubmitted(m, { formId, count }) {
     const leader = m.kind === 'leader';
+    // A demande d'inscription: a new عنصر waiting to be registered
+    const signup = m.kind === 'signup';
     const section = leader ? m.section : db.prepare('SELECT section FROM branches WHERE id = ?').get(m.branch_id)?.section;
     if (!section) return;
     const users = leader
       ? audience({ section, type: 'member_form' }).filter((u) => u.role === 'admin')
-      : audience({ section, branchIds: [m.branch_id], type: 'member_form' }).filter((u) => canUser(u, 'members.contact'));
+      : audience({ section, branchIds: [m.branch_id], type: 'member_form' }).filter(
+          (u) => canUser(u, 'members.contact') && (!signup || canUser(u, 'members.create'))
+        );
     const name = [m.first_name, m.father_name, m.last_name].filter(Boolean).join(' ');
     deliver(users, {
       type: 'member_form',
-      url: leader ? '/members/forms?who=leaders&tab=review' : '/members/forms?tab=review',
-      tag: `${leader ? 'lf' : 'mf'}${formId}`,
+      url: leader ? '/members/forms?who=leaders&tab=review' : signup ? '/members/forms?tab=signups' : '/members/forms?tab=review',
+      tag: `${leader ? 'lf' : signup ? 'sg' : 'mf'}${formId}`,
       text: (lang) => ({
         title: leader
           ? lang === 'ar' ? 'بطاقة قائد مُكمَّلة' : 'Fiche de chef complétée'
-          : titleWith(lang === 'ar' ? 'بطاقة مُكمَّلة' : 'Fiche complétée', branchNames([m.branch_id], lang)),
-        body: `${name}\n${lang === 'ar' ? `${count === 1 ? 'معلومة واحدة' : `${count} معلومات`} بانتظار المراجعة` : `${count} information${count > 1 ? 's' : ''} à valider`}`,
+          : titleWith(
+              signup ? (lang === 'ar' ? 'طلب تسجيل جديد' : 'Nouvelle demande d’inscription') : lang === 'ar' ? 'بطاقة مُكمَّلة' : 'Fiche complétée',
+              branchNames([m.branch_id], lang)
+            ),
+        body: signup
+          ? `${name}\n${lang === 'ar' ? 'بانتظار المراجعة و التسجيل' : 'En attente de validation'}`
+          : `${name}\n${lang === 'ar' ? `${count === 1 ? 'معلومة واحدة' : `${count} معلومات`} بانتظار المراجعة` : `${count} information${count > 1 ? 's' : ''} à valider`}`,
       }),
     });
   }

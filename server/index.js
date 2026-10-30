@@ -3131,10 +3131,10 @@ function validateMember(body) {
 
 // جنس العنصر من قسم الطلب: حساب الفتيات لا يسجّل ذكرًا، و حساب الفتيان (أو الفرنكوفون،
 // ما دام قسمهم للفتيان) لا يسجّل أنثى.
-const sexOutsideSection = (req) => {
+const sexOutsideSection = (req, sex = req.body.sex) => {
   // قسمٌ مختلط (gender null) يقبل الجنسين
   const gender = sectionDef(activeSection(req))?.gender;
-  return !!gender && req.body.sex !== gender;
+  return !!gender && sex !== gender;
 };
 
 // Age is derived from birth_date, so sorting by age is sorting by birth_date:
@@ -3429,12 +3429,13 @@ app.get('/api/members/:id', requirePerm('members.read'), (req, res) => {
   );
 });
 
-app.post('/api/members', requirePerm('members.create'), (req, res) => {
-  const err = validateMember(req.body);
-  if (err) return res.status(400).json({ error: err });
-  if (!branchOk(req, req.body.branch_id)) return res.status(403).json({ error: 'forbidden' });
-  if (sexOutsideSection(req)) return res.status(403).json({ error: 'sex_outside_section' });
-  const b = req.body;
+// Inscrit un عنصر : depuis le formulaire, ou depuis une demande d'inscription validée
+// (memberForms.js). { created } ou { status, error, ...détails }.
+function createMember(req, b) {
+  const err = validateMember(b);
+  if (err) return { status: 400, error: err };
+  if (!branchOk(req, b.branch_id)) return { status: 403, error: 'forbidden' };
+  if (sexOutsideSection(req, b.sex)) return { status: 403, error: 'sex_outside_section' };
   // IS, not =: two entries with the same name and no birth date are the same عنصر
   // registered twice — the date is what tells real homonyms apart. Looked for in the
   // new عنصر's own قسم only: the answer names a record, and the other قسم's stay unseen.
@@ -3447,9 +3448,9 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
        LIMIT 1`
     )
     .get(b.first_name, b.last_name, b.birth_date || null, sectionOfBranch(b.branch_id));
-  if (duplicate) return res.status(409).json({ error: 'member_duplicate', member_id: duplicate.id });
+  if (duplicate) return { status: 409, error: 'member_duplicate', member_id: duplicate.id };
   const groupId = resolveGroupId(b.group_id, b.branch_id);
-  if (groupId === undefined) return res.status(400).json({ error: 'invalid group_id' });
+  if (groupId === undefined) return { status: 400, error: 'invalid group_id' };
   const info = db
     .prepare(
       `INSERT INTO members (first_name, last_name, father_name, mother_name, birth_date, birth_place,
@@ -3466,6 +3467,12 @@ app.post('/api/members', requirePerm('members.create'), (req, res) => {
   const created = db.prepare('SELECT * FROM members WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'member', created.id, null, created);
   notifications.memberCreated(req, created);
+  return { created };
+}
+
+app.post('/api/members', requirePerm('members.create'), (req, res) => {
+  const { created, status, ...error } = createMember(req, req.body);
+  if (!created) return res.status(status).json(error);
   res.status(201).json(stripContact(req, created));
 });
 
@@ -6168,7 +6175,8 @@ const notifications = require('./push')(app, {
 // reviews each answer before it lands (server/memberForms.js)
 require('./memberForms')(app, publicApi, {
   db, hasPerm, requirePerm, requireAdmin, branchOk, branchFilterSQL, leaderScopeSQL, leaderOk, auditEvent,
-  notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr,
+  notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr, createMember, ageGroupIdFor, sectionDef,
+  sectionOfBranch,
 });
 
 // ---------- Sessions & attendance ----------

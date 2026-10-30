@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { useAuth } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useFetch, useUrlFilters } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DatePicker from '../components/DatePicker';
@@ -29,8 +29,10 @@ import {
   useConfirm,
   useToast,
   IconCheckAll,
+  IconAlert,
   IconInbox,
   IconLink,
+  IconPlus,
   IconWhatsApp,
 } from '../components/ui';
 
@@ -72,12 +74,12 @@ const LIVE = ['draft', 'sent', 'opened'];
 
 const statusTone = { draft: 'outline', sent: 'info', opened: 'info', submitted: 'warning', expired: 'secondary', revoked: 'secondary', applied: 'success', confirmed: 'success', rejected: 'secondary' };
 
-function StatusBadge({ form }) {
+function StatusBadge({ form, prefix = 'memberForms.status' }) {
   const { t } = useTranslation();
   if (!form) return null;
   const when = { opened: form.opened_at, applied: form.reviewed_at, confirmed: form.reviewed_at }[form.status] ?? form.sent_at;
   const date = fmtDate(when?.slice(0, 10));
-  return <Badge variant={statusTone[form.status]}>{t(`memberForms.status.${form.status}`, { date })}</Badge>;
+  return <Badge variant={statusTone[form.status]}>{t([`${prefix}.${form.status}`, `memberForms.status.${form.status}`], { date })}</Badge>;
 }
 
 export default function MemberForms() {
@@ -112,19 +114,29 @@ export default function MemberForms() {
 
 function FormsPanel({ kind, who }) {
   const { t } = useTranslation();
+  const { has } = usePerms();
   const [sp, patch] = useUrlFilters();
-  const tab = sp.get('tab') === 'review' ? 'review' : 'send';
+  // Demandes d'inscription: a new عنصر, so the right to register one
+  const canSignup = who === 'members' && has('members.create');
+  const tab = ['review', 'signups'].includes(sp.get('tab')) && (sp.get('tab') !== 'signups' || canSignup) ? sp.get('tab') : 'send';
   const overview = useFetch(kind.api);
   const pending = useFetch(`${kind.api}/pending`);
+  const signups = useFetch('/member-signups', { skip: !canSignup });
+  const signupsPending = useFetch('/member-signups/pending', { skip: !canSignup });
 
   const reloadAll = () => {
     overview.reload({ quiet: true });
     pending.reload({ quiet: true });
+    if (canSignup) {
+      signups.reload({ quiet: true });
+      signupsPending.reload({ quiet: true });
+    }
   };
 
   const tabs = [
     { id: 'send', label: t('memberForms.tabSend'), count: overview.data?.people.filter((m) => m.missing.length).length },
     { id: 'review', label: t('memberForms.tabReview'), count: pending.data?.length ?? overview.data?.pending },
+    ...(canSignup ? [{ id: 'signups', label: t('memberForms.tabSignups'), count: signupsPending.data?.length }] : []),
   ];
 
   return (
@@ -132,7 +144,7 @@ function FormsPanel({ kind, who }) {
         <UnderlineTabs
           items={tabs}
           value={tab}
-          onChange={(id) => patch({ tab: id === 'review' ? 'review' : '' })}
+          onChange={(id) => patch({ tab: id === 'send' ? '' : id })}
           label={t('memberForms.title')}
           idPrefix="mf-tab"
           panelId="mf-panel"
@@ -140,6 +152,8 @@ function FormsPanel({ kind, who }) {
         <div id="mf-panel" role="tabpanel" aria-labelledby={`mf-tab-${tab}`}>
           {tab === 'send' ? (
             <SendList kind={kind} who={who} overview={overview} onChanged={reloadAll} onReview={() => patch({ tab: 'review' })} />
+          ) : tab === 'signups' ? (
+            <Signups list={signups} pending={signupsPending} onChanged={reloadAll} />
           ) : (
             <ReviewList kind={kind} pending={pending} onChanged={reloadAll} />
           )}
@@ -626,6 +640,19 @@ function ReviewCard({ kind, f, onDone }) {
 /** The family's answer, editable by the قائد before it lands (same rules as the server). */
 function ValueEditor({ id, k, value, onChange, disabled }) {
   const { t } = useTranslation();
+  if (k === 'sex')
+    return (
+      <SegmentedControl
+        label={t('member.sex')}
+        size="sm"
+        options={[
+          { value: 'M', label: t('member.male') },
+          { value: 'F', label: t('member.female') },
+        ]}
+        value={value || ''}
+        onChange={(v) => !disabled && onChange(v)}
+      />
+    );
   if (k === 'can_swim')
     return (
       <SegmentedControl
@@ -689,5 +716,418 @@ function ValueEditor({ id, k, value, onChange, disabled }) {
       disabled={disabled}
       {...(PHONE_KEYS.includes(k) ? { type: 'tel', inputMode: 'tel', dir: 'ltr' } : {})}
     />
+  );
+}
+
+// ---------- Inscriptions ----------
+// A عنصر not on the books yet: a link tied to a فرقة, the family fills the whole file,
+// and a قائد checks it, picks the فرقة and registers him (server: member_signups).
+
+const SIGNUP_LIVE = ['draft', 'sent', 'opened'];
+
+function signupMessage(T, f, branch, lang) {
+  const url = `${window.location.origin}/fiche/${f.token}`;
+  const date = new Intl.DateTimeFormat(lang === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { day: 'numeric', month: 'long' }).format(
+    new Date(`${f.expires_at.slice(0, 10)}T12:00:00`)
+  );
+  return T(f.label ? 'memberForms.waSignup' : 'memberForms.waSignupNoName', {
+    org: T('memberForms.org'),
+    name: f.label,
+    branch: branch ? branchName(branch, lang) : '',
+    url,
+    date,
+  });
+}
+
+function Signups({ list, pending, onChanged }) {
+  const { t, i18n } = useTranslation();
+  const branches = useFetch('/branches');
+  const [dialog, setDialog] = useState(null);
+  const branchById = useMemo(() => new Map((branches.data || []).map((b) => [b.id, b])), [branches.data]);
+
+  if (list.error || pending.error)
+    return <ErrorState message={list.error || pending.error} onRetry={() => (list.reload(), pending.reload())} retryLabel={t('error.retry')} />;
+  if (!list.data || !pending.data) return <Skeleton className="h-64 w-full" />;
+  const links = list.data.filter((f) => f.status !== 'submitted');
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 flex-1 text-sm text-muted-foreground">{t('memberForms.signupsIntro')}</p>
+        <Button variant="brand" onClick={() => setDialog({ form: null })}>
+          <IconPlus />
+          {t('memberForms.newSignup')}
+        </Button>
+      </div>
+
+      {pending.data.map((f) => (
+        <SignupReviewCard key={f.id} f={f} branches={branches.data || []} onDone={onChanged} />
+      ))}
+
+      {links.length > 0 ? (
+        <Card className="divide-y divide-border overflow-hidden">
+          {links.map((f) => {
+            const live = SIGNUP_LIVE.includes(f.status);
+            const branch = branchById.get(f.branch_id);
+            return (
+              <div key={f.id} className="flex items-center gap-3 px-3 py-3 sm:px-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    {f.member_id ? (
+                      <Link to={`/members/${f.member_id}`} className="focus-ring truncate rounded font-medium hover:underline">
+                        {f.label || t('memberForms.signupNoName')}
+                      </Link>
+                    ) : (
+                      <span className="truncate font-medium">{f.label || t('memberForms.signupNoName')}</span>
+                    )}
+                    <StatusBadge form={f} prefix="memberForms.signupStatus" />
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {[branch && branchName(branch, i18n.language), f.phone && fmtPhone(f.phone), t('memberForms.createdOn', { date: fmtDate(f.created_at.slice(0, 10)) })]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+                </div>
+                {live && (
+                  <Button size="sm" variant="outline" onClick={() => setDialog({ form: f })}>
+                    <IconWhatsApp className="h-4 w-4" />
+                    {t('memberForms.resend')}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </Card>
+      ) : (
+        !pending.data.length && (
+          <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('memberForms.noSignupsTitle')}>
+            {t('memberForms.noSignupsBody')}
+          </EmptyState>
+        )
+      )}
+
+      <SignupDialog
+        open={!!dialog}
+        initial={dialog?.form || null}
+        branches={branches.data || []}
+        onClose={() => setDialog(null)}
+        onChanged={onChanged}
+      />
+    </div>
+  );
+}
+
+/** New link (فرقة, the child's first name, the parent's number), then the message to send. */
+function SignupDialog({ open, initial, branches, onClose, onChanged }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [form, setForm] = useState(null);
+  const [draft, setDraft] = useState({ branch_id: '', label: '', phone: '' });
+  const [lang, setLang] = useState(i18n.language === 'fr' ? 'fr' : 'ar');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setForm(initial);
+    setError(null);
+    setBusy(false);
+    setDraft({ branch_id: branches.length === 1 ? String(branches[0].id) : '', label: '', phone: '' });
+    if (initial) setLang(initial.lang);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- reset on each opening
+
+  async function create(e) {
+    e.preventDefault();
+    if (!draft.branch_id) {
+      setError(t('memberForms.pickBranch'));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const f = await api.post('/member-signups', { ...draft, branch_id: Number(draft.branch_id), lang });
+      setForm(f);
+      onChanged();
+    } catch (err) {
+      setError(err.code === 'invalid phone' ? t('member.errPhone') : err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const branch = form && branches.find((b) => b.id === form.branch_id);
+  const T = i18n.getFixedT(lang);
+  const message = form?.token ? signupMessage(T, form, branch, lang) : '';
+  const phone = form?.phone ? phoneNumbers(form.phone)[0] : null;
+  const markSent = () => api.post(`/member-signups/${form.id}/sent`, { lang }).then(onChanged).catch(() => {});
+
+  async function copy() {
+    try {
+      await copyText(message);
+      toast.success(t('memberForms.copied'));
+      markSent();
+    } catch {
+      toast.error(t('memberForms.copyFailed'));
+    }
+  }
+
+  async function revoke() {
+    if (!(await confirm({ title: t('memberForms.revoke'), message: t('memberForms.revokeConfirm'), confirmLabel: t('memberForms.revoke') }))) return;
+    try {
+      await api.post(`/member-signups/${form.id}/revoke`);
+      toast.success(t('memberForms.revoked'));
+      onChanged();
+      onClose();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  const langPicker = (
+    <div className="space-y-1.5">
+      <Label>{t('memberForms.language')}</Label>
+      <SegmentedControl
+        label={t('memberForms.language')}
+        size="sm"
+        options={[
+          { value: 'ar', label: 'العربية' },
+          { value: 'fr', label: 'Français' },
+        ]}
+        value={lang}
+        onChange={setLang}
+      />
+    </div>
+  );
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={t('memberForms.newSignup')}
+      description={t('memberForms.newSignupHint')}
+      footer={
+        form ? (
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={copy} className="max-sm:flex-1">
+              <IconLink />
+              {t('memberForms.copyLink')}
+            </Button>
+            {phone && (
+              <a
+                href={`${waHref(phone)}?text=${encodeURIComponent(message)}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={markSent}
+                className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.96] max-sm:flex-1 max-sm:px-3 sm:h-10"
+              >
+                <IconWhatsApp className="h-4 w-4" />
+                {t('memberForms.openWhatsApp')}
+              </a>
+            )}
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose} className="max-sm:flex-1">
+              {t('common.cancel')}
+            </Button>
+            <Button variant="brand" type="submit" form="signup-form" loading={busy} className="max-sm:flex-1">
+              {t('memberForms.createLink')}
+            </Button>
+          </div>
+        )
+      }
+    >
+      {!form ? (
+        <form id="signup-form" onSubmit={create} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="sg-branch">{t('member.branch')}</Label>
+            <Select id="sg-branch" value={draft.branch_id} onChange={(e) => setDraft((d) => ({ ...d, branch_id: e.target.value }))}>
+              <option value="" disabled>
+                {t('memberForms.pickBranch')}
+              </option>
+              {branches.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {branchName(b, i18n.language)}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sg-label">{t('memberForms.signupLabel')}</Label>
+            <Input id="sg-label" autoComplete="off" maxLength={80} value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sg-phone">{t('memberForms.signupPhone')}</Label>
+            <Input
+              id="sg-phone"
+              type="tel"
+              inputMode="tel"
+              dir="ltr"
+              placeholder="07 00 00 00 00"
+              value={draft.phone}
+              onChange={(e) => setDraft((d) => ({ ...d, phone: e.target.value }))}
+            />
+            <p className="text-xs text-muted-foreground">{t('memberForms.signupPhoneHint')}</p>
+          </div>
+          {langPicker}
+          {error && (
+            <p role="alert" className="rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive">
+              {error}
+            </p>
+          )}
+        </form>
+      ) : (
+        <div className="space-y-5">
+          {langPicker}
+          <div className="space-y-1.5">
+            <Label>{t('memberForms.preview')}</Label>
+            <p
+              dir={lang === 'ar' ? 'rtl' : 'ltr'}
+              lang={lang}
+              className="whitespace-pre-line break-words rounded-lg border border-border bg-muted/40 px-3.5 py-3 text-sm"
+            >
+              {message}
+            </p>
+            {!phone && <p className="text-xs text-muted-foreground">{t('memberForms.noPhone')}</p>}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
+            <span>{t('memberForms.validUntil', { date: fmtDate(form.expires_at.slice(0, 10)) })}</span>
+            <Button variant="destructive-ghost" size="sm" onClick={revoke}>
+              {t('memberForms.revoke')}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/** A family's demande: every answer editable, the فرقة to pick, then «Inscrire». */
+function SignupReviewCard({ f, branches, onDone }) {
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const answers = Object.fromEntries(f.answers.map((a) => [a.key, a.value]));
+  const [values, setValues] = useState(answers);
+  const [branchId, setBranchId] = useState(String(f.branch_id));
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const name = [values.first_name, values.father_name, values.last_name].filter(Boolean).join(' ');
+
+  async function apply() {
+    setBusy('apply');
+    setError(null);
+    try {
+      const r = await api.post(`/member-signups/${f.id}/apply`, { branch_id: Number(branchId), values });
+      toast.success(t('memberForms.registered'));
+      onDone();
+      return r;
+    } catch (err) {
+      setBusy(null);
+      setError(
+        err.code === 'member_duplicate'
+          ? t('memberForms.duplicateRefused')
+          : err.code === 'sex_outside_section'
+            ? t('memberForms.sexOutside')
+            : err.code === 'invalid_value'
+              ? `${t(`fiche.fields.${err.body?.field}`)} : ${t('fiche.errInvalid')}`
+              : err.message
+      );
+    }
+  }
+
+  async function reject() {
+    if (!(await confirm({ title: t('memberForms.reject'), message: t('memberForms.rejectSignupConfirm'), confirmLabel: t('memberForms.reject') }))) return;
+    setBusy('reject');
+    try {
+      await api.post(`/member-signups/${f.id}/reject`);
+      toast.success(t('memberForms.rejected'));
+      onDone();
+    } catch (err) {
+      setBusy(null);
+      toast.error(err.message);
+    }
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+        <Avatar name={`${values.first_name || ''} ${values.last_name || ''}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate font-medium">{name}</span>
+            <Badge variant="info">{t('memberForms.signupBadge')}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t('memberForms.filledBy', { who: t(`memberForms.who.${f.respondent}`), date: fmtDate(f.submitted_at.slice(0, 10)) })}
+          </p>
+        </div>
+      </div>
+
+      {f.duplicates.length > 0 && (
+        <div className="flex gap-2.5 border-b border-border bg-warning/10 px-4 py-3 text-sm">
+          <IconAlert className="mt-0.5 shrink-0 text-warning" />
+          <div className="min-w-0">
+            <p className="font-medium">{t('memberForms.duplicateTitle')}</p>
+            <ul className="mt-1 space-y-0.5">
+              {f.duplicates.map((d) => (
+                <li key={d.id}>
+                  <Link to={`/members/${d.id}`} className="focus-ring rounded underline underline-offset-2">
+                    {memberName(d)}
+                  </Link>
+                  {d.birth_date && <span className="text-muted-foreground"> · {fmtDate(d.birth_date)}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1.5 border-b border-border px-4 py-3">
+        <Label htmlFor={`sg${f.id}-branch`}>{t('member.branch')}</Label>
+        <Select id={`sg${f.id}-branch`} value={branchId} onChange={(e) => setBranchId(e.target.value)} className="max-w-72">
+          {branches.map((b) => (
+            <option key={b.id} value={String(b.id)}>
+              {branchName(b, i18n.language)}
+            </option>
+          ))}
+        </Select>
+      </div>
+
+      <ul className="divide-y divide-border">
+        {f.answers.map((a) => (
+          <li key={a.key} className="px-4 py-3">
+            <div className="max-w-xl space-y-1.5">
+              <label htmlFor={`sg${f.id}-${a.key}`} className="block text-sm font-medium">
+                {t(`fiche.fields.${a.key}`)}
+              </label>
+              <ValueEditor
+                id={`sg${f.id}-${a.key}`}
+                k={a.key}
+                value={values[a.key]}
+                onChange={(v) => setValues((s) => ({ ...s, [a.key]: v }))}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {f.hidden > 0 && <p className="border-t border-border px-4 py-2.5 text-xs text-muted-foreground">{t('memberForms.hidden', { count: f.hidden })}</p>}
+
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-card px-4 py-3">
+        {error && (
+          <p role="alert" className="me-auto text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+        <Button variant="destructive-ghost" onClick={reject} loading={busy === 'reject'} disabled={!!busy}>
+          {t('memberForms.reject')}
+        </Button>
+        <Button variant="brand" onClick={apply} loading={busy === 'apply'} disabled={!!busy}>
+          {t('memberForms.register')}
+        </Button>
+      </div>
+    </Card>
   );
 }
