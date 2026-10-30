@@ -64,6 +64,16 @@ const SIGNUP_FIELDS = {
   birth_date: { kind: 'date', required: true },
   ...Object.fromEntries(Object.entries(MEMBER_FIELDS).filter(([k]) => k !== 'birth_date')),
 };
+// Inscription d'un قائد (2026-10-30) : il remplit lui-même toute sa fiche. Nom, prénom, date
+// de naissance et téléphone sont exigés — c'est par ce numéro que la قيادة le joint.
+const LEADER_SIGNUP_FIELDS = {
+  first_name: { kind: 'text', max: 80, required: true },
+  father_name: { kind: 'text', max: 80 },
+  last_name: { kind: 'text', max: 80, required: true },
+  birth_date: { kind: 'date', required: true },
+  phone: { kind: 'phone', required: true },
+  ...Object.fromEntries(Object.entries(LEADER_FIELDS).filter(([k]) => !['birth_date', 'father_name', 'phone'].includes(k))),
+};
 // Ce qui va dans l'INSERT de l'عنصر ; le reste (santé) suit en UPDATE
 const SIGNUP_MEMBER_COLUMNS = [
   'first_name', 'last_name', 'sex', 'birth_date', 'birth_place', 'father_name', 'mother_name', 'school',
@@ -103,13 +113,13 @@ const leaderMissing = (l, key) => blank(l[key]);
 module.exports = function setupMemberForms(app, publicApi, deps) {
   const {
     db, hasPerm, requirePerm, requireAdmin, branchOk, branchFilterSQL, leaderScopeSQL, leaderOk, auditEvent,
-    notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr, createMember, ageGroupIdFor, sectionDef,
-    sectionOfBranch,
+    notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr, createMember, createLeader, ageGroupIdFor,
+    sectionDef, sectionOfBranch,
   } = deps;
 
   const formColumns = (fk, ref) => `
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ${fk} INTEGER NOT NULL REFERENCES ${ref}(id) ON DELETE CASCADE,
+      ${ref ? `${fk} INTEGER NOT NULL REFERENCES ${ref}(id) ON DELETE CASCADE` : `${fk} TEXT NOT NULL`},
       token TEXT NOT NULL UNIQUE,
       -- les champs demandés (JSON), figés à l'envoi
       fields TEXT NOT NULL,
@@ -166,6 +176,29 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       toggled_by TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signup_links_branch ON signup_links(branch_id);
+    -- Les mêmes pour un nouveau قائد, rattaché à un قسم ; leader_id = le قائد créé
+    CREATE TABLE IF NOT EXISTS leader_signup_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      section TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      label TEXT,
+      fields TEXT NOT NULL,
+      lang TEXT NOT NULL DEFAULT 'ar',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      created_by_id INTEGER,
+      toggled_at TEXT,
+      toggled_by TEXT
+    );
+    CREATE TABLE IF NOT EXISTS leader_signups (
+      ${formColumns('section', null)},
+      label TEXT,
+      phone TEXT,
+      leader_id INTEGER REFERENCES leaders(id) ON DELETE SET NULL,
+      link_id INTEGER REFERENCES leader_signup_links(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_leader_signups_section ON leader_signups(section, created_at);
   `);
   // La demande venue d'un lien permanent garde la trace de ce lien
   if (!db.prepare('PRAGMA table_info(member_signups)').all().some((c) => c.name === 'link_id'))
@@ -335,8 +368,6 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     notify: (l, info) => notifications.memberFormSubmitted({ ...l, kind: 'leader' }, info),
   };
   const KINDS = [memberKind, leaderKind];
-  const signupKind = { name: 'signup', table: 'member_signups' };
-  const sharedKind = { name: 'shared', table: 'signup_links' };
 
   // ---------- Page publique ----------
 
@@ -365,12 +396,19 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     next();
   });
 
-  // { kind, f } pour un jeton, cherché dans les deux tables
+  // { kind, f } pour une fiche, { signup, f } pour une demande, { shared, f } pour un lien
+  // permanent — le jeton cherché dans chaque table
   function byToken(token) {
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
-    for (const kind of [...KINDS, signupKind, sharedKind]) {
+    for (const kind of KINDS) {
       const f = db.prepare(`SELECT * FROM ${kind.table} WHERE token = ?`).get(token);
       if (f) return { kind, f };
+    }
+    for (const sk of SIGNUP_KINDS) {
+      const f = db.prepare(`SELECT * FROM ${sk.table} WHERE token = ?`).get(token);
+      if (f) return { signup: sk, f };
+      const l = db.prepare(`SELECT * FROM ${sk.linkTable} WHERE token = ?`).get(token);
+      if (l) return { shared: sk, f: l };
     }
     return null;
   }
@@ -384,8 +422,8 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
   publicApi.get('/fiche/:token', (req, res) => {
     const hit = byToken(req.params.token);
     if (!hit) return res.status(404).json({ error: 'not_found' });
-    if (hit.kind === signupKind) return signupPage(res, hit.f);
-    if (hit.kind === sharedKind) return sharedPage(res, hit.f);
+    if (hit.signup) return hit.signup.page(res, hit.f);
+    if (hit.shared) return hit.shared.sharedPage(res, hit.f);
     const { kind, f } = hit;
     const p = kind.get(f[kind.fk]);
     if (!p) return res.status(404).json({ error: 'not_found' });
@@ -393,10 +431,11 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
       kind: kind.name,
       status: statusOf(f),
       lang: f.lang,
-      // Prénom et nom seulement : on sait de qui il s'agit, rien d'autre ne sort
+      // Prénom, nom et identifiant seulement : on sait de qui il s'agit, rien d'autre ne sort
       person: {
         first_name: p.first_name,
         last_name: p.last_name,
+        code: p.code ?? null,
         sex: p.sex ?? (p.section === 'F' || p.section === 'FRF' ? 'F' : 'M'),
         branch_ar: p.branch_ar ?? null,
         branch_fr: p.branch_fr ?? null,
@@ -415,8 +454,8 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
   publicApi.post('/fiche/:token', (req, res) => {
     const hit = byToken(req.params.token);
     if (!hit) return res.status(404).json({ error: 'not_found' });
-    if (hit.kind === signupKind) return signupAnswer(req, res, hit.f);
-    if (hit.kind === sharedKind) return sharedAnswer(req, res, hit.f);
+    if (hit.signup) return hit.signup.answer(req, res, hit.f);
+    if (hit.shared) return hit.shared.sharedAnswer(req, res, hit.f);
     const { kind, f } = hit;
     if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
     const body = req.body || {};
@@ -604,103 +643,13 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     });
   }
 
-  // ---------- Demande d'inscription ----------
-  // Un عنصر qu'on n'a pas encore : le قائد envoie un lien rattaché à une فرقة, la famille
-  // remplit toute la fiche, et un قائد la relit, choisit la فرقة et l'inscrit — avec les
-  // règles mêmes du formulaire «Nouveau membre» (doublons, طليعة par âge, قسم).
-
-  const branchRow = (id) => db.prepare('SELECT id, name_ar, name_fr, section FROM branches WHERE id = ?').get(id);
-  const signupById = db.prepare('SELECT * FROM member_signups WHERE id = ?');
-
-  function signupPage(res, f) {
-    const b = branchRow(f.branch_id);
-    const base = {
-      kind: 'signup',
-      status: statusOf(f),
-      lang: f.lang,
-      person: { first_name: f.label || '', last_name: '', sex: sectionDef(b?.section)?.gender ?? null, branch_ar: b?.name_ar, branch_fr: b?.name_fr },
-    };
-    if (!isLive(f)) return res.json(base);
-    if (!f.opened_at) db.prepare("UPDATE member_signups SET opened_at = datetime('now') WHERE id = ?").run(f.id);
-    const fields = JSON.parse(f.fields).filter((k) => SIGNUP_FIELDS[k]);
-    res.json({
-      ...base,
-      status: 'open',
-      expires_at: f.expires_at,
-      fields,
-      missing: fields,
-      values: {},
-      required: fields.filter((k) => SIGNUP_FIELDS[k].required),
-      blood_types: BLOOD_TYPES,
-    });
-  }
-
-  // Les réponses d'une demande, nettoyées : { answers } ou { errors }
-  function signupAnswers(fields, raw) {
-    const answers = {};
-    const errors = {};
-    for (const key of fields) {
-      const def = SIGNUP_FIELDS[key];
-      if (!def) continue;
-      const v = cleanValue(def, raw[key]);
-      if (v instanceof Error) errors[key] = v.message;
-      else if (v !== undefined) answers[key] = v;
-      else if (def.required) errors[key] = 'required';
-    }
-    return Object.keys(errors).length ? { errors } : { answers };
-  }
-
-  function signupAnswer(req, res, f) {
-    if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
-    const body = req.body || {};
-    if (!RESPONDENTS.includes(body.respondent)) return res.status(400).json({ error: 'invalid_respondent' });
-    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
-    const { answers, errors } = signupAnswers(JSON.parse(f.fields), raw);
-    if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
-    const done = db
-      .prepare(
-        `UPDATE member_signups SET answers = ?, respondent = ?, submitted_at = datetime('now')
-          WHERE id = ? AND submitted_at IS NULL AND revoked_at IS NULL`
-      )
-      .run(JSON.stringify(answers), body.respondent, f.id);
-    if (!done.changes) return res.status(409).json({ error: 'closed' });
-    notifications.memberFormSubmitted(
-      { kind: 'signup', first_name: answers.first_name, father_name: answers.father_name, last_name: answers.last_name, branch_id: f.branch_id },
-      { formId: f.id, count: Object.keys(answers).length }
-    );
-    res.json({ status: 'submitted' });
-  }
-
-  // ---------- Lien d'inscription permanent ----------
-
-  function sharedPage(res, l) {
-    const b = branchRow(l.branch_id);
-    const base = {
-      kind: 'signup',
-      shared: true,
-      lang: l.lang,
-      person: { first_name: '', last_name: '', sex: sectionDef(b?.section)?.gender ?? null, branch_ar: b?.name_ar, branch_fr: b?.name_fr },
-    };
-    if (!l.active) return res.json({ ...base, status: 'disabled' });
-    const fields = JSON.parse(l.fields).filter((k) => SIGNUP_FIELDS[k]);
-    res.json({
-      ...base,
-      status: 'open',
-      fields,
-      missing: fields,
-      values: {},
-      required: fields.filter((k) => SIGNUP_FIELDS[k].required),
-      blood_types: BLOOD_TYPES,
-    });
-  }
-
   // Un lien posté dans un groupe peut circuler : au plus SHARED_MAX demandes par adresse et
   // par heure, en plus de la limite générale de la page
   const SHARED_WINDOW_MS = 60 * 60 * 1000;
   const SHARED_MAX = 10;
   const sharedHits = new Map();
-  function sharedThrottled(req, linkId) {
-    const key = `${linkId}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+  function sharedThrottled(req, linkKey) {
+    const key = `${linkKey}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
     const now = Date.now();
     const row = sharedHits.get(key);
     if (!row || now - row.startedAt > SHARED_WINDOW_MS) {
@@ -712,269 +661,430 @@ module.exports = function setupMemberForms(app, publicApi, deps) {
     return row.count > SHARED_MAX;
   }
 
-  // Chaque envoi devient une demande à part, comme si un lien personnel y avait conduit
-  function sharedAnswer(req, res, l) {
-    if (!l.active) return res.status(409).json({ error: 'closed', status: 'disabled' });
-    const body = req.body || {};
-    if (!RESPONDENTS.includes(body.respondent)) return res.status(400).json({ error: 'invalid_respondent' });
-    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
-    const { answers, errors } = signupAnswers(JSON.parse(l.fields), raw);
-    if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
-    if (sharedThrottled(req, l.id)) {
-      res.setHeader('Retry-After', String(SHARED_WINDOW_MS / 1000));
-      return res.status(429).json({ error: 'too_many_requests' });
-    }
-    const label = [answers.first_name, answers.last_name].filter(Boolean).join(' ').slice(0, 80);
-    const phone = answers.father_phone || answers.mother_phone || answers.member_phone || null;
-    const id = db
-      .prepare(
-        `INSERT INTO member_signups (branch_id, link_id, token, fields, lang, label, phone, created_by, created_by_id,
-           expires_at, answers, respondent, submitted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, datetime('now'))`
-      )
-      .run(l.branch_id, l.id, crypto.randomBytes(24).toString('base64url'), l.fields, l.lang, label, phone, l.created_by,
-        l.created_by_id, JSON.stringify(answers), body.respondent).lastInsertRowid;
-    notifications.memberFormSubmitted(
-      { kind: 'signup', first_name: answers.first_name, father_name: answers.father_name, last_name: answers.last_name, branch_id: l.branch_id },
-      { formId: id, count: Object.keys(answers).length }
-    );
-    res.json({ status: 'submitted' });
-  }
+  // ---------- Demandes d'inscription ----------
+  // Quelqu'un qu'on n'a pas encore. Un عنصر : le قائد envoie un lien rattaché à une فرقة, la
+  // famille remplit toute la fiche, un قائد la relit, choisit la فرقة et l'inscrit — avec
+  // les règles mêmes du formulaire «Nouveau membre» (doublons, طليعة par âge, قسم). Un قائد
+  // (2026-10-30) : le lien est rattaché à un قسم, il remplit lui-même sa fiche, l'admin la
+  // relit et l'ajoute aux قادة. Lien personnel (une réponse) ou lien permanent (posté dans
+  // un groupe WhatsApp, chaque envoi devient sa propre demande, désactivable à volonté).
+  // Les deux sortes ne diffèrent que par ce qui suit ; tout le reste est le même code.
 
-  const signupGuard = [requirePerm('members.create'), requirePerm('members.contact')];
-  const linkById = db.prepare('SELECT * FROM signup_links WHERE id = ?');
-  const linkView = (l) => {
-    const n = db
-      .prepare(
-        `SELECT COUNT(*) AS total, SUM(outcome IS NULL) AS pending, SUM(outcome = 'applied') AS registered
-           FROM member_signups WHERE link_id = ?`
-      )
-      .get(l.id);
-    return {
-      id: l.id,
-      branch_id: l.branch_id,
-      token: l.token,
-      label: l.label,
-      lang: l.lang,
-      active: !!l.active,
-      created_at: l.created_at,
-      created_by: l.created_by,
-      toggled_at: l.toggled_at,
-      toggled_by: l.toggled_by,
-      requests: n.total || 0,
-      pending: n.pending || 0,
-      registered: n.registered || 0,
-    };
-  };
+  const branchRow = (id) => db.prepare('SELECT id, name_ar, name_fr, section FROM branches WHERE id = ?').get(id);
+  const langFor = (section) => (['FR', 'FRF'].includes(section) ? 'fr' : 'ar');
 
-  app.get('/api/signup-links', ...signupGuard, (req, res) => {
-    const rows = db
-      .prepare(`SELECT * FROM signup_links WHERE 1=1 ${branchFilterSQL(req, 'branch_id')} ORDER BY active DESC, created_at DESC`)
-      .all();
-    res.json(rows.map(linkView));
-  });
+  const SIGNUP_KINDS = [
+    {
+      name: 'signup',
+      table: 'member_signups',
+      linkTable: 'signup_links',
+      // La colonne qui rattache la demande : une فرقة
+      scope: 'branch_id',
+      FIELDS: SIGNUP_FIELDS,
+      route: '/api/member-signups',
+      linkRoute: '/api/signup-links',
+      audit: 'member_signup',
+      guard: [requirePerm('members.create'), requirePerm('members.contact')],
+      keysFor: (req) => Object.keys(SIGNUP_FIELDS).filter((k) => !SIGNUP_FIELDS[k].health || hasPerm(req, 'members.health')),
+      // { value, section } pour le rattachement demandé, ou null
+      parseScope: (raw) => {
+        const b = branchRow(intOr(raw));
+        return b ? { value: b.id, section: b.section } : null;
+      },
+      sectionOf: (value) => branchRow(value)?.section ?? null,
+      inScope: (req, value) => branchOk(req, value),
+      filterSQL: (req, col) => branchFilterSQL(req, col),
+      person: (value) => {
+        const b = branchRow(value);
+        return { sex: sectionDef(b?.section)?.gender ?? null, branch_ar: b?.name_ar, branch_fr: b?.name_fr };
+      },
+      phoneOf: (a) => a.father_phone || a.mother_phone || a.member_phone || null,
+      // Les عناصر de même nom déjà inscrits dans le قسم (doublon ?)
+      duplicates: (req, answers, f) =>
+        db
+          .prepare(
+            `SELECT m.id, m.first_name, m.father_name, m.last_name, m.birth_date, m.branch_id, m.status
+               FROM members m JOIN branches b ON b.id = m.branch_id
+              WHERE lower(trim(m.first_name)) = lower(trim(?)) AND lower(trim(m.last_name)) = lower(trim(?)) AND b.section = ?
+              LIMIT 5`
+          )
+          .all(answers.first_name || '', answers.last_name || '', sectionOfBranch(f.branch_id))
+          .filter((m) => branchOk(req, m.branch_id)),
+      // Inscrit l'عنصر dans la فرقة choisie : { id } ou { status, error }
+      create(req, scope, values) {
+        // Un قسم d'un seul sexe n'accueille pas l'autre
+        const gender = sectionDef(scope.section)?.gender;
+        if (gender && values.sex !== gender) return { status: 400, error: 'sex_outside_section' };
+        const body = Object.fromEntries(SIGNUP_MEMBER_COLUMNS.filter((k) => k in values).map((k) => [k, values[k]]));
+        const result = createMember(req, {
+          ...body,
+          branch_id: scope.value,
+          group_id: ageGroupIdFor(values.birth_date, scope.value),
+          join_date: todayISO(),
+          status: 'active',
+        });
+        if (!result.created) return result;
+        const health = HEALTH_KEYS.filter((k) => k in values);
+        if (health.length) {
+          const params = { id: result.created.id, by: by(req) };
+          for (const k of health) params[k] = k === 'can_swim' ? (values[k] ? 1 : 0) : values[k];
+          db.prepare(
+            `UPDATE members SET ${health.map((k) => `${k} = @${k}`).join(', ')}, health_updated_at = datetime('now'), health_updated_by = @by WHERE id = @id`
+          ).run(params);
+        }
+        return { id: result.created.id };
+      },
+      createdKey: 'member_id',
+      notify: (answers, f, id) =>
+        notifications.memberFormSubmitted(
+          { kind: 'signup', first_name: answers.first_name, father_name: answers.father_name, last_name: answers.last_name, branch_id: f.branch_id },
+          { formId: id, count: Object.keys(answers).length }
+        ),
+    },
+    {
+      name: 'leader_signup',
+      table: 'leader_signups',
+      linkTable: 'leader_signup_links',
+      // Un قائد n'a pas de فرقة : son قسم
+      scope: 'section',
+      FIELDS: LEADER_SIGNUP_FIELDS,
+      route: '/api/leader-signups',
+      linkRoute: '/api/leader-signup-links',
+      audit: 'leader_signup',
+      // Le dossier des قادة est à l'admin seul
+      guard: [requireAdmin],
+      keysFor: () => Object.keys(LEADER_SIGNUP_FIELDS),
+      parseScope: (raw) => (sectionDef(raw) ? { value: raw, section: raw } : null),
+      sectionOf: (value) => value,
+      inScope: (req, value) => leaderOk(req, { section: value }),
+      filterSQL: (req, col) => leaderScopeSQL(req, col.split('.')[0]),
+      person: (value) => ({ sex: sectionDef(value)?.gender ?? null, section: value }),
+      phoneOf: (a) => a.phone || null,
+      duplicates: (req, answers) =>
+        db
+          .prepare(
+            `SELECT id, first_name, father_name, last_name, birth_date, section, status FROM leaders
+              WHERE lower(trim(first_name)) = lower(trim(?)) AND lower(trim(last_name)) = lower(trim(?))
+              LIMIT 5`
+          )
+          .all(answers.first_name || '', answers.last_name || '')
+          .filter((l) => leaderOk(req, l)),
+      create(req, scope, values) {
+        const result = createLeader(req, values, scope.value);
+        return result.created ? { id: result.created.id } : result;
+      },
+      createdKey: 'leader_id',
+      notify: (answers, f, id) =>
+        notifications.memberFormSubmitted(
+          { kind: 'leader_signup', first_name: answers.first_name, father_name: answers.father_name, last_name: answers.last_name, section: f.section },
+          { formId: id, count: Object.keys(answers).length }
+        ),
+    },
+  ];
 
-  app.post('/api/signup-links', ...signupGuard, (req, res) => {
-    const b = req.body || {};
-    const branch = branchRow(intOr(b.branch_id));
-    if (!branch) return res.status(400).json({ error: 'invalid branch_id' });
-    if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
-    const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
-    const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : ['FR', 'FRF'].includes(branch.section) ? 'fr' : 'ar';
-    const id = db
-      .prepare(
-        `INSERT INTO signup_links (branch_id, token, label, fields, lang, created_by, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(branch.id, crypto.randomBytes(24).toString('base64url'), label, JSON.stringify(signupKeysFor(req)), lang, by(req), req.user.id)
-      .lastInsertRowid;
-    auditEvent(req, 'create', 'signup_link', id, null, { branch_id: branch.id, label });
-    res.status(201).json(linkView(linkById.get(id)));
-  });
+  for (const sk of SIGNUP_KINDS) {
+    const { table, linkTable, scope, FIELDS, route, linkRoute, guard, audit } = sk;
+    const signupById = db.prepare(`SELECT * FROM ${table} WHERE id = ?`);
+    const linkById = db.prepare(`SELECT * FROM ${linkTable} WHERE id = ?`);
+    // Un قائد répond pour lui-même
+    const respondentOf = (body) => (sk.name === 'leader_signup' ? 'self' : body.respondent);
 
-  // Activer / désactiver, renommer, changer la langue
-  app.put('/api/signup-links/:id', ...signupGuard, (req, res) => {
-    const l = linkById.get(intOr(req.params.id));
-    if (!l) return res.status(404).json({ error: 'not found' });
-    if (!branchOk(req, l.branch_id)) return res.status(403).json({ error: 'forbidden' });
-    const b = req.body || {};
-    if (b.active !== undefined && typeof b.active !== 'boolean') return res.status(400).json({ error: 'invalid active' });
-    const active = b.active === undefined ? l.active : b.active ? 1 : 0;
-    const label = b.label === undefined ? l.label : typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
-    const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : l.lang;
-    const toggled = active !== l.active;
-    db.prepare(
-      `UPDATE signup_links SET active = ?, label = ?, lang = ?,
-         toggled_at = CASE WHEN ? THEN datetime('now') ELSE toggled_at END,
-         toggled_by = CASE WHEN ? THEN ? ELSE toggled_by END
-       WHERE id = ?`
-    ).run(active, label, lang, toggled ? 1 : 0, toggled ? 1 : 0, by(req), l.id);
-    if (toggled) auditEvent(req, active ? 'enable' : 'disable', 'signup_link', l.id, null, { branch_id: l.branch_id });
-    res.json(linkView(linkById.get(l.id)));
-  });
-  const signupKeysFor = (req) =>
-    Object.keys(SIGNUP_FIELDS).filter((k) => !SIGNUP_FIELDS[k].health || hasPerm(req, 'members.health'));
-  const signupView = (f, opts) => ({
-    ...formView(f, opts),
-    link_id: f.link_id ?? null,
-    branch_id: f.branch_id,
-    label: f.label,
-    phone: f.phone,
-    member_id: f.member_id,
-  });
-  const signupInScope = (req) => {
-    const f = signupById.get(intOr(req.params.id));
-    if (!f) return { error: [404, 'not found'] };
-    if (!branchOk(req, f.branch_id)) return { error: [403, 'forbidden'] };
-    return { f };
-  };
-
-  // Les liens d'inscription de mes فرق : ceux encore ouverts, et ceux des 60 derniers jours
-  app.get('/api/member-signups', ...signupGuard, (req, res) => {
-    const rows = db
-      .prepare(
-        `SELECT f.* FROM member_signups f WHERE 1=1 ${branchFilterSQL(req, 'f.branch_id')}
-           AND (f.submitted_at IS NULL OR f.outcome IS NULL OR f.created_at >= datetime('now', '-60 days'))
-         ORDER BY f.created_at DESC`
-      )
-      .all();
-    res.json(rows.map((f) => signupView(f, { withToken: true })));
-  });
-
-  app.post('/api/member-signups', ...signupGuard, (req, res) => {
-    const b = req.body || {};
-    const branch = branchRow(intOr(b.branch_id));
-    if (!branch) return res.status(400).json({ error: 'invalid branch_id' });
-    if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
-    const phone = typeof b.phone === 'string' && b.phone.trim() ? b.phone.trim() : null;
-    if (phone && (phone.length > 40 || !validPhone(phone))) return res.status(400).json({ error: 'invalid phone' });
-    const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
-    const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : ['FR', 'FRF'].includes(branch.section) ? 'fr' : 'ar';
-    const token = crypto.randomBytes(24).toString('base64url');
-    const id = db
-      .prepare(
-        `INSERT INTO member_signups (branch_id, token, fields, lang, label, phone, created_by, created_by_id, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`
-      )
-      .run(branch.id, token, JSON.stringify(signupKeysFor(req)), lang, label, phone, by(req), req.user.id, `+${LINK_DAYS} days`)
-      .lastInsertRowid;
-    const f = signupById.get(id);
-    auditEvent(req, 'create', 'member_signup', f.id, null, { branch_id: branch.id, label, phone });
-    res.status(201).json(signupView(f, { withToken: true }));
-  });
-
-  app.post('/api/member-signups/:id/sent', ...signupGuard, (req, res) => {
-    const { f, error } = signupInScope(req);
-    if (error) return res.status(error[0]).json({ error: error[1] });
-    if (!isLive(f)) return res.status(409).json({ error: 'not_live' });
-    const lang = ['ar', 'fr'].includes(req.body?.lang) ? req.body.lang : f.lang;
-    db.prepare("UPDATE member_signups SET sent_at = datetime('now'), lang = ? WHERE id = ?").run(lang, f.id);
-    res.json(signupView(signupById.get(f.id), { withToken: true }));
-  });
-
-  app.post('/api/member-signups/:id/revoke', ...signupGuard, (req, res) => {
-    const { f, error } = signupInScope(req);
-    if (error) return res.status(error[0]).json({ error: error[1] });
-    if (!isLive(f)) return res.status(409).json({ error: 'not_live' });
-    db.prepare("UPDATE member_signups SET revoked_at = datetime('now') WHERE id = ?").run(f.id);
-    auditEvent(req, 'revoke', 'member_signup', f.id, null, { branch_id: f.branch_id });
-    res.json(signupView(signupById.get(f.id)));
-  });
-
-  // Les demandes reçues, avec les عناصر de même nom déjà inscrits dans le قسم (doublon ?)
-  app.get('/api/member-signups/pending', ...signupGuard, (req, res) => {
-    const keys = new Set(signupKeysFor(req));
-    const rows = db
-      .prepare(
-        `SELECT f.* FROM member_signups f WHERE f.submitted_at IS NOT NULL AND f.outcome IS NULL
-           ${branchFilterSQL(req, 'f.branch_id')} ORDER BY f.submitted_at`
-      )
-      .all();
-    const sameName = db.prepare(
-      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.birth_date, m.branch_id, m.status
-         FROM members m JOIN branches b ON b.id = m.branch_id
-        WHERE lower(trim(m.first_name)) = lower(trim(?)) AND lower(trim(m.last_name)) = lower(trim(?)) AND b.section = ?
-        LIMIT 5`
-    );
-    res.json(
-      rows.map((f) => {
-        const answers = JSON.parse(f.answers || '{}');
-        const visible = Object.keys(answers).filter((k) => keys.has(k));
-        return {
-          ...signupView(f),
-          respondent: f.respondent,
-          answers: visible.map((k) => ({ key: k, value: answers[k], current: null })),
-          hidden: Object.keys(answers).length - visible.length,
-          duplicates: sameName
-            .all(answers.first_name || '', answers.last_name || '', sectionOfBranch(f.branch_id))
-            .filter((m) => branchOk(req, m.branch_id)),
-        };
-      })
-    );
-  });
-
-  // Inscrit l'عنصر : les réponses (corrigées au besoin) dans la فرقة choisie
-  app.post('/api/member-signups/:id/apply', ...signupGuard, (req, res) => {
-    const { f, error } = signupInScope(req);
-    if (error) return res.status(error[0]).json({ error: error[1] });
-    if (!f.submitted_at || f.outcome) return res.status(409).json({ error: 'not_pending' });
-    const branchId = req.body?.branch_id === undefined ? f.branch_id : intOr(req.body.branch_id);
-    const branch = branchRow(branchId);
-    if (!branch) return res.status(400).json({ error: 'invalid branch_id' });
-    if (!branchOk(req, branch.id)) return res.status(403).json({ error: 'forbidden' });
-    const answers = JSON.parse(f.answers || '{}');
-    const keys = new Set(signupKeysFor(req));
-    const edits = req.body?.values && typeof req.body.values === 'object' ? req.body.values : {};
-    const values = {};
-    for (const key of Object.keys(SIGNUP_FIELDS)) {
-      if (!keys.has(key)) continue;
-      if (!Object.hasOwn(answers, key) && !Object.hasOwn(edits, key)) continue;
-      const v = cleanValue(SIGNUP_FIELDS[key], Object.hasOwn(edits, key) ? edits[key] : answers[key]);
-      if (v instanceof Error) return res.status(400).json({ error: 'invalid_value', field: key });
-      if (v !== undefined) values[key] = v;
-      else if (SIGNUP_FIELDS[key].required) return res.status(400).json({ error: 'invalid_value', field: key });
-    }
-    // Un قسم d'un seul sexe n'accueille pas l'autre
-    const gender = sectionDef(branch.section)?.gender;
-    if (gender && values.sex !== gender) return res.status(400).json({ error: 'sex_outside_section' });
-
-    const body = Object.fromEntries(SIGNUP_MEMBER_COLUMNS.filter((k) => k in values).map((k) => [k, values[k]]));
-    let result;
-    db.transaction(() => {
-      result = createMember(req, {
-        ...body,
-        branch_id: branch.id,
-        group_id: ageGroupIdFor(values.birth_date, branch.id),
-        join_date: todayISO(),
-        status: 'active',
-      });
-      if (!result.created) return;
-      const health = HEALTH_KEYS.filter((k) => k in values);
-      if (health.length) {
-        const params = { id: result.created.id, by: by(req) };
-        for (const k of health) params[k] = k === 'can_swim' ? (values[k] ? 1 : 0) : values[k];
-        db.prepare(
-          `UPDATE members SET ${health.map((k) => `${k} = @${k}`).join(', ')}, health_updated_at = datetime('now'), health_updated_by = @by WHERE id = @id`
-        ).run(params);
+    // Les réponses d'une demande, nettoyées : { answers } ou { errors }
+    function signupAnswers(fields, raw) {
+      const answers = {};
+      const errors = {};
+      for (const key of fields) {
+        const def = FIELDS[key];
+        if (!def) continue;
+        const v = cleanValue(def, raw[key]);
+        if (v instanceof Error) errors[key] = v.message;
+        else if (v !== undefined) answers[key] = v;
+        else if (def.required) errors[key] = 'required';
       }
-      db.prepare(
-        `UPDATE member_signups SET outcome = 'applied', member_id = ?, branch_id = ?, reviewed_at = datetime('now'), reviewed_by = ? WHERE id = ?`
-      ).run(result.created.id, branch.id, by(req), f.id);
-    })();
-    const { created, status, ...err } = result;
-    if (!created) return res.status(status).json(err);
-    res.status(201).json({ member_id: created.id });
-  });
+      return Object.keys(errors).length ? { errors } : { answers };
+    }
 
-  app.post('/api/member-signups/:id/reject', ...signupGuard, (req, res) => {
-    const { f, error } = signupInScope(req);
-    if (error) return res.status(error[0]).json({ error: error[1] });
-    if (!f.submitted_at || f.outcome) return res.status(409).json({ error: 'not_pending' });
-    db.prepare(`UPDATE member_signups SET outcome = 'rejected', reviewed_at = datetime('now'), reviewed_by = ? WHERE id = ?`).run(by(req), f.id);
-    auditEvent(req, 'reject', 'member_signup', f.id, null, { branch_id: f.branch_id });
-    res.status(204).end();
-  });
+    const pageBase = (f) => ({
+      kind: sk.name,
+      lang: f.lang,
+      person: { first_name: '', last_name: '', ...sk.person(f[scope]) },
+    });
+    const openPage = (fields) => ({
+      status: 'open',
+      fields,
+      missing: fields,
+      values: {},
+      required: fields.filter((k) => FIELDS[k].required),
+      blood_types: BLOOD_TYPES,
+    });
+
+    sk.page = (res, f) => {
+      const base = { ...pageBase(f), status: statusOf(f) };
+      base.person.first_name = f.label || '';
+      if (!isLive(f)) return res.json(base);
+      if (!f.opened_at) db.prepare(`UPDATE ${table} SET opened_at = datetime('now') WHERE id = ?`).run(f.id);
+      res.json({ ...base, ...openPage(JSON.parse(f.fields).filter((k) => FIELDS[k])), expires_at: f.expires_at });
+    };
+
+    sk.answer = (req, res, f) => {
+      if (!isLive(f)) return res.status(409).json({ error: 'closed', status: statusOf(f) });
+      const body = req.body || {};
+      const respondent = respondentOf(body);
+      if (!RESPONDENTS.includes(respondent)) return res.status(400).json({ error: 'invalid_respondent' });
+      const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+      const { answers, errors } = signupAnswers(JSON.parse(f.fields), raw);
+      if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
+      const done = db
+        .prepare(
+          `UPDATE ${table} SET answers = ?, respondent = ?, submitted_at = datetime('now')
+            WHERE id = ? AND submitted_at IS NULL AND revoked_at IS NULL`
+        )
+        .run(JSON.stringify(answers), respondent, f.id);
+      if (!done.changes) return res.status(409).json({ error: 'closed' });
+      sk.notify(answers, f, f.id);
+      res.json({ status: 'submitted' });
+    };
+
+    // ----- Lien permanent -----
+
+    sk.sharedPage = (res, l) => {
+      const base = { ...pageBase(l), shared: true };
+      if (!l.active) return res.json({ ...base, status: 'disabled' });
+      res.json({ ...base, ...openPage(JSON.parse(l.fields).filter((k) => FIELDS[k])) });
+    };
+
+    // Chaque envoi devient une demande à part, comme si un lien personnel y avait conduit
+    sk.sharedAnswer = (req, res, l) => {
+      if (!l.active) return res.status(409).json({ error: 'closed', status: 'disabled' });
+      const body = req.body || {};
+      const respondent = respondentOf(body);
+      if (!RESPONDENTS.includes(respondent)) return res.status(400).json({ error: 'invalid_respondent' });
+      const raw = body.answers && typeof body.answers === 'object' ? body.answers : {};
+      const { answers, errors } = signupAnswers(JSON.parse(l.fields), raw);
+      if (errors) return res.status(400).json({ error: 'invalid_answers', fields: errors });
+      if (sharedThrottled(req, `${linkTable}:${l.id}`)) {
+        res.setHeader('Retry-After', String(SHARED_WINDOW_MS / 1000));
+        return res.status(429).json({ error: 'too_many_requests' });
+      }
+      const label = [answers.first_name, answers.last_name].filter(Boolean).join(' ').slice(0, 80);
+      const id = db
+        .prepare(
+          `INSERT INTO ${table} (${scope}, link_id, token, fields, lang, label, phone, created_by, created_by_id,
+             expires_at, answers, respondent, submitted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, datetime('now'))`
+        )
+        .run(l[scope], l.id, crypto.randomBytes(24).toString('base64url'), l.fields, l.lang, label, sk.phoneOf(answers),
+          l.created_by, l.created_by_id, JSON.stringify(answers), respondent).lastInsertRowid;
+      sk.notify(answers, l, id);
+      res.json({ status: 'submitted' });
+    };
+
+    const linkView = (l) => {
+      const n = db
+        .prepare(
+          `SELECT COUNT(*) AS total, SUM(outcome IS NULL) AS pending, SUM(outcome = 'applied') AS registered
+             FROM ${table} WHERE link_id = ?`
+        )
+        .get(l.id);
+      return {
+        id: l.id,
+        [scope]: l[scope],
+        token: l.token,
+        label: l.label,
+        lang: l.lang,
+        active: !!l.active,
+        created_at: l.created_at,
+        created_by: l.created_by,
+        toggled_at: l.toggled_at,
+        toggled_by: l.toggled_by,
+        requests: n.total || 0,
+        pending: n.pending || 0,
+        registered: n.registered || 0,
+      };
+    };
+
+    app.get(linkRoute, ...guard, (req, res) => {
+      const rows = db
+        .prepare(`SELECT * FROM ${linkTable} f WHERE 1=1 ${sk.filterSQL(req, `f.${scope}`)} ORDER BY active DESC, created_at DESC`)
+        .all();
+      res.json(rows.map(linkView));
+    });
+
+    app.post(linkRoute, ...guard, (req, res) => {
+      const b = req.body || {};
+      const at = sk.parseScope(b[scope]);
+      if (!at) return res.status(400).json({ error: `invalid ${scope}` });
+      if (!sk.inScope(req, at.value)) return res.status(403).json({ error: 'forbidden' });
+      const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
+      const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : langFor(at.section);
+      const id = db
+        .prepare(`INSERT INTO ${linkTable} (${scope}, token, label, fields, lang, created_by, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(at.value, crypto.randomBytes(24).toString('base64url'), label, JSON.stringify(sk.keysFor(req)), lang, by(req), req.user.id)
+        .lastInsertRowid;
+      auditEvent(req, 'create', `${audit === 'member_signup' ? 'signup' : audit}_link`, id, null, { [scope]: at.value, label });
+      res.status(201).json(linkView(linkById.get(id)));
+    });
+
+    // Activer / désactiver, renommer, changer la langue
+    app.put(`${linkRoute}/:id`, ...guard, (req, res) => {
+      const l = linkById.get(intOr(req.params.id));
+      if (!l) return res.status(404).json({ error: 'not found' });
+      if (!sk.inScope(req, l[scope])) return res.status(403).json({ error: 'forbidden' });
+      const b = req.body || {};
+      if (b.active !== undefined && typeof b.active !== 'boolean') return res.status(400).json({ error: 'invalid active' });
+      const active = b.active === undefined ? l.active : b.active ? 1 : 0;
+      const label = b.label === undefined ? l.label : typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
+      const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : l.lang;
+      const toggled = active !== l.active;
+      db.prepare(
+        `UPDATE ${linkTable} SET active = ?, label = ?, lang = ?,
+           toggled_at = CASE WHEN ? THEN datetime('now') ELSE toggled_at END,
+           toggled_by = CASE WHEN ? THEN ? ELSE toggled_by END
+         WHERE id = ?`
+      ).run(active, label, lang, toggled ? 1 : 0, toggled ? 1 : 0, by(req), l.id);
+      if (toggled)
+        auditEvent(req, active ? 'enable' : 'disable', `${audit === 'member_signup' ? 'signup' : audit}_link`, l.id, null, { [scope]: l[scope] });
+      res.json(linkView(linkById.get(l.id)));
+    });
+
+    // ----- Lien personnel et relecture -----
+
+    const signupView = (f, opts) => ({
+      ...formView(f, opts),
+      link_id: f.link_id ?? null,
+      [scope]: f[scope],
+      label: f.label,
+      phone: f.phone,
+      [sk.createdKey]: f[sk.createdKey],
+    });
+    const signupInScope = (req) => {
+      const f = signupById.get(intOr(req.params.id));
+      if (!f) return { error: [404, 'not found'] };
+      if (!sk.inScope(req, f[scope])) return { error: [403, 'forbidden'] };
+      return { f };
+    };
+
+    // Les liens d'inscription de mon périmètre : ceux encore ouverts, et ceux des 60 derniers jours
+    app.get(route, ...guard, (req, res) => {
+      const rows = db
+        .prepare(
+          `SELECT f.* FROM ${table} f WHERE 1=1 ${sk.filterSQL(req, `f.${scope}`)}
+             AND (f.submitted_at IS NULL OR f.outcome IS NULL OR f.created_at >= datetime('now', '-60 days'))
+           ORDER BY f.created_at DESC`
+        )
+        .all();
+      res.json(rows.map((f) => signupView(f, { withToken: true })));
+    });
+
+    app.post(route, ...guard, (req, res) => {
+      const b = req.body || {};
+      const at = sk.parseScope(b[scope]);
+      if (!at) return res.status(400).json({ error: `invalid ${scope}` });
+      if (!sk.inScope(req, at.value)) return res.status(403).json({ error: 'forbidden' });
+      const phone = typeof b.phone === 'string' && b.phone.trim() ? b.phone.trim() : null;
+      if (phone && (phone.length > 40 || !validPhone(phone))) return res.status(400).json({ error: 'invalid phone' });
+      const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 80) : null;
+      const lang = ['ar', 'fr'].includes(b.lang) ? b.lang : langFor(at.section);
+      const id = db
+        .prepare(
+          `INSERT INTO ${table} (${scope}, token, fields, lang, label, phone, created_by, created_by_id, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`
+        )
+        .run(at.value, crypto.randomBytes(24).toString('base64url'), JSON.stringify(sk.keysFor(req)), lang, label, phone, by(req),
+          req.user.id, `+${LINK_DAYS} days`)
+        .lastInsertRowid;
+      const f = signupById.get(id);
+      auditEvent(req, 'create', audit, f.id, null, { [scope]: at.value, label, phone });
+      res.status(201).json(signupView(f, { withToken: true }));
+    });
+
+    app.post(`${route}/:id/sent`, ...guard, (req, res) => {
+      const { f, error } = signupInScope(req);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      if (!isLive(f)) return res.status(409).json({ error: 'not_live' });
+      const lang = ['ar', 'fr'].includes(req.body?.lang) ? req.body.lang : f.lang;
+      db.prepare(`UPDATE ${table} SET sent_at = datetime('now'), lang = ? WHERE id = ?`).run(lang, f.id);
+      res.json(signupView(signupById.get(f.id), { withToken: true }));
+    });
+
+    app.post(`${route}/:id/revoke`, ...guard, (req, res) => {
+      const { f, error } = signupInScope(req);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      if (!isLive(f)) return res.status(409).json({ error: 'not_live' });
+      db.prepare(`UPDATE ${table} SET revoked_at = datetime('now') WHERE id = ?`).run(f.id);
+      auditEvent(req, 'revoke', audit, f.id, null, { [scope]: f[scope] });
+      res.json(signupView(signupById.get(f.id)));
+    });
+
+    // Les demandes reçues, avec les doublons possibles
+    app.get(`${route}/pending`, ...guard, (req, res) => {
+      const keys = new Set(sk.keysFor(req));
+      const rows = db
+        .prepare(
+          `SELECT f.* FROM ${table} f WHERE f.submitted_at IS NOT NULL AND f.outcome IS NULL
+             ${sk.filterSQL(req, `f.${scope}`)} ORDER BY f.submitted_at`
+        )
+        .all();
+      res.json(
+        rows.map((f) => {
+          const answers = JSON.parse(f.answers || '{}');
+          const visible = Object.keys(answers).filter((k) => keys.has(k));
+          return {
+            ...signupView(f),
+            respondent: f.respondent,
+            answers: visible.map((k) => ({ key: k, value: answers[k], current: null })),
+            hidden: Object.keys(answers).length - visible.length,
+            duplicates: sk.duplicates(req, answers, f),
+          };
+        })
+      );
+    });
+
+    // Inscrit la personne : les réponses (corrigées au besoin), là où on l'a rattachée
+    app.post(`${route}/:id/apply`, ...guard, (req, res) => {
+      const { f, error } = signupInScope(req);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      if (!f.submitted_at || f.outcome) return res.status(409).json({ error: 'not_pending' });
+      const at = sk.parseScope(req.body?.[scope] === undefined ? f[scope] : req.body[scope]);
+      if (!at) return res.status(400).json({ error: `invalid ${scope}` });
+      if (!sk.inScope(req, at.value)) return res.status(403).json({ error: 'forbidden' });
+      const answers = JSON.parse(f.answers || '{}');
+      const keys = new Set(sk.keysFor(req));
+      const edits = req.body?.values && typeof req.body.values === 'object' ? req.body.values : {};
+      const values = {};
+      for (const key of Object.keys(FIELDS)) {
+        if (!keys.has(key)) continue;
+        if (!Object.hasOwn(answers, key) && !Object.hasOwn(edits, key)) continue;
+        const v = cleanValue(FIELDS[key], Object.hasOwn(edits, key) ? edits[key] : answers[key]);
+        if (v instanceof Error) return res.status(400).json({ error: 'invalid_value', field: key });
+        if (v !== undefined) values[key] = v;
+        else if (FIELDS[key].required) return res.status(400).json({ error: 'invalid_value', field: key });
+      }
+      let result;
+      db.transaction(() => {
+        result = sk.create(req, at, values);
+        if (!result.id) return;
+        db.prepare(
+          `UPDATE ${table} SET outcome = 'applied', ${sk.createdKey} = ?, ${scope} = ?, reviewed_at = datetime('now'), reviewed_by = ? WHERE id = ?`
+        ).run(result.id, at.value, by(req), f.id);
+      })();
+      const { id, status, ...err } = result;
+      if (!id) return res.status(status).json(err);
+      res.status(201).json({ [sk.createdKey]: id });
+    });
+
+    app.post(`${route}/:id/reject`, ...guard, (req, res) => {
+      const { f, error } = signupInScope(req);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      if (!f.submitted_at || f.outcome) return res.status(409).json({ error: 'not_pending' });
+      db.prepare(`UPDATE ${table} SET outcome = 'rejected', reviewed_at = datetime('now'), reviewed_by = ? WHERE id = ?`).run(by(req), f.id);
+      auditEvent(req, 'reject', audit, f.id, null, { [scope]: f[scope] });
+      res.status(204).end();
+    });
+  }
 };
 
 module.exports.MEMBER_FIELDS = MEMBER_FIELDS;
 module.exports.LEADER_FIELDS = LEADER_FIELDS;
 module.exports.SIGNUP_FIELDS = SIGNUP_FIELDS;
+module.exports.LEADER_SIGNUP_FIELDS = LEADER_SIGNUP_FIELDS;

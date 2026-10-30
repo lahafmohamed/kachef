@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import AuthLayout, { AuthHeader } from '../components/AuthLayout';
 import DatePicker from '../components/DatePicker';
+import { CodeTag } from '../components/MemberParts';
 import { fmtDate } from '../utils';
 import {
   Button,
@@ -43,6 +44,13 @@ const SECTIONS = {
   // A قائد's own file: he answers for himself
   leader: [
     ['sectionIdentity', ['birth_date', 'birth_place', 'father_name', 'marital_status']],
+    ['sectionContact', ['phone', 'address_abidjan', 'address_lebanon']],
+    ['sectionPath', ['join_year', 'years_ghadir', 'years_total', 'education']],
+    ['sectionHealth', ['blood_type']],
+  ],
+  // A new قائد: his whole file, names first
+  leader_signup: [
+    ['sectionIdentity', ['first_name', 'father_name', 'last_name', 'birth_date', 'birth_place', 'marital_status']],
     ['sectionContact', ['phone', 'address_abidjan', 'address_lebanon']],
     ['sectionPath', ['join_year', 'years_ghadir', 'years_total', 'education']],
     ['sectionHealth', ['blood_type']],
@@ -93,7 +101,9 @@ export default function Fiche() {
     ? ''
     : data.kind === 'leader'
       ? t('fiche.leaderLine')
-      : i18n.language === 'ar' ? data.person.branch_ar : data.person.branch_fr;
+      : data.kind === 'leader_signup'
+        ? t(`section.name${data.person.section}`)
+        : i18n.language === 'ar' ? data.person.branch_ar : data.person.branch_fr;
 
   let body;
   if (loading) body = <div className="flex justify-center py-16 text-muted-foreground"><Spinner className="size-6" /></div>;
@@ -115,24 +125,39 @@ export default function Fiche() {
   else if (data.status === 'disabled')
     body = (
       <Notice tone="muted" title={t('fiche.disabledTitle')}>
-        {t('fiche.disabledBody')}
+        {t(data.kind === 'leader_signup' ? 'fiche.disabledBodyLeader' : 'fiche.disabledBody')}
       </Notice>
     );
   else if (data.status !== 'open')
     body = (
       <Notice tone="muted" title={t('fiche.closedTitle')}>
-        {t(data.kind === 'leader' ? 'fiche.closedBodyLeader' : 'fiche.closedBody')}
+        {t(data.kind === 'leader' || data.kind === 'leader_signup' ? 'fiche.closedBodyLeader' : 'fiche.closedBody')}
       </Notice>
     );
   else if (!data.fields.length)
     body = <Notice tone="success" title={t('fiche.completeTitle')}>{t('fiche.completeBody')}</Notice>;
-  else body = <FicheForm key={round} token={token} data={data} onAnother={data.shared ? () => setRound((n) => n + 1) : null} />;
+  else body = <FicheForm key={round} token={token} data={data} onAnother={data.shared && data.kind === 'signup' ? () => setRound((n) => n + 1) : null} />;
 
   return (
     <AuthLayout>
       <div className="space-y-7">
-        <AuthHeader title={!data ? t('fiche.docTitle') : data.kind === 'signup' ? t('fiche.signupTitle') : t('fiche.title', { name })}>
+        <AuthHeader title={
+            !data
+              ? t('fiche.docTitle')
+              : data.kind === 'signup'
+                ? t('fiche.signupTitle')
+                : data.kind === 'leader_signup'
+                  ? t('fiche.signupTitleLeader')
+                  : t('fiche.title', { name })
+          }
+        >
           {data ? branch : null}
+          {data?.person.code && (
+            <>
+              {' · '}
+              <CodeTag code={data.person.code} />
+            </>
+          )}
         </AuthHeader>
         {body}
       </div>
@@ -176,8 +201,10 @@ function FicheForm({ token, data, onAnother }) {
   const asked = new Set(data.fields);
   const missing = new Set(data.missing || data.fields);
   const current = data.values || {};
-  const leader = data.kind === 'leader';
-  const signup = data.kind === 'signup';
+  // A new قائد is both: he answers for himself, and fills a whole file
+  const leaderSignup = data.kind === 'leader_signup';
+  const leader = data.kind === 'leader' || leaderSignup;
+  const signup = data.kind === 'signup' || leaderSignup;
   const required = new Set(data.required || []);
   const [respondent, setRespondent] = useState('');
   const [values, setValues] = useState({});
@@ -317,7 +344,13 @@ function FicheForm({ token, data, onAnother }) {
           )
         }
       >
-        {t(done === 'confirmed' ? 'fiche.confirmedBody' : leader ? 'fiche.doneBodyLeader' : signup ? 'fiche.doneBodySignup' : 'fiche.doneBody')}
+        {t(
+          done === 'confirmed'
+            ? 'fiche.confirmedBody'
+            : leaderSignup
+              ? 'fiche.doneBodyLeaderSignup'
+              : leader ? 'fiche.doneBodyLeader' : signup ? 'fiche.doneBodySignup' : 'fiche.doneBody'
+        )}
       </Notice>
     );
 
@@ -469,7 +502,7 @@ function FicheForm({ token, data, onAnother }) {
   return (
     <form ref={formRef} onSubmit={submit} noValidate className="space-y-8">
       <p className="text-[0.9375rem] text-muted-foreground">
-        {t(leader ? 'fiche.introLeader' : signup ? 'fiche.introSignup' : 'fiche.intro')}
+        {t(leaderSignup ? 'fiche.introLeaderSignup' : leader ? 'fiche.introLeader' : signup ? 'fiche.introSignup' : 'fiche.intro')}
       </p>
 
       {!leader && (
@@ -510,7 +543,7 @@ function FicheForm({ token, data, onAnother }) {
                     hint={
                       editing.has(key)
                         ? null
-                        : key === 'blood_type' ? t('fiche.bloodHint') : null
+                        : key === 'blood_type' ? t(leader ? 'fiche.bloodHintLeader' : 'fiche.bloodHint') : null
                     }
                     error={errorText(key)}
                   >
@@ -549,7 +582,7 @@ function FicheForm({ token, data, onAnother }) {
         <p className="flex gap-2.5 text-sm text-muted-foreground">
           <IconLock className="mt-0.5 shrink-0" />
           <span>
-            {t(leader ? 'fiche.privacyLeader' : 'fiche.privacy')}
+            {t(leaderSignup ? 'fiche.privacyLeaderSignup' : leader ? 'fiche.privacyLeader' : 'fiche.privacy')}
             {/* A permanent link has no end date */}
             {data.expires_at && ` ${t('fiche.validUntil', { date: fmtDate(data.expires_at.slice(0, 10)) })}`}
           </span>

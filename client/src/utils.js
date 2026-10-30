@@ -135,6 +135,9 @@ export function filterLeaders(leaders, f) {
     if (f.course === 'none' ? courses.length > 0 : f.course && !courses.includes(f.course)) return false;
     if (f.account && 'account_user_id' in l && (f.account === 'with') !== !!l.account_user_id) return false;
     if (!q) return true;
+    // L'identifiant, tapé comme il vient : «K-7», «k7», «K-007»
+    const code = /^k-?0*(\d+)$/.exec(q);
+    if (code) return l.code === `K-${code[1].padStart(3, '0')}`;
     return (
       memberName(l).toLowerCase().includes(q) ||
       roles.some((r) => r.title.toLowerCase().includes(q)) ||

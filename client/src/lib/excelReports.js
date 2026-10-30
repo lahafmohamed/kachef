@@ -115,6 +115,8 @@ function tools({ t, lng }) {
     sep,
     list: (values) => values.filter(Boolean).join(sep) || null,
     num: { label: t('excel.number'), type: 'int', value: (_, i) => i + 1 },
+    // L'identifiant à vie (E-0042, K-001) ; un invité n'en a pas : cellule vide
+    code: { label: t('common.code'), value: (p) => p.code || null },
     status: (st) => t(STATUS_KEYS[st] || 'session.unmarked'),
     active: (st) => t(st === 'active' ? 'member.active' : 'member.inactive'),
     sex: (sex) => (sex ? t(sex === 'M' ? 'member.male' : 'member.female') : null),
@@ -171,6 +173,7 @@ async function membersList(ctx) {
             list,
             [
               x.num,
+              x.code,
               { label: t('member.name'), value: memberName },
               { label: t('member.birthDate'), type: 'date', value: (m) => m.birth_date },
               { label: t('member.age'), type: 'int', value: (m) => m.age },
@@ -222,6 +225,7 @@ async function leadersList(ctx) {
             list,
             [
               x.num,
+              x.code,
               { label: t('member.name'), value: memberName },
               {
                 label: t('leader.colRoles'),
@@ -413,6 +417,7 @@ async function promotionsList(ctx) {
             list,
             [
               x.num,
+              x.code,
               { label: t('promotion.member'), value: memberName },
               { label: t('member.age'), type: 'int', value: (p) => p.age },
               all && { label: t('promotion.oldBranch'), value: (p) => x.branch(p.current_branch) },
@@ -624,6 +629,7 @@ async function sessionCard(ctx) {
       sheet(label, label, [
         table(animators, [
           x.num,
+          x.code,
           { label: t('member.name'), value: memberName },
           { label: t('session.role'), value: (a) => x.role(a.role) },
           { label: t('session.myPresence'), value: (a) => x.status(a.status) },
@@ -648,6 +654,7 @@ async function sessionCard(ctx) {
           roster,
           [
             x.num,
+            x.code,
             { label: t('member.name'), value: memberName },
             multiBranch && { label: t('member.branch'), value: (m) => nameOf(m.branch_id) },
             { label: t('member.group'), value: (m) => m.group_name },
@@ -681,6 +688,7 @@ async function memberCard(ctx) {
       blocks: [
         {
           facts: [
+            [t('common.code'), m.code],
             [t('member.branch'), x.branch(m)],
             [t('member.group'), m.group_name],
             [t('member.status'), x.active(m.status)],
@@ -841,6 +849,7 @@ async function leaderCard(ctx) {
       blocks: [
         {
           facts: [
+            [t('common.code'), l.code],
             [t('member.status'), x.active(l.status)],
             [t('leader.currentRoles'), x.list((l.current_roles || []).map((r) => r.title))],
             [t('leader.year'), l.year],
@@ -1030,6 +1039,7 @@ async function branchCard(ctx) {
       table(
         leaders,
         [
+          x.code,
           { label: t('member.name'), value: memberName },
           { label: t('leader.role'), value: (l) => l.title },
         ],
@@ -1047,6 +1057,7 @@ async function branchCard(ctx) {
           list,
           [
             { label: t('excel.number'), type: 'int', value: (_, i) => i + 1 },
+            x.code,
             { label: t('member.name'), value: memberName },
             { label: t('member.age'), type: 'int', value: (m) => m.age },
             { label: t('member.sex'), value: (m) => x.sex(m.sex) },
@@ -1686,6 +1697,7 @@ async function eventCard(ctx) {
           roster,
           [
             x.num,
+            x.code,
             { label: t('member.name'), value: (p) => memberName(p) },
             { label: t('member.branch'), value: (p) => x.branch(p) },
             { label: t('member.group'), value: (p) => p.group_name || t('campFile.noGroup') },
@@ -1710,6 +1722,7 @@ async function eventCard(ctx) {
         blocks: [
           table(others, [
             x.num,
+            x.code,
             { label: t('member.name'), value: (p) => participantName(p) },
             { label: t('event.kind'), value: (p) => t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest') },
             fees && { label: t('event.payment'), value: (p) => payText(p, ev, t) },
@@ -1803,6 +1816,7 @@ async function eventUnpaidList(ctx) {
             list,
             [
               x.num,
+              x.code,
               { label: t('member.name'), value: (p) => participantName(p) },
               { label: t('member.branch'), value: (p) => (p.member_id ? x.branch(p) : t(p.leader_id ? 'event.kindLeader' : 'event.kindGuest')) },
               { label: t('member.group'), value: (p) => p.group_name },
@@ -1831,6 +1845,7 @@ async function duesArrearsList(ctx) {
   const title = [one ? x.branch(one) : t('arrears.allBranches'), data.year].filter(Boolean).join(' · ');
   const columns = [
     x.num,
+    x.code,
     { label: t('member.name'), value: (r) => memberName(r) },
     { label: t('member.branch'), value: (r) => x.branch(r) },
     { label: t('member.group'), value: (r) => r.group_name },
@@ -1949,6 +1964,7 @@ async function periodCard(ctx) {
           d.followup,
           [
             x.num,
+            x.code,
             { label: t('member.name'), value: memberName },
             { label: t('member.branch'), value: nameOf },
             { label: t('periodReport.colAbsences'), type: 'int', value: (m) => m.absences },
@@ -2031,7 +2047,7 @@ async function periodCard(ctx) {
  */
 async function amanaPresenceCard(ctx) {
   const { id, t, kindLabel, stamp } = ctx;
-  const { status } = tools(ctx);
+  const { status, code } = tools(ctx);
   const data = await api.get(`/amanat/${id}/rolls?entries=1`);
   const { amana, members } = data;
   // Oldest first, the way a register fills up
@@ -2075,6 +2091,7 @@ async function amanaPresenceCard(ctx) {
           table(
             members,
             [
+              code,
               { label: t('member.name'), value: memberName },
               { label: t('session.tallyPresent'), type: 'int', sum: true, value: (m) => m.present },
               { label: t('session.tallyExcused'), type: 'int', sum: true, value: (m) => m.excused },

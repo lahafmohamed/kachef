@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
-import { usePerms } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { toDate } from '../lib/date';
 import { catalogMap, majalStats } from '../lib/matalib';
@@ -12,7 +12,7 @@ import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { MemberDuesCard } from '../components/MemberDues';
 import MemberFormDialog from '../components/MemberForm';
-import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, callLabel, contactsOf, telHref, waHref, whoLabel } from '../components/MemberParts';
+import { AttendanceStrip, CodeTag, RateValue, UnderlineTabs, WhatsAppTile, callLabel, contactsOf, telHref, waHref, whoLabel } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
 import {
   Avatar,
@@ -32,6 +32,7 @@ import {
   IconAlert,
   IconArchive,
   IconArchiveRestore,
+  IconTrash,
   IconArrow,
   IconAward,
   IconBack,
@@ -202,6 +203,8 @@ export default function MemberDetail() {
   // L'archivage se fait ici seulement, fiche ouverte : depuis une liste de 200
   // lignes, un clic de travers suffisait à sortir quelqu'un des activités.
   const canArchive = has('members.delete');
+  // La suppression définitive : l'admin seul, sur un عنصر déjà archivé
+  const canPurge = useAuth().user?.role === 'admin';
   // المخيمات و الدورات: لمن يرى المخيمات
   const canEvents = has('events.read');
   // الاشتراك الشهري: لمن مُنح رؤيته
@@ -227,6 +230,7 @@ export default function MemberDetail() {
   const [editing, setEditing] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [purging, setPurging] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   // '' | present | absent | excused — «which ones did he miss?» is the question parents ask
   const [historyStatus, setHistoryStatus] = useState('');
@@ -275,6 +279,26 @@ export default function MemberDetail() {
       toast.error(displayError(err));
     } finally {
       setArchiving(false);
+    }
+  }
+
+  async function purge() {
+    const ok = await confirm({
+      title: t('member.purge'),
+      message: t('member.purgeConfirm', { name: memberName(member) }),
+      typeToConfirm: member.code,
+      typeLabel: t('member.purgeType', { code: member.code }),
+      confirmLabel: t('member.purge'),
+    });
+    if (!ok) return;
+    setPurging(true);
+    try {
+      await api.post('/members/purge', { member_ids: [member.id] });
+      toast.success(t('member.purged', { count: 1 }));
+      navigate('/members', { replace: true });
+    } catch (err) {
+      toast.error(displayError(err));
+      setPurging(false);
     }
   }
 
@@ -415,6 +439,12 @@ export default function MemberDetail() {
               {t('member.restore')}
             </Button>
           )}
+          {canPurge && member.code && (
+            <Button size="sm" variant="ghost" loading={purging} onClick={purge} className="text-destructive hover:text-destructive">
+              {!purging && <IconTrash />}
+              {t('member.purge')}
+            </Button>
+          )}
         </div>
       )}
 
@@ -436,6 +466,7 @@ export default function MemberDetail() {
               <bdi>{name}</bdi>
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
+              <CodeTag code={member.code} className="rounded-md border border-border px-1.5 py-0.5 text-foreground" />
               <span>
                 <Parts
                   parts={[

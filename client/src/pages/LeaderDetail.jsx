@@ -11,7 +11,7 @@ import { DecisionMeta, MeetingKindBadge } from '../components/MeetingParts';
 import EventParticipations from '../components/EventParticipations';
 import ExportPdfButton from '../components/ExportPdfButton';
 import { LeaderDuesCard } from '../components/LeaderDues';
-import { AttendanceStrip, RateValue, UnderlineTabs, WhatsAppTile, phoneNumbers, telHref, waHref } from '../components/MemberParts';
+import { AttendanceStrip, CodeTag, RateValue, UnderlineTabs, WhatsAppTile, phoneNumbers, telHref, waHref } from '../components/MemberParts';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import {
   Avatar,
@@ -636,6 +636,7 @@ export default function LeaderDetail() {
               <bdi>{name}</bdi>
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
+              <CodeTag code={leader.code} className="rounded-md border border-border px-1.5 py-0.5 text-foreground" />
               <span>
                 <Parts
                   parts={[

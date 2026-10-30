@@ -1657,6 +1657,7 @@ function pendingPromotions({ ref } = {}) {
       upcoming,
       eligible_on: eligibleOn,
       id: m.id,
+      code: m.code,
       first_name: m.first_name,
       father_name: m.father_name,
       last_name: m.last_name,
@@ -1978,7 +1979,7 @@ app.get('/api/branches/overview', requirePerm('branches.read'), (req, res) => {
       )
       .get();
   const leadersStmt = db.prepare(
-    `SELECT a.id, a.title, a.leader_id, l.first_name, l.father_name, l.last_name, l.photo
+    `SELECT a.id, a.title, a.leader_id, l.code, l.first_name, l.father_name, l.last_name, l.photo
      FROM assignments a LEFT JOIN leaders l ON l.id = a.leader_id
      WHERE a.branch_id = ? AND a.year = ?
      ORDER BY a.sort_order, a.id`
@@ -3265,6 +3266,12 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
         params.push(`%${digits}%`, `%${digits}%`, `%${digits}%`);
       }
     }
+    // L'identifiant, tapé comme il vient : «E-42», «e42», «E-0042»
+    const code = /^E-?0*(\d+)$/i.exec(String(q).trim());
+    if (code) {
+      or.push('m.code = ?');
+      params.push(`E-${code[1].padStart(4, '0')}`);
+    }
     // A bare number is read as an age — "12" should list the twelve-year-olds
     const asAge = Number(String(q).trim());
     if (Number.isInteger(asAge) && asAge >= 0 && asAge < 120) {
@@ -3583,6 +3590,86 @@ app.post('/api/members/:id/restore', requirePerm('members.edit'), (req, res) => 
   const updated = db.prepare('SELECT * FROM members WHERE id = ?').get(existing.id);
   auditEvent(req, 'restore', 'member', existing.id, existing, updated);
   res.json(stripContact(req, updated));
+});
+
+// ---------- Suppression définitive (admin) ----------
+// Efface la personne et tout ce qui la concerne : présences, مطالب, historique, fiches,
+// journal. Seul l'archivé se supprime : on archive d'abord, on efface ensuite, en tapant
+// son identifiant. L'argent déjà encaissé ne quitte pas les caisses — il est réellement
+// dans la boîte : les participations payées à un camp restent comme une ligne au nom de
+// l'identifiant, et les droits de séance et cotisations des قادة deviennent une entrée
+// de caisse du même montant, au même jour, dans la même caisse. Les cotisations des
+// عناصر restent d'elles-mêmes (member_dues.member_id passe à NULL).
+const keepMoneyEntry = db.prepare(
+  `INSERT INTO treasury_entries (direction, category, label, amount, date, paid_on, section, branch_id, created_by)
+   VALUES ('in', 'other', ?, ?, ?, ?, ?, ?, ?)`
+);
+const keepParticipantPaid = (col) =>
+  db.prepare(
+    `UPDATE event_participants SET ${col} = NULL, guest_name = ?, consent_at = NULL, consent_by = NULL,
+       consent_scan = NULL, consent_recorded_by = NULL
+     WHERE ${col} = ? AND paid > 0`
+  );
+const keepMemberPaid = keepParticipantPaid('member_id');
+const keepLeaderPaid = keepParticipantPaid('leader_id');
+
+function purgeMember(req, m) {
+  const actor = req.user.display_name || req.user.username;
+  for (const s of db
+    .prepare(
+      `SELECT s.title, s.date, s.section, s.branch_id, a.paid FROM attendance a JOIN sessions s ON s.id = a.session_id
+       WHERE a.member_id = ? AND a.paid > 0`
+    )
+    .all(m.id))
+    keepMoneyEntry.run(`${m.code} — ${s.title}`, s.paid, s.date, s.date, s.section, s.branch_id, actor);
+  keepMemberPaid.run(m.code, m.id);
+  db.prepare("DELETE FROM audit_events WHERE entity_type = 'member' AND entity_id = ?").run(String(m.id));
+  db.prepare('DELETE FROM members WHERE id = ?').run(m.id);
+  // La trace qu'il a existé et qui l'a effacé — rien de plus
+  auditEvent(req, 'purge', 'member', m.id, { code: m.code, name: leaderFullName(m) }, null);
+}
+
+function purgeLeader(req, l) {
+  const actor = req.user.display_name || req.user.username;
+  for (const d of db
+    .prepare('SELECT month, amount, date(paid_at) AS day FROM leader_dues WHERE leader_id = ?')
+    .all(l.id))
+    keepMoneyEntry.run(`${l.code} — ${d.month}`, d.amount, d.day, d.day, l.section, null, actor);
+  keepLeaderPaid.run(l.code, l.id);
+  // Plain INTEGER, no FK: the name snapshot in sessions.leader stays, the link goes
+  db.prepare('UPDATE sessions SET leader_id = NULL WHERE leader_id = ?').run(l.id);
+  // Son compte ne survit pas à sa fiche
+  for (const u of db.prepare('SELECT id FROM users WHERE leader_id = ?').all(l.id)) {
+    db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(u.id);
+    db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
+  }
+  db.prepare("DELETE FROM audit_events WHERE entity_type = 'leader' AND entity_id = ?").run(String(l.id));
+  db.prepare('DELETE FROM leaders WHERE id = ?').run(l.id);
+  auditEvent(req, 'purge', 'leader', l.id, { code: l.code, name: leaderFullName(l) }, null);
+}
+
+app.post('/api/members/purge', requireAdmin, (req, res) => {
+  const rawIds = req.body?.member_ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0)
+    return res.status(400).json({ error: 'member_ids required' });
+  const ids = [...new Set(rawIds.map(Number))];
+  const find = db.prepare('SELECT * FROM members WHERE id = ?');
+  const rows = ids.map((id) => find.get(id));
+  if (rows.some((m) => !m)) return res.status(404).json({ error: 'member not found' });
+  if (rows.some((m) => !branchOk(req, m.branch_id))) return res.status(403).json({ error: 'forbidden' });
+  if (rows.some((m) => m.status === 'active')) return res.status(409).json({ error: 'purge_active' });
+  db.transaction(() => {
+    for (const m of rows) purgeMember(req, m);
+  })();
+  res.json({ deleted: rows.length });
+});
+
+app.delete('/api/leaders/:id/purge', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM leaders WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'leader not found' });
+  if (existing.status === 'active') return res.status(409).json({ error: 'purge_active' });
+  db.transaction(() => purgeLeader(req, existing))();
+  res.status(204).end();
 });
 
 // ---------- سجل المتابعة (A2) ----------
@@ -4624,14 +4711,11 @@ const LEADER_COLUMNS = [
   'status',
 ];
 
-app.post('/api/leaders', requireAdmin, (req, res) => {
-  const err = validateLeader(req.body);
-  if (err) return res.status(400).json({ error: err });
-  const b = req.body;
-  if (b.section !== undefined && !parseSection(b.section))
-    return res.status(400).json({ error: 'invalid section' });
-  // Said explicitly, or the قسم the admin is looking at, or قسم الفتيان as before
-  const section = parseSection(b.section) || activeSection(req) || 'M';
+// Un nouveau قائد dans un قسم — du formulaire comme d'une demande d'inscription validée
+// (memberForms.js). { created } ou { status, error }.
+function createLeader(req, b, section) {
+  const err = validateLeader(b);
+  if (err) return { status: 400, error: err };
   const info = db
     .prepare(
       `INSERT INTO leaders (${LEADER_COLUMNS.join(', ')}, section)
@@ -4640,6 +4724,16 @@ app.post('/api/leaders', requireAdmin, (req, res) => {
     .run(...leaderValues(b), section);
   const created = db.prepare('SELECT * FROM leaders WHERE id = ?').get(info.lastInsertRowid);
   auditEvent(req, 'create', 'leader', created.id, null, publicLeader(created));
+  return { created };
+}
+
+app.post('/api/leaders', requireAdmin, (req, res) => {
+  const b = req.body;
+  if (b.section !== undefined && !parseSection(b.section))
+    return res.status(400).json({ error: 'invalid section' });
+  // Said explicitly, or the قسم the admin is looking at, or قسم الفتيان as before
+  const { created, status, error } = createLeader(req, b, parseSection(b.section) || activeSection(req) || 'M');
+  if (!created) return res.status(status).json({ error });
   res.status(201).json(publicLeader(created));
 });
 
@@ -5270,7 +5364,7 @@ const isLate = (months, current = currentMonth()) => months.some((m) => m < curr
 // withCurrent : aussi ceux qui ne doivent que le mois en cours.
 function duesArrears(req, { branch = null, year = null, withCurrent = false } = {}) {
   const params = [];
-  let sql = `SELECT m.id, m.first_name, m.father_name, m.last_name, m.branch_id, m.photo,
+  let sql = `SELECT m.id, m.code, m.first_name, m.father_name, m.last_name, m.branch_id, m.photo,
                m.member_phone, m.father_phone, m.mother_phone,
                ${MEMBER_DUES_COLS.split(', ').map((c) => `m.${c}`).join(', ')},
                b.name_fr AS branch_name_fr, b.name_ar AS branch_name_ar, b.sort_order AS branch_sort,
@@ -5948,17 +6042,18 @@ app.get('/api/amanat/:id/rolls', requirePerm('leaders.read'), (req, res) => {
   const ids = [...new Set([...team.map((m) => m.leader_id), ...counts.keys()])];
   const people = new Map(
     (ids.length
-      ? db.prepare(`SELECT id, first_name, father_name, last_name, photo FROM leaders WHERE id IN (${ids.join(',')})`).all()
+      ? db.prepare(`SELECT id, code, first_name, father_name, last_name, photo FROM leaders WHERE id IN (${ids.join(',')})`).all()
       : []
     ).map((l) => [l.id, l])
   );
   const members = ids
     .filter((id) => people.has(id))
     .map((id) => {
-      const { first_name, father_name, last_name, photo } = people.get(id);
+      const { code, first_name, father_name, last_name, photo } = people.get(id);
       const c = counts.get(id);
       return {
         leader_id: id,
+        code,
         first_name,
         father_name,
         last_name,
@@ -6175,7 +6270,7 @@ const notifications = require('./push')(app, {
 // reviews each answer before it lands (server/memberForms.js)
 require('./memberForms')(app, publicApi, {
   db, hasPerm, requirePerm, requireAdmin, branchOk, branchFilterSQL, leaderScopeSQL, leaderOk, auditEvent,
-  notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr, createMember, ageGroupIdFor, sectionDef,
+  notifications, validISODate, validPhone, BLOOD_TYPES, todayISO, intOr, createMember, createLeader, ageGroupIdFor, sectionDef,
   sectionOfBranch,
 });
 
@@ -6752,7 +6847,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
   const lastPromotionStmt = db.prepare('SELECT MAX(effective_date) AS d FROM member_branch_history WHERE member_id = ?');
   const roster = s.kind === 'group' ? [] : db
     .prepare(
-      `SELECT m.id, m.first_name, m.father_name, m.last_name, m.photo,
+      `SELECT m.id, m.code, m.first_name, m.father_name, m.last_name, m.photo,
               COALESCE(a.branch_id, m.branch_id) AS branch_id,
               a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status,
               a.paid, a.reason
@@ -6777,7 +6872,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     s.kind === 'leaders'
       ? db
           .prepare(
-            `SELECT l.id AS leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+            `SELECT l.id AS leader_id, l.code, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
              FROM leaders l LEFT JOIN session_leaders sl ON sl.leader_id = l.id AND sl.session_id = ?
              WHERE l.section = ? AND (l.status = 'active' OR sl.status IS NOT NULL)
              ORDER BY sl.role = 'main' DESC, l.last_name, l.first_name`
@@ -6785,7 +6880,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
           .all(s.id, s.section)
       : db
           .prepare(
-            `SELECT sl.leader_id, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
+            `SELECT sl.leader_id, l.code, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
              FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
              WHERE sl.session_id = ?
              ORDER BY sl.role = 'helper', l.last_name, l.first_name`
@@ -8472,6 +8567,8 @@ const EVENT_PARTICIPANT_SQL = `
     ${CONSENT_NEEDED_SQL('m', 'b')} AS consent_needed,
     -- L'appel du car, aller et retour
     p.out_at, p.out_by, p.back_at, p.back_by,
+    -- L'identifiant à vie (E-0042 / K-001) ; un invité n'en a pas
+    COALESCE(m.code, l.code) AS code,
     COALESCE(m.first_name, l.first_name) AS first_name,
     COALESCE(m.father_name, l.father_name) AS father_name,
     COALESCE(m.last_name, l.last_name) AS last_name,
@@ -12009,7 +12106,7 @@ function periodReport(req, branchId, p) {
       .get(b.id, p.from, p.to);
     if (canMembers && followIds.length)
       for (const pm of db
-        .prepare(`SELECT id, first_name, father_name, last_name FROM members WHERE id IN (${followIds.join(',')})`)
+        .prepare(`SELECT id, code, first_name, father_name, last_name FROM members WHERE id IN (${followIds.join(',')})`)
         .all())
         followup.push({
           ...pm,

@@ -1896,6 +1896,62 @@ function migrate() {
   migrateAbsenceFollowup();
   migrateCampSafety();
   migrateDuesRates();
+  migrateCodes();
+}
+
+// L'identifiant à vie : E-0042 pour un عنصر, K-001 pour un قائد. Donné une fois, il ne change
+// ni au ترفيع ni à l'archivage, et un numéro n'est jamais redonné, même après une
+// suppression : id_counters garde le dernier donné. Les déclencheurs le posent à
+// l'insertion, quel que soit le chemin (formulaire, inscription par lien, import, SQL
+// fait à la main sur le VPS). Les dossiers déjà là sont numérotés une fois, par date
+// d'entrée puis numéro interne — K-001 étant السيد علي عبدالامير شرف الدين.
+function migrateCodes() {
+  ensureColumn('members', 'code', 'code TEXT');
+  ensureColumn('leaders', 'code', 'code TEXT');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS id_counters (kind TEXT PRIMARY KEY, last INTEGER NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_members_code ON members(code);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_leaders_code ON leaders(code);
+  `);
+  if (!db.prepare("SELECT 1 FROM id_counters WHERE kind = 'E'").get())
+    db.transaction(() => {
+      const members = db
+        .prepare('SELECT id FROM members WHERE code IS NULL ORDER BY join_date IS NULL, join_date, id')
+        .all();
+      const setMember = db.prepare('UPDATE members SET code = ? WHERE id = ?');
+      members.forEach((m, i) => setMember.run(`E-${String(i + 1).padStart(4, '0')}`, m.id));
+      // Le premier قائد du فوج d'abord, reconnu à son nom : son numéro interne n'est pas le
+      // même ici et sur le VPS
+      const squash = (col) => `replace(replace(replace(${col}, ' ', ''), 'أ', 'ا'), 'إ', 'ا')`;
+      const leaders = db
+        .prepare(
+          `SELECT id FROM leaders WHERE code IS NULL
+           ORDER BY NOT (${squash('first_name')} LIKE '%علي%' AND ${squash('father_name')} LIKE '%عبدالامير%'
+                         AND ${squash('last_name')} LIKE '%شرفالدين%'),
+                    join_year IS NULL, join_year, id`
+        )
+        .all();
+      const setLeader = db.prepare('UPDATE leaders SET code = ? WHERE id = ?');
+      leaders.forEach((l, i) => setLeader.run(`K-${String(i + 1).padStart(3, '0')}`, l.id));
+      const counter = db.prepare('INSERT INTO id_counters (kind, last) VALUES (?, ?)');
+      counter.run('E', members.length);
+      counter.run('K', leaders.length);
+    })();
+  // À chaque démarrage : une reconstruction de table emporte ses déclencheurs
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS members_code AFTER INSERT ON members WHEN NEW.code IS NULL
+    BEGIN
+      UPDATE id_counters SET last = last + 1 WHERE kind = 'E';
+      UPDATE members SET code = 'E-' || printf('%04d', (SELECT last FROM id_counters WHERE kind = 'E'))
+        WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS leaders_code AFTER INSERT ON leaders WHEN NEW.code IS NULL
+    BEGIN
+      UPDATE id_counters SET last = last + 1 WHERE kind = 'K';
+      UPDATE leaders SET code = 'K-' || printf('%03d', (SELECT last FROM id_counters WHERE kind = 'K'))
+        WHERE id = NEW.id;
+    END;
+  `);
 }
 
 // Cotisations (G1) : les tarifs datés (due_rates — un tarif vaut à partir de son mois,

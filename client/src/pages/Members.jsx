@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useNavigationType } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { usePerms } from '../auth';
+import { useAuth, usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
 import DateRangePicker from '../components/DateRangePicker';
@@ -14,6 +14,7 @@ import {
   AttendanceStrip,
   RateValue,
   UnderlineTabs,
+  CodeTag,
   callLabel,
   contactsOf,
   telHref,
@@ -178,6 +179,7 @@ function RosterRow({ m, lang, t, whereMode, canModify, onEdit, onOpen, threshold
               >
                 {name}
               </Link>
+              <CodeTag code={m.code} />
               {bday && (
                 <Badge variant="warning">
                   <IconCake className="h-3 w-3" />
@@ -350,6 +352,7 @@ export default function Members() {
   const canSeeLeaders = has('leaders.read');
   // Bulk actions (bug 31): the «Sélectionner» toggle is for who may change عناصر
   const canArchive = has('members.delete');
+  const canPurge = useAuth().user?.role === 'admin';
   const canSelect = canModify || canArchive;
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState(() => new Set());
@@ -1188,6 +1191,7 @@ export default function Members() {
           branchId={branchObj && has('branches.groups') ? branchObj.id : null}
           groups={groups}
           canArchive={canArchive}
+          canPurge={canPurge}
           canCopy={canContact}
           onClear={() => setPicked(new Set())}
           onDone={afterBulk}

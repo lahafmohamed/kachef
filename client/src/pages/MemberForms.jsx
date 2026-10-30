@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { useAuth, usePerms } from '../auth';
+import { SECTIONS, useSection } from '../section';
 import { useFetch, useUrlFilters } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DatePicker from '../components/DatePicker';
@@ -116,14 +117,16 @@ function FormsPanel({ kind, who }) {
   const { t } = useTranslation();
   const { has } = usePerms();
   const [sp, patch] = useUrlFilters();
-  // Demandes d'inscription: a new عنصر, so the right to register one
-  const canSignup = who === 'members' && has('members.create');
+  // Demandes d'inscription: a new عنصر, so the right to register one; a new قائد, the
+  // admin's (the only one who sees this panel for the قادة)
+  const sk = SIGNUPS[who];
+  const canSignup = who === 'leaders' || has('members.create');
   const tab = ['review', 'signups'].includes(sp.get('tab')) && (sp.get('tab') !== 'signups' || canSignup) ? sp.get('tab') : 'send';
   const overview = useFetch(kind.api);
   const pending = useFetch(`${kind.api}/pending`);
-  const signups = useFetch('/member-signups', { skip: !canSignup });
-  const sharedLinks = useFetch('/signup-links', { skip: !canSignup });
-  const signupsPending = useFetch('/member-signups/pending', { skip: !canSignup });
+  const signups = useFetch(sk.api, { skip: !canSignup });
+  const sharedLinks = useFetch(sk.linkApi, { skip: !canSignup });
+  const signupsPending = useFetch(`${sk.api}/pending`, { skip: !canSignup });
 
   const reloadAll = () => {
     overview.reload({ quiet: true });
@@ -155,7 +158,7 @@ function FormsPanel({ kind, who }) {
           {tab === 'send' ? (
             <SendList kind={kind} who={who} overview={overview} onChanged={reloadAll} onReview={() => patch({ tab: 'review' })} />
           ) : tab === 'signups' ? (
-            <Signups list={signups} pending={signupsPending} shared={sharedLinks} onChanged={reloadAll} />
+            <Signups sk={sk} list={signups} pending={signupsPending} shared={sharedLinks} onChanged={reloadAll} />
           ) : (
             <ReviewList kind={kind} pending={pending} onChanged={reloadAll} />
           )}
@@ -727,26 +730,49 @@ function ValueEditor({ id, k, value, onChange, disabled }) {
 
 const SIGNUP_LIVE = ['draft', 'sent', 'opened'];
 
-function signupMessage(T, f, branch, lang) {
+// Who a demande registers and where it is tied: an عنصر to a فرقة, a قائد (who fills his
+// own file, the admin registers him) to a قسم (server: member_signups / leader_signups)
+const SIGNUPS = {
+  members: { api: '/member-signups', linkApi: '/signup-links', scope: 'branch_id', createdKey: 'member_id', profile: (id) => `/members/${id}`, suffix: '' },
+  leaders: { api: '/leader-signups', linkApi: '/leader-signup-links', scope: 'section', createdKey: 'leader_id', profile: (id) => `/leaders/${id}`, suffix: 'Leader' },
+};
+// The قائد's wording where it differs, the عنصر's otherwise
+const tk = (sk, name) => (sk.suffix ? [`memberForms.${name}${sk.suffix}`, `memberForms.${name}`] : `memberForms.${name}`);
+
+/** Where a demande can be tied, as { value, name(lang) }: the فرق I see, or the أقسام. */
+function useScopes(sk) {
+  const { i18n } = useTranslation();
+  const { section } = useSection();
+  const branches = useFetch('/branches', { skip: sk.scope !== 'branch_id' });
+  return useMemo(() => {
+    const list =
+      sk.scope === 'branch_id'
+        ? (branches.data || []).map((b) => ({ value: String(b.id), name: (lang) => branchName(b, lang) }))
+        : (section ? [section] : SECTIONS).map((c) => ({ value: c, name: (lang) => i18n.getFixedT(lang)(`section.name${c}`) }));
+    return { list, get: (v) => list.find((x) => x.value === String(v)) };
+  }, [branches.data, section, sk.scope, i18n]);
+}
+const scopeBody = (sk, v) => ({ [sk.scope]: sk.scope === 'branch_id' ? Number(v) : v });
+
+function signupMessage(T, sk, f, where, lang) {
   const url = `${window.location.origin}/fiche/${f.token}`;
   const date = new Intl.DateTimeFormat(lang === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { day: 'numeric', month: 'long' }).format(
     new Date(`${f.expires_at.slice(0, 10)}T12:00:00`)
   );
-  return T(f.label ? 'memberForms.waSignup' : 'memberForms.waSignupNoName', {
+  return T(tk(sk, f.label ? 'waSignup' : 'waSignupNoName'), {
     org: T('memberForms.org'),
     name: f.label,
-    branch: branch ? branchName(branch, lang) : '',
+    branch: where?.name(lang) ?? '',
     url,
     date,
   });
 }
 
-function Signups({ list, pending, shared, onChanged }) {
+function Signups({ sk, list, pending, shared, onChanged }) {
   const { t, i18n } = useTranslation();
-  const branches = useFetch('/branches');
+  const scopes = useScopes(sk);
   const [dialog, setDialog] = useState(null);
   const [sharedDialog, setSharedDialog] = useState(null);
-  const branchById = useMemo(() => new Map((branches.data || []).map((b) => [b.id, b])), [branches.data]);
 
   if (list.error || pending.error)
     return <ErrorState message={list.error || pending.error} onRetry={() => (list.reload(), pending.reload())} retryLabel={t('error.retry')} />;
@@ -757,7 +783,7 @@ function Signups({ list, pending, shared, onChanged }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="min-w-0 flex-1 basis-64 text-sm text-muted-foreground">{t('memberForms.signupsIntro')}</p>
+        <p className="min-w-0 flex-1 basis-64 text-sm text-muted-foreground">{t(tk(sk, 'signupsIntro'))}</p>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setSharedDialog({ link: null })}>
             <IconLink />
@@ -777,8 +803,9 @@ function Signups({ list, pending, shared, onChanged }) {
             {shared.data.map((l) => (
               <SharedLinkRow
                 key={l.id}
+                sk={sk}
                 l={l}
-                branch={branchById.get(l.branch_id)}
+                where={scopes.get(l[sk.scope])}
                 onShare={() => setSharedDialog({ link: l })}
                 onChanged={onChanged}
               />
@@ -795,7 +822,7 @@ function Signups({ list, pending, shared, onChanged }) {
           </h2>
           <Card className="divide-y divide-border overflow-hidden">
             {pending.data.map((f) => (
-              <SignupReviewCard key={f.id} f={f} via={f.link_id ? sharedById.get(f.link_id) : null} branches={branches.data || []} onDone={onChanged} />
+              <SignupReviewCard key={f.id} sk={sk} f={f} via={f.link_id ? sharedById.get(f.link_id) : null} scopes={scopes} onDone={onChanged} />
             ))}
           </Card>
         </section>
@@ -808,22 +835,22 @@ function Signups({ list, pending, shared, onChanged }) {
         <Card className="divide-y divide-border overflow-hidden">
           {links.map((f) => {
             const live = SIGNUP_LIVE.includes(f.status);
-            const branch = branchById.get(f.branch_id);
+            const where = scopes.get(f[sk.scope]);
             return (
               <div key={f.id} className="flex items-center gap-3 px-3 py-3 sm:px-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    {f.member_id ? (
-                      <Link to={`/members/${f.member_id}`} className="focus-ring truncate rounded font-medium hover:underline">
-                        {f.label || t('memberForms.signupNoName')}
+                    {f[sk.createdKey] ? (
+                      <Link to={sk.profile(f[sk.createdKey])} className="focus-ring truncate rounded font-medium hover:underline">
+                        {f.label || t(tk(sk, 'signupNoName'))}
                       </Link>
                     ) : (
-                      <span className="truncate font-medium">{f.label || t('memberForms.signupNoName')}</span>
+                      <span className="truncate font-medium">{f.label || t(tk(sk, 'signupNoName'))}</span>
                     )}
-                    <StatusBadge form={f} prefix="memberForms.signupStatus" />
+                    <StatusBadge form={f} prefix={`memberForms.signupStatus${sk.suffix}`} />
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {[branch && branchName(branch, i18n.language), f.phone && fmtPhone(f.phone), t('memberForms.createdOn', { date: fmtDate(f.created_at.slice(0, 10)) })]
+                    {[where?.name(i18n.language), f.phone && fmtPhone(f.phone), t('memberForms.createdOn', { date: fmtDate(f.created_at.slice(0, 10)) })]
                       .filter(Boolean)
                       .join(' · ')}
                   </p>
@@ -841,23 +868,25 @@ function Signups({ list, pending, shared, onChanged }) {
       ) : (
         !pending.data.length && !shared.data?.length && (
           <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('memberForms.noSignupsTitle')}>
-            {t('memberForms.noSignupsBody')}
+            {t(tk(sk, 'noSignupsBody'))}
           </EmptyState>
         )
       )}
 
       <SharedLinkDialog
+        sk={sk}
         open={!!sharedDialog}
         initial={sharedDialog?.link || null}
-        branches={branches.data || []}
+        scopes={scopes}
         onClose={() => setSharedDialog(null)}
         onChanged={onChanged}
       />
 
       <SignupDialog
+        sk={sk}
         open={!!dialog}
         initial={dialog?.form || null}
-        branches={branches.data || []}
+        scopes={scopes}
         onClose={() => setDialog(null)}
         onChanged={onChanged}
       />
@@ -865,13 +894,13 @@ function Signups({ list, pending, shared, onChanged }) {
   );
 }
 
-/** New link (فرقة, the child's first name, the parent's number), then the message to send. */
-function SignupDialog({ open, initial, branches, onClose, onChanged }) {
+/** New link (فرقة or قسم, the first name, the number to send to), then the message to send. */
+function SignupDialog({ sk, open, initial, scopes, onClose, onChanged }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
   const [form, setForm] = useState(null);
-  const [draft, setDraft] = useState({ branch_id: '', label: '', phone: '' });
+  const [draft, setDraft] = useState({ scope: '', label: '', phone: '' });
   const [lang, setLang] = useState(i18n.language === 'fr' ? 'fr' : 'ar');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -881,20 +910,20 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
     setForm(initial);
     setError(null);
     setBusy(false);
-    setDraft({ branch_id: branches.length === 1 ? String(branches[0].id) : '', label: '', phone: '' });
+    setDraft({ scope: scopes.list.length === 1 ? scopes.list[0].value : '', label: '', phone: '' });
     if (initial) setLang(initial.lang);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- reset on each opening
 
   async function create(e) {
     e.preventDefault();
-    if (!draft.branch_id) {
-      setError(t('memberForms.pickBranch'));
+    if (!draft.scope) {
+      setError(t(tk(sk, 'pickBranch')));
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const f = await api.post('/member-signups', { ...draft, branch_id: Number(draft.branch_id), lang });
+      const f = await api.post(sk.api, { label: draft.label, phone: draft.phone, ...scopeBody(sk, draft.scope), lang });
       setForm(f);
       onChanged();
     } catch (err) {
@@ -904,11 +933,10 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
     }
   }
 
-  const branch = form && branches.find((b) => b.id === form.branch_id);
   const T = i18n.getFixedT(lang);
-  const message = form?.token ? signupMessage(T, form, branch, lang) : '';
+  const message = form?.token ? signupMessage(T, sk, form, scopes.get(form[sk.scope]), lang) : '';
   const phone = form?.phone ? phoneNumbers(form.phone)[0] : null;
-  const markSent = () => api.post(`/member-signups/${form.id}/sent`, { lang }).then(onChanged).catch(() => {});
+  const markSent = () => api.post(`${sk.api}/${form.id}/sent`, { lang }).then(onChanged).catch(() => {});
 
   async function copy() {
     try {
@@ -923,7 +951,7 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
   async function revoke() {
     if (!(await confirm({ title: t('memberForms.revoke'), message: t('memberForms.revokeConfirm'), confirmLabel: t('memberForms.revoke') }))) return;
     try {
-      await api.post(`/member-signups/${form.id}/revoke`);
+      await api.post(`${sk.api}/${form.id}/revoke`);
       toast.success(t('memberForms.revoked'));
       onChanged();
       onClose();
@@ -953,7 +981,7 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
       open={open}
       onClose={onClose}
       title={t('memberForms.newSignup')}
-      description={t('memberForms.newSignupHint')}
+      description={t(tk(sk, 'newSignupHint'))}
       footer={
         form ? (
           <div className="flex justify-end gap-2">
@@ -989,24 +1017,24 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
       {!form ? (
         <form id="signup-form" onSubmit={create} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="sg-branch">{t('member.branch')}</Label>
-            <Select id="sg-branch" value={draft.branch_id} onChange={(e) => setDraft((d) => ({ ...d, branch_id: e.target.value }))}>
+            <Label htmlFor="sg-branch">{t(tk(sk, 'scopeLabel'))}</Label>
+            <Select id="sg-branch" value={draft.scope} onChange={(e) => setDraft((d) => ({ ...d, scope: e.target.value }))}>
               <option value="" disabled>
-                {t('memberForms.pickBranch')}
+                {t(tk(sk, 'pickBranch'))}
               </option>
-              {branches.map((b) => (
-                <option key={b.id} value={String(b.id)}>
-                  {branchName(b, i18n.language)}
+              {scopes.list.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.name(i18n.language)}
                 </option>
               ))}
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="sg-label">{t('memberForms.signupLabel')}</Label>
+            <Label htmlFor="sg-label">{t(tk(sk, 'signupLabel'))}</Label>
             <Input id="sg-label" autoComplete="off" maxLength={80} value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="sg-phone">{t('memberForms.signupPhone')}</Label>
+            <Label htmlFor="sg-phone">{t(tk(sk, 'signupPhone'))}</Label>
             <Input
               id="sg-phone"
               type="tel"
@@ -1051,14 +1079,14 @@ function SignupDialog({ open, initial, branches, onClose, onChanged }) {
   );
 }
 
-/** A family's demande: every answer editable, the فرقة to pick, then «Inscrire». */
-function SignupReviewCard({ f, via, branches, onDone }) {
+/** A demande: every answer editable, the فرقة (or قسم) to pick, then «Inscrire». */
+function SignupReviewCard({ sk, f, via, scopes, onDone }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
   const answers = Object.fromEntries(f.answers.map((a) => [a.key, a.value]));
   const [values, setValues] = useState(answers);
-  const [branchId, setBranchId] = useState(String(f.branch_id));
+  const [scope, setScope] = useState(String(f[sk.scope]));
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   // Folded to one row until opened to check it
@@ -1070,8 +1098,8 @@ function SignupReviewCard({ f, via, branches, onDone }) {
     setBusy('apply');
     setError(null);
     try {
-      const r = await api.post(`/member-signups/${f.id}/apply`, { branch_id: Number(branchId), values });
-      toast.success(t('memberForms.registered'));
+      const r = await api.post(`${sk.api}/${f.id}/apply`, { ...scopeBody(sk, scope), values });
+      toast.success(t(tk(sk, 'registered')));
       onDone();
       return r;
     } catch (err) {
@@ -1089,10 +1117,10 @@ function SignupReviewCard({ f, via, branches, onDone }) {
   }
 
   async function reject() {
-    if (!(await confirm({ title: t('memberForms.reject'), message: t('memberForms.rejectSignupConfirm'), confirmLabel: t('memberForms.reject') }))) return;
+    if (!(await confirm({ title: t('memberForms.reject'), message: t(tk(sk, 'rejectSignupConfirm')), confirmLabel: t('memberForms.reject') }))) return;
     setBusy('reject');
     try {
-      await api.post(`/member-signups/${f.id}/reject`);
+      await api.post(`${sk.api}/${f.id}/reject`);
       toast.success(t('memberForms.rejected'));
       onDone();
     } catch (err) {
@@ -1124,7 +1152,9 @@ function SignupReviewCard({ f, via, branches, onDone }) {
           <p className="text-xs text-muted-foreground">
             {[
               answers.birth_date && fmtDate(answers.birth_date),
-              t('memberForms.filledBy', { who: t(`memberForms.who.${f.respondent}`), date: fmtDate(f.submitted_at.slice(0, 10)) }),
+              sk.suffix
+                ? t('memberForms.sentOn', { date: fmtDate(f.submitted_at.slice(0, 10)) })
+                : t('memberForms.filledBy', { who: t(`memberForms.who.${f.respondent}`), date: fmtDate(f.submitted_at.slice(0, 10)) }),
             ]
               .filter(Boolean)
               .join(' · ')}
@@ -1141,11 +1171,11 @@ function SignupReviewCard({ f, via, branches, onDone }) {
         <div className="flex gap-2.5 border-b border-border bg-warning/10 px-4 py-3 text-sm">
           <IconAlert className="mt-0.5 shrink-0 text-warning" />
           <div className="min-w-0">
-            <p className="font-medium">{t('memberForms.duplicateTitle')}</p>
+            <p className="font-medium">{t(tk(sk, 'duplicateTitle'))}</p>
             <ul className="mt-1 space-y-0.5">
               {f.duplicates.map((d) => (
                 <li key={d.id}>
-                  <Link to={`/members/${d.id}`} className="focus-ring rounded underline underline-offset-2">
+                  <Link to={sk.profile(d.id)} className="focus-ring rounded underline underline-offset-2">
                     {memberName(d)}
                   </Link>
                   {d.birth_date && <span className="text-muted-foreground"> · {fmtDate(d.birth_date)}</span>}
@@ -1157,11 +1187,11 @@ function SignupReviewCard({ f, via, branches, onDone }) {
       )}
 
       <div className="space-y-1.5 border-b border-border px-4 py-3">
-        <Label htmlFor={`sg${f.id}-branch`}>{t('member.branch')}</Label>
-        <Select id={`sg${f.id}-branch`} value={branchId} onChange={(e) => setBranchId(e.target.value)} className="max-w-72">
-          {branches.map((b) => (
-            <option key={b.id} value={String(b.id)}>
-              {branchName(b, i18n.language)}
+        <Label htmlFor={`sg${f.id}-branch`}>{t(tk(sk, 'scopeLabel'))}</Label>
+        <Select id={`sg${f.id}-branch`} value={scope} onChange={(e) => setScope(e.target.value)} className="max-w-72">
+          {scopes.list.map((x) => (
+            <option key={x.value} value={x.value}>
+              {x.name(i18n.language)}
             </option>
           ))}
         </Select>
@@ -1197,7 +1227,7 @@ function SignupReviewCard({ f, via, branches, onDone }) {
           {t('memberForms.reject')}
         </Button>
         <Button variant="brand" onClick={apply} loading={busy === 'apply'} disabled={!!busy}>
-          {t('memberForms.register')}
+          {t(tk(sk, 'register'))}
         </Button>
       </div>
       </div>
@@ -1212,22 +1242,22 @@ function SignupReviewCard({ f, via, branches, onDone }) {
 
 const sharedUrl = (l) => `${window.location.origin}/fiche/${l.token}`;
 
-function sharedMessage(T, l, branch, lang) {
-  return T('memberForms.waShared', { org: T('memberForms.org'), branch: branch ? branchName(branch, lang) : '', url: sharedUrl(l) });
+function sharedMessage(T, sk, l, where, lang) {
+  return T(tk(sk, 'waShared'), { org: T('memberForms.org'), branch: where?.name(lang) ?? '', url: sharedUrl(l) });
 }
 
-function SharedLinkRow({ l, branch, onShare, onChanged }) {
+function SharedLinkRow({ sk, l, where, onShare, onChanged }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
 
   async function toggle() {
-    if (l.active && !(await confirm({ title: t('memberForms.disableShared'), message: t('memberForms.disableSharedConfirm'), confirmLabel: t('memberForms.disableShared') })))
+    if (l.active && !(await confirm({ title: t('memberForms.disableShared'), message: t(tk(sk, 'disableSharedConfirm')), confirmLabel: t('memberForms.disableShared') })))
       return;
     setBusy(true);
     try {
-      await api.put(`/signup-links/${l.id}`, { active: !l.active });
+      await api.put(`${sk.linkApi}/${l.id}`, { active: !l.active });
       toast.success(t(l.active ? 'memberForms.sharedDisabled' : 'memberForms.sharedEnabled'));
       onChanged();
     } catch (err) {
@@ -1241,13 +1271,13 @@ function SharedLinkRow({ l, branch, onShare, onChanged }) {
     <div className={cn('flex flex-wrap items-center gap-3 px-3 py-3 sm:px-4', !l.active && 'bg-muted/30')}>
       <div className="min-w-0 flex-1 basis-56">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="truncate font-medium">{l.label || (branch ? branchName(branch, i18n.language) : t('memberForms.sharedTitle'))}</span>
+          <span className="truncate font-medium">{l.label || where?.name(i18n.language) || t('memberForms.sharedTitle')}</span>
           <Badge variant={l.active ? 'success' : 'secondary'}>{t(l.active ? 'memberForms.sharedActive' : 'memberForms.sharedInactive')}</Badge>
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {[
-            branch && branchName(branch, i18n.language),
-            t('memberForms.sharedCounts', { count: l.requests, registered: l.registered }),
+            where?.name(i18n.language),
+            t(tk(sk, 'sharedCounts'), { count: l.requests, registered: l.registered }),
             l.pending ? t('memberForms.sharedPending', { count: l.pending }) : null,
           ]
             .filter(Boolean)
@@ -1269,12 +1299,12 @@ function SharedLinkRow({ l, branch, onShare, onChanged }) {
   );
 }
 
-/** New permanent link (فرقة, a name for it), then the message to post in the group. */
-function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
+/** New permanent link (فرقة or قسم, a name for it), then the message to post in the group. */
+function SharedLinkDialog({ sk, open, initial, scopes, onClose, onChanged }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const [link, setLink] = useState(null);
-  const [draft, setDraft] = useState({ branch_id: '', label: '' });
+  const [draft, setDraft] = useState({ scope: '', label: '' });
   const [lang, setLang] = useState(i18n.language === 'fr' ? 'fr' : 'ar');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -1284,20 +1314,20 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
     setLink(initial);
     setError(null);
     setBusy(false);
-    setDraft({ branch_id: branches.length === 1 ? String(branches[0].id) : '', label: '' });
+    setDraft({ scope: scopes.list.length === 1 ? scopes.list[0].value : '', label: '' });
     if (initial) setLang(initial.lang);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- reset on each opening
 
   async function create(e) {
     e.preventDefault();
-    if (!draft.branch_id) {
-      setError(t('memberForms.pickBranch'));
+    if (!draft.scope) {
+      setError(t(tk(sk, 'pickBranch')));
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      setLink(await api.post('/signup-links', { ...draft, branch_id: Number(draft.branch_id), lang }));
+      setLink(await api.post(sk.linkApi, { label: draft.label, ...scopeBody(sk, draft.scope), lang }));
       onChanged();
     } catch (err) {
       setError(err.message);
@@ -1306,11 +1336,10 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
     }
   }
 
-  const branch = link && branches.find((b) => b.id === link.branch_id);
   const T = i18n.getFixedT(lang);
-  const message = link ? sharedMessage(T, link, branch, lang) : '';
+  const message = link ? sharedMessage(T, sk, link, scopes.get(link[sk.scope]), lang) : '';
   // The form opens in the language of the message
-  const saveLang = () => link && link.lang !== lang && api.put(`/signup-links/${link.id}`, { lang }).catch(() => {});
+  const saveLang = () => link && link.lang !== lang && api.put(`${sk.linkApi}/${link.id}`, { lang }).catch(() => {});
 
   async function copy() {
     try {
@@ -1343,7 +1372,7 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
       open={open}
       onClose={onClose}
       title={t('memberForms.newShared')}
-      description={t('memberForms.newSharedHint')}
+      description={t(tk(sk, 'newSharedHint'))}
       footer={
         link ? (
           <div className="flex justify-end gap-2">
@@ -1378,14 +1407,14 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
       {!link ? (
         <form id="shared-form" onSubmit={create} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="sl-branch">{t('member.branch')}</Label>
-            <Select id="sl-branch" value={draft.branch_id} onChange={(e) => setDraft((d) => ({ ...d, branch_id: e.target.value }))}>
+            <Label htmlFor="sl-branch">{t(tk(sk, 'scopeLabel'))}</Label>
+            <Select id="sl-branch" value={draft.scope} onChange={(e) => setDraft((d) => ({ ...d, scope: e.target.value }))}>
               <option value="" disabled>
-                {t('memberForms.pickBranch')}
+                {t(tk(sk, 'pickBranch'))}
               </option>
-              {branches.map((b) => (
-                <option key={b.id} value={String(b.id)}>
-                  {branchName(b, i18n.language)}
+              {scopes.list.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.name(i18n.language)}
                 </option>
               ))}
             </Select>
@@ -1396,7 +1425,7 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
               id="sl-label"
               autoComplete="off"
               maxLength={80}
-              placeholder={t('memberForms.sharedLabelHint')}
+              placeholder={t(tk(sk, 'sharedLabelHint'))}
               value={draft.label}
               onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
             />
@@ -1420,7 +1449,7 @@ function SharedLinkDialog({ open, initial, branches, onClose, onChanged }) {
             >
               {message}
             </p>
-            <p className="text-xs text-muted-foreground">{t('memberForms.sharedNote')}</p>
+            <p className="text-xs text-muted-foreground">{t(tk(sk, 'sharedNote'))}</p>
           </div>
         </div>
       )}

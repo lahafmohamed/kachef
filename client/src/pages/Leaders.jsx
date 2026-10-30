@@ -27,7 +27,7 @@ import PhotoPicker from '../components/PhotoPicker';
 import Credentials from '../components/Credentials';
 import PermsEditor, { PermPresets } from '../components/PermsEditor';
 import { presetPerms } from '../lib/perms';
-import { RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
+import { CodeTag, RateValue, UnderlineTabs, phoneNumbers, telHref } from '../components/MemberParts';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/shadcn/popover';
 import { USERNAME_PATTERN, USERNAME_RE } from '../lib/username';
 import {
@@ -1265,7 +1265,7 @@ const Dash = () => <span className="text-muted-foreground">—</span>;
  * card's width, not the viewport's — the same register as the عناصر page.
  */
 function LeaderRow({ l, page, onOpen }) {
-  const { t, isAdmin, bothSections, revokeAccount, setAccountFor, setEditingLeader, removeLeader } = page;
+  const { t, isAdmin, bothSections, revokeAccount, setAccountFor, setEditingLeader, removeLeader, purgeLeader } = page;
   const name = memberName(l);
   const href = `/leaders/${l.id}`;
   const inactive = l.status !== 'active';
@@ -1307,6 +1307,7 @@ function LeaderRow({ l, page, onOpen }) {
               >
                 {name}
               </Link>
+              <CodeTag code={l.code} />
               {/* من له حساب دخول — جواب «من يدخل الموقع؟» من القائمة نفسها */}
               {isAdmin && l.account_username && (
                 <span title={`${t('leader.colAccount')}: ${l.account_username}`} className="text-primary">
@@ -1446,7 +1447,10 @@ function LeaderRow({ l, page, onOpen }) {
               l.account_user_id
                 ? { label: t('leader.accountRevoke'), icon: <IconKey />, onSelect: () => revokeAccount(l) }
                 : { label: t('leader.accountCreate'), icon: <IconKey />, onSelect: () => setAccountFor(l) },
-              { label: t('common.delete'), icon: <IconTrash />, danger: true, onSelect: () => removeLeader(l) },
+              // Archivé : il ne reste qu'à l'effacer pour de bon
+              inactive
+                ? { label: t('member.purge'), icon: <IconTrash />, danger: true, onSelect: () => purgeLeader(l) }
+                : { label: t('common.delete'), icon: <IconTrash />, danger: true, onSelect: () => removeLeader(l) },
             ]}
           />
         </td>
@@ -1675,6 +1679,24 @@ export default function Leaders() {
     }
   }
 
+  async function purgeLeader(l) {
+    const ok = await confirm({
+      title: t('member.purge'),
+      message: t('leader.purgeConfirm', { name: memberName(l) }),
+      typeToConfirm: l.code,
+      typeLabel: t('member.purgeType', { code: l.code }),
+      confirmLabel: t('member.purge'),
+    });
+    if (!ok) return;
+    try {
+      await api.del(`/leaders/${l.id}/purge`);
+      reloadAll();
+      toast.success(t('member.purged', { count: 1 }));
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  }
+
   // Freeze / unfreeze the whole تشكيلة of the selected year. Admin only, server-enforced.
   async function toggleLock() {
     const next = !locked;
@@ -1781,6 +1803,7 @@ export default function Leaders() {
     setAccountFor,
     setEditingLeader,
     removeLeader,
+    purgeLeader,
     amanaRolls: tachkila.amana_rolls || {},
     canTakeRoll,
     isMine,

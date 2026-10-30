@@ -64,6 +64,21 @@ export function AttendanceStrip({ recent, size = 'sm', className }) {
   );
 }
 
+/** L'identifiant à vie (E-0042, K-001), toujours de gauche à droite, même dans une page arabe. */
+export function CodeTag({ code, className }) {
+  const { t } = useTranslation();
+  if (!code) return null;
+  return (
+    <bdi
+      dir="ltr"
+      title={t('common.code')}
+      className={cn('font-mono text-xs font-medium tabular-nums tracking-wide text-muted-foreground', className)}
+    >
+      {code}
+    </bdi>
+  );
+}
+
 /** Every number in a phone field — a cell sometimes holds two ("0708904643/0708904644", or glued). */
 export function phoneNumbers(value) {
   if (!value) return [];

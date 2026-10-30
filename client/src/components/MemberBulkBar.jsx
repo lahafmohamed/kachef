@@ -10,6 +10,7 @@ import {
   IconArchive,
   IconChevronDown,
   IconClipboard,
+  IconTrash,
   IconUsers,
   IconX,
 } from './ui';
@@ -59,17 +60,20 @@ export async function copyText(text) {
  * الترفيعات. Each action shows only for who may do it:
  * - `groups` (the one filtered فرقة's طلائع) + `branchId`: «Affecter à une طليعة», or none
  * - `canArchive`: archive, after a confirm
+ * - `canPurge` (admin): when every one picked is already archived, archiving gives way to
+ *   deleting for good — after typing how many
  * - `canCopy`: the parents' numbers, one per line, to paste in a WhatsApp group
  * `onDone(kind)` runs after a change on the server, so the page reloads quietly.
  */
-export default function MemberBulkBar({ members, branchId, groups, canArchive, canCopy, onClear, onDone }) {
+export default function MemberBulkBar({ members, branchId, groups, canArchive, canPurge, canCopy, onClear, onDone }) {
   const { t } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
-  const [busy, setBusy] = useState(null); // null | 'assign' | 'archive'
+  const [busy, setBusy] = useState(null); // null | 'assign' | 'archive' | 'purge'
   const [menuOpen, setMenuOpen] = useState(false);
   const ids = members.map((m) => m.id);
   const count = ids.length;
+  const allArchived = count > 0 && members.every((m) => m.status !== 'active');
 
   async function assign(groupId) {
     setMenuOpen(false);
@@ -99,6 +103,27 @@ export default function MemberBulkBar({ members, branchId, groups, canArchive, c
       const res = await api.post('/members/archive', { member_ids: ids });
       toast.success(t('member.bulkArchived', { count: res.archived }));
       onDone('archive');
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function purge() {
+    const ok = await confirm({
+      title: t('member.purge'),
+      message: t('member.bulkPurgeConfirm', { count }),
+      typeToConfirm: String(count),
+      typeLabel: t('member.bulkPurgeType', { count }),
+      confirmLabel: t('member.purge'),
+    });
+    if (!ok) return;
+    setBusy('purge');
+    try {
+      const res = await api.post('/members/purge', { member_ids: ids });
+      toast.success(t('member.purged', { count: res.deleted }));
+      onDone('purge');
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -156,7 +181,19 @@ export default function MemberBulkBar({ members, branchId, groups, canArchive, c
           <span className="hidden sm:inline">{t('member.bulkCopyPhonesShort')}</span>
         </Button>
       )}
-      {canArchive && (
+      {canPurge && allArchived ? (
+        <Button
+          size="sm"
+          variant="destructive"
+          loading={busy === 'purge'}
+          disabled={!!busy}
+          onClick={purge}
+          aria-label={t('member.purge')}
+        >
+          {busy !== 'purge' && <IconTrash className="hidden sm:block" />}
+          {t('member.purgeShort')}
+        </Button>
+      ) : canArchive && (
         <Button
           size="sm"
           variant="outline"

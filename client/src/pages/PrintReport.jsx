@@ -353,6 +353,15 @@ function Table({ head, children, className }) {
 // after it
 const td = 'py-1.5 pe-3 align-top last:pe-0';
 const tdNum = `${td} whitespace-nowrap tabular-nums`;
+const tdCode = `${tdNum} w-16 text-muted-foreground`;
+
+/**
+ * L'identifiant à vie (E-0042, K-001): an LTR island, or an Arabic sheet prints it
+ * backwards (0042-E). A guest has none, and his cell stays empty.
+ */
+function Code({ code }) {
+  return code ? <bdi dir="ltr">{code}</bdi> : null;
+}
 
 function MatalibGrid({ total, selected }) {
   const set = new Set(selected);
@@ -388,11 +397,20 @@ function Signature({ label }) {
 }
 
 function PersonHeader({ person, children }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-5 flex items-start gap-4">
       <Avatar photo={person.photo} name={avatarName(person)} className="h-16 w-16 text-xl" />
       <div className="min-w-0 flex-1">
         <H1 className="mt-0">{memberName(person)}</H1>
+        {person.code && (
+          <div className="mt-0.5 text-[12px] text-muted-foreground">
+            {t('common.code')}{' '}
+            <span className="font-semibold tabular-nums text-foreground">
+              <Code code={person.code} />
+            </span>
+          </div>
+        )}
         {children}
       </div>
     </div>
@@ -479,6 +497,7 @@ function SessionReport({ id, onReady, kindLabel }) {
     <Table
       head={[
         '#',
+        t('common.code'),
         t('member.name'),
         t('member.group'),
         // Figures end-aligned against a status that starts its column: a wider gutter
@@ -490,6 +509,9 @@ function SessionReport({ id, onReady, kindLabel }) {
       {rows.map((m, i) => (
         <tr key={m.id}>
           <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdCode}>
+            <Code code={m.code} />
+          </td>
           <td className={cn(td, 'font-medium')}>
             {memberName(m)}
             {m.consecutive_absences >= (session.absence_threshold ?? 3) && (
@@ -601,10 +623,13 @@ function SessionReport({ id, onReady, kindLabel }) {
           >
             {t(isLeaders ? 'session.leadersAttendance' : 'session.animators')}
           </H2>
-          <Table head={['#', t('member.name'), t('session.role'), t('session.myPresence')]}>
+          <Table head={['#', t('common.code'), t('member.name'), t('session.role'), t('session.myPresence')]}>
             {animators.map((a, i) => (
               <tr key={a.leader_id}>
                 <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+                <td className={tdCode}>
+                  <Code code={a.code} />
+                </td>
                 <td className={cn(td, 'font-medium')}>{memberName(a)}</td>
                 <td className={td}>
                   {a.role ? t(a.role === 'main' ? 'session.mainAnimator' : 'session.helper') : '—'}
@@ -1230,6 +1255,11 @@ function BranchReport({ id, onReady, kindLabel }) {
           {leaders.map((l) => (
             <li key={l.id} className="flex items-baseline gap-2">
               <span className="font-medium">{memberName(l)}</span>
+              {l.code && (
+                <span className="text-[11px] tabular-nums text-muted-foreground">
+                  <Code code={l.code} />
+                </span>
+              )}
               <span className="text-[11px] text-muted-foreground">{l.title}</span>
             </li>
           ))}
@@ -1256,6 +1286,7 @@ function BranchReport({ id, onReady, kindLabel }) {
             <Table
               head={[
                 '#',
+                t('common.code'),
                 t('member.name'),
                 t('member.age'),
                 t('member.sex'),
@@ -1271,6 +1302,9 @@ function BranchReport({ id, onReady, kindLabel }) {
                 return (
                   <tr key={m.id}>
                     <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+                    <td className={tdCode}>
+                      <Code code={m.code} />
+                    </td>
                     <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
                     <td className={tdNum}>{m.age ?? '—'}</td>
                     <td className={td}>{t(m.sex === 'M' ? 'member.male' : 'member.female')}</td>
@@ -1427,6 +1461,7 @@ function PromotionsReport({ id, onReady, kindLabel }) {
   // عمود «الفرقة الحالية» لا معنى له حين تكون الورقة لفرقة واحدة
   const head = [
     { label: '#', className: 'w-8' },
+    t('common.code'),
     t('promotion.member'),
     { label: t('member.age'), className: 'w-14' },
     ...(all ? [t('promotion.oldBranch')] : []),
@@ -1450,6 +1485,9 @@ function PromotionsReport({ id, onReady, kindLabel }) {
           {list.map((p, i) => (
             <tr key={p.id}>
               <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+              <td className={tdCode}>
+                <Code code={p.code} />
+              </td>
               <td className={cn(td, 'font-medium')}>{memberName(p)}</td>
               <td className={tdNum}>{p.age}</td>
               {all && (
@@ -1559,6 +1597,7 @@ function MembersListReport({ id, onReady, kindLabel }) {
       empty={t('member.noMembers')}
       head={[
         { label: '#', className: 'w-8' },
+        t('common.code'),
         t('member.name'),
         { label: t('member.age'), className: 'w-12' },
         ...(all ? [t('member.branch')] : []),
@@ -1571,6 +1610,9 @@ function MembersListReport({ id, onReady, kindLabel }) {
         return (
           <tr key={m.id}>
             <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+            <td className={tdCode}>
+              <Code code={m.code} />
+            </td>
             <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
             <td className={tdNum}>{m.age ?? '—'}</td>
             {all && <td className={td}>{branchName(m, lng)}</td>}
@@ -1615,10 +1657,13 @@ function LeadersListReport({ onReady, kindLabel }) {
       title={title}
       count={t('leader.totalShort', { count: list.length })}
       empty={t('leader.noLeaders')}
-      head={[{ label: '#', className: 'w-8' }, t('member.name'), t('leader.role'), t('leader.phone')]}
+      head={[{ label: '#', className: 'w-8' }, t('common.code'), t('member.name'), t('leader.role'), t('leader.phone')]}
       rows={list.map((l, i) => (
         <tr key={l.id}>
           <td className={cn(tdNum, 'w-8 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdCode}>
+            <Code code={l.code} />
+          </td>
           <td className={cn(td, 'font-medium')}>{memberName(l)}</td>
           <td className={td}>
             {(l.roles || []).length
@@ -2741,6 +2786,7 @@ function EventReport({ id, onReady, kindLabel }) {
 
   const callHead = [
     { label: '#', className: 'w-7' },
+    t('common.code'),
     t('member.name'),
     ...(consents ? [t('campFile.consent')] : []),
     ...(fees ? [t('event.payment')] : []),
@@ -2872,6 +2918,9 @@ function EventReport({ id, onReady, kindLabel }) {
                         return (
                           <tr key={p.id} className="avoid-break">
                             <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                            <td className={tdCode}>
+                              <Code code={p.code} />
+                            </td>
                             <td className={cn(td, 'font-medium')}>
                               {memberName(p)}
                               {p.member_role && (
@@ -2919,6 +2968,7 @@ function EventReport({ id, onReady, kindLabel }) {
               <Table
                 head={[
                   { label: '#', className: 'w-7' },
+                  t('common.code'),
                   t('member.name'),
                   ...(fees ? [t('event.payment')] : []),
                   { label: t('campFile.presences'), className: 'w-16' },
@@ -2927,6 +2977,9 @@ function EventReport({ id, onReady, kindLabel }) {
                 {others.map((p, i) => (
                   <tr key={p.id} className="avoid-break">
                     <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                    <td className={tdCode}>
+                      <Code code={p.code} />
+                    </td>
                     <td className={cn(td, 'font-medium')}>
                       {participantName(p)}
                       <span className="block text-[11px] font-normal text-muted-foreground">
@@ -3079,6 +3132,7 @@ function EventUnpaidReport({ id, onReady, kindLabel }) {
         <Table
           head={[
             { label: '#', className: 'w-7' },
+            t('common.code'),
             t('member.name'),
             t('member.parentPhone'),
             { label: t('event.dueLabel'), className: 'w-20' },
@@ -3089,6 +3143,9 @@ function EventUnpaidReport({ id, onReady, kindLabel }) {
           {list.map((p, i) => (
             <tr key={p.id} className="avoid-break">
               <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+              <td className={tdCode}>
+                <Code code={p.code} />
+              </td>
               <td className={cn(td, 'font-medium')}>
                 {participantName(p)}
                 <span className="block text-[11px] font-normal text-muted-foreground">
@@ -3107,7 +3164,7 @@ function EventUnpaidReport({ id, onReady, kindLabel }) {
           ))}
           <tr className="font-bold">
             <td className={td} />
-            <td className={td} colSpan={4}>
+            <td className={td} colSpan={5}>
               {t('campFile.total')}
             </td>
             <td className={cn(tdNum, 'text-destructive')}>{fmtAmount(total)}</td>
@@ -3144,6 +3201,7 @@ function DuesArrearsReport({ id, onReady, kindLabel }) {
     <Table
       head={[
         { label: '#', className: 'w-7' },
+        t('common.code'),
         t('member.name'),
         t('member.parentPhone'),
         t('arrears.monthsCol'),
@@ -3154,6 +3212,9 @@ function DuesArrearsReport({ id, onReady, kindLabel }) {
       {rows.map((r, i) => (
         <tr key={r.id} className="avoid-break">
           <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+          <td className={tdCode}>
+            <Code code={r.code} />
+          </td>
           <td className={cn(td, 'font-medium')}>
             {memberName(r)}
             {r.group_name && <span className="block text-[11px] font-normal text-muted-foreground">{r.group_name}</span>}
@@ -3168,7 +3229,7 @@ function DuesArrearsReport({ id, onReady, kindLabel }) {
       ))}
       <tr className="font-bold">
         <td className={td} />
-        <td className={td} colSpan={4}>
+        <td className={td} colSpan={5}>
           {t('campFile.total')}
         </td>
         <td className={cn(tdNum, 'text-destructive')}>{fmtAmount(rows.reduce((n, r) => n + r.owed, 0))}</td>
@@ -3361,6 +3422,7 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
             <Table
               head={[
                 { label: '#', className: 'w-7' },
+                t('common.code'),
                 t('member.name'),
                 many && t('member.branch'),
                 { label: t('periodReport.colAbsences'), className: 'w-16' },
@@ -3370,6 +3432,9 @@ function PeriodReportSheet({ id, onReady, kindLabel }) {
               {d.followup.map((m, i) => (
                 <tr key={m.id} className="avoid-break">
                   <td className={cn(tdNum, 'w-7 text-muted-foreground')}>{i + 1}</td>
+                  <td className={tdCode}>
+                    <Code code={m.code} />
+                  </td>
                   <td className={cn(td, 'font-medium')}>{memberName(m)}</td>
                   {many && <td className={td}>{nameOf(m)}</td>}
                   <td className={cn(tdNum, 'font-semibold text-destructive')}>{m.absences}</td>

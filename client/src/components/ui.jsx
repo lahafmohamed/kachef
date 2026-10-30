@@ -1203,9 +1203,15 @@ const ConfirmContext = createContext(null);
 
 export function ConfirmProvider({ children, labels }) {
   const [state, setState] = useState(null);
+  // `typeToConfirm`: what has to be typed before the button wakes (an ID, a word) — for
+  // what cannot be undone, a click is too cheap
+  const [typed, setTyped] = useState('');
   const resolveRef = useRef(null);
+  const expected = state?.typeToConfirm;
+  const unlocked = !expected || typed.trim().toLowerCase() === String(expected).toLowerCase();
 
   const confirm = useCallback((opts) => {
+    setTyped('');
     setState(typeof opts === 'string' ? { message: opts } : opts);
     return new Promise((resolve) => {
       resolveRef.current = resolve;
@@ -1228,12 +1234,29 @@ export function ConfirmProvider({ children, labels }) {
         size="sm"
       >
         <p className="text-sm text-muted-foreground">{state?.message}</p>
+        {expected && (
+          <label className="mt-4 block space-y-1.5">
+            <span className="text-sm font-medium">{state.typeLabel}</span>
+            <Input
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && unlocked && settle(true)}
+              dir="ltr"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              placeholder={String(expected)}
+              className="font-mono"
+            />
+          </label>
+        )}
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={() => settle(false)}>
             {state?.cancelLabel || labels.cancel}
           </Button>
           <Button
             variant={state?.destructive === false ? 'default' : 'destructive'}
+            disabled={!unlocked}
             onClick={() => settle(true)}
           >
             {state?.confirmLabel || labels.confirm}
