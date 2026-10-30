@@ -72,7 +72,7 @@ function SettingsSection({ title, badge, open: openProp, onOpenChange, children 
           </span>
           <IconChevronDown
             className={cn(
-              'text-muted-foreground transition-[color,rotate] duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-hover:text-foreground',
+              'text-muted-foreground transition-[color,rotate] duration-200 ease-(--ease-out-soft) group-hover:text-foreground',
               open && 'rotate-180'
             )}
           />
@@ -88,7 +88,7 @@ function SettingsSection({ title, badge, open: openProp, onOpenChange, children 
       <div
         id={bodyId}
         className={cn(
-          'grid grid-cols-1 transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+          'grid grid-cols-1 transition-[grid-template-rows] duration-200 ease-(--ease-out-soft)',
           open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
         )}
       >

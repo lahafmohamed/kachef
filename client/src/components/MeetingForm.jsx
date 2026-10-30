@@ -319,7 +319,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
                       aria-pressed={on}
                       onClick={() => toggleBranch(b.id)}
                       className={cn(
-                        'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                        'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                         on
                           ? 'border-primary bg-primary/10 font-medium text-primary'
                           : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -402,7 +402,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
                         key={line}
                         type="button"
                         onClick={() => addLine(line)}
-                        className="focus-ring inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border border-dashed border-input bg-card px-3 py-1.5 text-start text-sm text-muted-foreground transition-[color,background-color,border-color,scale] hover:border-primary/40 hover:bg-accent hover:text-accent-foreground active:scale-[0.96] sm:min-h-9"
+                        className="focus-ring inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border border-dashed border-input bg-card px-3 py-1.5 text-start text-sm text-muted-foreground transition-[color,background-color,border-color,scale] hover:border-primary/40 hover:bg-accent hover:text-accent-foreground active:scale-[0.97] sm:min-h-9"
                       >
                         <IconPlus className="h-3.5 w-3.5" />
                         <bdi className="min-w-0 truncate">{line}</bdi>

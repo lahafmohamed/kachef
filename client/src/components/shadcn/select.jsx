@@ -64,7 +64,7 @@ export function SelectTrigger({ className, children, icon, ...props }) {
       {/* The chevron points at where the panel went. Rotating it is the one
           cue that survives the panel being portalled somewhere else on screen. */}
       <SelectPrimitive.Icon asChild>
-        <Chevron className="transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-180" />
+        <Chevron className="transition-transform duration-200 ease-(--ease-out-soft) group-data-[state=open]:rotate-180" />
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   );

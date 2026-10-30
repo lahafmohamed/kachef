@@ -1407,7 +1407,7 @@ export default function Sessions() {
                         aria-pressed={on}
                         onClick={() => toggleBranch(b.id)}
                         className={cn(
-                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                          'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                           on
                             ? 'border-primary bg-primary/10 font-medium text-primary'
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
@@ -1465,7 +1465,7 @@ export default function Sessions() {
                               aria-pressed={on}
                               onClick={() => toggleGroup(g.id)}
                               className={cn(
-                                'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.96] sm:min-h-9',
+                                'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                                 on
                                   ? 'border-primary bg-primary/10 font-medium text-primary'
                                   : 'border-input bg-card text-muted-foreground hover:bg-accent'

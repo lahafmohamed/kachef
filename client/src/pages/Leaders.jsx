@@ -716,7 +716,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
                     onClick={() => toggleBranch(b.id)}
                     className={cn(
                       'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm sm:min-h-9',
-                      'transition-[color,background-color,border-color,scale] active:scale-[0.96]',
+                      'transition-[color,background-color,border-color,scale] active:scale-[0.97]',
                       on
                         ? 'border-primary bg-primary/10 font-medium text-primary'
                         : 'border-input bg-card text-muted-foreground hover:bg-accent'

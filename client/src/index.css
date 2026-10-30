@@ -52,14 +52,15 @@
   --input: hsl(220 10% 56%);
   --ring: hsl(193 82% 36%);
 
-  /* Radii — softer than the old set; the emblem is all round forms */
+  /* Radii — round like the emblem, sized to what they hold: a card 16, a panel
+     inside one 14, a control 12, a tag 6. One step rounder read as pills everywhere. */
   --radius-xs: 0.375rem;
   --radius-sm: 0.5rem;
   --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --radius-xl: 1.125rem;
-  --radius-2xl: 1.5rem;
-  --radius-3xl: 2rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
 
   /* Elevation — neutral, layered close+far pairs rather than flat black */
   --shadow-xs: 0 1px 2px 0 hsl(220 25% 12% / 0.05);
@@ -72,9 +73,8 @@
   /* Upward lift for bars stuck to the bottom of the screen (selection bars) */
   --shadow-top: 0 -8px 16px -12px hsl(220 25% 12% / 0.2);
 
-  /* Motion */
+  /* Motion — one curve for everything, no overshoot */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 320ms;
@@ -210,7 +210,6 @@
   --shadow-top: var(--shadow-top);
 
   --ease-out-soft: var(--ease-out-soft);
-  --ease-spring: var(--ease-spring);
 
   /* Inter has no Arabic glyphs, so Arabic falls through to Noto Sans Arabic
      per-glyph; both load as self-hosted variable woff2 (see main.jsx). */
@@ -250,15 +249,15 @@ textarea,
   touch-action: manipulation;
 }
 
-/* Headings tighten as they grow — the standard optical correction */
 h1, h2, h3, h4 {
-  letter-spacing: -0.018em;
   text-wrap: balance;
   /* Names and activity titles are user supplied. A single long word must not
      widen a detail page or squeeze its neighbouring actions off screen. */
   overflow-wrap: anywhere;
 }
-h1 { letter-spacing: -0.028em; }
+/* Only the page title is large enough to tighten; card titles and the small day
+   labels keep the font's own spacing */
+h1 { letter-spacing: -0.02em; }
 
 /* Descriptions and body copy: keep a short word off the last line alone.
    In the base layer on purpose: `text-wrap` also sets text-wrap-mode, and an
@@ -528,7 +527,7 @@ input[type="radio"] {
 .animate-dialog-out { animation: dialog-out var(--dur-fast) ease-out both; }
 .animate-sheet-out { animation: sheet-out var(--dur-base) ease-out both; }
 .animate-fade-up { animation: fade-up var(--dur-slow) var(--ease-out-soft) both; }
-.animate-pop { animation: pop var(--dur-base) var(--ease-spring); }
+.animate-pop { animation: pop var(--dur-base) var(--ease-out-soft); }
 .animate-sun-rise { animation: sun-rise 1400ms var(--ease-out-soft) both; }
 .animate-spin-slow { animation: spin 900ms linear infinite; }
 

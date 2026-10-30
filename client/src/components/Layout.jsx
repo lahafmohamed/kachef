@@ -61,7 +61,9 @@ function useNavItems() {
   });
 }
 
-// 36px rows: an admin's twelve pages fit a 1366×639 laptop screen without scrolling
+// 36px rows: an admin's twelve pages fit a 1366×639 laptop screen without scrolling.
+// The page you are on is a step up in surface with a hairline and its icon in the lake
+// teal: the accent marks the choice without turning the row into a button.
 function SidebarNav() {
   const { t } = useTranslation();
   return useNavItems().map(({ to, key, Icon, end }) => (
@@ -71,15 +73,19 @@ function SidebarNav() {
       end={end}
       className={({ isActive }) =>
         cn(
-          'focus-ring flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-[color,background-color,box-shadow] duration-150',
+          'focus-ring flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-[color,background-color,box-shadow] duration-150',
           isActive
-            ? 'ring-inset-light bg-primary text-primary-foreground shadow-brand'
-            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            ? 'ring-inset-light inset-ring inset-ring-border bg-secondary text-foreground'
+            : 'text-muted-foreground hover:bg-secondary/70 hover:text-foreground'
         )
       }
     >
-      <Icon className="h-[1.15rem] w-[1.15rem]" />
-      <span className="truncate">{t(key)}</span>
+      {({ isActive }) => (
+        <>
+          <Icon className={cn('size-4.5', isActive && 'text-primary')} />
+          <span className="truncate">{t(key)}</span>
+        </>
+      )}
     </NavLink>
   ));
 }
@@ -199,7 +205,7 @@ function Brand({ className, sub }) {
       {/* The name is written right beside it: alt text would only say it twice */}
       <img src="/logo-mark.png" alt="" width={44} height={44} className="h-11 w-11 shrink-0" />
       <span className="min-w-0">
-        <span className="block truncate text-base font-bold tracking-tight text-primary">{t('app.name')}</span>
+        <span className="block truncate text-base font-semibold text-foreground">{t('app.name')}</span>
         {/* Two lines before an ellipsis: «Section francophone garçons» is wider than the sidebar's column */}
         {sub && <span className="line-clamp-2 text-xs font-medium text-muted-foreground">{sub}</span>}
       </span>
@@ -432,7 +438,7 @@ function SectionMenu() {
           className="focus-ring group flex w-full cursor-pointer items-center gap-2 rounded-xl p-1.5 text-start transition-colors hover:bg-accent data-[state=open]:bg-accent"
         >
           <Brand className="min-w-0 flex-1" sub={current} />
-          <IconChevronDown className="text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-180" />
+          <IconChevronDown className="text-muted-foreground transition-transform duration-200 ease-(--ease-out-soft) group-data-[state=open]:rotate-180" />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -507,7 +513,7 @@ function AccountMenu({ children }) {
                 <span className="block truncate text-xs text-muted-foreground">{roleLine}</span>
               </span>
               {/* Points up while closed: the panel opens above the row */}
-              <IconChevronDown className="rotate-180 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] group-data-[state=open]:rotate-0" />
+              <IconChevronDown className="rotate-180 text-muted-foreground transition-transform duration-200 ease-(--ease-out-soft) group-data-[state=open]:rotate-0" />
             </button>
           </PopoverTrigger>
           {children}

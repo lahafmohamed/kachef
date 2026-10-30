@@ -588,7 +588,7 @@ export function IconSwap({ on, onIcon, offIcon = null, collapse = false, classNa
         // Last so tailwind-merge lets the collapsed width beat the caller's.
         collapse && [
           'overflow-hidden transition-[width,margin-inline-end] duration-200',
-          'ease-[cubic-bezier(0.2,0,0,1)]',
+          'ease-(--ease-out-soft)',
           !on && 'w-0 -me-1.5',
         ]
       )}
@@ -602,7 +602,7 @@ export function IconSwap({ on, onIcon, offIcon = null, collapse = false, classNa
           aria-hidden="true"
           className={cn(
             'col-start-1 row-start-1 flex transition-[opacity,scale,filter] duration-200',
-            'ease-[cubic-bezier(0.2,0,0,1)]',
+            'ease-(--ease-out-soft)',
             // blur-[0px], not blur-0: v4 dropped `blur-0`, and without a filter
             // declared on both sides the blur snaps off instead of resolving.
             show ? 'scale-100 opacity-100 blur-[0px]' : 'scale-[0.25] opacity-0 blur-[4px]'
@@ -619,16 +619,16 @@ export function IconSwap({ on, onIcon, offIcon = null, collapse = false, classNa
    rather than flat swatches, and a color-matched glow instead of grey shadow. */
 const buttonVariants = {
   default:
-    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.96]',
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.97]',
   brand:
-    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.96]',
-  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.96]',
+    'ring-inset-light bg-primary text-primary-foreground shadow-brand hover:bg-primary-hover active:scale-[0.97]',
+  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 active:scale-[0.97]',
   outline:
-    'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.96]',
-  ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.96]',
+    'border border-border bg-card text-foreground shadow-xs hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.97]',
+  ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.97]',
   destructive:
-    'ring-inset-light bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.96]',
-  'destructive-ghost': 'text-destructive hover:bg-destructive/10 active:scale-[0.96]',
+    'ring-inset-light bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 active:scale-[0.97]',
+  'destructive-ghost': 'text-destructive hover:bg-destructive/10 active:scale-[0.97]',
 };
 
 /* Touch targets are ≥44px on phones and tighten up on pointer devices. */
@@ -676,7 +676,8 @@ export function Card({ className, interactive = false, ...props }) {
   return (
     <div
       className={cn(
-        'rounded-2xl border border-border bg-card text-card-foreground shadow-sm',
+        // Dark mode reads depth from the surface step and the hairline, not a shadow
+        'rounded-2xl border border-border bg-card text-card-foreground shadow-sm dark:shadow-none',
         interactive &&
           'transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/30 hover:shadow-md active:shadow-xs',
         className
@@ -692,7 +693,7 @@ export function CardHeader({ className, ...props }) {
 
 export function CardTitle({ className, ...props }) {
   return (
-    <h2 className={cn('text-base font-semibold leading-tight tracking-tight', className)} {...props} />
+    <h2 className={cn('text-base font-semibold leading-tight', className)} {...props} />
   );
 }
 
@@ -891,7 +892,7 @@ export function Badge({ variant = 'default', className, ...props }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap tabular-nums',
+        'inline-flex items-center gap-1 rounded-xs border px-2 py-0.5 text-xs font-medium whitespace-nowrap tabular-nums',
         badgeVariants[variant],
         className
       )}
@@ -1333,7 +1334,7 @@ export function Th({ className, ...props }) {
     <th
       scope="col"
       className={cn(
-        'h-10 whitespace-nowrap px-3 text-start align-middle text-xs font-semibold uppercase tracking-wide text-muted-foreground',
+        'h-10 whitespace-nowrap px-3 text-start align-middle text-xs font-medium text-muted-foreground',
         className
       )}
       {...props}
@@ -1403,7 +1404,7 @@ export function PageHeader({ title, description, children, className }) {
       {/* basis-full below sm: the actions always take the row under the title, rather
           than jumping up beside it whenever a filter swaps in a shorter description */}
       <div className="min-w-0 basis-full sm:basis-auto">
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
+        <h1 className="text-2xl font-medium sm:text-3xl">{title}</h1>
         {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       </div>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
@@ -1456,7 +1457,7 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
             onClick={() => onChange(o.value)}
             className={cn(
               'focus-ring inline-flex flex-1 cursor-pointer items-center justify-center text-center leading-tight font-medium',
-              'transition-[color,background-color,border-color,scale] duration-150 active:scale-[0.96]',
+              'transition-[color,background-color,border-color,scale] duration-150 active:scale-[0.97]',
               pad,
               !columns && i > 0 && 'border-s border-border',
               // A count the grid cannot fill evenly: the first option («Tout») takes a whole row

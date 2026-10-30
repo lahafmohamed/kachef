@@ -525,12 +525,11 @@ const todoSig = (todo) => {
   return [todo.count ?? '', ...(list ? list.map((i) => i.key ?? i.id) : [todo.meta ?? ''])].join('|');
 };
 
-// Tint of the icon square: what is overdue reads hot, what can wait reads cool.
-// The words carry the meaning; the tint only repeats it.
-const LEVEL_TONES = {
-  now: 'bg-destructive/12 text-destructive',
-  week: 'bg-warning/15 text-warning',
-  watch: 'bg-info/12 text-info',
+// A dot on the icon's tile for what is due: red now, amber this week. What can wait
+// gets none, so the rail stays quiet. The words carry the meaning; the dot only repeats it.
+const LEVEL_DOTS = {
+  now: 'bg-destructive',
+  week: 'bg-warning',
 };
 
 /**
@@ -622,9 +621,12 @@ function TodoRow({ todo, onDismiss, decisionProps }) {
     <>
       <span
         aria-hidden="true"
-        className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', LEVEL_TONES[todo.level])}
+        className="relative flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground"
       >
-        <Icon className="h-[1.1rem] w-[1.1rem]" />
+        <Icon className="size-4.5" />
+        {LEVEL_DOTS[todo.level] && (
+          <span className={cn('absolute end-1 top-1 size-2 rounded-full', LEVEL_DOTS[todo.level])} />
+        )}
       </span>
       <span className="min-w-0 flex-1 py-px">
         <span className="block font-medium [overflow-wrap:anywhere]">{todo.title}</span>
@@ -636,17 +638,13 @@ function TodoRow({ todo, onDismiss, decisionProps }) {
       </span>
       {/* Counts sit in their own column, level with the icon, so a long title
           wraps on its own instead of pushing the number onto a line alone */}
-      {count != null && (
-        <Badge variant="secondary" className="mt-1.5 shrink-0">
-          {count}
-        </Badge>
-      )}
+      {count != null && <span className="mt-2 shrink-0 text-sm tabular-nums text-muted-foreground">{count}</span>}
       {target ? (
         <IconArrow className="mt-2.5 text-muted-foreground rtl:rotate-180" />
       ) : (
         <IconChevronDown
           className={cn(
-            'mt-2.5 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+            'mt-2.5 text-muted-foreground transition-transform duration-200 ease-(--ease-out-soft)',
             open && 'rotate-180'
           )}
         />
@@ -690,9 +688,10 @@ function TodoRow({ todo, onDismiss, decisionProps }) {
                 <PrefLink
                   to={item.to}
                   pref={item.pref}
-                  // Indented to the title above: row inset + icon (2.25rem) + gap (0.75rem)
-                  className="focus-ring flex items-center gap-3 py-2.5 ps-16 pe-4 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:ps-[4.25rem] sm:pe-5"
+                  className="focus-ring flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:px-5"
                 >
+                  {/* The tile's width: the text starts under the title above */}
+                  <span aria-hidden="true" className="w-9 shrink-0" />
                   <span className="min-w-0 flex-1">
                     <span className="block font-medium [overflow-wrap:anywhere]">{item.label}</span>
                     {item.meta && (
@@ -793,7 +792,7 @@ const agendaRowCls =
 function AgendaLine({ Icon, title, meta, badge, end }) {
   return (
     <>
-      <Icon aria-hidden="true" className="mt-0.5 h-[1.1rem] w-[1.1rem] shrink-0 text-muted-foreground" />
+      <Icon aria-hidden="true" className="mt-0.5 size-4.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1">
         <span className="block font-medium [overflow-wrap:anywhere]">{title}</span>
         {(meta || badge) && (
@@ -904,7 +903,7 @@ function AgendaRow({ r }) {
           end={
             <IconChevronDown
               className={cn(
-                'mt-0.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+                'mt-0.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-(--ease-out-soft)',
                 open && 'rotate-180'
               )}
             />
@@ -917,9 +916,10 @@ function AgendaRow({ r }) {
             <PrefLink
               to={x.to}
               pref={x.pref}
-              // Indented to the title above: row inset + icon (1.1rem) + gap (0.75rem)
-              className="focus-ring flex items-start gap-3 py-2.5 ps-[2.85rem] pe-4 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:ps-[3.1rem] sm:pe-5"
+              className="focus-ring flex items-start gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-accent/60 focus-visible:[outline-offset:-2px]! sm:px-5"
             >
+              {/* The icon's width: the text starts under the title above */}
+              <span aria-hidden="true" className="w-4.5 shrink-0" />
               <span className="min-w-0 flex-1">
                 <span className="block font-medium [overflow-wrap:anywhere]">
                   <bdi>{userText(x.title)}</bdi>
@@ -1170,26 +1170,6 @@ function Meter({ value, className }) {
   );
 }
 
-/**
- * Sparkline for a figure: context only, the figure beside it states the value. One or
- * two bars draw no trend and read as a rendering glitch, so it waits for a third.
- */
-function Spark({ points, className }) {
-  if (!points || points.length < 3) return null;
-  const last = points.length - 1;
-  return (
-    <span aria-hidden="true" className={cn('flex h-8 items-end gap-0.5', className)} style={deemph}>
-      {points.map((p, i) => (
-        <span
-          key={p.date}
-          className={cn('w-1.5 rounded-t-[2px]', i === last ? 'bg-primary' : 'bg-[var(--dash-deemph)]')}
-          style={{ height: `${Math.max(p.rate ?? 0, 4)}%` }}
-        />
-      ))}
-    </span>
-  );
-}
-
 /* ============================================================
    Page parts
    ============================================================ */
@@ -1234,11 +1214,11 @@ function RecentList({ items }) {
                     <Badge variant="warning">{t('dashboard.recent.unmarked', { count: x.unmarked_count })}</Badge>
                   )
                 )}
-                <Badge variant="secondary">
+                <span className="whitespace-nowrap text-sm tabular-nums text-muted-foreground">
                   {counted
                     ? t('dashboard.recent.result', { present: x.present_count, marked: x.present_count + x.absent_count })
                     : t('dashboard.recent.present', { count: x.present_count })}
-                </Badge>
+                </span>
               </span>
             </Link>
           </li>
@@ -1248,7 +1228,7 @@ function RecentList({ items }) {
   );
 }
 
-function Kpi({ label, value, context, spark, to }) {
+function Kpi({ label, value, context, to }) {
   // A long figure («127 000 F») shrinks to its tile on a phone instead of running
   // past the padding — it cannot wrap, its spaces are no-break. Short ones, and
   // every figure in a wider tile, stay at the full 1.875rem.
@@ -1259,13 +1239,12 @@ function Kpi({ label, value, context, spark, to }) {
           would drop its number below its neighbour's */}
       <span className="text-sm text-muted-foreground max-sm:min-h-[2lh]">{label}</span>
       <span
-        className="text-3xl font-bold leading-tight tracking-tight"
+        className="text-3xl font-medium leading-tight tabular-nums"
         style={{ fontSize: `min(1.875rem, ${(180 / chars).toFixed(1)}cqi)` }}
       >
         {value}
       </span>
       {context && <span className="text-xs text-muted-foreground">{context}</span>}
-      <Spark points={spark} className="mt-auto h-9 pt-2" />
     </Card>
   );
   return to ? (
@@ -1291,7 +1270,7 @@ function DashboardSkeleton() {
       </div>
       <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-40 rounded-2xl" />
+          <Skeleton key={i} className="h-38 rounded-2xl sm:h-31" />
         ))}
       </div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3 xl:items-start">
@@ -1432,7 +1411,6 @@ export default function Dashboard() {
             label: t('dashboard.monthRate', { month: f.month(d.month.prev_month) }),
             value: rateText(d.month.prev_rate),
             context: t('dashboard.monthRateNone', { month }),
-            spark: d.trend,
           }
         : {
             key: 'rate',
@@ -1443,7 +1421,6 @@ export default function Dashboard() {
               (d.month.marked
                 ? t('dashboard.monthRateContext', { present: d.month.present, marked: d.month.marked })
                 : t('dashboard.monthRateNone', { month })),
-            spark: d.trend,
           }),
     d.month && {
       key: 'activities',
@@ -1496,12 +1473,13 @@ export default function Dashboard() {
     ) : (
       <span className="text-muted-foreground">—</span>
     );
-  const followCell = (b) =>
-    b.followup_count > 0 ? (
-      <Badge variant="destructive">{b.followup_count}</Badge>
-    ) : (
-      <span className="tabular-nums text-muted-foreground">0</span>
-    );
+  const followCell = (b) => (
+    <span
+      className={cn('tabular-nums', b.followup_count > 0 ? 'font-medium text-destructive' : 'text-muted-foreground')}
+    >
+      {b.followup_count || 0}
+    </span>
+  );
   const hasSessions = !!d.month;
   const hasPlan = live.some((b) => b.plan);
   const hasFollowup = d.followup != null;
@@ -1544,7 +1522,9 @@ export default function Dashboard() {
                 <CardTitle id="dashboard-todo" className="me-auto">
                   {t('dashboard.todo.title')}
                 </CardTitle>
-                {shownTodos.length > 0 && <Badge variant="secondary">{shownTodos.length}</Badge>}
+                {shownTodos.length > 0 && (
+                  <span className="text-sm tabular-nums text-muted-foreground">{shownTodos.length}</span>
+                )}
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -1652,7 +1632,7 @@ export default function Dashboard() {
                     <tr className="border-b border-border bg-muted/40 [&>th]:h-auto [&>th]:py-2.5 [&>th]:leading-4 [&>th]:whitespace-normal">
                       <Th className="ps-5">{t('dashboard.branches.branch')}</Th>
                       <Th className="text-end">{t('dashboard.branches.members')}</Th>
-                      {hasSessions && <Th>{t('dashboard.branches.seasonRate')}</Th>}
+                      {hasSessions && <Th className="text-end">{t('dashboard.branches.seasonRate')}</Th>}
                       {hasSessions && <Th>{t('dashboard.branches.lastActivity')}</Th>}
                       {hasFollowup && <Th className="text-end">{t('dashboard.branches.followup')}</Th>}
                       {hasPlan && <Th className="pe-5">{t('dashboard.branches.plan')}</Th>}
@@ -1681,13 +1661,7 @@ export default function Dashboard() {
                         </Td>
                         <Td className="text-end tabular-nums">{b.member_count ?? '—'}</Td>
                         {hasSessions && (
-                          <Td>
-                            <span className="flex items-center gap-3">
-                              <span className="w-10 font-medium tabular-nums">{rateText(b.season?.rate)}</span>
-                              {/* Dropped first when the card is tight: the rate beside it says it */}
-                              <Spark points={b.trend} className="h-6 @max-[44rem]:hidden" />
-                            </span>
-                          </Td>
+                          <Td className="text-end font-medium tabular-nums">{rateText(b.season?.rate)}</Td>
                         )}
                         {hasSessions && <Td>{lastCell(b)}</Td>}
                         {hasFollowup && <Td className="text-end">{followCell(b)}</Td>}
@@ -1701,16 +1675,13 @@ export default function Dashboard() {
                 <ul className="divide-y divide-border border-t border-border @min-[37rem]:hidden">
                   {live.map((b) => (
                     <li key={b.id} className="px-4 py-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <PrefLink
-                          to="/branches"
-                          pref={['branches.selected', b.id]}
-                          className='focus-ring relative min-w-0 rounded font-semibold before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[""] hover:text-primary hover:underline'
-                        >
-                          {branchName(b, lng)}
-                        </PrefLink>
-                        <Spark points={b.trend} className="h-6" />
-                      </div>
+                      <PrefLink
+                        to="/branches"
+                        pref={['branches.selected', b.id]}
+                        className='focus-ring relative min-w-0 rounded font-semibold before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[""] hover:text-primary hover:underline'
+                      >
+                        {branchName(b, lng)}
+                      </PrefLink>
                       <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
                         <div>
                           <dt className="text-xs text-muted-foreground">{t('dashboard.branches.members')}</dt>

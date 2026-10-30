@@ -146,7 +146,7 @@ export default function SearchSelect({
       </span>
       <IconChevronDown
         className={cn(
-          'shrink-0 opacity-50 transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)]',
+          'shrink-0 opacity-50 transition-transform duration-200 ease-(--ease-out-soft)',
           open && 'rotate-180'
         )}
       />

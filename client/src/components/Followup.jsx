@@ -423,7 +423,7 @@ export function FollowupList({ items, initial = 5, onChanged, moreLink = '/membe
                       href={telHref(n)}
                       aria-label={`${label} — ${t(`dashboard.followup.call${who === 'self' ? 'Self' : who === 'father' ? 'Father' : 'Mother'}`, { name })}`}
                       title={fmtPhone(n)}
-                      className="focus-ring inline-flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-xs font-medium shadow-xs transition-colors hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.96] sm:h-8"
+                      className="focus-ring inline-flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-xs font-medium shadow-xs transition-colors hover:border-primary/35 hover:bg-accent hover:text-accent-foreground active:scale-[0.97] sm:h-8"
                     >
                       <IconPhone className="h-3.5 w-3.5 max-sm:hidden" />
                       {label}

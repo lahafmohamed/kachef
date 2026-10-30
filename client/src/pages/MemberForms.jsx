@@ -409,7 +409,7 @@ function SendDialog({ kind, member, onClose, onChanged }) {
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => markSent('whatsapp')}
-                className="focus-ring inline-flex h-11 items-center max-sm:flex-1 justify-center gap-2 rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.96] sm:h-10"
+                className="focus-ring inline-flex h-11 items-center max-sm:flex-1 justify-center gap-2 rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] sm:h-10"
               >
                 <IconWhatsApp className="h-4 w-4" />
                 {t('memberForms.openWhatsApp')}
@@ -996,7 +996,7 @@ function SignupDialog({ sk, open, initial, scopes, onClose, onChanged }) {
                 target="_blank"
                 rel="noreferrer"
                 onClick={markSent}
-                className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.96] max-sm:flex-1 max-sm:px-3 sm:h-10"
+                className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
               >
                 <IconWhatsApp className="h-4 w-4" />
                 {t('memberForms.openWhatsApp')}
@@ -1388,7 +1388,7 @@ function SharedLinkDialog({ sk, open, initial, scopes, onClose, onChanged }) {
               target="_blank"
               rel="noreferrer"
               onClick={saveLang}
-              className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.96] max-sm:flex-1 max-sm:px-3 sm:h-10"
+              className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
             >
               <IconWhatsApp className="h-4 w-4" />
               {t('memberForms.openWhatsApp')}

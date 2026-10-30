@@ -552,7 +552,7 @@ function Switch({ id, checked, onChange, disabled, describedBy }) {
       <span
         aria-hidden="true"
         className={cn(
-          'block h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none',
+          'block h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200 ease-(--ease-out-soft) motion-reduce:transition-none',
           checked ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-0.5 rtl:-translate-x-0.5'
         )}
       />
