@@ -382,7 +382,7 @@ function AccountDetail({ id, days }) {
             {t('activity.unusedNone')}
           </p>
         ) : (
-          <div className="rounded-xl border border-warning/35 bg-warning/10 px-4 py-3">
+          <div className="rounded-xl border border-warning-line bg-warning-soft px-4 py-3">
             <p className="mb-2 flex items-center gap-2 text-sm font-medium">
               <IconAlert className="h-4 w-4 text-warning" />
               {t('activity.unusedHint', { count: days })}

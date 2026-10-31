@@ -878,12 +878,12 @@ export function Field({ label, hint, error, children, className }) {
 }
 
 const badgeVariants = {
-  default: 'bg-primary/12 text-primary border-primary/25',
+  default: 'bg-primary-soft text-primary border-primary/25',
   secondary: 'bg-secondary text-secondary-foreground border-transparent',
-  destructive: 'bg-destructive/12 text-destructive border-destructive/25',
-  success: 'bg-success/12 text-success border-success/25',
-  warning: 'bg-warning/15 text-warning border-warning/30',
-  info: 'bg-info/12 text-info border-info/25',
+  destructive: 'bg-destructive-soft text-destructive border-destructive-line',
+  success: 'bg-success-soft text-success border-success-line',
+  warning: 'bg-warning-soft text-warning border-warning-line',
+  info: 'bg-info-soft text-info border-info-line',
   outline: 'text-muted-foreground border-border bg-transparent',
   solid: 'bg-primary text-primary-foreground border-transparent',
 };
@@ -1379,7 +1379,7 @@ export function EmptyState({ icon, title, children, action, className, headingAs
 /** Full-width error card with a retry affordance. */
 export function ErrorState({ message, onRetry, retryLabel, alert = true }) {
   return (
-    <Card className="border-destructive/30 bg-destructive/5">
+    <Card className="border-destructive-line bg-destructive/5">
       <CardContent className="flex flex-wrap items-center gap-3 p-4 sm:p-5">
         <IconAlert className="h-5 w-5 text-destructive" />
         <p role={alert ? 'alert' : undefined} className="min-w-40 flex-1 text-sm font-medium text-destructive">{displayError(message)}</p>
@@ -1423,8 +1423,8 @@ export function SegmentedControl({ options, value, onChange, label, size = 'defa
     warning: 'bg-warning text-warning-foreground border-warning',
     // Selected but quiet: for a state most rows sit in by default, which a
     // solid fill would turn into a wall of colour
-    'destructive-soft': 'bg-destructive/12 text-destructive border-destructive/25',
-    'warning-soft': 'bg-warning/15 text-warning border-warning/30',
+    'destructive-soft': 'bg-destructive-soft text-destructive border-destructive-line',
+    'warning-soft': 'bg-warning-soft text-warning border-warning-line',
     default: 'bg-primary text-primary-foreground border-primary',
   };
   /* min-h instead of h so long labels (Arabic/French) wrap instead of clipping */

@@ -15,42 +15,62 @@
 
 :root,
 .print-light {
-  /* Surfaces — warm neutral ground, pure white cards */
-  --background: hsl(45 12% 97%);
+  /* Surfaces — the logo's cream field as paper, pure white cards on it. The
+     sidebar shares the paper so the emblem sits on the same ground as on the
+     sign-in scene, and cards read as sheets laid on the desk, not white on white. */
+  --background: hsl(42 30% 94%);
   --foreground: hsl(220 15% 14%);
   --card: hsl(0 0% 100%);
   --card-foreground: hsl(220 15% 14%);
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(220 15% 14%);
+  --sidebar: var(--background);
 
-  /* Brand — the logo's lake teal, solid. The only accent in the UI. */
-  --primary: hsl(193 82% 31%);
+  /* Brand — the logo's lake teal (#10bccd, hue 186), darkened to text strength.
+     The only accent in the UI. */
+  --primary: hsl(189 84% 29%);
   --primary-foreground: hsl(190 60% 98%);
-  --primary-hover: hsl(193 86% 24%);
+  --primary-hover: hsl(189 88% 23%);
+  /* Soft teal surface for icon chips and selected tiles (was bg-primary/10) */
+  --primary-soft: hsl(189 50% 93%);
 
-  /* Neutrals — plain cool greys, no brand tint */
-  --secondary: hsl(220 12% 95%);
+  /* Neutrals — warm greys that belong to the paper, not to a cool UI kit */
+  --secondary: hsl(40 20% 90%);
   --secondary-foreground: hsl(220 12% 25%);
-  --muted: hsl(220 12% 95%);
-  --muted-foreground: hsl(220 8% 44%);
+  --muted: hsl(40 20% 90%);
+  --muted-foreground: hsl(220 8% 42%);
   --accent: hsl(190 55% 94%);
   --accent-foreground: hsl(193 85% 22%);
 
-  /* Semantic — warning keeps the logo orange, info a muted logo plum */
-  --success: hsl(150 68% 29%);
+  /* Semantic — text colours dark enough for AA on white; each has a -soft
+     surface and a -line edge for badges and chips, so a badge is one colour
+     everywhere instead of an alpha mix that shifts with what is under it.
+     Success is grass green (not a second teal), warning keeps the logo orange
+     on its surface while the text stays legible, info is the logo plum. */
+  --success: hsl(140 62% 28%);
   --success-foreground: hsl(150 40% 98%);
-  --warning: hsl(28 90% 35%);
+  --success-soft: hsl(140 50% 93%);
+  --success-line: hsl(140 40% 80%);
+  --warning: hsl(26 92% 33%);
   --warning-foreground: hsl(40 60% 98%);
-  --destructive: hsl(0 72% 44%);
+  --warning-soft: hsl(30 95% 92%);
+  --warning-line: hsl(28 90% 78%);
+  --destructive: hsl(0 72% 42%);
   --destructive-foreground: hsl(0 0% 98%);
+  --destructive-soft: hsl(0 80% 95%);
+  --destructive-line: hsl(0 70% 84%);
   --info: hsl(280 26% 42%);
   --info-foreground: hsl(285 40% 98%);
+  --info-soft: hsl(280 30% 94%);
+  --info-line: hsl(280 25% 82%);
+  /* WhatsApp brand green — on the glyph only, never a button surface */
+  --whatsapp: #25d366;
 
   /* Lines & focus */
-  --border: hsl(220 12% 89%);
+  --border: hsl(40 14% 86%);
   /* Field boundaries stay distinct from cards and muted control surfaces. */
   --input: hsl(220 10% 56%);
-  --ring: hsl(193 82% 36%);
+  --ring: hsl(189 84% 34%);
 
   /* Radii — round like the emblem, sized to what they hold: a card 16, a panel
      inside one 14, a control 12, a tag 6. One step rounder read as pills everywhere. */
@@ -104,37 +124,48 @@
 }
 
 .dark {
-  /* Neutral charcoal ground — the teal accent does the branding */
+  /* Charcoal ground, cards one visible step above it, sidebar one step below */
   --background: hsl(220 12% 7%);
   --foreground: hsl(220 10% 92%);
-  --card: hsl(220 10% 11%);
+  --card: hsl(220 10% 13%);
   --card-foreground: hsl(220 10% 92%);
-  --popover: hsl(220 10% 13%);
+  --popover: hsl(220 10% 15%);
   --popover-foreground: hsl(220 10% 92%);
+  --sidebar: hsl(220 12% 9%);
 
-  --primary: hsl(190 72% 46%);
+  --primary: hsl(188 70% 48%);
   --primary-foreground: hsl(210 30% 8%);
-  --primary-hover: hsl(190 78% 54%);
+  --primary-hover: hsl(188 76% 56%);
+  --primary-soft: hsl(188 30% 17%);
 
-  --secondary: hsl(220 8% 17%);
+  --secondary: hsl(220 8% 19%);
   --secondary-foreground: hsl(220 10% 90%);
-  --muted: hsl(220 8% 17%);
-  --muted-foreground: hsl(220 6% 63%);
+  --muted: hsl(220 8% 19%);
+  --muted-foreground: hsl(220 6% 64%);
   --accent: hsl(195 25% 18%);
   --accent-foreground: hsl(190 65% 72%);
 
-  --success: hsl(150 58% 48%);
+  --success: hsl(140 50% 52%);
   --success-foreground: hsl(150 40% 8%);
-  --warning: hsl(38 90% 60%);
+  --success-soft: hsl(140 30% 16%);
+  --success-line: hsl(140 30% 26%);
+  --warning: hsl(36 90% 62%);
   --warning-foreground: hsl(30 45% 10%);
-  --destructive: hsl(0 75% 64%);
+  --warning-soft: hsl(36 40% 16%);
+  --warning-line: hsl(36 40% 28%);
+  /* 72% (was 64%) so badge text clears 4.5:1 on its soft surface */
+  --destructive: hsl(0 80% 72%);
   --destructive-foreground: hsl(0 50% 10%);
-  --info: hsl(280 32% 70%);
+  --destructive-soft: hsl(0 35% 17%);
+  --destructive-line: hsl(0 35% 28%);
+  --info: hsl(280 34% 72%);
   --info-foreground: hsl(280 30% 10%);
+  --info-soft: hsl(280 25% 18%);
+  --info-line: hsl(280 25% 30%);
 
-  --border: hsl(220 8% 20%);
+  --border: hsl(220 8% 23%);
   --input: hsl(220 8% 47%);
-  --ring: hsl(190 72% 52%);
+  --ring: hsl(188 70% 54%);
 
   --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.35);
   --shadow-sm: 0 1px 3px 0 hsl(0 0% 0% / 0.45), 0 1px 2px -1px hsl(0 0% 0% / 0.35);
@@ -165,10 +196,12 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-sidebar: var(--sidebar);
 
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
 
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -179,12 +212,21 @@
 
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
+  --color-success-line: var(--success-line);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-line: var(--warning-line);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-line: var(--destructive-line);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+  --color-info-soft: var(--info-soft);
+  --color-info-line: var(--info-line);
+  --color-whatsapp: var(--whatsapp);
 
   --color-border: var(--border);
   --color-input: var(--input);
@@ -412,9 +454,9 @@ input[type="radio"] {
   }
 }
 
-/* Faint solid tint for hero panels and empty states */
+/* Faint solid tint for hero panels, icon chips and empty states */
 @utility bg-brand-soft {
-  background-color: color-mix(in oklab, var(--primary) 10%, transparent);
+  background-color: var(--primary-soft);
 }
 
 /* Sticky-bar surface: near-solid card tint with a light blur. Kept light on

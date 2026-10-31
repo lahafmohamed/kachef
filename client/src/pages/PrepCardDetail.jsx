@@ -272,7 +272,7 @@ export default function PrepCardDetail() {
           {card.session_id && (
             <Link
               to={`/sessions/${card.session_id}`}
-              className="focus-ring mt-4 flex min-h-11 w-fit max-w-full items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
+              className="focus-ring mt-4 flex min-h-11 w-fit max-w-full items-center gap-1.5 rounded-full border border-primary/25 bg-primary-soft px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
             >
               <IconCalendar className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0 [overflow-wrap:anywhere]">

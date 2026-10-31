@@ -123,7 +123,7 @@ export function ChangePasswordForm({ onDone, submitLabel }) {
           key={error.n}
           id="pw_error"
           role="alert"
-          className="animate-fade-up flex gap-2.5 rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive"
+          className="animate-fade-up flex gap-2.5 rounded-lg bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive"
         >
           <IconAlert className="mt-0.5" />
           <p>{error.key ? t(error.key, { n: MIN_PASSWORD_LENGTH }) : error.text}</p>

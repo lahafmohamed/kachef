@@ -420,7 +420,7 @@ export default function MemberDetail() {
       </div>
 
       {!active && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-warning/35 bg-warning/10 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-warning-line bg-warning-soft px-4 py-3">
           <IconArchive className="h-5 w-5 text-warning" />
           <div className="min-w-40 flex-1">
             <p className="text-sm font-medium">
@@ -514,7 +514,7 @@ export default function MemberDetail() {
                     aria-label={`${callLabel(t, c.who, member.first_name)} — ${fmtPhone(n)}`}
                     className="focus-ring flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
                   >
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
                       <IconPhone className="h-4 w-4" />
                     </span>
                     <span className="min-w-0 leading-tight">
@@ -533,7 +533,7 @@ export default function MemberDetail() {
       </section>
 
       {bday && (
-        <p role="status" className="flex items-center gap-2.5 rounded-xl border border-warning/35 bg-warning/10 px-4 py-3 text-sm font-medium text-warning">
+        <p role="status" className="flex items-center gap-2.5 rounded-xl border border-warning-line bg-warning-soft px-4 py-3 text-sm font-medium text-warning">
           <IconCake className="h-5 w-5 shrink-0" />
           {t(bday === 'today' ? 'birthday.isToday' : 'birthday.isTomorrow', {
             name: member.first_name,
@@ -543,7 +543,7 @@ export default function MemberDetail() {
       )}
 
       {active && stats.consecutive_absences >= absenceThreshold && (
-        <p role="alert" className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+        <p role="alert" className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-xl border border-destructive-line bg-destructive-soft px-4 py-3 text-sm font-medium text-destructive">
           <IconAlert className="h-5 w-5 shrink-0" />
           {t('member.consecutiveAbsences', { count: stats.consecutive_absences })}
           <span className="font-normal">

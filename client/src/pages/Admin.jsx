@@ -328,7 +328,7 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
                         className={cn(
                           'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                           on
-                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            ? 'border-primary bg-primary-soft font-medium text-primary'
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
                         )}
                       >
@@ -689,7 +689,7 @@ export default function Admin() {
       {!loading && !failed && (drifted.length > 0 || outOfTachkila.length > 0) && (
         <div
           role="status"
-          className="flex flex-wrap items-center gap-3 rounded-xl border border-warning/35 bg-warning/10 px-4 py-3"
+          className="flex flex-wrap items-center gap-3 rounded-xl border border-warning-line bg-warning-soft px-4 py-3"
         >
           <IconAlert className="h-5 w-5 shrink-0 text-warning" />
           <div className="min-w-48 flex-1">

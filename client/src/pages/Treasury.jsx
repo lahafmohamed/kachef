@@ -296,7 +296,7 @@ function JournalRow({ r, t, lng, names, tag, canEdit, canSessions, canEvents, ca
         <span
           className={cn(
             'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-            isIn ? 'bg-success/12 text-success' : 'bg-muted text-muted-foreground'
+            isIn ? 'bg-success-soft text-success' : 'bg-muted text-muted-foreground'
           )}
         >
           <Icon />
@@ -398,8 +398,8 @@ function SessionRow({ g, flow, t, tag, canSessions, rowProps }) {
             spentOnly || g.result === 0
               ? 'bg-muted text-muted-foreground'
               : g.result > 0
-                ? 'bg-success/12 text-success'
-                : 'bg-destructive/10 text-destructive'
+                ? 'bg-success-soft text-success'
+                : 'bg-destructive-soft text-destructive'
           )}
         >
           <IconCalendar />
@@ -474,7 +474,7 @@ function OwedCard({ owed, total, t, tagOf, canManage, onEdit, onPay }) {
             ].filter(Boolean);
             const body = (
               <>
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warning-soft text-warning">
                   <IconReceipt />
                 </span>
                 <span className="min-w-0 flex-1">

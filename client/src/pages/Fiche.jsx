@@ -174,9 +174,9 @@ function Notice({ tone, title, children, action }) {
         <span
           className={
             tone === 'success'
-              ? 'flex size-9 shrink-0 items-center justify-center rounded-full bg-success/12 text-success'
+              ? 'flex size-9 shrink-0 items-center justify-center rounded-full bg-success-soft text-success'
               : tone === 'error'
-                ? 'flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive'
+                ? 'flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive-soft text-destructive'
                 : 'flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground'
           }
         >
@@ -590,7 +590,7 @@ function FicheForm({ token, data, onAnother }) {
         {formError && (
           <div
             role="alert"
-            className="animate-fade-up flex gap-2.5 rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive"
+            className="animate-fade-up flex gap-2.5 rounded-lg bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive"
           >
             <IconAlert className="mt-0.5" />
             <p>{t(formError)}</p>

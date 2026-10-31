@@ -1295,7 +1295,7 @@ export default function Sessions() {
 
           // ما تقوله الخطة عن هذا اليوم: يُعرض بمجرد اختيار التاريخ، و ينتقل إلى العنوان بنقرة
           const planLinked = usesPlan && linkedItem && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success-line bg-success-soft px-3 py-2 text-xs">
               <IconCheck className="h-3.5 w-3.5 shrink-0 text-success" />
               <span className="min-w-0 flex-1">
                 {t('session.linkedToPlan', { date: fmtDate(linkedItem.date) })}
@@ -1312,7 +1312,7 @@ export default function Sessions() {
           // Still shown next to the green chip when the قائد moved the date onto a day
           // carrying another بند — switching to it stays one tap away.
           const planDay = usesPlan && plannedThisDay && plannedThisDay.id !== linkedItem?.id && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/8 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary-soft px-3 py-2 text-xs">
               <IconCalendar className="h-3.5 w-3.5 shrink-0 text-primary" />
               <span className="min-w-0 flex-1">
                 <span className="text-muted-foreground">{t('session.plannedThisDay')}</span>{' '}
@@ -1409,7 +1409,7 @@ export default function Sessions() {
                         className={cn(
                           'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                           on
-                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            ? 'border-primary bg-primary-soft font-medium text-primary'
                             : 'border-input bg-card text-muted-foreground hover:bg-accent'
                         )}
                       >
@@ -1467,7 +1467,7 @@ export default function Sessions() {
                               className={cn(
                                 'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-[color,background-color,border-color,scale] active:scale-[0.97] sm:min-h-9',
                                 on
-                                  ? 'border-primary bg-primary/10 font-medium text-primary'
+                                  ? 'border-primary bg-primary-soft font-medium text-primary'
                                   : 'border-input bg-card text-muted-foreground hover:bg-accent'
                               )}
                             >

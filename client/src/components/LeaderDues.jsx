@@ -64,11 +64,11 @@ export function DueCell({ month, paid, owed, editable, onToggle, lng, t, name, s
   const cls = cn(
     'flex h-11 w-11 items-center justify-center rounded-lg border text-xs transition-[color,background-color,border-color,box-shadow,scale] sm:h-9 sm:w-9',
     full
-      ? 'border-success/40 bg-success/15 text-success'
+      ? 'border-success-line bg-success-soft text-success'
       : part
-        ? 'border-warning/40 bg-warning/12 text-warning'
+        ? 'border-warning-line bg-warning-soft text-warning'
         : owed
-          ? 'border-destructive/30 bg-destructive/5 text-destructive/70'
+          ? 'border-destructive-line bg-destructive/5 text-destructive/70'
           : 'border-dashed border-border text-muted-foreground/50',
     selected && 'ring-2 ring-primary'
   );

@@ -661,7 +661,7 @@ export default function LeaderDetail() {
                   aria-label={`${t('member.call')} ${name} — ${fmtPhone(n)}`}
                   className="focus-ring flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-xs transition-colors hover:border-primary/35 hover:bg-accent sm:pe-4"
                 >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
                     <IconPhone className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 leading-tight">

@@ -46,7 +46,7 @@ export function PermPresets({ perms, onPick, label }) {
             className={cn(
               'focus-ring inline-flex min-h-11 items-center rounded-full border px-3 py-1.5 text-sm transition-colors sm:min-h-9',
               preset === p
-                ? 'border-primary bg-primary/10 font-medium text-primary'
+                ? 'border-primary bg-primary-soft font-medium text-primary'
                 : 'border-input bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
             )}
           >

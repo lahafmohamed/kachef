@@ -348,7 +348,7 @@ function AgendaCard({ m, t, canEdit, onAdd, onEdit }) {
               <li key={it.id} className="flex gap-3">
                 <span
                   aria-hidden="true"
-                  className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/12 text-sm font-semibold tabular-nums text-primary"
+                  className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-soft text-sm font-semibold tabular-nums text-primary"
                 >
                   {i + 1}
                 </span>

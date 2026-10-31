@@ -175,7 +175,7 @@ function BottomNav() {
                     className={cn(
                       'focus-ring flex min-h-12 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors',
                       active
-                        ? 'bg-primary/12 text-primary'
+                        ? 'bg-primary-soft text-primary'
                         : 'text-foreground hover:bg-accent hover:text-accent-foreground'
                     )}
                     aria-current={active ? 'page' : undefined}
@@ -565,9 +565,9 @@ function OfflineBanner() {
   return (
     <div
       role="status"
-      className="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-20 border-b border-warning/30 bg-background lg:top-0"
+      className="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-20 border-b border-warning-line bg-background lg:top-0"
     >
-      <p className="flex items-center justify-center gap-2 bg-warning/12 px-4 py-1.5 text-center text-xs font-medium text-warning">
+      <p className="flex items-center justify-center gap-2 bg-warning-soft px-4 py-1.5 text-center text-xs font-medium text-warning">
         <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
         {t('common.offline')}
       </p>
@@ -627,7 +627,7 @@ export default function Layout({ children }) {
       </a>
 
       {/* ---------- Desktop sidebar ---------- */}
-      <aside className="fixed inset-y-0 start-0 z-40 hidden w-64 flex-col border-e border-border bg-card lg:flex">
+      <aside className="fixed inset-y-0 start-0 z-40 hidden w-64 flex-col border-e border-border bg-sidebar lg:flex">
         {/* Header, nav and footer rows share one inset, so their hover fills line up */}
         <div className="border-b border-border px-3 py-2">
           {canSwitch ? <SectionMenu /> : <Brand className="p-1.5" sub={lockedName} />}

@@ -1270,7 +1270,7 @@ export default function SessionDetail() {
             <Link
               key={c.id}
               to={`/prep-cards/${c.id}`}
-              className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
+              className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border border-primary/25 bg-primary-soft px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-10"
             >
               <IconClipboard className="h-3.5 w-3.5" />
               <span>

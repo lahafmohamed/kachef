@@ -718,7 +718,7 @@ function AccountDialog({ leader, branches, onClose, onCreated }) {
                       'focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm sm:min-h-9',
                       'transition-[color,background-color,border-color,scale] active:scale-[0.97]',
                       on
-                        ? 'border-primary bg-primary/10 font-medium text-primary'
+                        ? 'border-primary bg-primary-soft font-medium text-primary'
                         : 'border-input bg-card text-muted-foreground hover:bg-accent'
                     )}
                   >
@@ -982,7 +982,7 @@ function TeamCard({ title, lead, rest = [], groups = [], leadTitle = false, page
             title={page.t('leader.filledHint', { filled, total: all.length })}
             className={cn(
               'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums',
-              filled === all.length ? 'bg-success/12 text-success' : 'bg-secondary text-muted-foreground'
+              filled === all.length ? 'bg-success-soft text-success' : 'bg-secondary text-muted-foreground'
             )}
           >
             {filled}/{all.length}
@@ -1894,7 +1894,7 @@ export default function Leaders() {
               {locked && (
                 <div
                   role="status"
-                  className="flex flex-wrap items-center gap-3 rounded-xl border border-warning/35 bg-warning/10 px-4 py-3"
+                  className="flex flex-wrap items-center gap-3 rounded-xl border border-warning-line bg-warning-soft px-4 py-3"
                 >
                   <IconLock className="h-5 w-5 shrink-0 text-warning" />
                   <p className="min-w-48 flex-1 text-sm font-medium">

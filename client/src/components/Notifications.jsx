@@ -175,7 +175,7 @@ function InboxItem({ n, onOpen }) {
       <span
         className={cn(
           'relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-          n.unread ? 'bg-primary/12 text-primary' : 'bg-secondary text-muted-foreground'
+          n.unread ? 'bg-primary-soft text-primary' : 'bg-secondary text-muted-foreground'
         )}
       >
         <Icon className="h-[1.1rem] w-[1.1rem]" />
@@ -561,13 +561,13 @@ function Switch({ id, checked, onChange, disabled, describedBy }) {
 }
 
 const DEVICE_COPY = {
-  on: { icon: IconBell, tone: 'text-success bg-success/12', title: 'push.state.on', hint: 'push.state.onHint' },
+  on: { icon: IconBell, tone: 'text-success bg-success-soft', title: 'push.state.on', hint: 'push.state.onHint' },
   off: { icon: IconBell, tone: 'text-muted-foreground bg-secondary', title: 'push.state.off', hint: 'push.state.offHint' },
-  denied: { icon: IconAlert, tone: 'text-warning bg-warning/15', title: 'push.state.denied', hint: 'push.state.deniedHint' },
-  'ios-install': { icon: IconBell, tone: 'text-primary bg-primary/12', title: 'push.state.iosInstall', hint: 'push.state.iosInstallHint' },
+  denied: { icon: IconAlert, tone: 'text-warning bg-warning-soft', title: 'push.state.denied', hint: 'push.state.deniedHint' },
+  'ios-install': { icon: IconBell, tone: 'text-primary bg-primary-soft', title: 'push.state.iosInstall', hint: 'push.state.iosInstallHint' },
   unsupported: { icon: IconAlert, tone: 'text-muted-foreground bg-secondary', title: 'push.state.unsupported', hint: 'push.state.unsupportedHint' },
   unavailable: { icon: IconAlert, tone: 'text-muted-foreground bg-secondary', title: 'push.state.unavailable', hint: 'push.state.unavailableHint' },
-  error: { icon: IconAlert, tone: 'text-destructive bg-destructive/10', title: 'push.state.error', hint: 'push.state.errorHint' },
+  error: { icon: IconAlert, tone: 'text-destructive bg-destructive-soft', title: 'push.state.error', hint: 'push.state.errorHint' },
 };
 
 function DeviceCard() {

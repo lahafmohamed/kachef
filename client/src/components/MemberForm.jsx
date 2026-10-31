@@ -449,7 +449,7 @@ function MemberFormBody({ formId, member, defaults, setSaving, onSaved }) {
         <div
           ref={errorRef}
           role="alert"
-          className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive"
+          className="flex items-start gap-2.5 rounded-lg border border-destructive-line bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive"
         >
           <IconAlert className="mt-0.5" />
           <p className="flex-1">

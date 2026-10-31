@@ -52,7 +52,7 @@ export function WhatsAppSquare({ href, label, className }) {
       aria-label={label}
       title={label}
       className={cn(
-        'focus-ring inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[#25D366] transition-colors hover:bg-[#25D366]/10',
+        'focus-ring inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-whatsapp transition-colors hover:bg-whatsapp/10',
         className
       )}
     >

@@ -116,7 +116,7 @@ export function WhatsAppTile({ href, label }) {
       rel="noopener noreferrer"
       aria-label={label}
       title={label}
-      className="focus-ring flex min-h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-[#25D366] shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10"
+      className="focus-ring flex min-h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-whatsapp shadow-xs transition-colors hover:border-whatsapp/40 hover:bg-whatsapp/10"
     >
       <IconWhatsApp className="h-5 w-5" />
     </a>
@@ -248,7 +248,7 @@ export function UnderlineTabs({ items, value, onChange, label, idPrefix, panelId
                 <span
                   className={cn(
                     'min-w-6 rounded-full px-1.5 py-px text-center text-xs font-medium tabular-nums',
-                    on ? 'bg-primary/12 text-primary' : 'bg-secondary text-muted-foreground',
+                    on ? 'bg-primary-soft text-primary' : 'bg-secondary text-muted-foreground',
                     !on && x.count === 0 && 'opacity-60'
                   )}
                 >

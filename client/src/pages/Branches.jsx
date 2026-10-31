@@ -323,7 +323,7 @@ function PlanRow({ row, index, days, canEdit, validated, removedHere, today, onT
             // The pill stays small; on a phone its tap area reaches the line's full height
             <Link
               to={`/sessions/${row.session.id}`}
-              className="focus-ring relative inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-success/25 bg-success/12 px-2.5 py-0.5 text-xs font-medium tabular-nums text-success before:absolute before:inset-x-0 before:-inset-y-3 before:content-[''] hover:bg-success/20 sm:before:content-none"
+              className="focus-ring relative inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-success-line bg-success-soft px-2.5 py-0.5 text-xs font-medium tabular-nums text-success before:absolute before:inset-x-0 before:-inset-y-3 before:content-[''] hover:bg-success/20 sm:before:content-none"
             >
               <IconCheck className="h-3 w-3" />
               {fmtDate(row.session.date)}
@@ -407,13 +407,13 @@ function ValidationBar({ plan, isAdmin, busy, onValidate, onUnvalidate }) {
     <div
       className={cn(
         'flex flex-wrap items-start gap-3 rounded-xl border px-3.5 py-3',
-        v ? 'border-success/25 bg-success/8' : 'border-warning/30 bg-warning/10'
+        v ? 'border-success-line bg-success-soft' : 'border-warning-line bg-warning-soft'
       )}
     >
       <span
         className={cn(
           'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-          v ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'
+          v ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
         )}
       >
         {v ? <IconCheck className="h-4 w-4" /> : <IconClock className="h-4 w-4" />}
@@ -509,7 +509,7 @@ function LinkSessionDialog({ branchId, year, item, onClose, onDone }) {
     >
       <div className="space-y-3">
         {linked && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-success/25 bg-success/8 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-success-line bg-success-soft px-3 py-2">
             <div className="min-w-0 text-sm">
               <span className="text-muted-foreground">{t('branch.planLinkCurrent')}</span>{' '}
               <span className="font-medium">{linked.title}</span>{' '}
@@ -2153,7 +2153,7 @@ function BranchMoney({ branchId }) {
                 <MoneyRow
                   key={x.key}
                   mark={
-                    <RowMark className="bg-success/12 text-success">
+                    <RowMark className="bg-success-soft text-success">
                       <IconHandHeart />
                     </RowMark>
                   }
@@ -2217,7 +2217,7 @@ function BranchMoney({ branchId }) {
                       <MoneyRow
                         key={x.key}
                         mark={
-                          <RowMark className={owed ? 'bg-warning/15 text-warning' : 'bg-muted text-muted-foreground'}>
+                          <RowMark className={owed ? 'bg-warning-soft text-warning' : 'bg-muted text-muted-foreground'}>
                             <IconReceipt />
                           </RowMark>
                         }
@@ -2266,7 +2266,7 @@ function PlanMark({ plan }) {
       title={label}
       className={cn(
         'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
-        ok ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
+        ok ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
       )}
     >
       {ok ? <IconCheck className="h-3 w-3" /> : <IconClock className="h-3 w-3" />}

@@ -260,7 +260,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
                     {form.matalib.map((n) => (
                       <span
                         key={n}
-                        className="inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-primary/10 px-1.5 text-xs font-semibold tabular-nums text-primary"
+                        className="inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-primary-soft px-1.5 text-xs font-semibold tabular-nums text-primary"
                       >
                         {n}
                       </span>

@@ -415,7 +415,7 @@ function MineCard({ mine, onEdit, onWithdraw }) {
         {/* basis-60: on a phone the buttons go under the sentence instead of
             squeezing it to one word per line */}
         <div className="flex min-w-0 grow basis-60 items-center gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-success/12 text-success">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-success-soft text-success">
             <IconCheck className="h-5 w-5" />
           </span>
           <div className="min-w-0">

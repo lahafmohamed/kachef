@@ -268,9 +268,9 @@ export function FollowupLog({ member, absences, onArchived }) {
               target="_blank"
               rel="noopener noreferrer"
               title={fmtPhone(n)}
-              className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10 sm:min-h-8"
+              className="focus-ring inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:border-whatsapp/40 hover:bg-whatsapp/10 sm:min-h-8"
             >
-              <IconWhatsApp className="h-4 w-4 text-[#25D366]" />
+              <IconWhatsApp className="h-4 w-4 text-whatsapp" />
               {t('followup.waTo', { who: t(`dashboard.followup.${who}`) })}
             </a>
           ))}
@@ -437,7 +437,7 @@ export function FollowupList({ items, initial = 5, onChanged, moreLink = '/membe
                     rel="noopener noreferrer"
                     aria-label={`${t('member.whatsapp')} — ${name}`}
                     title={fmtPhone(phones[0][1])}
-                    className="focus-ring inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-card text-[#25D366] shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10 sm:h-8 sm:w-8"
+                    className="focus-ring inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-card text-whatsapp shadow-xs transition-colors hover:border-whatsapp/40 hover:bg-whatsapp/10 sm:h-8 sm:w-8"
                   >
                     <IconWhatsApp className="h-4 w-4" />
                   </a>

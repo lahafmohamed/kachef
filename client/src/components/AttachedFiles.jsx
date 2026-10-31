@@ -381,8 +381,8 @@ export default function AttachedFiles({ base, files = [], editable, onChange }) 
                       <span
                         className={
                           f.kind === 'excel'
-                            ? 'grid size-9 shrink-0 place-items-center rounded-lg bg-success/15 text-success'
-                            : 'grid size-9 shrink-0 place-items-center rounded-lg bg-destructive/10 text-destructive'
+                            ? 'grid size-9 shrink-0 place-items-center rounded-lg bg-success-soft text-success'
+                            : 'grid size-9 shrink-0 place-items-center rounded-lg bg-destructive-soft text-destructive'
                         }
                       >
                         <Icon />

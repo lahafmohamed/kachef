@@ -291,7 +291,7 @@ function MemberRow({ kind, m, branch, onSend, onReview }) {
         </Button>
       ) : (
         <Button size="sm" variant="outline" onClick={onSend}>
-          <IconWhatsApp className={cn('h-4 w-4', !live && 'text-[#1a7f45]')} />
+          <IconWhatsApp className={cn('h-4 w-4', !live && 'text-whatsapp')} />
           {t(live ? 'memberForms.resend' : 'memberForms.send')}
         </Button>
       )}
@@ -409,7 +409,7 @@ function SendDialog({ kind, member, onClose, onChanged }) {
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => markSent('whatsapp')}
-                className="focus-ring inline-flex h-11 items-center max-sm:flex-1 justify-center gap-2 rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] sm:h-10"
+                className="focus-ring inline-flex h-11 items-center max-sm:flex-1 justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-[background-color,scale] duration-150 hover:bg-primary-hover active:scale-[0.97] sm:h-10"
               >
                 <IconWhatsApp className="h-4 w-4" />
                 {t('memberForms.openWhatsApp')}
@@ -420,7 +420,7 @@ function SendDialog({ kind, member, onClose, onChanged }) {
       }
     >
       {errorText ? (
-        <p role="alert" className="rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive">{errorText}</p>
+        <p role="alert" className="rounded-lg bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive">{errorText}</p>
       ) : !form ? (
         <div className="space-y-3">
           <Skeleton className="h-10 w-full" />
@@ -996,7 +996,7 @@ function SignupDialog({ sk, open, initial, scopes, onClose, onChanged }) {
                 target="_blank"
                 rel="noreferrer"
                 onClick={markSent}
-                className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
+                className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-[background-color,scale] duration-150 hover:bg-primary-hover active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
               >
                 <IconWhatsApp className="h-4 w-4" />
                 {t('memberForms.openWhatsApp')}
@@ -1049,7 +1049,7 @@ function SignupDialog({ sk, open, initial, scopes, onClose, onChanged }) {
           </div>
           {langPicker}
           {error && (
-            <p role="alert" className="rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive">
+            <p role="alert" className="rounded-lg bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive">
               {error}
             </p>
           )}
@@ -1170,7 +1170,7 @@ function SignupReviewCard({ sk, f, via, scopes, onDone }) {
       {open && (
       <div id={bodyId}>
       {f.duplicates.length > 0 && (
-        <div className="flex gap-2.5 border-b border-border bg-warning/10 px-4 py-3 text-sm">
+        <div className="flex gap-2.5 border-b border-border bg-warning-soft px-4 py-3 text-sm">
           <IconAlert className="mt-0.5 shrink-0 text-warning" />
           <div className="min-w-0">
             <p className="font-medium">{t(tk(sk, 'duplicateTitle'))}</p>
@@ -1289,7 +1289,7 @@ function SharedLinkRow({ sk, l, where, onShare, onChanged }) {
       <div className="flex gap-2">
         {l.active && (
           <Button size="sm" variant="outline" onClick={onShare}>
-            <IconWhatsApp className="h-4 w-4 text-[#1a7f45]" />
+            <IconWhatsApp className="h-4 w-4 text-whatsapp" />
             {t('memberForms.share')}
           </Button>
         )}
@@ -1388,7 +1388,7 @@ function SharedLinkDialog({ sk, open, initial, scopes, onClose, onChanged }) {
               target="_blank"
               rel="noreferrer"
               onClick={saveLang}
-              className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[#1a7f45] px-4 text-sm font-medium text-white transition-[background-color,scale] duration-150 hover:bg-[#166b3a] active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
+              className="focus-ring inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-[background-color,scale] duration-150 hover:bg-primary-hover active:scale-[0.97] max-sm:flex-1 max-sm:px-3 sm:h-10"
             >
               <IconWhatsApp className="h-4 w-4" />
               {t('memberForms.openWhatsApp')}
@@ -1434,7 +1434,7 @@ function SharedLinkDialog({ sk, open, initial, scopes, onClose, onChanged }) {
           </div>
           {langPicker}
           {error && (
-            <p role="alert" className="rounded-lg bg-destructive/10 px-3.5 py-3 text-sm font-medium text-destructive">
+            <p role="alert" className="rounded-lg bg-destructive-soft px-3.5 py-3 text-sm font-medium text-destructive">
               {error}
             </p>
           )}

@@ -201,11 +201,11 @@ function H2({ children, aside }) {
 }
 
 const TAG_TONES = {
-  default: 'border-primary/30 bg-primary/8 text-primary',
+  default: 'border-primary/30 bg-primary-soft text-primary',
   neutral: 'border-border bg-muted text-foreground',
-  success: 'border-success/40 bg-success/10 text-success',
-  destructive: 'border-destructive/40 bg-destructive/10 text-destructive',
-  warning: 'border-warning/40 bg-warning/10 text-warning',
+  success: 'border-success-line bg-success-soft text-success',
+  destructive: 'border-destructive-line bg-destructive-soft text-destructive',
+  warning: 'border-warning-line bg-warning-soft text-warning',
 };
 
 function Tag({ children, tone = 'default', className }) {

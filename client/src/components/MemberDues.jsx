@@ -81,7 +81,7 @@ function DuesMonth({ data, month, session, busy, onCollect, onUndo }) {
         <div
           className={cn(
             'space-y-2 rounded-xl border p-3',
-            info.full ? 'border-success/30 bg-success/8' : 'border-warning/30 bg-warning/8'
+            info.full ? 'border-success-line bg-success-soft' : 'border-warning-line bg-warning-soft'
           )}
         >
           <p className={cn('flex items-center gap-2 font-medium', info.full ? 'text-success' : 'text-warning')}>
@@ -229,7 +229,7 @@ function SettleMonths({ data, memberId, session, phone, firstName, onDone }) {
 
   if (done)
     return (
-      <div className="max-w-xl space-y-2 rounded-xl border border-success/30 bg-success/8 p-3">
+      <div className="max-w-xl space-y-2 rounded-xl border border-success-line bg-success-soft p-3">
         <p className="flex items-center gap-2 font-medium text-success">
           <IconCalendarCheck className="h-5 w-5 shrink-0" />
           {t('dues.settled', { amount: fmtAmount(done.amount), count: done.months.length })}
@@ -244,9 +244,9 @@ function SettleMonths({ data, memberId, session, phone, firstName, onDone }) {
               href={receiptHref(done)}
               target="_blank"
               rel="noopener noreferrer"
-              className="focus-ring inline-flex h-11 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:border-[#25D366]/40 hover:bg-[#25D366]/10 sm:h-8"
+              className="focus-ring inline-flex h-11 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:border-whatsapp/40 hover:bg-whatsapp/10 sm:h-8"
             >
-              <IconWhatsApp className="h-4 w-4 text-[#25D366]" />
+              <IconWhatsApp className="h-4 w-4 text-whatsapp" />
               {t('dues.sendReceipt')}
             </a>
           )}
@@ -397,7 +397,7 @@ export function MemberDuesPanel({
   const owing = data.summary.unpaid_months;
   // The reminder of what is owed, on the profile: a نشاط is where it is paid, not asked
   const remind = !session && phone && owing.length > 0 && (
-    <div className="flex max-w-xl items-center gap-2 rounded-xl border border-destructive/25 bg-destructive/5 ps-3">
+    <div className="flex max-w-xl items-center gap-2 rounded-xl border border-destructive-line bg-destructive/5 ps-3">
       <p className="min-w-0 flex-1 py-2 text-sm text-destructive">
         {t('dues.owedLine', { count: owing.length, amount: fmtAmount(data.summary.owed_total) })}
       </p>
