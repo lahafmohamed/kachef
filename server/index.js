@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { renderPdf, chromiumMissing } = require('./pdf');
 const crypto = require('crypto');
-const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef } = require('./db');
+const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef, leaderSections, leaderSectionSQL } = require('./db');
 
 migrate();
 seed();
@@ -827,14 +827,14 @@ function allowedBranches(req) {
   return scope;
 }
 
-// القادة لا فرقة لهم، فيُحصرون بقسمهم هم. `section` مُتحقَّق منه، فدمجه في النص آمن.
+// القادة لا فرقة لهم، فيُحصرون بقسمهم هم — و بالقسم الذي يستعير قادته (leaderSections).
 const leaderScopeSQL = (req, alias = 'l') => {
   const section = activeSection(req);
-  return section ? ` AND ${alias}.section = '${section}'` : '';
+  return section ? ` AND ${leaderSectionSQL(section, `${alias}.section`)}` : '';
 };
 const leaderOk = (req, leader) => {
   const section = activeSection(req);
-  return !section || leader.section === section;
+  return !section || leaderSections(section).includes(leader.section);
 };
 
 // Is this branch (or a branch-less نشاط قادة, id = null) visible to the caller?
@@ -4795,8 +4795,11 @@ app.post('/api/leaders', requireAdmin, (req, res) => {
   const b = req.body;
   if (b.section !== undefined && !parseSection(b.section))
     return res.status(400).json({ error: 'invalid section' });
-  // Said explicitly, or the قسم the admin is looking at, or قسم الفتيان as before
-  const { created, status, error } = createLeader(req, b, parseSection(b.section) || activeSection(req) || 'M');
+  // Said explicitly, or the قسم the admin is looking at (its leadersFrom when it borrows its
+  // قادة: a قائد added from the FR view is a قائد of الفتيان), or قسم الفتيان as before
+  const viewed = activeSection(req);
+  const fallback = viewed && (sectionDef(viewed).leadersFrom || viewed);
+  const { created, status, error } = createLeader(req, b, parseSection(b.section) || fallback || 'M');
   if (!created) return res.status(status).json({ error });
   res.status(201).json(publicLeader(created));
 });
@@ -5710,7 +5713,7 @@ function validateAssignment(body, selfId = null, section = 'M') {
       return 'invalid leader_id';
     // قائد في توصيف من القسم الآخر يُظهر اسمه في تشكيلة ليست له (section null = فرقة
     // غير موجودة، يرفضها الفحص التالي)
-    if (section && leader.section !== section) return 'leader_outside_section';
+    if (section && !leaderSections(section).includes(leader.section)) return 'leader_outside_section';
   }
   const branchId = optionalId(body.branch_id);
   if (branchId !== null && !db.prepare('SELECT id FROM branches WHERE id = ?').get(branchId))
@@ -6637,15 +6640,15 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   let leaderRow = null;
   if (leader_id !== undefined && leader_id !== null) {
     leaderRow = db
-      .prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active' AND section = ?")
-      .get(leader_id, section);
+      .prepare(`SELECT * FROM leaders WHERE id = ? AND status = 'active' AND ${leaderSectionSQL(section)}`)
+      .get(leader_id);
     if (!leaderRow) return res.status(400).json({ error: 'invalid leader_id' });
   }
   const helpers = helper_ids === undefined || helper_ids === null ? [] : helper_ids;
   if (!Array.isArray(helpers) || !helpers.every((h) => Number.isInteger(h)))
     return res.status(400).json({ error: 'invalid helper_ids' });
   for (const h of helpers) {
-    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active' AND section = ?").get(h, section))
+    if (!db.prepare(`SELECT id FROM leaders WHERE id = ? AND status = 'active' AND ${leaderSectionSQL(section)}`).get(h))
       return res.status(400).json({ error: 'invalid helper_ids' });
   }
   // زيارة الأهل: the visited عناصر are marked present straight away, so the visit
@@ -6815,7 +6818,7 @@ app.put('/api/sessions/:id', requirePerm('sessions.edit'), (req, res) => {
   // القائد المسؤول من قسم النشاط؛ قائد أُرشف يبقى على نشاطه القديم
   let leaderRow = null;
   if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
-    leaderRow = db.prepare('SELECT * FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), s.section);
+    leaderRow = db.prepare(`SELECT * FROM leaders WHERE id = ? AND ${leaderSectionSQL(s.section)}`).get(intOr(b.leader_id));
     if (!leaderRow || (leaderRow.status !== 'active' && leaderRow.id !== s.leader_id))
       return res.status(400).json({ error: 'invalid leader_id' });
   }
@@ -6938,10 +6941,10 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
           .prepare(
             `SELECT l.id AS leader_id, l.code, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
              FROM leaders l LEFT JOIN session_leaders sl ON sl.leader_id = l.id AND sl.session_id = ?
-             WHERE l.section = ? AND (l.status = 'active' OR sl.status IS NOT NULL)
+             WHERE ${leaderSectionSQL(s.section, 'l.section')} AND (l.status = 'active' OR sl.status IS NOT NULL)
              ORDER BY sl.role = 'main' DESC, l.last_name, l.first_name`
           )
-          .all(s.id, s.section)
+          .all(s.id)
       : db
           .prepare(
             `SELECT sl.leader_id, l.code, sl.role, sl.status, l.first_name, l.father_name, l.last_name, l.photo
@@ -7073,7 +7076,7 @@ app.post('/api/sessions/:id/animators', requirePerm('sessions.attendance'), (req
   if (s.kind === 'leaders' && s.attendance_finalized_at && 'status' in (req.body || {}))
     return res.status(409).json({ error: 'attendance_finalized' });
   // منشّطو النشاط من قسمه وحده
-  if (!db.prepare('SELECT id FROM leaders WHERE id = ? AND section = ?').get(leader_id, s.section))
+  if (!db.prepare(`SELECT id FROM leaders WHERE id = ? AND ${leaderSectionSQL(s.section)}`).get(leader_id))
     return res.status(400).json({ error: 'invalid leader_id' });
   const animatorRow = db.prepare(
     'SELECT leader_id, role, status FROM session_leaders WHERE session_id = ? AND leader_id = ?'
@@ -8376,8 +8379,8 @@ function parsePrepCard(req) {
   let leaderRow = null;
   if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
     leaderRow = db
-      .prepare("SELECT * FROM leaders WHERE id = ? AND status = 'active' AND section = ?")
-      .get(b.leader_id, sectionOfBranch(branchId));
+      .prepare(`SELECT * FROM leaders WHERE id = ? AND status = 'active' AND ${leaderSectionSQL(sectionOfBranch(branchId))}`)
+      .get(b.leader_id);
     if (!leaderRow) return { error: 'invalid leader_id' };
   }
   // النشاط الذي حُضِّرت له — اختياري: البطاقة تُكتب قبل أن يوجد النشاط غالبًا،
@@ -8855,7 +8858,7 @@ function parseEvent(req, existing = null) {
   if (sections[0] && sections[0] !== section) return { error: 'mixed_sections' };
   let leaderId = null;
   if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
-    const l = db.prepare('SELECT id, status FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), section);
+    const l = db.prepare(`SELECT id, status FROM leaders WHERE id = ? AND ${leaderSectionSQL(section)}`).get(intOr(b.leader_id));
     // قائد أُرشف يبقى على المخيم الذي قاده، و لا يُختار لمخيم جديد
     if (!l || (l.status !== 'active' && l.id !== existing?.leader_id)) return { error: 'invalid leader_id' };
     leaderId = l.id;
@@ -9202,12 +9205,12 @@ app.get('/api/events/:id/candidates', requirePerm('events.manage'), (req, res) =
   const leaders = db
     .prepare(
       `SELECT l.id, l.first_name, l.father_name, l.last_name FROM leaders l
-       WHERE l.status = 'active' AND l.section = ?
+       WHERE l.status = 'active' AND ${leaderSectionSQL(ev.section, 'l.section')}
          AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = ? AND p.leader_id = l.id
                            AND p.withdrawn_at IS NULL)
        ORDER BY l.last_name, l.first_name`
     )
-    .all(ev.section, ev.id);
+    .all(ev.id);
   res.json({ members, leaders });
 });
 
@@ -9236,7 +9239,7 @@ app.post('/api/events/:id/participants', requirePerm('events.manage'), (req, res
     if (!branchOk(req, m.branch_id)) return res.status(403).json({ error: 'forbidden_branch' });
   }
   for (const id of leaderIds)
-    if (!db.prepare("SELECT id FROM leaders WHERE id = ? AND status = 'active' AND section = ?").get(id, ev.section))
+    if (!db.prepare(`SELECT id FROM leaders WHERE id = ? AND status = 'active' AND ${leaderSectionSQL(ev.section)}`).get(id))
       return res.status(400).json({ error: 'invalid leader_ids' });
   // الضيف نفسه لا يُسجَّل مرّتين، و لو كُتب اسمه بحالة أحرف أخرى
   const guests = new Set(
@@ -9528,7 +9531,7 @@ function parseStaff(req, ev, existing = null) {
   let leaderId = null;
   let name = null;
   if (b.leader_id !== undefined && b.leader_id !== null && b.leader_id !== '') {
-    const l = db.prepare('SELECT id, status FROM leaders WHERE id = ? AND section = ?').get(intOr(b.leader_id), ev.section);
+    const l = db.prepare(`SELECT id, status FROM leaders WHERE id = ? AND ${leaderSectionSQL(ev.section)}`).get(intOr(b.leader_id));
     // قائد أُرشف يبقى على مسؤوليته القديمة، و لا يُعيَّن لمسؤولية جديدة
     if (!l || (l.status !== 'active' && l.id !== existing?.leader_id)) return { error: 'invalid leader_id' };
     leaderId = l.id;
@@ -10242,7 +10245,7 @@ const touchMeeting = (req, id) =>
 // حيث كان و لا يُختار من جديد — أو اسم من خارج الفوج. { id, name } أو null إن لم يُذكر أحد.
 function parsePerson(rawId, rawName, section, keepId = null) {
   if (rawId !== undefined && rawId !== null && rawId !== '') {
-    const l = db.prepare('SELECT * FROM leaders WHERE id = ? AND section = ?').get(intOr(rawId), section);
+    const l = db.prepare(`SELECT * FROM leaders WHERE id = ? AND ${leaderSectionSQL(section)}`).get(intOr(rawId));
     if (!l || (l.status !== 'active' && l.id !== keepId)) return { error: 'invalid leader_id' };
     return { id: l.id, name: leaderFullName(l) };
   }
@@ -10487,7 +10490,7 @@ app.put('/api/meetings/:id/attendance', requirePerm('meetings.manage'), (req, re
   for (const r of leaders) {
     const id = intOr(r?.leader_id);
     if (!ATTENDANCE_STATUSES.includes(r?.status) || seen.has(id)) return res.status(400).json({ error: 'invalid attendance' });
-    const l = db.prepare('SELECT * FROM leaders WHERE id = ? AND section = ?').get(id, m.section);
+    const l = db.prepare(`SELECT * FROM leaders WHERE id = ? AND ${leaderSectionSQL(m.section)}`).get(id);
     if (!l || (l.status !== 'active' && !before.has(l.id))) return res.status(400).json({ error: 'invalid leader_id' });
     seen.add(id);
     rows.push({ leader_id: l.id, name: leaderFullName(l), status: r.status });

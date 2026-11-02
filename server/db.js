@@ -24,14 +24,25 @@ let evalTablesAreNew = !db
 // تُؤنَّث التوصيفات (قائدة)؛ lang: لغة التوصيفات التي يولّدها قالب التشكيلة. 'M' هو
 // الفوج نفسه: أماناته في القالب، و القيمة الافتراضية لكل ما سبق الأقسام.
 // التوأم في client/src/api.js. قسم جديد = سطر هنا و سطر هناك، و اسماه في ملفّي
-// الترجمة (section.<code> و section.name<code>) — لا تغيير في الجداول.
+// الترجمة (section.<code> و section.name<code>) — لا تغيير في الجداول. leadersFrom: قسم
+// يقود عناصرَه قادةُ قسم آخر — الفرنكوفون الفتيان يقودهم قادة الفتيان أنفسهم.
 const SECTION_DEFS = [
   { code: 'M', gender: 'M', lang: 'ar' },
   { code: 'F', gender: 'F', lang: 'ar' },
-  { code: 'FR', gender: 'M', lang: 'fr' },
+  { code: 'FR', gender: 'M', lang: 'fr', leadersFrom: 'M' },
   { code: 'FRF', gender: 'F', lang: 'fr' },
 ];
 const sectionDef = (code) => SECTION_DEFS.find((s) => s.code === code) || null;
+
+// الأقسام التي يُختار منها قادة قسم ما: قسمه، و القسم الذي يستعير قادته. [] لقسم مجهول.
+const leaderSections = (code) => {
+  const def = sectionDef(code);
+  return def ? [def.code, def.leadersFrom].filter(Boolean) : [];
+};
+// `section IN (...)` للقادة. الرموز من SECTION_DEFS وحدها، فدمجها في النص آمن؛ قسم مجهول
+// يعطي IN () فلا يطابق أحدًا.
+const leaderSectionSQL = (code, col = 'section') =>
+  `${col} IN (${leaderSections(code).map((s) => `'${s}'`).join(', ')})`;
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS branches (
@@ -2198,4 +2209,4 @@ function seedLeaders() {
   migrateAmanaHelpers();
 }
 
-module.exports = { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef };
+module.exports = { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef, leaderSections, leaderSectionSQL };

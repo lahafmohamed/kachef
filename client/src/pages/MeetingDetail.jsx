@@ -2,7 +2,7 @@ import { displayError } from '../lib/errors';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { isFeminine, useSection } from '../section';
@@ -177,7 +177,7 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
     setQ('');
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const sectionPool = leaders.filter((l) => l.section === m.section && (l.status === 'active' || marks[l.id]));
+  const sectionPool = leaders.filter((l) => leaderFits(l, m.section) && (l.status === 'active' || marks[l.id]));
   const ownIds = new Set(m.branch_leader_ids || []);
   // Narrowed only when it leaves someone out — a قائد already marked always stays
   const narrowed = ownIds.size > 0 && sectionPool.some((l) => !ownIds.has(l.id) && !marks[l.id]);
@@ -706,7 +706,7 @@ function DecisionDialog({ m, decision, open, onClose, onSaved, leaders, t }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, decision]);
 
-  const pool = leaders.filter((l) => l.section === m.section && (l.status === 'active' || l.id === decision?.leader_id));
+  const pool = leaders.filter((l) => leaderFits(l, m.section) && (l.status === 'active' || l.id === decision?.leader_id));
 
   async function save(e) {
     e.preventDefault();

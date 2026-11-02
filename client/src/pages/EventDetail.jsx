@@ -2,7 +2,7 @@ import { displayError } from '../lib/errors';
 import { Fragment, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api, isFeminine } from '../api';
+import { api, isFeminine, leaderFits } from '../api';
 import { usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import { avatarName, branchName, fmtAmount, fmtDate, fmtPhone, fmtTime, memberName, todayISO } from '../utils';
@@ -644,7 +644,7 @@ function SessionDialog({ ev, session, open, onClose, onSaved, leaders, t, lng })
             maxLength={120}
             placeholder={t('event.responsibleHint')}
             value={form.responsible}
-            options={leaders.filter((l) => l.section === ev.section && l.status === 'active').map((l) => memberName(l))}
+            options={leaders.filter((l) => leaderFits(l, ev.section) && l.status === 'active').map((l) => memberName(l))}
             onChange={set('responsible')}
           />
         </div>
@@ -1072,7 +1072,7 @@ function StaffDialog({ ev, staff, presetRole, open, onClose, onSaved, leaders, t
 
   // The قادة of the camp's قسم; an archived one stays on the post he already held
   const leaderOptions = leaders
-    .filter((l) => l.section === ev.section && (l.status === 'active' || l.id === staff?.leader_id))
+    .filter((l) => leaderFits(l, ev.section) && (l.status === 'active' || l.id === staff?.leader_id))
     .map((l) => ({ value: l.id, label: memberName(l) }));
 
   async function save(e) {

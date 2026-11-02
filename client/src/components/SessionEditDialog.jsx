@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
@@ -94,7 +94,7 @@ export default function SessionEditDialog({ session, branches, open, onClose, on
     (id) => branches.find((b) => b.id === id)?.total_requirements === total
   );
   const leaderOptions = (leaders.data || [])
-    .filter((l) => l.section === session.section && (l.status === 'active' || l.id === session.leader_id))
+    .filter((l) => leaderFits(l, session.section) && (l.status === 'active' || l.id === session.leader_id))
     .map((l) => ({ value: l.id, label: memberName(l) }));
   const leaderLabel = t(isVisit || isLeadersOnly ? 'session.visitMainLeader' : 'session.leader');
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);

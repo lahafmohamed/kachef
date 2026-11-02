@@ -60,12 +60,18 @@ export function stopViewingAs() {
 export const SECTION_DEFS = [
   { code: 'M', gender: 'M' },
   { code: 'F', gender: 'F' },
-  { code: 'FR', gender: 'M' },
+  { code: 'FR', gender: 'M', leadersFrom: 'M' },
   { code: 'FRF', gender: 'F' },
 ];
 export const SECTIONS = SECTION_DEFS.map((s) => s.code);
 export const sectionGender = (code) => SECTION_DEFS.find((s) => s.code === code)?.gender ?? null;
 export const isFeminine = (code) => sectionGender(code) === 'F';
+// leadersFrom: a قسم led by another قسم's قادة (الفرنكوفون الفتيان ← الفتيان). Twin of
+// leaderSections() in server/db.js.
+export const leaderFits = (leader, code) => {
+  const def = SECTION_DEFS.find((s) => s.code === code);
+  return !!leader && !!def && (leader.section === def.code || leader.section === def.leadersFrom);
+};
 const VIEW_KEY = 'view.section';
 
 /** The قسم picked in the switcher, or '' for both. Tab-scoped, like the session token. */

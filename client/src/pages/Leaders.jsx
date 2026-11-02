@@ -3,7 +3,7 @@ import ExportPdfButton from '../components/ExportPdfButton';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { useAuth, usePerms } from '../auth';
 import LeaderDues from '../components/LeaderDues';
 import { AmanaPresenceDialog, AmanaPresenceFooter } from '../components/AmanaPresence';
@@ -350,7 +350,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
   // الأمانات الجذور التي يمكن أن يتبعها هذا التوصيف — لا نفسه، و لا تابعٌ لغيره
   const parentOptions = amanaRoots.filter((a) => a.id !== initial.id && a.section === section);
   const leaderOptions = leaders.filter(
-    (l) => (l.status === 'active' && l.section === section) || String(l.id) === String(initial.leader_id)
+    (l) => (l.status === 'active' && leaderFits(l, section)) || String(l.id) === String(initial.leader_id)
   );
   // A new أمانة while both أقسام are on screen: say which one it belongs to (an
   // assistant added from a card already sits in its أمين's)
@@ -387,7 +387,7 @@ function AssignmentForm({ initial, year, leaders, branches, template, amanaRoots
   // Picking the other قسم (or a فرقة of it) lets go of a قائد and a أمين of this one
   function setSlotSection(next, patch = {}) {
     setForm((f) => {
-      const keepLeader = leaders.find((l) => String(l.id) === String(f.leader_id))?.section === next;
+      const keepLeader = leaderFits(leaders.find((l) => String(l.id) === String(f.leader_id)), next);
       const parentId = 'parent_id' in patch ? patch.parent_id : next === section ? f.parent_id : '';
       return { ...f, ...patch, leader_id: keepLeader ? f.leader_id : '', parent_id: parentId };
     });
@@ -920,7 +920,7 @@ function Holder({ a, page, strong = false }) {
         // An archived قائد stays on the slot they hold, but is not offered anew; and a
         // slot of one قسم only ever takes a قائد of that قسم
         options={leaders
-          .filter((l) => (l.status === 'active' && l.section === a.section) || l.id === a.leader_id)
+          .filter((l) => (l.status === 'active' && leaderFits(l, a.section)) || l.id === a.leader_id)
           .map((l) => ({ value: l.id, label: memberName(l) }))}
         clearLabel={t('leader.unassigned')}
         placeholder={t('leader.vacant')}

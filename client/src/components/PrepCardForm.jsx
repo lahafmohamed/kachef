@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { displayError } from '../lib/errors';
 import { useAuth } from '../auth';
 import { useFetch } from '../hooks';
@@ -115,7 +115,7 @@ export default function PrepCardForm({ initial, defaults, branches, leaders, onS
   function pickBranch(id) {
     const next = branchList.find((b) => b.id === Number(id))?.section;
     setForm((f) => {
-      const keepLeader = leaderList.find((l) => l.id === Number(f.leader_id))?.section === next;
+      const keepLeader = leaderFits(leaderList.find((l) => l.id === Number(f.leader_id)), next);
       return { ...f, branch_id: id, matalib: [], session_id: '', leader_id: keepLeader ? f.leader_id : '' };
     });
   }
@@ -220,7 +220,7 @@ export default function PrepCardForm({ initial, defaults, branches, leaders, onS
             {leaderList
               .filter(
                 (l) =>
-                  (l.status === 'active' && (!selectedBranch || l.section === selectedBranch.section)) ||
+                  (l.status === 'active' && (!selectedBranch || leaderFits(l, selectedBranch.section))) ||
                   l.id === Number(form.leader_id)
               )
               .map((l) => (

@@ -2,7 +2,7 @@ import { displayError } from '../lib/errors';
 import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { useAuth, usePerms } from '../auth';
 import { useBack, useFetch } from '../hooks';
 import AmountInput from '../components/AmountInput';
@@ -884,7 +884,7 @@ export default function SessionDetail() {
   const availableHelpers = (leaders.data || []).filter(
     (l) =>
       l.status === 'active' &&
-      l.section === session.section &&
+      leaderFits(l, session.section) &&
       !session.animators?.some((a) => a.leader_id === l.id)
   );
   // فرق النشاط بأسمائها، و الفرق التي تظهر فعلًا في اللائحة (فرق المستخدم منها)

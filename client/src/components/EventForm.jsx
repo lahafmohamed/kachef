@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
@@ -116,7 +116,7 @@ export default function EventFormDialog({ open, initial, onClose, onSaved }) {
   const groupedBranches = sectionBranches.filter((b) => form.branch_ids.includes(b.id) && (b.groups || []).length > 0);
   const shownGroupIds = new Set(branchList.flatMap((b) => (b.groups || []).map((g) => g.id)));
   const leaderOptions = (leaders.data || [])
-    .filter((l) => l.section === formSection && (l.status === 'active' || l.id === Number(form.leader_id)))
+    .filter((l) => leaderFits(l, formSection) && (l.status === 'active' || l.id === Number(form.leader_id)))
     .map((l) => ({ value: l.id, label: memberName(l) }));
   const loadFailed = branches.error || leaders.error;
   // First opening only: the lists are kept between openings. Saved before the فرق

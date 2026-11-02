@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { displayError } from '../lib/errors';
 import { usePerms } from '../auth';
 import { useFetch } from '../hooks';
@@ -125,7 +125,7 @@ export default function MeetingFormDialog({ open, initial, previous = null, seed
   const sectionBranches = branchList.filter((b) => b.section === formSection);
   const keep = [form.chair.id, form.secretary.id];
   const leaderList = (leaders.data || []).filter(
-    (l) => l.section === formSection && (l.status === 'active' || keep.includes(l.id))
+    (l) => leaderFits(l, formSection) && (l.status === 'active' || keep.includes(l.id))
   );
   const loadFailed = branches.error || leaders.error;
 

@@ -4,7 +4,7 @@ import PeriodReportButton from '../components/PeriodReport';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api';
+import { api, leaderFits } from '../api';
 import { usePerms } from '../auth';
 import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
 import { isFeminine, useSection } from '../section';
@@ -572,7 +572,7 @@ export default function Sessions() {
   const firstBranchSection = branchList.find((b) => b.id === Number(form.branch_ids[0]))?.section;
   const formSection = onScreen || firstBranchSection || form.section || 'M';
   const sectionBranches = branchList.filter((b) => b.section === formSection);
-  const sectionLeaders = leaderList.filter((l) => l.section === formSection);
+  const sectionLeaders = leaderList.filter((l) => leaderFits(l, formSection));
   const selectedBranch = branchList.find((b) => b.id === Number(primaryBranchId));
   // طلائع of the فرقة the journal is filtered on — the طليعة filter exists only then
   const filterGroups = branchList.find((b) => String(b.id) === branch)?.groups || [];
