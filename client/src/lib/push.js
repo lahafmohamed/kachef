@@ -126,5 +126,21 @@ export async function disablePush() {
   set({ state: 'off', endpoint: null });
 }
 
+/**
+ * The number on the installed app's icon (Android, desktop, iOS home-screen app), the
+ * same as the bell's. A browser without the Badging API simply shows none.
+ */
+let shownBadge = null;
+export function setAppBadge(count) {
+  if (count === shownBadge || typeof navigator === 'undefined') return;
+  shownBadge = count;
+  try {
+    const done = count > 0 ? navigator.setAppBadge?.(count) : navigator.clearAppBadge?.();
+    done?.catch?.(() => {});
+  } catch {
+    /* no badge here */
+  }
+}
+
 /** A test notification to this device. */
 export const testPush = () => api.post('/push/test', { endpoint: snapshot.endpoint });

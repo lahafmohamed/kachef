@@ -5,7 +5,8 @@ import { api } from '../api';
 import { useAuth } from '../auth';
 import { useFetch } from '../hooks';
 import { branchName } from '../utils';
-import { disablePush, enablePush, refreshPush, registerServiceWorker, testPush, usePushDevice } from '../lib/push';
+import { disablePush, enablePush, refreshPush, registerServiceWorker, setAppBadge, testPush, usePushDevice } from '../lib/push';
+import TimePicker from './TimePicker';
 import {
   cn,
   Button,
@@ -26,12 +27,14 @@ import {
   IconCoins,
   IconInbox,
   IconMessages,
+  IconMoon,
   IconSettings,
   IconStar,
   IconTent,
   IconUserCheck,
   IconUsers,
   IconWallet,
+  Label,
 } from './ui';
 
 /*
@@ -68,6 +71,32 @@ function fmtAgo(createdAt, lng, justNow) {
   )
     .format(at)
     .replace(/[‎‏؜]/g, '');
+}
+
+// The inbox reads in days: «Aujourd'hui», «Hier», then the date. Local days — the
+// reader's, not the server's.
+const toDate = (createdAt) => new Date(createdAt.replace(' ', 'T') + 'Z');
+const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+function dayLabel(createdAt, lng, t) {
+  const d = toDate(createdAt);
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (dayKey(d) === dayKey(today)) return t('push.today');
+  if (dayKey(d) === dayKey(yesterday)) return t('push.yesterday');
+  return cached(`day${lng}`, () =>
+    new Intl.DateTimeFormat(lng === 'ar' ? 'ar-LB-u-nu-latn' : 'fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })
+  )
+    .format(d)
+    .replace(/[‎‏؜]/g, '');
+}
+function byDay(items, lng, t) {
+  const days = [];
+  for (const n of items) {
+    const key = dayKey(toDate(n.created_at));
+    if (days.at(-1)?.key !== key) days.push({ key, label: dayLabel(n.created_at, lng, t), items: [] });
+    days.at(-1).items.push(n);
+  }
+  return days;
 }
 
 // ---------- device ----------
@@ -302,10 +331,14 @@ function PushCallout({ onSettings }) {
 }
 
 function NotificationsPanel({ open, onClose, counts, onSettings, isAdmin }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const toast = useToast();
   const [tab, setTab] = useState('mine');
   const [mine, setMine] = useState(null); // null loading · 'error' · []
   const [activity, setActivity] = useState(null);
+  // The inbox comes a page at a time: is there an older one, and is it on its way
+  const [more, setMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   // Each list is marked read once per opening, the first time it is on screen
   const marked = useRef({ mine: false, activity: false });
 
@@ -313,10 +346,27 @@ function NotificationsPanel({ open, onClose, counts, onSettings, isAdmin }) {
   function load(which) {
     const [path, set] = which === 'activity' ? ['/notifications', setActivity] : ['/me/notifications', setMine];
     set(null);
+    if (which !== 'activity') setMore(false);
     api
       .get(path)
-      .then((d) => set(d.items))
+      .then((d) => {
+        set(d.items);
+        if (which !== 'activity') setMore(!!d.more);
+      })
       .catch(() => set('error'));
+  }
+
+  function loadOlder() {
+    if (!Array.isArray(mine) || !mine.length) return;
+    setLoadingMore(true);
+    api
+      .get(`/me/notifications?before=${mine.at(-1).id}`)
+      .then((d) => {
+        setMine((list) => [...list, ...d.items.filter((n) => !list.some((x) => x.id === n.id))]);
+        setMore(!!d.more);
+      })
+      .catch(() => toast.error(t('error.loadFailed')))
+      .finally(() => setLoadingMore(false));
   }
 
   // Opening: the tab that has news first, both lists fetched fresh
@@ -395,15 +445,33 @@ function NotificationsPanel({ open, onClose, counts, onSettings, isAdmin }) {
         <EmptyState icon={<IconInbox className="h-6 w-6" />} title={t('push.empty')}>
           {t(tab === 'mine' ? 'push.emptyHint' : 'push.emptyActivityHint')}
         </EmptyState>
-      ) : (
-        <ul className={cn('-mx-2', tab === 'activity' && 'divide-y divide-border')}>
-          {list.map((n) =>
-            tab === 'mine' ? (
-              <InboxItem key={n.id} n={n} onOpen={onClose} />
-            ) : (
-              <ActivityItem key={n.id} n={n} onOpen={onClose} />
-            )
+      ) : tab === 'mine' ? (
+        <>
+          {byDay(list, i18n.language, t).map((day) => (
+            <section key={day.key} aria-label={day.label} className="mb-1">
+              <h3 className="sticky top-0 z-[1] -mx-1 bg-card/95 px-1 pt-2 pb-1 text-xs font-medium text-muted-foreground backdrop-blur-sm first-letter:uppercase">
+                {day.label}
+              </h3>
+              <ul className="-mx-2">
+                {day.items.map((n) => (
+                  <InboxItem key={n.id} n={n} onOpen={onClose} />
+                ))}
+              </ul>
+            </section>
+          ))}
+          {more && (
+            <div className="flex justify-center pt-2">
+              <Button variant="ghost" size="sm" onClick={loadOlder} loading={loadingMore}>
+                {t('push.loadOlder')}
+              </Button>
+            </div>
           )}
+        </>
+      ) : (
+        <ul className="-mx-2 divide-y divide-border">
+          {list.map((n) => (
+            <ActivityItem key={n.id} n={n} onOpen={onClose} />
+          ))}
         </ul>
       )}
     </Dialog>
@@ -423,6 +491,8 @@ let stopPolling = null;
 
 function setCounts(next) {
   counts = typeof next === 'function' ? next(counts) : next;
+  // The installed app's icon carries the same number as the bell
+  setAppBadge(counts.unread + counts.activity_unread);
   countListeners.forEach((l) => l());
 }
 
@@ -643,27 +713,91 @@ function DeviceCard() {
   );
 }
 
-function TypeRow({ type, enabled, hint, onChange, saving }) {
+// Where a type reaches the account: nowhere, the bell alone, or the bell and its devices
+const LEVELS = ['off', 'bell', 'all'];
+
+function TypeRow({ type, level, hint, onChange, saving }) {
   const { t } = useTranslation();
   const id = useId();
   return (
-    <li className="flex items-center gap-3 px-3 py-3">
-      <label htmlFor={id} className="min-w-0 flex-1 cursor-pointer">
-        <span className="block text-sm font-medium">{t(`push.type.${type}`)}</span>
-        {hint && (
-          <span id={`${id}-hint`} className="mt-0.5 block text-xs text-muted-foreground [text-wrap:pretty]">
-            {hint}
-          </span>
-        )}
-      </label>
-      <Switch
-        id={id}
-        checked={enabled}
-        onChange={onChange}
-        disabled={saving}
-        describedBy={hint ? `${id}-hint` : undefined}
-      />
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3">
+      <div className="min-w-0 flex-1 basis-44">
+        <span id={id} className="block text-sm font-medium">
+          {t(`push.type.${type}`)}
+        </span>
+        {hint && <span className="mt-0.5 block text-xs text-muted-foreground [text-wrap:pretty]">{hint}</span>}
+      </div>
+      <div className={cn('w-full sm:w-auto', saving && 'pointer-events-none opacity-60')} aria-busy={saving || undefined}>
+        <SegmentedControl
+          label={t(`push.type.${type}`)}
+          size="sm"
+          value={level}
+          onChange={(v) => v !== level && onChange(v)}
+          className="flex w-full sm:w-auto"
+          options={LEVELS.map((l) => ({
+            value: l,
+            label: <span className="px-1 whitespace-nowrap">{t(`push.level.${l}`)}</span>,
+          }))}
+        />
+      </div>
     </li>
+  );
+}
+
+const DEFAULT_QUIET = { from: '22:00', to: '07:00' };
+
+/** Quiet hours: the devices stay silent, the bell keeps filling, one summary at the end. */
+function QuietHours({ quiet, onSave }) {
+  const { t } = useTranslation();
+  const id = useId();
+  const [saving, setSaving] = useState(false);
+  const on = !!quiet;
+  async function save(next) {
+    setSaving(true);
+    try {
+      await onSave(next);
+    } finally {
+      setSaving(false);
+    }
+  }
+  const setEdge = (edge) => (e) => {
+    const v = e.target.value;
+    if (!v || v === (edge === 'from' ? quiet.to : quiet.from)) return;
+    save({ ...quiet, [edge]: v });
+  };
+  return (
+    <div className="rounded-xl border border-border p-3 sm:p-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <IconMoon className="h-[1.1rem] w-[1.1rem]" />
+        </span>
+        <label htmlFor={id} className="min-w-0 flex-1 cursor-pointer">
+          <span className="block text-sm font-medium">{t('push.quiet.title')}</span>
+          <span id={`${id}-hint`} className="mt-0.5 block text-sm text-muted-foreground [text-wrap:pretty]">
+            {t('push.quiet.hint')}
+          </span>
+        </label>
+        <Switch
+          id={id}
+          checked={on}
+          disabled={saving}
+          describedBy={`${id}-hint`}
+          onChange={(v) => save(v ? DEFAULT_QUIET : null)}
+        />
+      </div>
+      {on && (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:ps-12">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-from`}>{t('push.quiet.from')}</Label>
+            <TimePicker id={`${id}-from`} value={quiet.from} onChange={setEdge('from')} disabled={saving} minuteStep={15} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-to`}>{t('push.quiet.to')}</Label>
+            <TimePicker id={`${id}-to`} value={quiet.to} onChange={setEdge('to')} disabled={saving} minuteStep={15} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -695,18 +829,32 @@ export function NotificationSettingsDialog({ open, onClose }) {
       )
     : [];
 
-  async function toggle(type, enabled) {
+  async function setLevel(type, level) {
     const previous = prefs.data;
     // Applied at once; put back if the server refuses
-    prefs.setData((d) => ({ ...d, types: d.types.map((x) => (x.type === type ? { ...x, enabled } : x)) }));
+    prefs.setData((d) => ({
+      ...d,
+      types: d.types.map((x) => (x.type === type ? { ...x, level, enabled: level !== 'off' } : x)),
+    }));
     setSaving(type);
     try {
-      prefs.setData(await api.put('/me/notification-prefs', { [type]: enabled }));
+      prefs.setData(await api.put('/me/notification-prefs', { [type]: level }));
     } catch {
       prefs.setData(previous);
       toast.error(t('push.prefSaveFailed'));
     } finally {
       setSaving(null);
+    }
+  }
+
+  async function saveQuiet(quiet) {
+    const previous = prefs.data;
+    prefs.setData((d) => ({ ...d, quiet }));
+    try {
+      prefs.setData(await api.put('/me/notification-prefs/quiet', { quiet }));
+    } catch {
+      prefs.setData(previous);
+      toast.error(t('push.prefSaveFailed'));
     }
   }
 
@@ -717,6 +865,8 @@ export function NotificationSettingsDialog({ open, onClose }) {
           <h3 className="text-sm font-semibold">{t('push.deviceTitle')}</h3>
           <DeviceCard />
         </section>
+        {/* For every device of the account, not just this one */}
+        {prefs.data && <QuietHours quiet={prefs.data.quiet ?? null} onSave={saveQuiet} />}
         <section className="space-y-2">
           <h3 className="text-sm font-semibold">{t('push.typesTitle')}</h3>
           {prefs.error && !prefs.data ? (
@@ -735,10 +885,10 @@ export function NotificationSettingsDialog({ open, onClose }) {
                       <TypeRow
                         key={p.type}
                         type={p.type}
-                        enabled={p.enabled}
+                        level={p.level ?? (p.enabled ? 'all' : 'off')}
                         hint={hintOf(p.type)}
                         saving={saving === p.type}
-                        onChange={(v) => toggle(p.type, v)}
+                        onChange={(v) => setLevel(p.type, v)}
                       />
                     ))}
                   </ul>

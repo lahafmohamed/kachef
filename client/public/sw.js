@@ -1,7 +1,8 @@
 /*
  * Service worker de Kachef : les notifications push, et rien d'autre. Il ne met rien
  * en cache et n'intercepte aucune requête — l'app se charge toujours depuis le réseau,
- * comme avant lui. Le serveur envoie { title, body, url, tag, lang, dir } (server/push.js).
+ * comme avant lui. Le serveur envoie { title, body, url, tag, lang, dir, badge } (server/push.js) ; badge = le
+ * nombre de non-lus de la cloche, affiché sur l'icône de l'app installée.
  */
 
 self.addEventListener('install', () => self.skipWaiting());
@@ -27,6 +28,9 @@ self.addEventListener('push', (event) => {
         renotify: !!data.tag,
         data: { url: typeof data.url === 'string' ? data.url : '/' },
       });
+      // The icon of the installed app shows the bell's count (where the phone supports it)
+      if (Number.isInteger(data.badge) && 'setAppBadge' in navigator)
+        await (data.badge > 0 ? navigator.setAppBadge(data.badge) : navigator.clearAppBadge()).catch(() => {});
       // An open app refreshes its bell right away instead of at its next poll
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const w of windows) w.postMessage({ type: 'notification-push' });

@@ -2419,7 +2419,7 @@
     "blocked": "Le navigateur a refusé. Autorisez les notifications pour ce site dans ses réglages.",
     "enableFailed": "Activation impossible. Réessayez.",
     "typesTitle": "Me prévenir quand…",
-    "typesNote": "Ces choix valent pour la cloche et pour tous vos appareils.",
+    "typesNote": "« Cloche » : dans l’app seulement. « Partout » : aussi sur vos appareils où les notifications sont activées.",
     "type": {
       "session_created": "Une séance est ajoutée",
       "session_changed": "Une séance à venir change de date, d’heure ou de lieu",
@@ -2484,7 +2484,21 @@
       "people": "Membres et chefs",
       "money": "Argent"
     },
-    "emptyActivityHint": "Les séances ajoutées ou modifiées par les chefs s’afficheront ici."
+    "emptyActivityHint": "Les séances ajoutées ou modifiées par les chefs s’afficheront ici.",
+    "today": "Aujourd’hui",
+    "yesterday": "Hier",
+    "loadOlder": "Voir les plus anciennes",
+    "level": {
+      "off": "Non",
+      "bell": "Cloche",
+      "all": "Partout"
+    },
+    "quiet": {
+      "title": "Heures calmes",
+      "hint": "Vos appareils restent silencieux, la cloche continue de se remplir. À la fin, un seul résumé vous attend.",
+      "from": "De",
+      "to": "À"
+    }
   },
   "history": {
     "createdBy": "Créée par <b>{{name}}</b> le {{date}}",
@@ -3440,8 +3454,13 @@
       "export": "Exports PDF"
     },
     "action": {
-      "app": { "login": "Connexion" },
-      "dashboard": { "open": "Tableau de bord ouvert", "report": "Rapport de période" },
+      "app": {
+        "login": "Connexion"
+      },
+      "dashboard": {
+        "open": "Tableau de bord ouvert",
+        "report": "Rapport de période"
+      },
       "sessions": {
         "list": "Liste des séances",
         "open": "Séance ouverte",
@@ -3591,7 +3610,9 @@
         "users_delete": "Compte désactivé ou supprimé",
         "users_sync": "Comptes alignés sur la composition"
       },
-      "export": { "pdf": "Export PDF" }
+      "export": {
+        "pdf": "Export PDF"
+      }
     }
   }
 }
