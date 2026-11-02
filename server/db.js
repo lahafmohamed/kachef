@@ -1005,8 +1005,24 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   type TEXT NOT NULL,
   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  -- 0 = الجرس وحده: النوع يُكتب في الصندوق و لا يخرج إلى الأجهزة
+  push INTEGER NOT NULL DEFAULT 1 CHECK (push IN (0, 1)),
   PRIMARY KEY (user_id, type)
 );
+
+-- ساعات الهدوء: إشعارات الأجهزة التي حلّ وقتها في ساعات هدوء حسابها تنتظر هنا، ثم تخرج
+-- في إشعار واحد يجمعها عند انتهائها. الجرس لا ينتظر: صفّه كُتب في user_notifications.
+-- text: {"ar": {title, body}, "fr": {…}} كما في الصندوق. expires_at: بعده لا معنى له.
+CREATE TABLE IF NOT EXISTS push_deferred (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  url TEXT,
+  tag TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_deferred_user ON push_deferred(user_id, id);
 
 -- إعدادات الواجهة التي تتبع الحساب على كل جهاز (ما يُعرض في «بحاجة إلى إجراء»…):
 -- قيمة JSON لكل مفتاح
@@ -1578,6 +1594,8 @@ function migrate() {
   // Idle-timeout bookkeeping. ALTER TABLE cannot take datetime('now') as a default,
   // so the column lands nullable and old rows inherit their creation time.
   ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
+  // «Cloche seulement» : un type que le compte lit dans l'app sans qu'il sonne sur ses appareils
+  ensureColumn('notification_prefs', 'push', 'push INTEGER NOT NULL DEFAULT 1 CHECK (push IN (0, 1))');
   db.exec("UPDATE auth_tokens SET last_seen_at = created_at WHERE last_seen_at IS NULL");
   // «Voir en tant que»: a token opened by an admin to look at an account as that account
   // sees it. It points at the admin's own token, which keeps it alive — and ends it.

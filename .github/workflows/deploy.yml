@@ -1,0 +1,114 @@
+# Déploiement sur le VPS à chaque mise à jour de main (ou à la main : onglet Actions →
+# Deploy → Run workflow).
+#
+# Le client est construit ici, puis le code est copié dans /opt/kachef par rsync. Sur le
+# VPS : instantané de la base (les migrations de db.js modifient des tables au démarrage),
+# dépendances, redémarrage du service, puis vérification que le site répond.
+#
+# Secrets du dépôt (Settings → Secrets and variables → Actions → Secrets) :
+#   DEPLOY_SSH_KEY      clé privée d'une clé SSH dédiée au déploiement
+#   DEPLOY_KNOWN_HOSTS  sortie de `ssh-keyscan -t ed25519 169.58.210.77`
+# Variables facultatives (même page, onglet Variables) :
+#   DEPLOY_HOST  (défaut root@169.58.210.77)   DEPLOY_PATH  (défaut /opt/kachef)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Un déploiement à la fois ; un nouveau push attend la fin du précédent
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HOST: ${{ vars.DEPLOY_HOST || 'root@169.58.210.77' }}
+      APP_DIR: ${{ vars.DEPLOY_PATH || '/opt/kachef' }}
+      DB: /var/lib/kachef/scout.db
+      BACKUPS: /var/lib/kachef/backups
+      SERVICE: kachef
+      SITE: https://kachef.nolyxci.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the client
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          node --check server/index.js
+          node --check server/push.js
+          node --check server/db.js
+
+      - name: SSH key
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::Secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS are required"
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host *\n  IdentityFile ~/.ssh/id_deploy\n  BatchMode yes\n  StrictHostKeyChecking yes\n' > ~/.ssh/config
+
+      - name: Snapshot the database
+        run: |
+          STAMP=$(date -u +%Y%m%d-%H%M%S)
+          ssh "$HOST" "mkdir -p '$BACKUPS' && cd '$APP_DIR' && node -e '
+            const D = require(\"better-sqlite3\");
+            const db = new D(process.argv[1], { readonly: true });
+            db.backup(process.argv[2]).then(() => { db.close(); console.log(\"backup:\", process.argv[2]); });
+          ' '$DB' '$BACKUPS/scout-deploy-$STAMP.db'"
+
+      # Never touches the data: the database, the push keys and the uploads live outside
+      # the copied paths or are excluded. No --delete: a file removed from the repo stays
+      # on the server, which is harmless, rather than risk deleting something that matters.
+      - name: Copy the code
+        run: |
+          rsync -az --checksum --no-owner --no-group \
+            --exclude '.git/' --exclude '.github/' \
+            --exclude 'node_modules/' --exclude '*/node_modules/' \
+            --exclude 'server/scout.db*' --exclude 'server/*.db' --exclude 'server/*.db-*' \
+            --exclude 'server/uploads/' --exclude 'server/vapid.json' \
+            --exclude '.env*' --exclude 'server/.env*' \
+            --exclude 'docs/' --exclude 'unslop-story/' \
+            ./ "$HOST:$APP_DIR/"
+
+      - name: Install and restart
+        run: |
+          ssh "$HOST" "set -e
+            cd '$APP_DIR'
+            npm ci --omit=dev --no-audit --no-fund
+            systemctl restart '$SERVICE'
+            sleep 3
+            systemctl is-active --quiet '$SERVICE' || { journalctl -u '$SERVICE' -n 50 --no-pager; exit 1; }"
+
+      - name: Check the site answers
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/api/push/key" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = 200 ] || [ "$code" = 401 ] && exit 0
+            sleep 5
+          done
+          echo "::error::$SITE does not answer after the restart"
+          exit 1

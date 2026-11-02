@@ -15,9 +15,11 @@ const webpush = require('web-push');
 const { db, sectionDef } = require('./db');
 
 const LANGS = ['ar', 'fr'];
-// Per account: the bell is a recent log, not an archive
-const INBOX_MAX = 100;
+// Per account: the bell is a recent log, not an archive — read a page at a time
+const INBOX_MAX = 200;
 const LIST_LIMIT = 50;
+// The bell's «Activité des chefs» log counts at most this many lines
+const ACTIVITY_LIMIT = 50;
 // 8 pm in Abidjan (GMT all year): the Saturday نشاط is long over, the evening still young
 const REMINDER_HOUR = Number(process.env.NOTIFY_REMINDER_HOUR ?? 20);
 // Birthdays are news of the morning
@@ -32,6 +34,7 @@ const REPORT_REMINDER_HOUR = 9;
 // بطاقة التحضير of the next planned نشاط, this many days before it
 const PREP_DAYS_AHEAD = 2;
 const REMINDER_EVERY_MS = 10 * 60 * 1000;
+const DEFERRED_EVERY_MS = 2 * 60 * 1000;
 const DAY_S = 24 * 60 * 60;
 const DEVICES_MAX = 10;
 
@@ -141,10 +144,46 @@ function ownBranches(u) {
 
 const seesSection = (u, section) => u.role === 'admin' || !u.section || u.section === section;
 
-const prefRow = db.prepare('SELECT enabled FROM notification_prefs WHERE user_id = ? AND type = ?');
-function wants(u, type) {
+// Three levels per type: 'off', 'bell' (the inbox only) and 'all' (the inbox and every
+// device). A type on by default is 'all'; a row is kept only for a choice that differs.
+const LEVELS = ['off', 'bell', 'all'];
+const prefRow = db.prepare('SELECT enabled, push FROM notification_prefs WHERE user_id = ? AND type = ?');
+const defaultLevel = (u, type) => (TYPES[type].on(u) ? 'all' : 'off');
+function levelOf(u, type) {
   const row = prefRow.get(u.id, type);
-  return row ? !!row.enabled : TYPES[type].on(u);
+  if (!row) return defaultLevel(u, type);
+  return !row.enabled ? 'off' : row.push ? 'all' : 'bell';
+}
+// In the inbox at all
+const wants = (u, type) => levelOf(u, type) !== 'off';
+// On the account's devices too
+const wantsPush = (u, type) => levelOf(u, type) === 'all';
+
+// ---------- Quiet hours ----------
+// { from: 'HH:MM', to: 'HH:MM' } in the app's time (Abidjan: GMT all year, as the
+// reminders), or nothing. A range may cross midnight (22:00 → 07:00). During it the
+// devices stay silent; the bell still fills, and one push sums it all up at its end.
+const QUIET_KEY = 'notify.quiet';
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const quietRow = db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?');
+const validQuiet = (q) =>
+  q === null || (!!q && typeof q === 'object' && HHMM_RE.test(q.from) && HHMM_RE.test(q.to) && q.from !== q.to);
+function quietOf(userId) {
+  try {
+    const row = quietRow.get(userId, QUIET_KEY);
+    const q = row ? JSON.parse(row.value) : null;
+    return q && validQuiet(q) ? { from: q.from, to: q.to } : null;
+  } catch {
+    return null;
+  }
+}
+const minutesOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+function inQuiet(q, now = new Date()) {
+  if (!q) return false;
+  const m = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const from = minutesOf(q.from);
+  const to = minutesOf(q.to);
+  return from < to ? m >= from && m < to : m >= from || m < to;
 }
 
 module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
@@ -246,18 +285,97 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
    * `text(lang, user)` writes it — per reader, for the rare text that speaks to him.
    * `tag` folds notifications about the same thing into one on the phone.
    */
-  function deliver(users, { type, url, tag, ttl, text }) {
+  function deliver(users, { type, url, tag, ttl = 2 * DAY_S, text }) {
     if (!users.length) return;
     const texts = new Map(users.map((u) => [u.id, Object.fromEntries(LANGS.map((l) => [l, text(l, u)]))]));
+    // The devices: only for the accounts that keep this type on them, and not now for an
+    // account inside its quiet hours — its push waits for their end
+    const now = new Date();
+    const pushNow = new Map();
+    const held = [];
+    for (const u of users) {
+      if (!wantsPush(u, type)) continue;
+      if (inQuiet(quietOf(u.id), now)) held.push(u.id);
+      else pushNow.set(u.id, texts.get(u.id));
+    }
+    const expires = new Date(now.getTime() + ttl * 1000).toISOString().replace('T', ' ').slice(0, 19);
     db.transaction(() => {
       for (const u of users) {
         insertInbox.run(u.id, type, JSON.stringify(texts.get(u.id)), url ?? null);
         trimInbox.run(u.id, u.id, INBOX_MAX);
       }
+      for (const id of held) insertDeferred.run(id, JSON.stringify(texts.get(id)), url ?? null, tag ?? null, expires);
     })();
-    setImmediate(() =>
-      sendPushes(texts, { url, tag, ttl }).catch((e) => console.error('push send failed:', e.message))
-    );
+    if (pushNow.size)
+      setImmediate(() =>
+        sendPushes(pushNow, { url, tag, ttl }).catch((e) => console.error('push send failed:', e.message))
+      );
+  }
+
+  // ---------- After the quiet hours ----------
+
+  const insertDeferred = db.prepare(
+    'INSERT INTO push_deferred (user_id, text, url, tag, expires_at) VALUES (?, ?, ?, ?, ?)'
+  );
+  const DIGEST_LINES = 4;
+  const digestTitle = (n, lang) =>
+    lang === 'fr'
+      ? `${n} nouvelles notifications`
+      : n === 2
+        ? 'إشعاران جديدان'
+        : n <= 10
+          ? `${n} إشعارات جديدة`
+          : `${n} إشعارًا جديدًا`;
+
+  /**
+   * The pushes held back by quiet hours, for every account whose hours are over (or
+   * just `userId`'s): one alone leaves as it was written, several leave as one summary
+   * that opens the app. Expired ones are dropped — the bell has them anyway.
+   */
+  function flushDeferred(now = new Date(), userId = null) {
+    const stamp = now.toISOString().replace('T', ' ').slice(0, 19);
+    db.prepare('DELETE FROM push_deferred WHERE expires_at <= ?').run(stamp);
+    const ids = db
+      .prepare(`SELECT DISTINCT user_id FROM push_deferred ${userId ? 'WHERE user_id = ?' : ''}`)
+      .all(...(userId ? [userId] : []))
+      .map((r) => r.user_id)
+      .filter((id) => !inQuiet(quietOf(id), now));
+    let flushed = 0;
+    for (const id of ids) {
+      const rows = db.transaction(() => {
+        const r = db.prepare('SELECT * FROM push_deferred WHERE user_id = ? ORDER BY id').all(id);
+        db.prepare('DELETE FROM push_deferred WHERE user_id = ?').run(id);
+        return r;
+      })();
+      if (!rows.length) continue;
+      flushed += 1;
+      const items = rows.map((r) => ({ ...r, text: JSON.parse(r.text) }));
+      if (items.length === 1) {
+        const [only] = items;
+        sendPushes(new Map([[id, only.text]]), { url: only.url, tag: only.tag }).catch((e) =>
+          console.error('push send failed:', e.message)
+        );
+        continue;
+      }
+      // Newest first, as in the bell
+      const latest = items.slice().reverse();
+      const text = Object.fromEntries(
+        LANGS.map((lang) => {
+          // «Nouveau membre · Baraem — Ali …»: one line each, the title and the first line of its body
+          const titles = latest.slice(0, DIGEST_LINES).map((it) => {
+            const t = it.text[lang] || it.text.ar;
+            const line = [t.title, String(t.body || '').split('\n')[0]].filter(Boolean).join(' — ');
+            return line.length > 90 ? `${line.slice(0, 89)}…` : line;
+          });
+          if (latest.length > DIGEST_LINES) titles.push('…');
+          return [lang, { title: digestTitle(items.length, lang), body: titles.join('\n') }];
+        })
+      );
+      sendPushes(new Map([[id, text]]), { url: '/', tag: 'digest' }).catch((e) =>
+        console.error('push send failed:', e.message)
+      );
+    }
+    return flushed;
   }
 
   const subsOfUsers = (ids) =>
@@ -272,10 +390,20 @@ module.exports = function setupNotifications(app, { canUser, nextPlanned }) {
   // texts: Map user_id -> { ar: {title, body}, fr: {...} }
   async function sendPushes(texts, { url, tag, ttl = 2 * DAY_S }) {
     const subs = subsOfUsers([...texts.keys()]);
+    // The number on the app's icon, where the phone shows one: the bell's own count
+    const badges = new Map();
+    const badgeOf = (userId) => {
+      if (!badges.has(userId)) badges.set(userId, unreadTotal(userId));
+      return badges.get(userId);
+    };
     const results = await Promise.all(
       subs.map((s) => {
         const t = texts.get(s.user_id)[s.lang] || texts.get(s.user_id).ar;
-        return pushTo(s, { title: t.title, body: t.body, url, tag, lang: s.lang }, { ttl, topic: tag });
+        return pushTo(
+          s,
+          { title: t.title, body: t.body, url, tag, lang: s.lang, badge: badgeOf(s.user_id) },
+          { ttl, topic: tag }
+        );
       })
     );
     return { sent: results.filter(Boolean).length, failed: results.filter((r) => !r).length };
@@ -1397,6 +1525,14 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
   }
   setTimeout(runReminders, 60 * 1000).unref();
   setInterval(runReminders, REMINDER_EVERY_MS).unref();
+  // Quiet hours end on the minute someone chose: checked more often than the reminders
+  setInterval(() => {
+    try {
+      flushDeferred();
+    } catch (e) {
+      console.error('deferred pushes failed:', e.message);
+    }
+  }, DEFERRED_EVERY_MS).unref();
 
   // ---------- Devices ----------
 
@@ -1486,8 +1622,8 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
         pushTo(
           s,
           s.lang === 'ar'
-            ? { title: 'الإشعارات مفعّلة', body: 'هكذا ستصلك أخبار الأنشطة الجديدة.', url: '/', tag: 'test', lang: 'ar' }
-            : { title: 'Notifications activées', body: 'Vous serez prévenu ainsi des nouvelles séances.', url: '/', tag: 'test', lang: 'fr' },
+            ? { title: 'الإشعارات مفعّلة', body: 'هكذا ستصلك أخبار الأنشطة الجديدة.', url: '/', tag: 'test', lang: 'ar', badge: unreadTotal(req.user.id) }
+            : { title: 'Notifications activées', body: 'Vous serez prévenu ainsi des nouvelles séances.', url: '/', tag: 'test', lang: 'fr', badge: unreadTotal(req.user.id) },
           { ttl: 60 * 60 }
         )
       )
@@ -1504,32 +1640,47 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
   // The admin's log of what the قادة did (notifyAdmins in index.js). Its «X added a نشاط»
   // lines are not counted when the same news already came to the inbox, or the bell
   // would count one نشاط twice.
-  function activityUnread(req) {
-    if (req.user.role !== 'admin') return null;
-    const seen =
-      db.prepare('SELECT seen_at FROM notification_seen WHERE user_id = ?').get(req.user.id)?.seen_at || '';
-    const skipCreated = wants(req.user, 'session_created');
+  function activityUnread(user) {
+    if (user.role !== 'admin') return null;
+    const seen = db.prepare('SELECT seen_at FROM notification_seen WHERE user_id = ?').get(user.id)?.seen_at || '';
+    const skipCreated = wants(user, 'session_created');
     return db
       .prepare(
-        `SELECT COUNT(*) AS n FROM (SELECT type, created_at FROM notifications ORDER BY created_at DESC, id DESC LIMIT ${LIST_LIMIT})
+        `SELECT COUNT(*) AS n FROM (SELECT type, created_at FROM notifications ORDER BY created_at DESC, id DESC LIMIT ${ACTIVITY_LIMIT})
          WHERE created_at > ? AND NOT (? AND type = 'session_create')`
       )
       .get(seen, skipCreated ? 1 : 0).n;
   }
 
+  // What the bell shows on its badge, for the icon of the installed app
+  function unreadTotal(userId) {
+    const u = userRow.get(userId);
+    return u ? unreadOf(u.id) + (activityUnread(u) || 0) : 0;
+  }
+
   app.get('/api/me/notifications/count', (req, res) => {
-    res.json({ unread: unreadOf(req.user.id), activity_unread: activityUnread(req) });
+    res.json({ unread: unreadOf(req.user.id), activity_unread: activityUnread(req.user) });
   });
 
+  // A page of the inbox, newest first; `before` (an id) reads the page after it
   app.get('/api/me/notifications', (req, res) => {
-    const items = db
+    const before = Number(req.query.before);
+    const rows = db
       .prepare(
         `SELECT id, type, text, url, created_at, read_at FROM user_notifications
-         WHERE user_id = ? ORDER BY id DESC LIMIT ${LIST_LIMIT}`
+         WHERE user_id = ? ${Number.isInteger(before) && before > 0 ? 'AND id < ?' : ''}
+         ORDER BY id DESC LIMIT ${LIST_LIMIT + 1}`
       )
-      .all(req.user.id)
+      .all(req.user.id, ...(Number.isInteger(before) && before > 0 ? [before] : []));
+    const items = rows
+      .slice(0, LIST_LIMIT)
       .map((n) => ({ ...n, text: JSON.parse(n.text), unread: !n.read_at }));
-    res.json({ items, unread: unreadOf(req.user.id), activity_unread: activityUnread(req) });
+    res.json({
+      items,
+      more: rows.length > LIST_LIMIT,
+      unread: unreadOf(req.user.id),
+      activity_unread: activityUnread(req.user),
+    });
   });
 
   // Everything read (opening the bell), or just the given ids
@@ -1550,7 +1701,11 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
   // ---------- Preferences ----------
 
   const prefsPayload = (u) => ({
-    types: typesFor(u).map((type) => ({ type, group: TYPES[type].group, enabled: wants(u, type), default: TYPES[type].on(u) })),
+    types: typesFor(u).map((type) => {
+      const level = levelOf(u, type);
+      return { type, group: TYPES[type].group, level, default: defaultLevel(u, type), enabled: level !== 'off' };
+    }),
+    quiet: quietOf(u.id),
     push_available: !!vapid,
   });
 
@@ -1560,26 +1715,42 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
 
   app.get('/api/me/notification-prefs', (req, res) => res.json(prefsPayload(userRow.get(req.user.id))));
 
-  // { type: true|false, ... } — a choice equal to the default leaves no row behind
+  // { type: 'off'|'bell'|'all', ... } — true and false still mean 'all' and 'off'. A
+  // choice equal to the default leaves no row behind.
   app.put('/api/me/notification-prefs', (req, res) => {
     const u = userRow.get(req.user.id);
     const allowed = typesFor(u);
     const body = req.body || {};
-    const entries = Object.entries(body);
-    if (!entries.length || entries.some(([type, v]) => !allowed.includes(type) || typeof v !== 'boolean'))
+    const entries = Object.entries(body).map(([type, v]) => [type, v === true ? 'all' : v === false ? 'off' : v]);
+    if (!entries.length || entries.some(([type, v]) => !allowed.includes(type) || !LEVELS.includes(v)))
       return res.status(400).json({ error: 'invalid prefs' });
     db.transaction(() => {
-      for (const [type, enabled] of entries) {
-        if (enabled === TYPES[type].on(u))
+      for (const [type, level] of entries) {
+        if (level === defaultLevel(u, type))
           db.prepare('DELETE FROM notification_prefs WHERE user_id = ? AND type = ?').run(u.id, type);
         else
           db.prepare(
-            `INSERT INTO notification_prefs (user_id, type, enabled) VALUES (?, ?, ?)
-             ON CONFLICT(user_id, type) DO UPDATE SET enabled = excluded.enabled`
-          ).run(u.id, type, enabled ? 1 : 0);
+            `INSERT INTO notification_prefs (user_id, type, enabled, push) VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id, type) DO UPDATE SET enabled = excluded.enabled, push = excluded.push`
+          ).run(u.id, type, level === 'off' ? 0 : 1, level === 'all' ? 1 : 0);
       }
     })();
     res.json(prefsPayload(u));
+  });
+
+  // { from: 'HH:MM', to: 'HH:MM' } or null (no quiet hours). What waited for their end
+  // leaves at once if the new hours no longer hold it.
+  app.put('/api/me/notification-prefs/quiet', (req, res) => {
+    const q = req.body?.quiet === undefined ? undefined : req.body.quiet;
+    if (q === undefined || !validQuiet(q)) return res.status(400).json({ error: 'invalid quiet hours' });
+    if (q === null) db.prepare('DELETE FROM user_settings WHERE user_id = ? AND key = ?').run(req.user.id, QUIET_KEY);
+    else
+      db.prepare(
+        `INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
+         ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
+      ).run(req.user.id, QUIET_KEY, JSON.stringify({ from: q.from, to: q.to }));
+    flushDeferred(new Date(), req.user.id);
+    res.json(prefsPayload(userRow.get(req.user.id)));
   });
 
   return {
@@ -1608,5 +1779,6 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
     prepReminders,
     birthdayReminders,
     duesReminders,
+    flushDeferred,
   };
 };
