@@ -213,7 +213,9 @@ function Shell() {
   const onFiche = location.pathname.startsWith('/fiche/');
   // Never on a print sheet: there the server's Chromium waits for the network to go
   // quiet before printing, and every PDF would wait for the whole app to download
-  usePrefetchPages(!!user && !user.must_change_password && !onPrintSheet && !onFiche);
+  // An admin looking at an account (user.impersonated_by) sees it past the password gate
+  const mustChange = !!user?.must_change_password && !user.impersonated_by;
+  usePrefetchPages(!!user && !mustChange && !onPrintSheet && !onFiche);
 
   // A family's link opens the same page whoever is signed in on this phone — a قائد
   // trying the link he sends sees what the family will see
@@ -233,7 +235,7 @@ function Shell() {
   if (!user) return <Login />;
   // A generated password is a bootstrap credential: the server serves no data
   // until it is replaced, so the app shows nothing else either
-  if (user.must_change_password) return <ChangePasswordGate />;
+  if (mustChange) return <ChangePasswordGate />;
 
   const isAdmin = user.role === 'admin';
 

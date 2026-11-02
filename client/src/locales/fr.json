@@ -95,6 +95,7 @@
     "crashTitle": "Une erreur est survenue",
     "reload": "Recharger l'application",
     "forbidden": "Vous n’avez pas accès à cette action. Contactez un administrateur pour vérifier vos autorisations.",
+    "readOnlyView": "Vue en lecture seule : quittez cette vue pour modifier quoi que ce soit.",
     "missing": "Cet élément n’est plus disponible. Actualisez la page pour afficher les données à jour.",
     "requestFailed": "Impossible de terminer la demande. Actualisez les données pour vérifier le résultat avant de réessayer.",
     "crashBody": "Rechargez l’application. Si le problème persiste, contactez un administrateur."
@@ -1746,6 +1747,12 @@
     "credentialsTitle": "Identifiants de connexion",
     "tempPassword": "Mot de passe provisoire",
     "tempPasswordHint": "Le chef doit encore remplacer son mot de passe provisoire.",
+    "viewAs": {
+      "action": "Voir en tant que ce compte",
+      "hint": "Voir l’application comme ce compte la voit (lecture seule)",
+      "banner": "Vous voyez l’application comme « {{name}} » — lecture seule, rien ne peut être modifié.",
+      "exit": "Quitter cette vue"
+    },
     "linkedLeader": "Compte lié à un chef",
     "inactive": "Désactivé",
     "inactiveSection": "Comptes désactivés",

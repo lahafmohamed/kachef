@@ -691,7 +691,8 @@ app.use('/api', (req, res, next) => {
     token &&
     db
       .prepare(
-        `SELECT u.*, t.last_seen_at AS token_last_seen, t.created_at AS token_created
+        `SELECT u.*, t.last_seen_at AS token_last_seen, t.created_at AS token_created,
+                t.parent_token AS parent_token
            FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?`
       )
       .get(token);
@@ -709,9 +710,38 @@ app.use('/api', (req, res, next) => {
   if (idleFor > TOUCH_MS)
     db.prepare("UPDATE auth_tokens SET last_seen_at = datetime('now') WHERE token = ?").run(token);
 
+  // «Voir en tant que»: the admin's own session must still be alive, and looking counts as
+  // being active — otherwise the admin would be signed out behind the account they watch
+  if (row.parent_token) {
+    const parent = db
+      .prepare(
+        `SELECT u.id, u.display_name, u.username, u.role, u.active,
+                t.last_seen_at AS seen, t.created_at AS created
+           FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?`
+      )
+      .get(row.parent_token);
+    const parentAlive =
+      parent &&
+      parent.active &&
+      parent.role === 'admin' &&
+      Date.now() - sqlTime(parent.seen || parent.created) <= IDLE_MS &&
+      Date.now() - sqlTime(parent.created) <= MAX_SESSION_MS;
+    if (!parentAlive) {
+      db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(token);
+      return res.status(401).json({ error: 'session_expired' });
+    }
+    if (Date.now() - sqlTime(parent.seen || parent.created) > TOUCH_MS)
+      db.prepare("UPDATE auth_tokens SET last_seen_at = datetime('now') WHERE token = ?").run(row.parent_token);
+    req.impersonator = { id: parent.id, display_name: parent.display_name || parent.username };
+    // Looking is not writing: nothing done here may land under the account's name
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.originalUrl !== '/api/auth/logout')
+      return res.status(403).json({ error: 'read_only_view' });
+  }
+
   req.user = publicUser(row);
   req.token = token;
-  res.on('finish', () => recordActivity(req, res));
+  // The admin looking around is not the leader using the app: no line in his statistics
+  if (!req.impersonator) res.on('finish', () => recordActivity(req, res));
   next();
 });
 
@@ -721,7 +751,14 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // absence_threshold: the series of absences that asks for a call (A2), for every badge
-app.get('/api/auth/me', (req, res) => res.json({ ...req.user, absence_threshold: absenceThreshold() }));
+app.get('/api/auth/me', (req, res) =>
+  res.json({
+    ...req.user,
+    absence_threshold: absenceThreshold(),
+    // Set while an admin looks at this account through «Voir en tant que»
+    impersonated_by: req.impersonator ?? null,
+  })
+);
 
 app.post('/api/auth/change-password', (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
@@ -742,7 +779,8 @@ app.post('/api/auth/change-password', (req, res) => {
 // A generated/default password is only a bootstrap credential. Until it is changed,
 // the account may inspect itself and change the password, but no product data leaves.
 app.use('/api', (req, res, next) => {
-  if (!req.user.must_change_password) return next();
+  // The admin looking at an account that still has its provisional password sees it as it is
+  if (!req.user.must_change_password || req.impersonator) return next();
   const allowed = ['/api/auth/me', '/api/auth/change-password', '/api/auth/logout'];
   return allowed.some((p) => req.originalUrl.startsWith(p))
     ? next()
@@ -1246,7 +1284,8 @@ const activityTotalsSQL = (where) => `
 const lastSeenEverSQL = `
   SELECT user_id, MAX(at) AS at FROM (
     SELECT user_id, MAX(created_at) AS at FROM activity_log GROUP BY user_id
-    UNION ALL SELECT user_id, MAX(COALESCE(last_seen_at, created_at)) FROM auth_tokens GROUP BY user_id
+    UNION ALL SELECT user_id, MAX(COALESCE(last_seen_at, created_at)) FROM auth_tokens
+      WHERE parent_token IS NULL GROUP BY user_id
     UNION ALL SELECT actor_user_id, MAX(created_at) FROM audit_events WHERE actor_user_id IS NOT NULL GROUP BY actor_user_id
   ) GROUP BY user_id`;
 
@@ -1536,6 +1575,31 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   const updated = userById(u.id);
   auditEvent(req, 'update', 'user', u.id, publicUser(u), publicUser(updated));
   res.json({ ...publicUser(updated), ...(req.body.reset_password ? { password: newPassword } : {}) });
+});
+
+// «Voir en tant que»: a session on this account, opened by an admin, so he sees exactly
+// what the account sees (pages, فرق, قسم, rights) without asking for its password. Read
+// only — see the guard in the token middleware — and tied to the admin's own session.
+// The account's password and its devices are left untouched; the opening is audited.
+app.post('/api/users/:id/impersonate', requireAdmin, (req, res) => {
+  const target = userById(req.params.id);
+  if (!target) return res.status(404).json({ error: 'user not found' });
+  if (target.id === req.user.id) return res.status(400).json({ error: 'cannot_view_self' });
+  if (target.role === 'admin') return res.status(400).json({ error: 'cannot_view_admin' });
+  if (!target.active) return res.status(400).json({ error: 'user_inactive' });
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare(
+    "INSERT INTO auth_tokens (token, user_id, last_seen_at, parent_token) VALUES (?, ?, datetime('now'), ?)"
+  ).run(token, target.id, req.token);
+  auditEvent(req, 'impersonate', 'user', target.id, null, { username: target.username });
+  res.json({
+    token,
+    user: {
+      ...publicUser(target),
+      absence_threshold: absenceThreshold(),
+      impersonated_by: { id: req.user.id, display_name: req.user.display_name || req.user.username },
+    },
+  });
 });
 
 // Default: deactivate (the account stays listed, can be reactivated, keeps its

@@ -8,6 +8,7 @@ import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './shadcn
 import { NotificationsBell, NotificationSettingsDialog, PushPrompt, usePushSync } from './Notifications';
 import {
   cn,
+  Button,
   Dialog,
   SegmentedControl,
   useTheme,
@@ -15,6 +16,7 @@ import {
   IconBell,
   IconCheck,
   IconChevronDown,
+  IconEye,
   IconHome,
   IconUsers,
   IconCalendar,
@@ -281,18 +283,24 @@ const initialsOf = (name) => name.slice(0, 2).toUpperCase();
 /** Password, notifications, language, theme and the way out: the account popover, sidebar and phone bar alike. */
 function AccountItems({ onChangePassword, onNotifications }) {
   const { t, i18n } = useTranslation();
-  const { logout } = useAuth();
+  const { user, logout, exitView } = useAuth();
   const { theme, toggle } = useTheme();
   const isAr = i18n.language === 'ar';
   const dark = theme === 'dark';
+  // An admin looking at this account: its password and its notifications are not his to touch
+  const viewing = !!user?.impersonated_by;
   return (
     <>
-      <MenuItem icon={<IconKey />} onClick={onChangePassword}>
-        {t('auth.changePassword')}
-      </MenuItem>
-      <MenuItem icon={<IconBell />} onClick={onNotifications}>
-        {t('push.settings')}
-      </MenuItem>
+      {!viewing && (
+        <>
+          <MenuItem icon={<IconKey />} onClick={onChangePassword}>
+            {t('auth.changePassword')}
+          </MenuItem>
+          <MenuItem icon={<IconBell />} onClick={onNotifications}>
+            {t('push.settings')}
+          </MenuItem>
+        </>
+      )}
       <MenuItem icon={<IconLanguages />} onClick={() => i18n.changeLanguage(isAr ? 'fr' : 'ar')}>
         {isAr ? 'Français' : 'العربية'}
       </MenuItem>
@@ -300,9 +308,15 @@ function AccountItems({ onChangePassword, onNotifications }) {
         {t(dark ? 'nav.lightMode' : 'nav.darkMode')}
       </MenuItem>
       <div role="separator" className="-mx-1.5 my-1.5 h-px bg-border" />
-      <MenuItem icon={<IconLogout />} onClick={logout}>
-        {t('auth.signOut')}
-      </MenuItem>
+      {viewing ? (
+        <MenuItem icon={<IconLogout />} onClick={exitView}>
+          {t('admin.viewAs.exit')}
+        </MenuItem>
+      ) : (
+        <MenuItem icon={<IconLogout />} onClick={logout}>
+          {t('auth.signOut')}
+        </MenuItem>
+      )}
     </>
   );
 }
@@ -575,8 +589,38 @@ function OfflineBanner() {
   );
 }
 
+/**
+ * Shown the whole time an admin looks at an account through «Voir en tant que»: whose
+ * screen this is, that nothing can be changed from it, and the way back. Sticky like the
+ * offline strip, in the warning tones so it is never mistaken for the real thing.
+ */
+function ViewAsBanner() {
+  const { t } = useTranslation();
+  const { user, exitView } = useAuth();
+  if (!user?.impersonated_by) return null;
+  return (
+    <div
+      role="status"
+      className="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-20 border-b border-warning-line bg-background lg:top-0"
+    >
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 bg-warning-soft px-4 py-2 text-sm text-warning">
+        <p className="flex min-w-0 items-center gap-2 font-medium">
+          <IconEye className="h-4 w-4 shrink-0" />
+          <span className="min-w-0">
+            {t('admin.viewAs.banner', { name: user.display_name || user.username })}
+          </span>
+        </p>
+        <Button size="sm" variant="outline" onClick={exitView}>
+          {t('admin.viewAs.exit')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function Layout({ children }) {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const { pathname } = useLocation();
   const wide = WIDE_PAGES.includes(pathname);
   const { fixed, canSwitch, section } = useSection();
@@ -662,6 +706,7 @@ export default function Layout({ children }) {
       </header>
 
       <div className="relative lg:ps-64">
+        <ViewAsBanner />
         <OfflineBanner />
         <main
           ref={mainRef}
@@ -673,7 +718,7 @@ export default function Layout({ children }) {
           )}
         >
           {/* Once, above the dashboard: switch push on for this device */}
-          {pathname === '/' && <PushPrompt className="mb-6" />}
+          {pathname === '/' && !user?.impersonated_by && <PushPrompt className="mb-6" />}
           {children}
         </main>
       </div>

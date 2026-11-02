@@ -30,6 +30,7 @@ import {
   useToast,
   IconAlert,
   IconCheck,
+  IconEye,
   IconKey,
   IconPencil,
   IconPlus,
@@ -362,9 +363,11 @@ function UserForm({ initial, branches, isSelf, setSaving, setError, onSaved, onC
 // I4: what the account's فرق are against the قائد's تشكيلة. 'ok' / 'all' / 'amana' say nothing.
 const TACHKILA_ALERTS = ['drift', 'absent', 'archived'];
 
-function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete, onAlign, aligning }) {
+function UserRow({ u, me, nameOf, onEdit, onViewAs, onDeactivate, onReactivate, onDelete, onAlign, aligning }) {
   const { t } = useTranslation();
   const isSelf = u.id === me.id;
+  // «Voir en tant que»: any active account but an admin's — nothing to learn from looking at yourself
+  const canView = u.active && u.role !== 'admin' && !isSelf;
   // The icon buttons say what they do; this tells a screen reader whose account it is
   const nameId = `user-${u.id}-name`;
   return (
@@ -469,6 +472,18 @@ function UserRow({ u, me, nameOf, onEdit, onDeactivate, onReactivate, onDelete, 
             <IconUserCheck className="text-success" />
           </Button>
         )}
+        {canView && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onViewAs(u)}
+            aria-label={t('admin.viewAs.action')}
+            aria-describedby={nameId}
+            title={t('admin.viewAs.hint')}
+          >
+            <IconEye />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -524,7 +539,7 @@ export default function Admin() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
-  const { user: me } = useAuth();
+  const { user: me, viewAs } = useAuth();
   const { view } = useSection();
   const navigate = useNavigate();
   const users = useFetch('/users');
@@ -572,6 +587,15 @@ export default function Admin() {
       last_admin: t('admin.lastAdmin'),
     };
     return map[err.message] || displayError(err);
+  }
+
+  // Opens the account's screen (read only); on success the app reloads on it
+  async function view_as(u) {
+    try {
+      await viewAs(u.id);
+    } catch (err) {
+      toast.error(describe(err));
+    }
   }
 
   async function deactivate(u) {
@@ -660,6 +684,7 @@ export default function Admin() {
     me,
     nameOf,
     onEdit: edit,
+    onViewAs: view_as,
     onDeactivate: deactivate,
     onReactivate: reactivate,
     onDelete: remove,

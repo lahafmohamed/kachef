@@ -9,6 +9,7 @@ const RECOVERY_KEYS = {
   forbidden: 'error.forbidden',
   unauthorized: 'error.forbidden',
   admin_only: 'error.forbidden',
+  read_only_view: 'error.readOnlyView',
   insufficient_permissions: 'error.forbidden',
   not_found: 'error.missing',
   'not found': 'error.missing',

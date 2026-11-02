@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, setToken, clearToken, getToken } from './api';
+import { api, setToken, clearToken, getToken, setViewSection, startViewingAs, stopViewingAs } from './api';
 import { Button, Dialog } from './components/ui';
 
 const AuthContext = createContext(null);
@@ -72,10 +72,32 @@ export function AuthProvider({ children }) {
     setUser(u);
   }
 
+  /**
+   * «Voir en tant que» (admin): opens a read-only session on this account and reloads the
+   * app on it, so nothing of the admin's screens — cached lists, open dialogs — lingers.
+   */
+  async function viewAs(userId) {
+    const { token, user: viewed } = await api.post(`/users/${userId}/impersonate`);
+    startViewingAs(token, userRef.current);
+    sessionStorage.setItem(USER_KEY, JSON.stringify(viewed));
+    setViewSection(''); // the account sees its own scope, not the admin's pick
+    window.location.assign('/');
+  }
+
+  /** Leave the view: the account's session is closed, the admin lands back on his accounts. */
+  function exitView() {
+    const admin = stopViewingAs();
+    if (admin) sessionStorage.setItem(USER_KEY, JSON.stringify(admin));
+    else sessionStorage.removeItem(USER_KEY);
+    window.location.assign(admin ? '/admin' : '/');
+  }
+
   /** `reason` is 'idle' when the inactivity timer fired, null when the user chose to leave.
    *  Call sites wired straight to onClick hand us an event — only strings count. */
   async function logout(reason = null) {
     const why = typeof reason === 'string' ? reason : null;
+    // Signing out from inside a view ends the admin's session too, not just the account's
+    if (userRef.current?.impersonated_by) stopViewingAs();
     try {
       await api.post('/auth/logout');
     } catch {
@@ -95,7 +117,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, updateUser, endedReason, lastUsername }}>
+    <AuthContext.Provider value={{ user, login, logout, viewAs, exitView, updateUser, endedReason, lastUsername }}>
       {children}
       <IdleGuard />
     </AuthContext.Provider>
