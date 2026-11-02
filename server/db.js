@@ -1579,6 +1579,9 @@ function migrate() {
   // so the column lands nullable and old rows inherit their creation time.
   ensureColumn('auth_tokens', 'last_seen_at', 'last_seen_at TEXT');
   db.exec("UPDATE auth_tokens SET last_seen_at = created_at WHERE last_seen_at IS NULL");
+  // «Voir en tant que»: a token opened by an admin to look at an account as that account
+  // sees it. It points at the admin's own token, which keeps it alive — and ends it.
+  ensureColumn('auth_tokens', 'parent_token', 'parent_token TEXT');
   // هاتف ولي الأمر split into father's and mother's numbers; the old single value
   // was the father's in practice, so it lands there
   ensureColumn('members', 'father_phone', 'father_phone TEXT');

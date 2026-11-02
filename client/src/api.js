@@ -8,7 +8,50 @@ const TOKEN_KEY = 'auth.token';
 // stolen machine cannot walk back into an account that was left open yesterday.
 export const getToken = () => sessionStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => sessionStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => sessionStorage.removeItem(TOKEN_KEY);
+// «Voir en tant que»: while an admin looks at an account, his own token and account are kept
+// aside here, and swapped back when he leaves the view. Dropping the session drops both.
+const ADMIN_TOKEN_KEY = 'auth.adminToken';
+const ADMIN_USER_KEY = 'auth.adminUser';
+export const clearToken = () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  sessionStorage.removeItem(ADMIN_USER_KEY);
+};
+export const isViewingAs = () => !!sessionStorage.getItem(ADMIN_TOKEN_KEY);
+
+/** Switch to the token of a «voir en tant que» session, keeping the admin's own for the way back. */
+export function startViewingAs(token, adminUser) {
+  sessionStorage.setItem(ADMIN_TOKEN_KEY, getToken());
+  sessionStorage.setItem(ADMIN_USER_KEY, JSON.stringify(adminUser));
+  setToken(token);
+}
+
+/**
+ * Back to the admin's own token. Returns his cached account, or null if nothing was kept aside.
+ * The viewed session is revoked on the way out — with a bare fetch, not `api`: a 401 on it
+ * (already expired) must not read as the admin's own session ending.
+ */
+export function stopViewingAs() {
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  const viewed = getToken();
+  if (token && viewed) {
+    fetch(`${BASE}/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${viewed}` },
+      keepalive: true, // the page is about to reload
+    }).catch(() => {});
+  }
+  const user = sessionStorage.getItem(ADMIN_USER_KEY);
+  sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  sessionStorage.removeItem(ADMIN_USER_KEY);
+  if (!token) return null;
+  setToken(token);
+  try {
+    return JSON.parse(user);
+  } catch {
+    return null;
+  }
+}
 
 // الأقسام: 'M' الفتيان، 'F' الفتيات، 'FR' الفرنكوفون الفتيان، 'FRF' الفرنكوفونيات (see section.jsx). Twin of SECTION_DEFS
 // in server/db.js — a new قسم is one line in each, plus its names in the locales
@@ -128,6 +171,7 @@ async function failure(res, path) {
   // Generic transport/access errors need useful copy wherever err.message is shown.
   const genericKey = res.status >= 500 ? 'error.requestFailed'
     : ['forbidden', 'admin_only', 'insufficient_permissions'].includes(code) ? 'error.forbidden'
+    : code === 'read_only_view' ? 'error.readOnlyView'
     : ['not_found', 'not found'].includes(code) ? 'error.missing'
     : null;
   const err = new Error(genericKey ? i18n.t(genericKey) : code);

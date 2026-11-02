@@ -101,7 +101,8 @@ export function usePushSync() {
   const { i18n } = useTranslation();
   const { user } = useAuth();
   useEffect(() => {
-    if (!user) return undefined;
+    // An admin looking at an account must not register his own device as that account's
+    if (!user || user.impersonated_by) return undefined;
     refreshPush(i18n.language);
     const onVisible = () => document.visibilityState === 'visible' && refreshPush(i18n.language);
     document.addEventListener('visibilitychange', onVisible);
