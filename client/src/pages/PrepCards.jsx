@@ -85,7 +85,9 @@ export default function PrepCards() {
 
   const cards = useFetch(`/prep-cards?${params}`);
   const branches = useFetch('/branches');
-  const leaders = useFetch('/leaders');
+  // Names only (/leader-options): /leaders needs leaders.read, which a قائد who writes
+  // cards may not have — the «new card» dialog then showed nothing but a load error
+  const leaders = useFetch('/leader-options');
 
   const branchList = branches.data || [];
   const leaderList = leaders.data || [];

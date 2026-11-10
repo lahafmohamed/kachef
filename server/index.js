@@ -4464,16 +4464,31 @@ app.post('/api/leaders/:id/progress', requirePerm('leaders.read'), (req, res) =>
 
 // Minimal names for session/preparation forms. This intentionally excludes addresses,
 // phones, account usernames, training and attendance history. `section` lets a form
-// opened on both أقسام offer only the قادة of the نشاط's own قسم.
+// opened on both أقسام offer only the قادة of the نشاط's own قسم. `roles` is only where
+// each قائد sits in this year's تشكيلة (فرقة / طليعة), so a new نشاط can prefill its
+// قادة — a قائد with prep or séance rights but no leaders.read must still get the form.
 app.get(
   '/api/leader-options',
   requireAnyPerm('sessions.read', 'prep.read', 'events.read', 'meetings.read'),
   (req, res) => {
+    const roles = {};
+    for (const a of assignmentsForYear(latestYear())) {
+      if (!a.leader_id) continue;
+      (roles[a.leader_id] = roles[a.leader_id] || []).push({
+        role_type: a.role_type,
+        branch_id: a.branch_id,
+        group_id: a.group_id,
+        sort_order: a.sort_order,
+      });
+    }
     res.json(
-      db.prepare(
-        `SELECT id, first_name, father_name, last_name, photo, status, section
-         FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY status != 'active', last_name, first_name`
-      ).all()
+      db
+        .prepare(
+          `SELECT id, first_name, father_name, last_name, photo, status, section
+           FROM leaders l WHERE 1=1${leaderScopeSQL(req)} ORDER BY status != 'active', last_name, first_name`
+        )
+        .all()
+        .map((l) => ({ ...l, roles: roles[l.id] || [] }))
     );
   }
 );

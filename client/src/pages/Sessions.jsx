@@ -432,7 +432,8 @@ export default function Sessions() {
 
   const sessions = useFetch(`/sessions?${params}`);
   const branches = useFetch('/branches');
-  const leaders = useFetch('/leaders');
+  // Names + تشكيلة roles only: /leaders needs leaders.read, which a séance writer may lack
+  const leaders = useFetch('/leader-options');
   // Visit picker needs the roster; without members.read the fetch would 403
   const members = useFetch('/members', { skip: !has('members.read') });
   // How many séances «À régulariser» — the button says it before it is pressed

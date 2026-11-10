@@ -510,7 +510,8 @@ export default function SessionDetail() {
           }
         : s
     );
-  const leaders = useFetch('/leaders');
+  // Helper picker: names only — /leaders needs leaders.read, which a séance writer may lack
+  const leaders = useFetch('/leader-options');
   // أسماء الفرق: النشاط المشترك يعرض فرقه في الترويسة و يقسّم لائحته عليها
   const branches = useFetch('/branches');
   const [bulkBusy, setBulkBusy] = useState(false);

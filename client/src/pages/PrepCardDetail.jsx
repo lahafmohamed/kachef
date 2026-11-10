@@ -81,7 +81,7 @@ export default function PrepCardDetail() {
   const { data: card, setData: setCard, loading, error, errorStatus, reload } = useFetch(`/prep-cards/${id}`);
   const [editing, setEditing] = useState(false);
   const branches = useFetch('/branches', { skip: !editable });
-  const leaders = useFetch('/leaders', { skip: !editable });
+  const leaders = useFetch('/leader-options', { skip: !editable });
 
   async function remove() {
     if (!(await confirm({ confirmLabel: t('prep.delete'), title: t('prep.delete'), message: t('prep.deleteConfirm') }))) return;
