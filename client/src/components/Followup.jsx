@@ -8,6 +8,7 @@ import { useFetch } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
 import DatePicker from './DatePicker';
 import { phoneNumbers, telHref, waHref } from './MemberParts';
+import { VisitDetails } from './VisitReport';
 import {
   cn,
   Avatar,
@@ -303,6 +304,7 @@ export function FollowupLog({ member, absences, onArchived }) {
                     <span className="tabular-nums">{fmtDate(e.date)}</span>
                     {e.leaders && ` · ${e.leaders}`}
                   </p>
+                  <VisitDetails v={e} className="mt-1.5" />
                 </div>
               </li>
             ) : (

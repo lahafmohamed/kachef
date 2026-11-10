@@ -919,6 +919,20 @@ function absenceThreshold() {
 // Motif d'un absent ou d'un excusé, et d'un contact avec la famille. «dropout» (انقطاع)
 // propose l'archivage côté client.
 const ABSENCE_REASONS = ['illness', 'travel', 'study', 'family', 'dropout', 'other'];
+// زيارة الأهل : qui a reçu les قادة, et les sujets abordés avec la famille
+const VISIT_MET = ['father', 'mother', 'parents', 'guardian', 'other'];
+const VISIT_REPORT_MAX = 4000;
+const VISIT_NOTE_MAX = 2000;
+const VISIT_FOLLOWUP_MAX = 500;
+const VISIT_TOPICS = ['attendance', 'behavior', 'studies', 'health', 'dues', 'activities', 'family', 'other'];
+const visitTopics = (v) => {
+  try {
+    const a = JSON.parse(v || '[]');
+    return Array.isArray(a) ? a.filter((x) => VISIT_TOPICS.includes(x)) : [];
+  } catch {
+    return [];
+  }
+};
 const CONTACT_CHANNELS = ['call', 'whatsapp', 'visit', 'other'];
 // Le dernier contact de chaque عنصر demandé : «contacté il y a X jours par Y», et la
 // relance prévue — tant qu'elle n'est pas échue, la ligne passe au second plan
@@ -1813,12 +1827,15 @@ function familyVisits(memberId) {
       `SELECT s.id AS session_id, s.title, s.date,
         (SELECT GROUP_CONCAT(${fullNameSQL('l')}, ' · ')
          FROM session_leaders sl JOIN leaders l ON l.id = sl.leader_id
-         WHERE sl.session_id = s.id) AS leaders
+         WHERE sl.session_id = s.id) AS leaders,
+        a.visit_met, a.visit_topics, a.visit_note, a.visit_followup
        FROM attendance a JOIN sessions s ON s.id = a.session_id
        WHERE a.member_id = ? AND a.status = 'present' AND s.kind = 'visit'
        ORDER BY s.date DESC, s.id DESC`
     )
-    .all(memberId);
+    .all(memberId)
+    // Ce qui s'est passé chez cette famille-là — le récit général reste sur la page de la visite
+    .map((v) => ({ ...v, visit_topics: visitTopics(v.visit_topics) }));
 }
 
 // ---------- الاشتراكات المالية ----------
@@ -6699,6 +6716,9 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
   // ضيوف نشاط القادة: أسماء حرّة لمن ليس في البرنامج
   const guestNames = kind === 'leaders' ? parseGuestNames(req.body.guest_names) : [];
   if (guestNames === null) return res.status(400).json({ error: 'invalid guest_names' });
+  // Compte-rendu d'une زيارة, s'il est écrit dès l'enregistrement
+  const report = kind === 'visit' ? optionalText(req.body.report, VISIT_REPORT_MAX) : null;
+  if (report === undefined) return res.status(400).json({ error: 'text too long' });
   // `leader` keeps a plain-text name snapshot so old data and linked leaders display the same way
   const leaderName = leaderRow ? `${leaderRow.first_name} ${leaderRow.last_name}` : leader || null;
   const insertAnimator = db.prepare(
@@ -6716,8 +6736,8 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
       .prepare(
         `INSERT INTO sessions
           (title, date, branch_id, leader, leader_id, fee, matalib, start_time, place, activity_type, leaders_count, kind,
-           plan_item_id, section, created_at, created_by, created_by_user_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`
+           plan_item_id, section, report, created_at, created_by, created_by_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`
       )
       .run(
         String(title).trim(),
@@ -6734,6 +6754,7 @@ app.post('/api/sessions', requirePerm('sessions.create'), (req, res) => {
         kind,
         planItemId,
         section,
+        report,
         actorName(req),
         req.user.id
       )
@@ -6932,7 +6953,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
       `SELECT m.id, m.code, m.first_name, m.father_name, m.last_name, m.photo,
               COALESCE(a.branch_id, m.branch_id) AS branch_id,
               a.group_id, g.name AS group_name, NULLIF(a.status, 'unmarked') AS status,
-              a.paid, a.reason
+              a.paid, a.reason, a.visit_met, a.visit_topics, a.visit_note, a.visit_followup
        FROM attendance a JOIN members m ON m.id = a.member_id
        LEFT JOIN branch_groups g ON g.id = a.group_id
        WHERE a.session_id = ? AND COALESCE(a.branch_id, m.branch_id) IN (${rosterList})
@@ -6941,6 +6962,7 @@ app.get('/api/sessions/:id', requirePerm('sessions.read'), (req, res) => {
     .all(s.id)
     .map((m) => ({
       ...m,
+      visit_topics: visitTopics(m.visit_topics),
       // الغيابات المتتالية تُحسب من آخر ترقية: سجلّ الفرقة السابقة لا يلاحق العنصر
       consecutive_absences: attendanceStats(m.id, null, {
         from: lastPromotionStmt.get(m.id).d || null,
@@ -7304,6 +7326,82 @@ function fileRoutes(owner, base, load) {
 
 fileRoutes('session', '/api/sessions/:id', loadSessionForFiles);
 
+// ---------- Compte-rendu d'une زيارة الأهل ----------
+// Ce qui s'est passé pendant la visite : un récit général (sessions.report) et, pour chaque
+// عنصر visité, qui a reçu les قادة, les sujets abordés, ce qui s'est dit et la suite à donner.
+// S'écrit avec la présence (sessions.attendance), par ceux qui tiennent les فرق concernées —
+// le récit général par qui les tient toutes, comme la séance elle-même.
+function visitSession(req, res) {
+  const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(intOr(req.params.id));
+  if (!s) return void res.status(404).json({ error: 'session not found' });
+  if (!sessionOk(req, s)) return void res.status(403).json({ error: 'forbidden' });
+  if (s.kind !== 'visit') return void res.status(400).json({ error: 'not a visit' });
+  return s;
+}
+
+app.put('/api/sessions/:id/report', requirePerm('sessions.attendance'), (req, res) => {
+  const s = visitSession(req, res);
+  if (!s) return;
+  if (!branchIdsOfSession(s.id).every((b) => branchOk(req, b))) return res.status(403).json({ error: 'forbidden' });
+  const report = optionalText(req.body?.report, VISIT_REPORT_MAX);
+  if (report === undefined) return res.status(400).json({ error: 'text too long' });
+  if ((s.report ?? null) !== report) {
+    db.prepare('UPDATE sessions SET report = ? WHERE id = ?').run(report, s.id);
+    auditEvent(req, 'update', 'session', s.id, s, db.prepare('SELECT * FROM sessions WHERE id = ?').get(s.id));
+  }
+  res.json({ report });
+});
+
+app.put('/api/sessions/:id/visit/:memberId', requirePerm('sessions.attendance'), (req, res) => {
+  const s = visitSession(req, res);
+  if (!s) return;
+  const memberId = intOr(req.params.memberId);
+  const row = db
+    .prepare(
+      `SELECT a.member_id, COALESCE(a.branch_id, m.branch_id) AS branch_id, a.status,
+              a.visit_met, a.visit_topics, a.visit_note, a.visit_followup
+       FROM attendance a JOIN members m ON m.id = a.member_id
+       WHERE a.session_id = ? AND a.member_id = ?`
+    )
+    .get(s.id, memberId);
+  if (!row || row.status !== 'present') return res.status(404).json({ error: 'member not visited' });
+  if (!myBranchesOfSession(req, s.id).includes(row.branch_id)) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const met = b.met === undefined || b.met === null || b.met === '' ? null : b.met;
+  if (met !== null && !VISIT_MET.includes(met)) return res.status(400).json({ error: 'invalid met' });
+  if (b.topics !== undefined && b.topics !== null && !Array.isArray(b.topics))
+    return res.status(400).json({ error: 'invalid topics' });
+  const topics = [...new Set(b.topics || [])];
+  if (!topics.every((x) => VISIT_TOPICS.includes(x))) return res.status(400).json({ error: 'invalid topics' });
+  const note = optionalText(b.note, VISIT_NOTE_MAX);
+  const followup = optionalText(b.followup, VISIT_FOLLOWUP_MAX);
+  if (note === undefined || followup === undefined) return res.status(400).json({ error: 'text too long' });
+  const ordered = VISIT_TOPICS.filter((x) => topics.includes(x));
+  const next = {
+    visit_met: met,
+    visit_topics: ordered.length ? JSON.stringify(ordered) : null,
+    visit_note: note,
+    visit_followup: followup,
+  };
+  const changed = Object.keys(next).some((k) => (row[k] ?? null) !== next[k]);
+  if (changed) {
+    db.prepare(
+      `UPDATE attendance SET visit_met = ?, visit_topics = ?, visit_note = ?, visit_followup = ?
+       WHERE session_id = ? AND member_id = ?`
+    ).run(next.visit_met, next.visit_topics, next.visit_note, next.visit_followup, s.id, memberId);
+    const ref = { member_id: memberId, branch_id: row.branch_id };
+    auditEvent(
+      req,
+      'visit_note',
+      'session',
+      s.id,
+      { ...ref, visit_met: row.visit_met, visit_topics: row.visit_topics, visit_note: row.visit_note, visit_followup: row.visit_followup },
+      { ...ref, ...next }
+    );
+  }
+  res.json({ member_id: memberId, ...next, visit_topics: ordered });
+});
+
 app.post('/api/sessions/:id/attendance', requirePerm('sessions.attendance'), (req, res) => {
   const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
@@ -7557,7 +7655,7 @@ app.post('/api/sessions/:id/roster/sync', requirePerm('sessions.attendance'), (r
 // أسطر الحساب الواحد المتتالية من النوع نفسه، في ربع ساعة، تصير سطرًا واحدًا بحصيلتها:
 // الحضور يُنقَّط ضغطةً لكل عنصر، و ثلاثون سطرًا «سجّل حضور فلان» تُغرق ما يهمّ.
 
-const HISTORY_FIELDS = ['title', 'date', 'start_time', 'place', 'activity_type', 'fee', 'leader', 'matalib', 'leaders_count'];
+const HISTORY_FIELDS = ['title', 'date', 'start_time', 'place', 'activity_type', 'fee', 'leader', 'matalib', 'leaders_count', 'report'];
 const HISTORY_MERGE_S = 15 * 60;
 
 const historyJSON = (v) => {
@@ -7626,6 +7724,10 @@ function historyEntry(ev, see) {
       }
       case 'guest':
         return one('guests', `g:${x.id}`, { name: x.name }, before?.name, after?.name);
+      case 'visit_note':
+        // Ce qui s'est dit chez une famille : qui l'a écrit et quand — le texte reste sur la page
+        if (!see.branch(x.branch_id)) return null;
+        return one('visitNotes', `vn:${x.member_id}`, { member_id: x.member_id }, before && { rev: `${ev.id}-` }, after && { rev: ev.id });
       case 'finalize':
         return { type: 'finalized', rows: [] };
       case 'reopen':

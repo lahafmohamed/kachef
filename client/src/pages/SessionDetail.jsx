@@ -14,6 +14,7 @@ import AttachedFiles from '../components/AttachedFiles';
 import SessionExpenses, { SessionDonations, SessionMoneyFigures, sessionMoney } from '../components/SessionExpenses';
 import SessionEvaluation from '../components/SessionEvaluation';
 import SessionHistory, { fmtAtDate, fmtWhen } from '../components/SessionHistory';
+import { VisitFamilies, VisitReportCard } from '../components/VisitReport';
 import { fmtScore, scoreTone } from '../lib/evaluations';
 import { UnderlineTabs } from '../components/MemberParts';
 import SearchInput from '../components/SearchInput';
@@ -875,6 +876,7 @@ export default function SessionDetail() {
   const duesHere = session.roster.reduce((n, m) => n + (m.dues?.here || []).reduce((a, h) => a + h.amount, 0), 0);
   // نشاط قادة: لائحته هي القادة أنفسهم — تقدّمه و أزراره تُبنى من animators
   const isLeadersSession = session.kind === 'leaders';
+  const isVisit = session.kind === 'visit';
   const leaderRoster = session.animators || [];
   const leaderMarked = leaderRoster.filter((a) => a.status).length;
   const leaderCounts = {
@@ -1312,7 +1314,8 @@ export default function SessionDetail() {
           place, and would slide under the row */}
       <UnderlineTabs
           items={[
-            { id: 'attendance', label: t('session.tabAttendance') },
+            // A زيارة has nothing to mark: its first tab is what happened there
+            { id: 'attendance', label: t(isVisit ? 'visit.tab' : 'session.tabAttendance') },
             ...(money ? [{ id: 'money', label: t('session.tabMoney') }] : []),
             ...(evaluation
               ? [
@@ -1379,8 +1382,39 @@ export default function SessionDetail() {
         />
       )}
 
+      {/* ---------- زيارة الأهل: le récit, puis chaque famille ---------- */}
+      {isVisit && (
+        <>
+          <VisitReportCard
+            session={session}
+            editable={editable && (session.branch_ids || []).every((b) => (session.my_branch_ids || []).includes(b))}
+            onChange={(report) => touched({ report })}
+          />
+          <VisitFamilies
+            session={session}
+            editable={editable}
+            writableBranchIds={session.my_branch_ids || []}
+            onSaved={(r) =>
+              touched({
+                roster: session.roster.map((m) =>
+                  m.id === r.member_id
+                    ? {
+                        ...m,
+                        visit_met: r.visit_met,
+                        visit_topics: r.visit_topics,
+                        visit_note: r.visit_note,
+                        visit_followup: r.visit_followup,
+                      }
+                    : m
+                ),
+              })
+            }
+          />
+        </>
+      )}
+
       {/* ---------- Attendance progress + bulk action ---------- */}
-      {!isLeadersSession && rosterProgress}
+      {!isLeadersSession && !isVisit && rosterProgress}
 
       {/* ---------- تقدّم حضور القادة في نشاط قادة ---------- */}
       {isLeadersSession && leaderRoster.length > 0 && (
@@ -1522,7 +1556,7 @@ export default function SessionDetail() {
       {/* نشاط قادة lists only the عناصر of its invited فرق (présence of the قادة is on
           the animators card above), and a نشاط عام للفوج counts its حضور instead of
           listing names */}
-      {session.kind !== 'group' && (!isLeadersSession || totalRoster > 0) && (
+      {session.kind !== 'group' && !isVisit && (!isLeadersSession || totalRoster > 0) && (
       <Card>
         {/* الترويسة تلتصق أثناء التمرير: لائحة من ستين عنصرًا تدفع البحث خارج الشاشة،
             فيعود القائد للأعلى ليكتب اسمًا. الإزاحة هي ارتفاع شريط الهاتف

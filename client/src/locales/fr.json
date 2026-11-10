@@ -2537,7 +2537,8 @@
       "fee": "Frais d’inscription",
       "leader": "Animateur principal",
       "matalib": "Matalib",
-      "leaders_count": "Chefs présents"
+      "leaders_count": "Chefs présents",
+      "report": "Compte-rendu"
     },
     "type": {
       "created": "Séance créée",
@@ -2596,7 +2597,8 @@
         "remove_one": "Élément retiré de la liste",
         "remove_other": "Éléments retirés de la liste",
         "edit": "Liste mise à jour"
-      }
+      },
+      "visitNotes": "Détails des familles modifiés"
     }
   },
   "matalib": {
@@ -3621,5 +3623,42 @@
         "pdf": "Export PDF"
       }
     }
+  },
+  "visit": {
+    "tab": "Compte-rendu",
+    "report": "Compte-rendu de la visite",
+    "reportHint": "Déroulement, accueil de la famille, ce qui a été convenu.",
+    "reportCreateHint": "Facultatif. Les détails de chaque famille s’ajoutent ensuite sur la page de la visite.",
+    "reportPlaceholder": "Comment s’est passée la visite ?",
+    "reportAdd": "Écrire le compte-rendu",
+    "noReport": "Aucun compte-rendu écrit.",
+    "familyOf": "Famille de {{name}}",
+    "metLabel": "Reçus par",
+    "metBy": "Reçus par : {{who}}",
+    "met": {
+      "father": "Le père",
+      "mother": "La mère",
+      "parents": "Les deux parents",
+      "guardian": "Le tuteur",
+      "other": "Autre personne"
+    },
+    "topicsLabel": "Sujets abordés",
+    "topic": {
+      "attendance": "Assiduité",
+      "behavior": "Comportement",
+      "studies": "Études",
+      "health": "Santé",
+      "dues": "Cotisations",
+      "activities": "Activités et camps",
+      "family": "Situation familiale",
+      "other": "Autre"
+    },
+    "note": "Ce qui s’est dit",
+    "notePlaceholder": "Remarques des parents, nouvelles de l’élément, demandes…",
+    "followup": "À suivre",
+    "followupHint": "Ce qu’il reste à faire : rappeler, revoir la famille, prévenir un chef…",
+    "addDetails": "Ajouter les détails",
+    "noDetails": "Pas encore de détails.",
+    "detailsProgress": "{{done}} sur {{total}} avec des détails"
   }
 }

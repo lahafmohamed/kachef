@@ -50,6 +50,7 @@ import {
 import { RoleBadges, respLabel } from '../components/GroupResponsibilities';
 import { FollowupLog, useAbsenceThreshold } from '../components/Followup';
 import { MemberHealthCard } from '../components/CampSafety';
+import { VisitDetails } from '../components/VisitReport';
 
 const STATUS_BADGE = {
   present: ['success', 'session.present'],
@@ -1005,6 +1006,8 @@ export default function MemberDetail() {
                           <span className="min-w-0 flex-1 font-medium">{v.title}</span>
                           {v.leaders && <span className="text-xs text-muted-foreground">{v.leaders}</span>}
                         </Link>
+                        {/* Ce qui s'est passé chez cette famille — sous la ligne, pas dans le lien */}
+                        <VisitDetails v={v} className="px-4 pb-3 sm:ps-[calc(5rem+0.75rem+1.25rem)] sm:pe-5" />
                       </li>
                     ))}
                   </ul>

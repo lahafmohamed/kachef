@@ -32,11 +32,13 @@ import {
   Dialog,
   EmptyState,
   ErrorState,
+  Field,
   Input,
   Label,
   PageHeader,
   Select,
   Skeleton,
+  Textarea,
   useToast,
   IconAlert,
   IconCalendar,
@@ -87,6 +89,8 @@ const EMPTY = {
   guest_names: [],
   // القسم، حين يُرى القسمان معًا — '' = لم يُختر بعد (الفتيان). فرق النشاط تغلبه متى اختيرت.
   section: '',
+  // زيارة الأهل : ce qui s'est passé, s'il est écrit dès l'enregistrement
+  report: '',
 };
 
 /** فرق النشاط — واحدة أو أكثر — أو نوعه حين يكون نشاطًا فوجيًا بلا فرقة */
@@ -806,6 +810,7 @@ export default function Sessions() {
         leader_id: form.leader_id === '' ? null : Number(form.leader_id),
         helper_ids: form.helper_ids.filter((h) => h !== Number(form.leader_id)),
         member_ids: form.kind === 'visit' ? form.member_ids : [],
+        report: form.kind === 'visit' ? form.report.trim() || null : null,
         fee: form.fee === '' ? null : Number(form.fee),
         matalib: form.kind === 'visit' ? [] : form.matalib,
         plan_item_id: form.kind === 'activity' && form.plan_item_id ? Number(form.plan_item_id) : null,
@@ -1830,6 +1835,23 @@ export default function Sessions() {
                     {groupCounts}
                     {helpersPicker}
                     {guestsField}
+                    {/* What happened, while it is fresh: each family's own details are
+                        written on the visit's page once it is saved */}
+                    {isVisit && (
+                      <Field label={t('visit.report')} hint={t('visit.reportCreateHint')}>
+                        {(p) => (
+                          <Textarea
+                            {...p}
+                            dir="auto"
+                            rows={4}
+                            maxLength={4000}
+                            value={form.report}
+                            placeholder={t('visit.reportPlaceholder')}
+                            onChange={(e) => setForm((f) => ({ ...f, report: e.target.value }))}
+                          />
+                        )}
+                      </Field>
+                    )}
                     {matalibField}
                   </div>
                 )}

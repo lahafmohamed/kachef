@@ -1929,6 +1929,20 @@ function migrate() {
   migrateCampSafety();
   migrateDuesRates();
   migrateCodes();
+  migrateVisitReport();
+}
+
+// Compte-rendu des زيارات الأهل : ce qui s'est passé pendant la visite. sessions.report est le
+// récit général ; sur la ligne de présence de chaque عنصر visité, qui a reçu les قادة
+// (visit_met : father, mother, parents, guardian, other), les sujets abordés (visit_topics,
+// JSON), ce qui s'est dit (visit_note) et la suite à donner (visit_followup). Colonnes
+// ajoutées seulement : aucune donnée existante n'est touchée.
+function migrateVisitReport() {
+  ensureColumn('sessions', 'report', 'report TEXT');
+  ensureColumn('attendance', 'visit_met', 'visit_met TEXT');
+  ensureColumn('attendance', 'visit_topics', 'visit_topics TEXT');
+  ensureColumn('attendance', 'visit_note', 'visit_note TEXT');
+  ensureColumn('attendance', 'visit_followup', 'visit_followup TEXT');
 }
 
 // L'identifiant à vie : E-0042 pour un عنصر, K-001 pour un قائد. Donné une fois, il ne change

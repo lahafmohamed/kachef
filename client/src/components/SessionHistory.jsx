@@ -103,6 +103,7 @@ const TYPE_ICONS = {
   finalized: IconLock,
   reopened: IconLock,
   roster: IconUsers,
+  visitNotes: IconPencil,
 };
 const FILE_ICONS = { image: IconCamera, pdf: IconFileText, excel: IconFileSheet };
 const STATUS = {
@@ -124,7 +125,7 @@ const REMOVAL_WORD = {
 const added = (r) => r.from === null;
 const removed = (r) => r.to === null;
 // Lines named once whatever they hold; the others (lists) say whether they added or removed
-const ONE_NAME = new Set(['created', 'details', 'attendance', 'counts', 'animators', 'finalized', 'reopened']);
+const ONE_NAME = new Set(['created', 'details', 'attendance', 'counts', 'animators', 'finalized', 'reopened', 'visitNotes']);
 
 // What happened, in the reader's language: for a list, the verb comes from its rows
 function itemLabel(item, t, kind) {
@@ -172,6 +173,9 @@ function fieldValue(field, v, t, lng) {
       return <bdi className="tabular-nums">{v.join(lng === 'ar' ? '، ' : ', ')}</bdi>;
     case 'leaders_count':
       return <span className="tabular-nums">{v}</span>;
+    // A visit's account can run to paragraphs: its first lines say which one it was
+    case 'report':
+      return <bdi className="line-clamp-2 whitespace-pre-line [overflow-wrap:anywhere]">{v}</bdi>;
     default:
       return <bdi className="[overflow-wrap:anywhere]">{v}</bdi>;
   }

@@ -658,8 +658,70 @@ function SessionReport({ id, onReady, kindLabel }) {
         </>
       )}
 
+      {/* ---------- زيارة الأهل: le récit, puis ce qui s'est passé chez chaque famille ---------- */}
+      {isVisit && (
+        <>
+          <H2>{t('visit.report')}</H2>
+          {session.report ? (
+            <p dir="auto" className="whitespace-pre-line text-start leading-relaxed">
+              {session.report}
+            </p>
+          ) : (
+            <p className="text-muted-foreground">{t('visit.noReport')}</p>
+          )}
+          <H2 aside={roster.length}>{t('session.visitedMembers')}</H2>
+          {roster.length === 0 ? (
+            <p className="text-muted-foreground">{t('session.emptyRoster')}</p>
+          ) : (
+            <ol className="divide-y divide-border">
+              {roster.map((m, i) => (
+                <li key={m.id} className="avoid-break py-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="w-5 shrink-0 tabular-nums text-muted-foreground">{i + 1}</span>
+                    <span className="font-semibold">{memberName(m)}</span>
+                    <Code code={m.code} />
+                    {rosterBranchIds.length > 1 && (
+                      <span className="text-muted-foreground">· {nameOfBranch(m.branch_id)}</span>
+                    )}
+                  </div>
+                  <div className="space-y-1 ps-7">
+                    {(m.visit_met || m.visit_topics?.length > 0) && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        {m.visit_met && (
+                          <span className="me-1 text-muted-foreground">
+                            {t('visit.metBy', { who: t(`visit.met.${m.visit_met}`) })}
+                          </span>
+                        )}
+                        {(m.visit_topics || []).map((k) => (
+                          <Tag key={k}>{t(`visit.topic.${k}`)}</Tag>
+                        ))}
+                      </div>
+                    )}
+                    {m.visit_note && (
+                      <p dir="auto" className="whitespace-pre-line text-start leading-relaxed">
+                        {m.visit_note}
+                      </p>
+                    )}
+                    {m.visit_followup && (
+                      <p dir="auto" className="whitespace-pre-line text-start leading-relaxed">
+                        <span className="font-semibold">{t('visit.followup')}</span>
+                        {' — '}
+                        {m.visit_followup}
+                      </p>
+                    )}
+                    {!m.visit_met && !m.visit_topics?.length && !m.visit_note && !m.visit_followup && (
+                      <p className="text-muted-foreground">{t('visit.noDetails')}</p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
+      )}
+
       {/* ---------- لائحة العناصر — في نشاط القادة: عناصر الفرق المدعوّة ---------- */}
-      {!isGroup && (!isLeaders || roster.length > 0) && (
+      {!isGroup && !isVisit && (!isLeaders || roster.length > 0) && (
         <>
           <H2 aside={t('session.marked', { marked: rosterCounts.marked, total: roster.length })}>
             {t(isVisit ? 'session.visitedMembers' : isLeaders ? 'session.invitedRoster' : 'session.roster')}
@@ -869,7 +931,36 @@ function MemberReport({ id, onReady, kindLabel }) {
             {m.visits.map((v) => (
               <tr key={v.session_id}>
                 <td className={cn(tdNum, 'w-24 text-muted-foreground')}>{fmtDate(v.date)}</td>
-                <td className={cn(td, 'font-medium')}>{v.title}</td>
+                <td className={cn(td, 'font-medium')}>
+                  {v.title}
+                  {/* Ce qui s'est passé chez la famille, sous le titre */}
+                  {(v.visit_met || v.visit_topics?.length > 0 || v.visit_note || v.visit_followup) && (
+                    <div className="mt-1 space-y-0.5 font-normal">
+                      {(v.visit_met || v.visit_topics?.length > 0) && (
+                        <p className="text-muted-foreground">
+                          {[
+                            v.visit_met && t('visit.metBy', { who: t(`visit.met.${v.visit_met}`) }),
+                            ...(v.visit_topics || []).map((k) => t(`visit.topic.${k}`)),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      )}
+                      {v.visit_note && (
+                        <p dir="auto" className="whitespace-pre-line text-start">
+                          {v.visit_note}
+                        </p>
+                      )}
+                      {v.visit_followup && (
+                        <p dir="auto" className="whitespace-pre-line text-start">
+                          <span className="font-semibold">{t('visit.followup')}</span>
+                          {' — '}
+                          {v.visit_followup}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </td>
                 <td className={cn(td, 'text-muted-foreground')}>{v.leaders || '—'}</td>
               </tr>
             ))}
