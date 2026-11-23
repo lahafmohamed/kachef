@@ -20,6 +20,7 @@ const IGNORED = [
   /^\/api\/users\/username-suggestion$/,
   /^\/api\/members\/filters$/,
   /^\/api\/push/,
+  /^\/api\/presence/,
 ];
 // Loaded as form data behind other pages: a read of them is not a visit
 const IGNORED_READS = [/^\/api\/lookups/, /^\/api\/due-rates$/, /^\/api\/branches$/, /^\/api\/leaders$/];

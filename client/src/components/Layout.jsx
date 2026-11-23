@@ -6,6 +6,7 @@ import { SECTIONS, isFeminine, useSection } from '../section';
 import { ChangePasswordDialog } from '../pages/ChangePassword';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { NotificationsBell, NotificationSettingsDialog, PushPrompt, usePushSync } from './Notifications';
+import { PresenceButton, usePresenceBeacon } from './Presence';
 import {
   cn,
   Button,
@@ -629,6 +630,7 @@ export default function Layout({ children }) {
   const lockedName = fixed ? t(`section.name${fixed}`) : null;
   const pickedName = section ? t(`section.name${section}`) : null;
   usePushSync();
+  usePresenceBeacon();
 
   // A screen too short for the whole nav still shows the page you are on: scroll
   // its link into the nav's view (only the nav — the aside is fixed, the page stays put)
@@ -684,7 +686,10 @@ export default function Layout({ children }) {
           <SidebarNav />
         </nav>
         <div className="border-t border-border px-3 py-2">
+          {/* The admin's «en ligne» pill beside the bell: in the header it cut the
+              app name short, and the bell is where the sidebar keeps what is live */}
           <AccountMenu>
+            <PresenceButton navItems={NAV_ITEMS} side="top" />
             <NotificationsBell variant="ghost" />
           </AccountMenu>
         </div>
@@ -692,13 +697,15 @@ export default function Layout({ children }) {
 
       {/* ---------- Mobile top bar ---------- */}
       {/* Slim (64px) so content owns the screen; the brand crop reads fine at 44px.
-          Bell and account menu only, so the app name is never cut short. The bell
+          Bell and account menu only (plus the admin's «en ligne» pill), so the app
+          name is never cut short. The bell
           is a round ghost beside the round initials — a bordered square there read
           as a second, unrelated control. */}
       <header data-app-bar className="glass safe-t sticky top-0 z-30 border-b border-border lg:hidden">
         <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-4">
           <Brand className="min-w-0" sub={pickedName} />
           <div className="flex shrink-0 items-center gap-1">
+            <PresenceButton navItems={NAV_ITEMS} />
             <NotificationsBell variant="ghost" className="rounded-full" iconClassName="h-5 w-5" />
             <AccountButton />
           </div>

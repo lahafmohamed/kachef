@@ -4100,5 +4100,20 @@
     "addDetails": "إضافة التفاصيل",
     "noDetails": "لا تفاصيل بعد.",
     "detailsProgress": "{{done}} من {{total}} بتفاصيلها"
+  },
+  "presence": {
+    "open": "من المتّصل الآن — {{count}}",
+    "title": "المتّصلون الآن",
+    "empty": "لا أحد غيرك يفتح التطبيق الآن.",
+    "hint": "التطبيق مفتوح على الشاشة، يُحدَّث كل 30 ثانية.",
+    "justNow": "الآن",
+    "since": "منذ {{time}}",
+    "otherPage": "صفحة أخرى",
+    "devices_zero": "{{count}} جهاز",
+    "devices_one": "جهاز واحد",
+    "devices_two": "جهازان",
+    "devices_few": "{{count}} أجهزة",
+    "devices_many": "{{count}} جهازًا",
+    "devices_other": "{{count}} جهاز"
   }
 }

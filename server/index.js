@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { renderPdf, chromiumMissing } = require('./pdf');
+const presence = require('./presence');
 const crypto = require('crypto');
 const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef, leaderSections, leaderSectionSQL } = require('./db');
 
@@ -747,6 +748,7 @@ app.use('/api', (req, res, next) => {
 
 app.post('/api/auth/logout', (req, res) => {
   db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(req.token);
+  presence.forget(req.token);
   res.status(204).end();
 });
 
@@ -789,6 +791,9 @@ app.use('/api', (req, res, next) => {
 
 const requireAdmin = (req, res, next) =>
   req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin_only' });
+
+// Who has the app open, and on which page: the admin's «en ligne» pill (server/presence.js)
+presence.setupPresence(app, { db, requireAdmin });
 
 // ---------- الأقسام: الفتيان، الفتيات، الفرنكوفون ----------
 // كل فرقة و كل قائد و كل نشاط و كل توصيف من قسم واحد (SECTION_DEFS في db.js). الحساب

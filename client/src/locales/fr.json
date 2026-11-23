@@ -3660,5 +3660,16 @@
     "addDetails": "Ajouter les détails",
     "noDetails": "Pas encore de détails.",
     "detailsProgress": "{{done}} sur {{total}} avec des détails"
+  },
+  "presence": {
+    "open": "Qui est en ligne — {{count}}",
+    "title": "En ligne maintenant",
+    "empty": "Personne d’autre n’a l’application ouverte.",
+    "hint": "Application ouverte à l’écran, mise à jour toutes les 30 secondes.",
+    "justNow": "à l’instant",
+    "since": "depuis {{time}}",
+    "otherPage": "Autre page",
+    "devices_one": "{{count}} appareil",
+    "devices_other": "{{count}} appareils"
   }
 }
