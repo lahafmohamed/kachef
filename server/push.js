@@ -1567,12 +1567,18 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
 
   app.get('/api/push/key', (req, res) => res.json({ publicKey: vapid?.publicKey ?? null }));
 
+  // A device shows the pushes of the last account opened on it, and of no other: a phone
+  // where the admin (or a brother) once switched push on would otherwise keep showing his
+  // notifications — فرق the قائد now holding it cannot open — long after he signed out.
+  const releaseDevice = db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id != ?');
+
   // This device, for this account: created or refreshed
   app.post('/api/push/subscriptions', (req, res) => {
     if (!vapid) return res.status(503).json({ error: 'push_unavailable' });
     const sub = parseSubscription(req.body);
     if (!sub) return res.status(400).json({ error: 'invalid subscription' });
     db.transaction(() => {
+      releaseDevice.run(sub.endpoint, req.user.id);
       db.prepare(
         `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, vapid_key, lang)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -1590,20 +1596,24 @@ ${lang === 'ar' ? `${fem ? 'عدّلته' : 'عدّله'} ${actor}` : `Modifiée
 
   // On each start of the app: is this device still on for this account? Refreshes its
   // language and keys if so, never creates — switching it on is the account's choice.
+  // The device now belongs to this account: any other account's subscription on it goes.
   app.post('/api/push/subscriptions/sync', (req, res) => {
     const sub = vapid && parseSubscription(req.body);
     if (!sub) return res.json({ subscribed: false });
-    const r = db
-      .prepare(
-        `UPDATE push_subscriptions SET p256dh = ?, auth = ?, lang = ?, last_seen_at = datetime('now')
-         WHERE endpoint = ? AND user_id = ? AND vapid_key = ?`
-      )
-      .run(sub.p256dh, sub.auth, sub.lang, sub.endpoint, req.user.id, vapid.publicKey);
+    const r = db.transaction(() => {
+      releaseDevice.run(sub.endpoint, req.user.id);
+      return db
+        .prepare(
+          `UPDATE push_subscriptions SET p256dh = ?, auth = ?, lang = ?, last_seen_at = datetime('now')
+           WHERE endpoint = ? AND user_id = ? AND vapid_key = ?`
+        )
+        .run(sub.p256dh, sub.auth, sub.lang, sub.endpoint, req.user.id, vapid.publicKey);
+    })();
     res.json({ subscribed: r.changes > 0 });
   });
 
-  // Off for this account on this device. The browser keeps its subscription: another
-  // account signed in on the same phone may still use it.
+  // Off for this account on this device. The browser keeps its subscription: the next
+  // account to switch push on here reuses it.
   app.post('/api/push/unsubscribe', (req, res) => {
     db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').run(
       String(req.body?.endpoint || ''),

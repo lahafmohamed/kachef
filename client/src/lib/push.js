@@ -4,8 +4,10 @@ import { api } from '../api';
 /*
  * Web Push on this device, for the signed-in account. The service worker
  * (public/sw.js) only shows the notifications; the server decides who gets what
- * (server/push.js). One device can serve several accounts — two brothers on one
- * phone — so «on» always means: on for this account, here.
+ * (server/push.js). A device shows the pushes of the last account opened on it only:
+ * signing in with another account on the same phone hands the device over to it (the
+ * server drops the previous account's subscription there at the next sync). «On»
+ * always means: on for this account, here.
  *
  * States: loading · on · off (can be switched on) · denied (blocked in the browser)
  * · ios-install (iPhone/iPad outside the home-screen app, where Safari has no push)
