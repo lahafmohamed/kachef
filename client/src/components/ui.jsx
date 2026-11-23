@@ -1010,6 +1010,8 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   const panelRef = useRef(null);
   const contentRef = useRef(null);
   const restoreRef = useRef(null);
+  // Did the current tap start on the backdrop (onBackdropClick below)
+  const pressedBackdrop = useRef(false);
   const titleId = useId();
   const descriptionId = useId();
   // Callers pass inline arrows; a ref keeps the effect from re-running (and
@@ -1066,6 +1068,9 @@ export function Dialog({ open, onClose, title, description, children, footer, si
     function onKeyDown(e) {
       const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
       if (dialogs[dialogs.length - 1] !== panel) return;
+      // A phone keyboard switching language mid-word ends its composition with key events
+      // of its own (keyCode 229): they belong to the field, never a dismissal
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') {
         // A select/popover layer is open on top — that one owns the Escape,
         // otherwise closing a dropdown would throw the whole form away.
@@ -1117,6 +1122,30 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   // that follows the dismissal, and assistive tech must not still see a dialog.
   const leaving = !open;
 
+  // The backdrop closes the dialog only for a tap that started on it and ended on it. On a
+  // phone the keyboard resizes the screen under the finger — opening, closing, switching
+  // language — and a touch begun in the sheet (or on the keyboard) used to land on the
+  // backdrop and throw a half-typed form away. While a field holds the phone keyboard,
+  // the first tap outside only puts the keyboard away.
+  function onBackdropPointerDown(e) {
+    pressedBackdrop.current = e.target === e.currentTarget;
+  }
+  function onBackdropClick(e) {
+    const pressed = pressedBackdrop.current;
+    pressedBackdrop.current = false;
+    if (!pressed || e.target !== e.currentTarget) return;
+    const field = document.activeElement;
+    if (
+      panelRef.current?.contains(field) &&
+      field.matches?.('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]), textarea, [contenteditable="true"]') &&
+      window.matchMedia?.('(pointer: coarse)').matches
+    ) {
+      field.blur();
+      return;
+    }
+    onClose?.();
+  }
+
   return createPortal(
     <div
       aria-hidden={leaving || undefined}
@@ -1130,7 +1159,8 @@ export function Dialog({ open, onClose, title, description, children, footer, si
           'absolute inset-0 bg-black/50 backdrop-blur-sm',
           leaving ? 'animate-overlay-out' : 'animate-overlay-in'
         )}
-        onClick={onClose}
+        onPointerDown={onBackdropPointerDown}
+        onClick={onBackdropClick}
       />
       <div
         ref={panelRef}
