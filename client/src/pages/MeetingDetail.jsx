@@ -21,6 +21,7 @@ import {
   userText,
 } from '../lib/meetings';
 import { avatarName, branchName, fmtDate, memberName } from '../utils';
+import { personMatches } from '../lib/nameSearch';
 import DatePicker from '../components/DatePicker';
 import ExportPdfButton from '../components/ExportPdfButton';
 import MeetingFormDialog, { ERRORS, PersonField, personBody } from '../components/MeetingForm';
@@ -182,8 +183,7 @@ function AttendanceDialog({ m, open, onClose, onSaved, leaders, t }) {
   // Narrowed only when it leaves someone out — a قائد already marked always stays
   const narrowed = ownIds.size > 0 && sectionPool.some((l) => !ownIds.has(l.id) && !marks[l.id]);
   const pool = narrowed && !showAll ? sectionPool.filter((l) => ownIds.has(l.id) || marks[l.id]) : sectionPool;
-  const query = q.trim().toLowerCase();
-  const shown = query ? pool.filter((l) => memberName(l).toLowerCase().includes(query)) : pool;
+  const shown = q.trim() ? pool.filter((l) => personMatches(q, l)) : pool;
   const c = { present: 0, absent: 0, excused: 0, guests: guests.length };
   for (const s of Object.values(marks)) c[s]++;
 

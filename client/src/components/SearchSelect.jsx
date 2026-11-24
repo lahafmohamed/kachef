@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverContent, PopoverTrigger } from './shadcn/popover';
 import { cn, IconCheck, IconChevronDown, IconPlus, IconSearch, Input, Spinner } from './ui';
+import { nameMatches } from '../lib/nameSearch';
 
 /**
  * Dropdown constrained to a curated list, with a search box — for lists too long
@@ -56,7 +57,8 @@ export default function SearchSelect({
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const matches = q ? normalized.filter((o) => String(o.label).toLowerCase().includes(q)) : normalized;
+    // The labels are mostly people: a name reads in either script and any word order
+    const matches = q ? normalized.filter((o) => nameMatches(q, [String(o.label)])) : normalized;
     // The clear row is an escape hatch, not a search result: it hides while filtering
     const head = clearLabel && !q ? [{ value: '', label: clearLabel }] : [];
     return [...head, ...matches];

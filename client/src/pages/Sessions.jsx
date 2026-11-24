@@ -10,6 +10,7 @@ import { useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks'
 import { isFeminine, useSection } from '../section';
 import SectionField from '../components/SectionField';
 import { ACTIVITY_TYPES, activityTypeKey, branchName, fmtDate, fmtTime, memberName, todayISO } from '../utils';
+import { personMatches } from '../lib/nameSearch';
 import { toDate, toISO } from '../lib/date';
 import { signed } from '../lib/events';
 import { resultTone } from '../lib/treasury';
@@ -891,8 +892,7 @@ export default function Sessions() {
     .sort((a, b) => (a.badge ? 0 : 1) - (b.badge ? 0 : 1));
   // Both pickers stay usable with 40+ names: filter on the full name, and never
   // hide an already-ticked row — otherwise a search makes selections look lost.
-  const matches = (person, query) =>
-    memberName(person).toLowerCase().includes(query.trim().toLowerCase());
+  const matches = (person, query) => personMatches(query, person);
 
   // A زيارة is recorded inside a فرقة, so only its active عناصر can be visited
   const visitableMembers = (members.data || []).filter(

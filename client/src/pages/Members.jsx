@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth, usePerms } from '../auth';
 import { useDebounced, useFetch, useLocalStorage, useUrlField, useUrlFilters } from '../hooks';
 import { avatarName, birthdayWhen, branchName, fmtAmount, fmtDate, fmtPhone, memberName } from '../utils';
+import { personMatches } from '../lib/nameSearch';
 import DateRangePicker from '../components/DateRangePicker';
 import ExportPdfButton from '../components/ExportPdfButton';
 import FilterChips from '../components/FilterChips';
@@ -454,7 +455,7 @@ export default function Members() {
           .filter(
             (l) =>
               !needle ||
-              [l.first_name, l.father_name, l.last_name].filter(Boolean).join(' ').toLowerCase().includes(needle) ||
+              personMatches(needle, l) ||
               (l.phone || '').includes(needle)
           )
           .map((l) => ({ ...l, kind: 'leader', age: yearsSince(l.birth_date) }))

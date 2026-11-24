@@ -1,5 +1,6 @@
 import i18n from './i18n';
 import { toDate } from './lib/date';
+import { personScore } from './lib/nameSearch';
 
 // Latin digits in both locales: dates sit in tabular-nums columns and dir="ltr"
 // islands next to Latin numbers, so Arabic-Indic digits would mix scripts.
@@ -118,12 +119,13 @@ export const LEADER_FILTER_KEYS = ['q', 'role', 'course', 'account', 'status'];
  * - account: '' | 'with' | 'without' — only an admin receives the account fields, so
  *   for anyone else the filter has nothing to read and is ignored
  * - status: '' = فعّال | 'inactive' | 'all', as on the عناصر list
- * - q: a name, an مسؤولية, or 3+ digits of a phone number
+ * - q: a name (in either script, any word order — lib/nameSearch), an مسؤولية, or 3+
+ *   digits of a phone number. Those named exactly that come first.
  */
 export function filterLeaders(leaders, f) {
   const q = (f.q || '').trim().toLowerCase();
   const qDigits = q.replace(/\D/g, '');
-  return leaders.filter((l) => {
+  const list = leaders.filter((l) => {
     const statusOk = f.status === 'all' ? true : f.status === 'inactive' ? l.status !== 'active' : l.status === 'active';
     if (!statusOk) return false;
     const roles = l.roles || [];
@@ -139,11 +141,24 @@ export function filterLeaders(leaders, f) {
     const code = /^k-?0*(\d+)$/.exec(q);
     if (code) return l.code === `K-${code[1].padStart(3, '0')}`;
     return (
-      memberName(l).toLowerCase().includes(q) ||
+      personScore(q, l) > 0 ||
       roles.some((r) => r.title.toLowerCase().includes(q)) ||
       (qDigits.length >= 3 && String(l.phone || '').replace(/\D/g, '').includes(qDigits))
     );
   });
+  return q ? rankByName(list, q) : list;
+}
+
+/**
+ * `list` with whoever `query` names most closely first (lib/nameSearch); the order it
+ * came in is kept within the same closeness. People it does not name keep their place
+ * after those it does — they were kept for another reason (an مسؤولية, a phone).
+ */
+export function rankByName(list, query, nameOf = (p) => p) {
+  return list
+    .map((p, i) => ({ p, i, s: personScore(query, nameOf(p)) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.p);
 }
 
 // Works for objects carrying either name_fr/name_ar or branch_name_fr/branch_name_ar

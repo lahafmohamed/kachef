@@ -5,6 +5,7 @@ import { api } from '../api';
 import { useFetch } from '../hooks';
 import { avatarName, fmtAmount, fmtDate, memberName } from '../utils';
 import { toDate } from '../lib/date';
+import { personMatches } from '../lib/nameSearch';
 import SearchInput from './SearchInput';
 import {
   Avatar,
@@ -152,10 +153,9 @@ export default function LeaderDues() {
     const late = l.status === 'active' ? owedMonths.filter((m) => !l.paid[m]).length : 0;
     return { ...l, paidCount, late };
   });
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = rows.filter(
     (l) =>
-      words.every((w) => memberName(l).toLowerCase().includes(w)) &&
+      personMatches(query, l) &&
       (show === 'late' ? l.late > 0 : show === 'ok' ? l.late === 0 : true)
   );
 

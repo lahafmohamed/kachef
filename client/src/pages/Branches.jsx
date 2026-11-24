@@ -8,6 +8,7 @@ import { useFetch, useLocalStorage } from '../hooks';
 import { useSection } from '../section';
 import { toDate, toISO } from '../lib/date';
 import { avatarName, branchName, fmtAmount, fmtDate, memberName } from '../utils';
+import { personMatches } from '../lib/nameSearch';
 import { OUT_CATEGORIES, byMonth, fmtMonth } from '../lib/treasury';
 import { ageGroupFor, ageYear as localAgeYear, bornIn, isAgeGroup } from '../lib/ageGroups';
 import SearchInput from '../components/SearchInput';
@@ -1476,7 +1477,7 @@ function BranchGroups({ branchId }) {
   const q = query.trim().toLowerCase();
   const shown = members.filter((m) => {
     if (filter === 'none' ? m.group_id : filter && String(m.group_id) !== String(filter)) return false;
-    return !q || memberName(m).toLowerCase().includes(q);
+    return !q || personMatches(q, m);
   });
   const shownIds = shown.map((m) => m.id);
   const allShownPicked = shownIds.length > 0 && shownIds.every((id) => picked.has(id));

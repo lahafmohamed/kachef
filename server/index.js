@@ -5,10 +5,15 @@ const { renderPdf, chromiumMissing } = require('./pdf');
 const presence = require('./presence');
 const crypto = require('crypto');
 const { db, seed, seedLeaders, migrate, migrateAmanaHelpers, tachkilaTemplate, SECTION_DEFS, sectionDef, leaderSections, leaderSectionSQL } = require('./db');
+const { nameScore } = require('./nameSearch');
 
 migrate();
 seed();
 seedLeaders();
+
+// name_match(q, first, father, last): how well a search reads as a name — «mohamed
+// lahaf» finds محمد علي الحاف, in either script and any word order. 0 = not at all.
+db.function('name_match', { deterministic: true, varargs: true }, (q, ...parts) => nameScore(q, parts));
 
 const app = express();
 app.set('trust proxy', 1);
@@ -3328,17 +3333,13 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     // فصيلة الدم, a phone number read off a screen, or plain age typed as a number.
     const like = `%${q}%`;
     const or = [
-      'm.first_name LIKE ?',
-      'm.last_name LIKE ?',
-      // اسم الأب صار معروضًا في القوائم، فالبحث به لازم: هو ما يفرّق بين «علي أحمد»
-      // و «علي أحمد» الآخر. الشكل الثلاثي يُطابَق كاملًا، و بلا اسم أب يبقى ثنائيًا.
-      'm.father_name LIKE ?',
-      "(m.first_name || ' ' || m.last_name) LIKE ?",
-      "(m.first_name || ' ' || COALESCE(m.father_name || ' ', '') || m.last_name) LIKE ?",
+      // الاسم بكلماته في أي ترتيب، باسم الأب أو بدونه، و بالحروف العربية أو اللاتينية:
+      // «mohamed lahaf» و «الحاف محمد» كلاهما يجد محمد علي الحاف (server/nameSearch.js)
+      'name_match(?, m.first_name, m.father_name, m.last_name) > 0',
       'm.school LIKE ?',
       'm.blood_type = ?',
     ];
-    params.push(like, like, like, like, like, like, String(q).trim().toUpperCase());
+    params.push(String(q), like, String(q).trim().toUpperCase());
     if (canContact) {
       or.push('m.address_abidjan LIKE ?', 'm.address_lebanon LIKE ?');
       params.push(like, like);
@@ -3366,7 +3367,11 @@ app.get('/api/members', requirePerm('members.read'), (req, res) => {
     }
     sql += ` AND (${or.join(' OR ')})`;
   }
-  sql += ` ORDER BY ${MEMBER_SORTS[req.query.sort] || MEMBER_SORTS.name}`;
+  // Sorted by name, a search lists whoever bears exactly the typed name before those
+  // whose name only starts like it; any other sort the قائد picked stays as picked
+  const byRelevance = q && (!req.query.sort || req.query.sort === 'name');
+  sql += ` ORDER BY ${byRelevance ? 'name_match(?, m.first_name, m.father_name, m.last_name) DESC, ' : ''}${MEMBER_SORTS[req.query.sort] || MEMBER_SORTS.name}`;
+  if (byRelevance) params.push(String(q));
   const listed = db.prepare(sql).all(...params);
   // كل الحضور في استعلامين للقائمة كلها، لا استعلامين لكل عنصر (bug 26)
   const currentAtt = currentBranchAttendanceMany(listed);
@@ -6538,12 +6543,13 @@ app.get('/api/sessions', requirePerm('sessions.read'), (req, res) => {
     params.push(leader, leader);
   }
   if (q) {
-    sql += ` AND (s.title LIKE ? OR COALESCE(${fullNameSQL('l')}, s.leader) LIKE ?
+    // A قائد's name reads as on the عناصر list: either script, any order (name_match)
+    sql += ` AND (s.title LIKE ? OR name_match(?, COALESCE(l.first_name, s.leader), l.father_name, l.last_name) > 0
                   OR s.place LIKE ?
                   OR EXISTS (SELECT 1 FROM session_leaders sl JOIN leaders l2 ON l2.id = sl.leader_id
-                             WHERE sl.session_id = s.id AND (${fullNameSQL('l2')}) LIKE ?)
-                  OR EXISTS (SELECT 1 FROM session_guests g WHERE g.session_id = s.id AND g.name LIKE ?))`;
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+                             WHERE sl.session_id = s.id AND name_match(?, l2.first_name, l2.father_name, l2.last_name) > 0)
+                  OR EXISTS (SELECT 1 FROM session_guests g WHERE g.session_id = s.id AND name_match(?, g.name) > 0))`;
+    params.push(`%${q}%`, String(q), `%${q}%`, String(q), String(q));
   }
   sql += ` ORDER BY ${SESSION_SORTS[req.query.sort] || SESSION_SORTS.date_desc}`;
   const seesMoney = canSeeSessionExpenses(req);
@@ -8552,8 +8558,9 @@ app.get('/api/prep-cards', requirePerm('prep.read'), (req, res) => {
   if (from) { sql += ' AND p.date >= ?'; params.push(from); }
   if (to) { sql += ' AND p.date <= ?'; params.push(to); }
   if (q) {
-    sql += ` AND (p.title LIKE ? OR p.place LIKE ? OR COALESCE(${fullNameSQL('l')}, p.leader) LIKE ?)`;
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    sql += ` AND (p.title LIKE ? OR p.place LIKE ?
+                  OR name_match(?, COALESCE(l.first_name, p.leader), l.father_name, l.last_name) > 0)`;
+    params.push(`%${q}%`, `%${q}%`, String(q));
   }
   sql += ' ORDER BY p.date DESC, p.id DESC';
   res.json(db.prepare(sql).all(...params).map(publicPrepCard));
@@ -9064,13 +9071,15 @@ app.get('/api/events', requirePerm('events.read'), (req, res) => {
   }
   if (req.query.q) {
     // E2 : un participant aussi — un عنصر des فرق du compte, un قائد ou un invité
-    sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR ${fullNameSQL('l')} LIKE ?
+    // Names read in either script and any order (name_match), as on the عناصر list
+    sql += ` AND (e.title LIKE ? OR e.place LIKE ? OR name_match(?, l.first_name, l.father_name, l.last_name) > 0
       OR EXISTS (SELECT 1 FROM event_participants pq LEFT JOIN members mq ON mq.id = pq.member_id
         LEFT JOIN leaders lq ON lq.id = pq.leader_id
         WHERE pq.event_id = e.id AND pq.withdrawn_at IS NULL${branchFilterSQL(req, 'mq.branch_id')}
-          AND (pq.guest_name LIKE ? OR ${fullNameSQL('mq')} LIKE ? OR ${fullNameSQL('lq')} LIKE ?)))`;
+          AND name_match(?, COALESCE(NULLIF(pq.guest_name, ''), mq.first_name, lq.first_name),
+                COALESCE(mq.father_name, lq.father_name), COALESCE(mq.last_name, lq.last_name)) > 0))`;
     const like = `%${req.query.q}%`;
-    params.push(like, like, like, like, like, like);
+    params.push(like, like, String(req.query.q), String(req.query.q));
   }
   sql += ' ORDER BY e.start_date DESC, e.id DESC';
   const money = ['fee', 'collected', 'expected', 'outstanding', 'unpaid_count', 'unpaid_families', 'donations', 'expenses', 'funded'];
@@ -10524,7 +10533,9 @@ app.get('/api/meeting-decisions', requirePerm('meetings.read'), (req, res) => {
   if (leader) sql += ` AND d.leader_id = ${intOr(leader)}`;
   if (q && String(q).trim()) {
     params.q = `%${String(q).trim()}%`;
-    sql += ` AND (d.text LIKE @q OR COALESCE(${fullNameSQL('o')}, d.owner) LIKE @q OR m.title LIKE @q)`;
+    params.qname = String(q);
+    sql += ` AND (d.text LIKE @q OR m.title LIKE @q
+      OR name_match(@qname, COALESCE(o.first_name, d.owner), o.father_name, o.last_name) > 0)`;
   }
   sql += ` ORDER BY d.status != 'open', CASE WHEN d.status = 'open' THEN COALESCE(d.due_date, '9999-12-31') END,
       CASE WHEN d.status = 'open' THEN m.date END, COALESCE(d.status_at, m.date) DESC, m.date DESC, d.position, d.id`;

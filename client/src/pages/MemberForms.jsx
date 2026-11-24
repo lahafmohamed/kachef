@@ -6,6 +6,7 @@ import { useAuth, usePerms } from '../auth';
 import { SECTIONS, useSection } from '../section';
 import { useFetch, useUrlFilters } from '../hooks';
 import { avatarName, branchName, fmtDate, fmtPhone, memberName } from '../utils';
+import { personMatches } from '../lib/nameSearch';
 import DatePicker from '../components/DatePicker';
 import FilterSelect from '../components/FilterSelect';
 import SearchInput from '../components/SearchInput';
@@ -185,7 +186,7 @@ function SendList({ kind, who, overview, onChanged, onReview }) {
     // «Tous» takes in complete files too: a family can still check and correct them
     return (overview.data?.people || []).filter((m) => {
       if (branch && String(m.branch_id) !== branch) return false;
-      if (needle && !memberName(m).toLowerCase().includes(needle)) return false;
+      if (needle && !personMatches(needle, m)) return false;
       const live = m.form && LIVE.includes(m.form.status) && m.form.status !== 'draft';
       if (show === 'todo') return m.missing.length > 0 && !live && m.form?.status !== 'submitted';
       if (show === 'waiting') return live || m.form?.status === 'submitted';
