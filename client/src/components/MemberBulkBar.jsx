@@ -60,8 +60,9 @@ export async function copyText(text) {
  * الترفيعات. Each action shows only for who may do it:
  * - `groups` (the one filtered فرقة's طلائع) + `branchId`: «Affecter à une طليعة», or none
  * - `canArchive`: archive, after a confirm
- * - `canPurge` (admin): when every one picked is already archived, archiving gives way to
- *   deleting for good — after typing how many
+ * - `canPurge` (admin): deleting for good, active or archived — after typing how many.
+ *   When every one picked is already archived, it takes archiving's place; next to
+ *   archiving it shrinks to a quiet icon on a phone, so a thumb does not land on it
  * - `canCopy`: the parents' numbers, one per line, to paste in a WhatsApp group
  * `onDone(kind)` runs after a change on the server, so the page reloads quietly.
  */
@@ -181,19 +182,22 @@ export default function MemberBulkBar({ members, branchId, groups, canArchive, c
           <span className="hidden sm:inline">{t('member.bulkCopyPhonesShort')}</span>
         </Button>
       )}
-      {canPurge && allArchived ? (
+      {canPurge && (
         <Button
           size="sm"
-          variant="destructive"
+          variant={allArchived ? 'destructive' : 'ghost'}
           loading={busy === 'purge'}
-          disabled={!!busy}
+          disabled={!!busy || !count}
           onClick={purge}
           aria-label={t('member.purge')}
+          title={t('member.purge')}
+          className={cn(!allArchived && 'text-destructive hover:text-destructive')}
         >
-          {busy !== 'purge' && <IconTrash className="hidden sm:block" />}
-          {t('member.purgeShort')}
+          {busy !== 'purge' && <IconTrash className={cn(allArchived && 'hidden sm:block')} />}
+          <span className={cn(!allArchived && 'hidden sm:inline')}>{t('member.purgeShort')}</span>
         </Button>
-      ) : canArchive && (
+      )}
+      {canArchive && !allArchived && (
         <Button
           size="sm"
           variant="outline"

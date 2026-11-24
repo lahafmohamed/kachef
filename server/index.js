@@ -3685,8 +3685,8 @@ app.post('/api/members/:id/restore', requirePerm('members.edit'), (req, res) => 
 
 // ---------- Suppression définitive (admin) ----------
 // Efface la personne et tout ce qui la concerne : présences, مطالب, historique, fiches,
-// journal. Seul l'archivé se supprime : on archive d'abord, on efface ensuite, en tapant
-// son identifiant. L'argent déjà encaissé ne quitte pas les caisses — il est réellement
+// journal. Un عنصر actif s'efface aussi, sans passer par l'archive ; un قائد, lui, doit
+// être archivé d'abord. Dans les deux cas on tape son identifiant. L'argent déjà encaissé ne quitte pas les caisses — il est réellement
 // dans la boîte : les participations payées à un camp restent comme une ligne au nom de
 // l'identifiant, et les droits de séance et cotisations des قادة deviennent une entrée
 // de caisse du même montant, au même jour, dans la même caisse. Les cotisations des
@@ -3748,7 +3748,6 @@ app.post('/api/members/purge', requireAdmin, (req, res) => {
   const rows = ids.map((id) => find.get(id));
   if (rows.some((m) => !m)) return res.status(404).json({ error: 'member not found' });
   if (rows.some((m) => !branchOk(req, m.branch_id))) return res.status(403).json({ error: 'forbidden' });
-  if (rows.some((m) => m.status === 'active')) return res.status(409).json({ error: 'purge_active' });
   db.transaction(() => {
     for (const m of rows) purgeMember(req, m);
   })();

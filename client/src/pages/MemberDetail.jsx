@@ -204,7 +204,7 @@ export default function MemberDetail() {
   // L'archivage se fait ici seulement, fiche ouverte : depuis une liste de 200
   // lignes, un clic de travers suffisait à sortir quelqu'un des activités.
   const canArchive = has('members.delete');
-  // La suppression définitive : l'admin seul, sur un عنصر déjà archivé
+  // La suppression définitive : l'admin seul, actif ou archivé
   const canPurge = useAuth().user?.role === 'admin';
   // المخيمات و الدورات: لمن يرى المخيمات
   const canEvents = has('events.read');
@@ -415,6 +415,20 @@ export default function MemberDetail() {
             >
               {!archiving && <IconArchive />}
               <span className="sr-only sm:not-sr-only">{t('member.archive')}</span>
+            </Button>
+          )}
+          {/* Actif : l'admin efface sans archiver d'abord — une icône discrète, le code à taper fait le reste */}
+          {canPurge && active && member.code && (
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={purging}
+              onClick={purge}
+              aria-label={t('member.purge')}
+              title={t('member.purge')}
+              className="w-11 px-0 text-destructive hover:text-destructive"
+            >
+              {!purging && <IconTrash />}
             </Button>
           )}
         </div>
